@@ -8,8 +8,8 @@
  */
 
 export {
-  DEFAULT_LIMIT_HINT, GRANT_LIMITS, LIMIT_RANGE, MEMBER_CANCEL_MODE, MEMBER_CANCEL_PERIOD, activePassIdFor,
-  bucketKey, grantsByGranter, memberCancelEnabledFor, monthKey, readMemberCancelConfig, remainingIn,
+  DEFAULT_LIMIT_HINT, GRANT_LIMITS, GRANT_REASON, GRANT_REASON_LABEL, INSTRUCTOR_GRANT_CAP, LIMIT_RANGE, MEMBER_CANCEL_MODE, MEMBER_CANCEL_PERIOD, activePassIdFor,
+  bucketKey, bucketOf, grantsByGranter, instructorGrantRoom, isGrantAdmin, memberCancelEnabledFor, monthKey, readMemberCancelConfig, remainingIn,
 } from "../../../functions/shared/member-cancel.mjs";
 
 const text = (value) => String(value ?? "").trim();
@@ -49,6 +49,8 @@ export function grantFailureMessage(error) {
     grant_amount_invalid: "횟수는 1~10 사이로 적어 주세요",
     grant_reason_required: "사유를 적어 주세요",
     grant_reason_too_long: "사유는 200자까지 적을 수 있어요",
+    grant_reason_code_invalid: "사유를 다시 골라 주세요",
+    grant_needs_admin: "담당 강사는 추가 1회까지 줄 수 있어요. 그 이상은 대표 · 총괄매니저에게 요청해 주세요",
     feature_off: "회원 앱 취소 기능이 꺼져 있어요",
     no_active_pass: "사용 중인 회원권이 없어 줄 수 없어요",
     unavailable: "연결이 불안정해요. 다시 시도해 주세요",

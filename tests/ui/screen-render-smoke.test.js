@@ -154,6 +154,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 이름 수정",
     "센터 회원 상세 · 앱 취소 횟수",
     "일정 탭 · 회원 취소 N건",
+    "취소 횟수 추가 · 경고 · 대표",
+    "취소 횟수 추가 · 경고 · 담당 강사",
+    "취소 횟수 추가 · 강사 재량 다 씀",
     "운영 설정 · 회원 앱 수업 취소",
     "센터 회원 상세 · 보관 가능",
     "센터 회원 상세 · 보관 확인",
@@ -3240,6 +3243,30 @@ test("이관 서비스 보정은 바뀔 값을 전후로 보여준다", async ()
   const clean = markupOf("이관 서비스 보정 · 보정할 것 없음");
   assert.match(clean, /보정할 것 없음/);
   assert.equal(clean.includes("확인했습니다"), false, "고칠 것이 없으면 확정 버튼을 내지 않는다");
+});
+
+test("grant warning: configured base count, three reasons, before/after preview, instructor cap of one", async () => {
+  const markup = await screenMarkup();
+  const owner = markup("취소 횟수 추가 · 경고 · 대표");
+  assert.match(owner, /data-member-cancel-grant-dialog/);
+  assert.match(owner, /취소 횟수를 추가하시겠습니까\?/);
+  assert.match(owner, /기본 제공 횟수는 월 3회이며, 추가 부여는 예외적인 상황에서만 허용됩니다\./);
+  for (const label of ["건강 및 부상 등 불가피한 사유", "센터 또는 강사 일정 변경", "기타 특별 사유"]) assert.ok(owner.includes(label), label);
+  assert.match(owner, /data-member-cancel-grant-preview/);
+  assert.match(owner, /남은 취소 <b[^>]*>0<!-- -->회 → <!-- -->1<!-- -->회<\/b>|남은 취소 <b[^>]*>0회 → 1회<\/b>/);
+  assert.match(owner, /1<!-- -->회 부여|1회 부여/);
+  assert.match(owner, /<select/, "대표는 횟수를 고른다");
+  assert.doesNotMatch(owner, /사유 복사/, "복사 버튼은 없다");
+  assert.doesNotMatch(owner, /담당 강사는 추가 1회까지/, "대표에게는 재량 안내가 없다");
+
+  const teacher = markup("취소 횟수 추가 · 경고 · 담당 강사");
+  assert.match(teacher, /담당 강사는 추가 1회까지, 그 이상은 대표 · 총괄매니저가 줍니다/);
+  assert.doesNotMatch(teacher, /<select/, "강사는 1회 고정");
+
+  const capped = markup("취소 횟수 추가 · 강사 재량 다 씀");
+  assert.match(capped, /data-member-cancel-grant-capped/);
+  assert.match(capped, /대표 · 총괄매니저에게 요청해 주세요/);
+  assert.doesNotMatch(capped, />취소 횟수 추가</, "버튼 대신 안내");
 });
 
 test("member app cancellation: the count on the first screen, the grant button, the owner's switch", async () => {

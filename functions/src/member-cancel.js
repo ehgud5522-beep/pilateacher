@@ -47,6 +47,9 @@ const HTTPS_CODE_BY_REASON = Object.freeze({
   grant_amount_invalid: "invalid-argument",
   grant_reason_required: "invalid-argument",
   grant_reason_too_long: "invalid-argument",
+  grant_reason_code_invalid: "invalid-argument",
+  /* 담당 강사의 재량(1회)을 넘었다 -- 대표 · 총괄매니저에게 요청한다. */
+  grant_needs_admin: "permission-denied",
   grant_request_id_invalid: "invalid-argument",
   client_not_found: "not-found",
   not_staff: "permission-denied",
@@ -273,13 +276,21 @@ async function grantMemberCancel(firestore, input, deps) {
       const existing = await transaction.get(grantRef);
       if (existing.exists) {
         const done = existing.data() || {};
-        return { grantId: grantRef.id, bucket: text(done.bucket), remaining: Number(done.remainingAfter) || 0, duplicate: true };
+        return {
+          grantId: grantRef.id, bucket: text(done.bucket), remaining: Number(done.remainingAfter) || 0, duplicate: true,
+          reasonCode: text(done.reasonCode), repeat: Boolean(done.repeat),
+        };
       }
     }
     const ledgerSnapshot = await transaction.get(ledgerRef);
     const ledger = ledgerSnapshot.exists ? ledgerSnapshot.data() || {} : null;
     const current = policy.bucketOf(ledger, bucket);
+    /* 강사 재량은 이 칸에서 1회까지 (2026-11-07). 원장을 트랜잭션 안에서 읽어 판정한다 --
+       두 강사가 동시에 눌러도 합계가 넘지 않는다. */
+    const room = policy.instructorGrantRoom(role, current.granted);
+    if (room !== null && checked.amount > room) throw refuse("grant_needs_admin");
     const grantedAfter = current.granted + checked.amount;
+    const remainingBefore = Math.max(0, config.limit + current.granted - current.used);
     transaction.set(ledgerRef, {
       organizationId,
       clientId,
@@ -293,6 +304,7 @@ async function grantMemberCancel(firestore, input, deps) {
       organizationId,
       clientId,
       amount: checked.amount,
+      reasonCode: checked.reasonCode,
       reason: checked.reason,
       grantedBy: callerUid,
       grantedByRole: role,
@@ -302,10 +314,16 @@ async function grantMemberCancel(firestore, input, deps) {
       month: policy.monthKey(now),
       createdAt: now,
       requestId: requestId || null,
+      /* 부여 전 · 후 (2026-11-07). 칸의 쓴 횟수 · 준 횟수와 남은 횟수 둘 다. */
+      usedBefore: current.used,
+      grantedBefore: current.granted,
+      remainingBefore,
       remainingAfter: Math.max(0, config.limit + grantedAfter - current.used),
+      /* 같은 칸에 이미 추가 부여가 있었다 -- 대표 화면이 "반복 부여" 로 센다. */
+      repeat: current.granted > 0,
     });
     const remaining = Math.max(0, config.limit + grantedAfter - current.used);
-    return { grantId: grantRef.id, bucket, remaining, duplicate: false };
+    return { grantId: grantRef.id, bucket, remaining, remainingBefore, duplicate: false, reasonCode: checked.reasonCode, repeat: current.granted > 0 };
   });
 }
 

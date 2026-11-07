@@ -295,9 +295,9 @@ test("강사가 다시 일정에 넣어도 쓴 횟수는 돌아오지 않는다 
 
 test("추가 부여: 담당 강사 · 대표 · 총괄은 된다, 담당 아닌 강사 · FC 는 거절 — 횟수 · 사유 · 누가가 남는다", async () => {
   const db = seed();
-  const byTeacher = await grant(db, "uid-teacher", { amount: 2, reason: "출장" });
-  assert.equal(byTeacher.remaining, 5);
-  await grant(db, "uid-owner");
+  const byTeacher = await grant(db, "uid-teacher", { amount: 1, reason: "출장" });
+  assert.equal(byTeacher.remaining, 4);
+  await grant(db, "uid-owner", { amount: 2 });
   await grant(db, "uid-area");
   await assert.rejects(grant(db, "uid-other"), refusedWith("grant_not_assigned"));
   await assert.rejects(grant(db, "uid-fc"), refusedWith("grant_not_assigned"));
@@ -305,8 +305,9 @@ test("추가 부여: 담당 강사 · 대표 · 총괄은 된다, 담당 아닌 
   const grants = grantsOf(db);
   assert.equal(grants.length, 3);
   assert.deepEqual(grants.map((row) => row.grantedBy), ["uid-teacher", "uid-owner", "uid-area"]);
-  assert.equal(grants[0].amount, 2);
+  assert.equal(grants[0].amount, 1);
   assert.equal(grants[0].reason, "출장");
+  assert.equal(grants[0].reasonCode, "other", "예전 화면(문장만)은 기타로");
   assert.equal(grants[0].month, "2026-11");
   assert.equal(grants[0].grantedByRole, "instructor");
   assert.deepEqual(db.read(ledgerPath("client-a")).buckets["m:2026-11"], { used: 0, granted: 4 });
@@ -348,10 +349,10 @@ test("추가 부여: 같은 요청 ID 는 한 번만 — 동시에 두 번 · �
   const db = seed();
   const requestId = "req-abcdef12";
   const [first, second] = await Promise.all([
-    grant(db, "uid-teacher", { amount: 2, requestId }),
-    grant(db, "uid-teacher", { amount: 2, requestId }),
+    grant(db, "uid-owner", { amount: 2, requestId }),
+    grant(db, "uid-owner", { amount: 2, requestId }),
   ]);
-  const retry = await grant(db, "uid-teacher", { amount: 2, requestId });
+  const retry = await grant(db, "uid-owner", { amount: 2, requestId });
   assert.equal(grantsOf(db).length, 1);
   assert.deepEqual(db.read(ledgerPath("client-a")).buckets["m:2026-11"], { used: 0, granted: 2 });
   assert.deepEqual([first.duplicate, second.duplicate].sort(), [false, true]);
@@ -359,9 +360,9 @@ test("추가 부여: 같은 요청 ID 는 한 번만 — 동시에 두 번 · �
   assert.equal(retry.remaining, 5);
   assert.equal(retry.grantId, first.grantId);
   /* 다른 계정의 같은 ID 는 따로다 · 요청 ID 없는 예전 호출은 전처럼 매번 */
-  await grant(db, "uid-owner", { requestId });
-  await grant(db, "uid-teacher");
-  await grant(db, "uid-teacher");
+  await grant(db, "uid-area", { requestId });
+  await grant(db, "uid-owner");
+  await grant(db, "uid-owner");
   assert.equal(grantsOf(db).length, 4);
   await assert.rejects(grant(db, "uid-teacher", { requestId: "bad id!" }), refusedWith("grant_request_id_invalid"));
   await assert.rejects(grant(db, "uid-other"), (error) => error.reason === "grant_not_assigned" && error.role === "instructor");
@@ -396,4 +397,54 @@ test("설정 변경 기록: 저장마다 한 건 — 누가(계정 · 역할) ·
     callerUid: "uid-owner", organizationId: ORG, document: "scheduleSync", value: { mode: "off", userIds: [] }, now: () => NOW,
   }, { membershipId, isActiveOwner: (row) => row?.role === "owner", newId: () => "chg-sync" });
   assert.deepEqual(db.read("runtimeConfigChanges/chg-sync").before, { mode: "listed", userIds: ["uid-teacher"] });
+});
+
+/* ── 추가 부여 경고 · 재량 (2026-11-07 대표 시안) ─────────────────────────── */
+
+test("담당 강사는 한 칸에 추가 1회까지 — 넘으면 grant_needs_admin, 대표 · 총괄은 제한 없음", async () => {
+  const db = seed();
+  await assert.rejects(grant(db, "uid-teacher", { amount: 2 }), refusedWith("grant_needs_admin"), "한 번에 2회도 막힌다");
+  assert.equal(grantsOf(db).length, 0, "막히면 아무것도 쓰지 않는다");
+  await grant(db, "uid-teacher");
+  await assert.rejects(grant(db, "uid-teacher"), refusedWith("grant_needs_admin"), "두 번째 1회는 대표에게");
+  await grant(db, "uid-owner", { amount: 3 });
+  await grant(db, "uid-area");
+  assert.deepEqual(db.read(ledgerPath("client-a")).buckets["m:2026-11"], { used: 0, granted: 5 });
+});
+
+test("대표가 먼저 줬으면 강사는 더 줄 수 없다 — 재량은 칸의 합계로 센다", async () => {
+  const db = seed();
+  await grant(db, "uid-owner");
+  await assert.rejects(grant(db, "uid-teacher"), refusedWith("grant_needs_admin"));
+});
+
+test("다음 달(새 칸)에는 강사 재량이 다시 1회", async () => {
+  const db = seed();
+  await grant(db, "uid-teacher");
+  const next = await grantMemberCancel(db, {
+    callerUid: "uid-teacher", organizationId: ORG, clientId: "client-a", amount: 1, reasonCode: "health",
+  }, { membershipId, now: () => new Date("2026-12-02T03:00:00Z"), newId: () => `id-${(ids += 1)}` });
+  assert.equal(next.duplicate, false);
+});
+
+test("부여 기록에 전 · 후와 반복 표시가 남는다", async () => {
+  const db = seed({ ledger: { buckets: { "m:2026-11": { used: 3, granted: 0 } } } });
+  await grant(db, "uid-teacher", { reasonCode: "health", reason: "" });
+  await grant(db, "uid-owner", { reasonCode: "centre_schedule", reason: "강사 휴가로 일정 변경" });
+  const [first, second] = grantsOf(db);
+  assert.deepEqual([first.usedBefore, first.grantedBefore, first.remainingBefore, first.remainingAfter], [3, 0, 0, 1]);
+  assert.equal(first.repeat, false);
+  assert.equal(first.reasonCode, "health");
+  assert.equal(first.reason, "건강 및 부상 등 불가피한 사유", "문장을 안 적으면 고른 사유 이름이 남는다");
+  assert.deepEqual([second.grantedBefore, second.remainingBefore, second.remainingAfter], [1, 1, 2]);
+  assert.equal(second.repeat, true, "같은 칸 두 번째는 반복");
+  assert.equal(second.reason, "강사 휴가로 일정 변경");
+});
+
+test("사유: 셋 중 하나, 기타는 내용 필수, 모르는 코드는 거절", async () => {
+  const db = seed();
+  await assert.rejects(grant(db, "uid-owner", { reasonCode: "other", reason: " " }), refusedWith("grant_reason_required"));
+  await assert.rejects(grant(db, "uid-owner", { reasonCode: "vip", reason: "x" }), refusedWith("grant_reason_code_invalid"));
+  const ok = await grant(db, "uid-owner", { reasonCode: "centre_schedule", reason: "" });
+  assert.equal(ok.reasonCode, "centre_schedule");
 });

@@ -942,12 +942,13 @@ exports.grantMemberCancel = onCall({
   try {
     const result = await grantMemberCancel(firestore, {
       callerUid: request?.auth?.uid, organizationId, clientId: request?.data?.clientId,
-      amount: request?.data?.amount, reason: request?.data?.reason, requestId: request?.data?.requestId,
+      amount: request?.data?.amount, reason: request?.data?.reason, reasonCode: request?.data?.reasonCode,
+      requestId: request?.data?.requestId,
     }, { membershipId, newId: () => firestore.collection("_").doc().id });
     // 사유 문장 · 회원 이름은 남기지 않는다 (§7).
     memberCancelLog("info", "member_cancel_granted", {
       stage: "grant", organizationId, correlationId: result.grantId, remaining: result.remaining,
-      duplicate: Boolean(result.duplicate),
+      duplicate: Boolean(result.duplicate), reasonCode: result.reasonCode || "", repeat: Boolean(result.repeat),
     });
     return result;
   } catch (error) {

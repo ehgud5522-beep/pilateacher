@@ -2,6 +2,20 @@
   "appId": "com.pilateacher.app",
   "appName": "필라티쳐",
   "webDir": "dist",
+  "includePlugins": [
+    "@capacitor-community/speech-recognition",
+    "@capacitor-firebase/authentication",
+    "@capacitor/app",
+    "@capacitor/camera",
+    "@capacitor/filesystem",
+    "@capacitor/haptics",
+    "@capacitor/keyboard",
+    "@capacitor/local-notifications",
+    "@capacitor/motion",
+    "@capacitor/share",
+    "@capgo/camera-preview",
+    "@capgo/capacitor-audio-recorder"
+  ],
   "plugins": {
     "FirebaseAuthentication": {
       "skipNativeAuth": true,

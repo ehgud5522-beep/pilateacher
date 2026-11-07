@@ -351,3 +351,79 @@ export function issueUnitPrice({ contractPrice, totalSessions } = {}) {
 }
 
 export { PAY_CATEGORY };
+
+/* ── 발급 화면의 상품 고르기 (2026-11-07 대표: "리스트가 너무 많아서 뭘 눌러야 할지 모름") ──
+ *
+ * 이름 칩을 한꺼번에 늘어놓으면 운영 상품 40여 개가 한 화면에 선다. 고르는 사람이
+ * 먼저 정하는 것은 이름이 아니다 -- **수업 종류**(1:1 · 2:1 · 디오사 · 기타)와
+ * **등록 구분**(신규 · 재등록 · 이벤트)이다. 둘 다 급여카테고리가 이미 말하고 있고,
+ * 고른 상품이 정하는 것도 결국 그 둘이다.
+ *
+ * 그래서 세 단계로 좁힌다. 단계마다 버튼이 몇 개뿐이다.
+ *   1. 수업 종류   (최대 4)
+ *   2. 등록 구분   (종류마다 최대 3) -- 하나뿐이면 건너뛴다
+ *   3. 상품        (그 종류 · 구분의 것만, 회차 적은 순)
+ * 이름을 알면 검색 한 칸으로 바로 간다.
+ */
+
+const CATEGORY_ORDER = Object.keys(PAY_CATEGORY_LABELS);
+const squashLower = (value) => text(value).replace(/\s+/g, "").toLowerCase();
+
+/**
+ * @param {Array<any>} products
+ * @returns {Array<{ key: string, label: string, count: number,
+ *   categories: Array<{ key: string, label: string, count: number, items: Array<any> }> }>}
+ */
+export function issueChoices(products) {
+  const groups = new Map(GROUP_ORDER.map((key) => [key, new Map()]));
+  for (const product of issuableProducts(products)) {
+    const byCategory = groups.get(productGroupOf(product));
+    const category = text(product?.payCategory) || "";
+    if (!byCategory.has(category)) byCategory.set(category, []);
+    byCategory.get(category).push(product);
+  }
+  const rank = (category) => {
+    const at = CATEGORY_ORDER.indexOf(category);
+    return at < 0 ? CATEGORY_ORDER.length : at;
+  };
+  return GROUP_ORDER.map((key) => {
+    const categories = [...groups.get(key).entries()]
+      .sort(([left], [right]) => rank(left) - rank(right) || left.localeCompare(right))
+      .map(([category, items]) => ({
+        key: category,
+        label: (category && PAY_CATEGORY_LABELS[category]) || category || "구분 없음",
+        count: items.length,
+        items: items.slice().sort((a, b) => (
+          count(a?.defaultSessions) - count(b?.defaultSessions)
+          || count(a?.defaultPrice) - count(b?.defaultPrice)
+          || text(a?.name).localeCompare(text(b?.name), "ko")
+        )),
+      }));
+    return {
+      key,
+      label: PRODUCT_GROUP_LABEL[key],
+      count: categories.reduce((sum, entry) => sum + entry.count, 0),
+      categories,
+    };
+  }).filter((group) => group.count > 0);
+}
+
+/** 이 상품은 어느 종류 · 구분인가 -- 이미 고른 상품이 있으면 그 단계를 열어 둔다. */
+export function issueChoiceOf(product) {
+  if (!product) return { group: "", category: "" };
+  return { group: productGroupOf(product), category: text(product?.payCategory) };
+}
+
+/**
+ * 이름 검색. 띄어쓰기 · 대소문자를 보지 않는다 ("1:1pt" 로 "1:1 PT" 를 찾는다).
+ * 급여카테고리 이름("재등록")으로도 찾는다. 빈 검색이면 빈 목록.
+ */
+export function searchIssuableProducts(products, query) {
+  const needle = squashLower(query);
+  if (!needle) return [];
+  return issuableProducts(products)
+    .filter((product) => squashLower(product?.name).includes(needle)
+      || squashLower(PAY_CATEGORY_LABELS[text(product?.payCategory)]).includes(needle))
+    .sort((a, b) => count(a?.defaultSessions) - count(b?.defaultSessions)
+      || text(a?.name).localeCompare(text(b?.name), "ko"));
+}

@@ -178,6 +178,7 @@ import {
 } from "./features/roster/roster-realtime.js";
 import { readPassesForClients, subscribeClients } from "./data/repositories/client-realtime.js";
 import { markTeacherInboxRead, subscribeTeacherInbox } from "./data/repositories/teacher-inbox-repository.js";
+import { currentPassUsage } from "./features/membership/pass-usage.js";
 import { dailySentence, hideToday as hideDailySentenceToday, isHiddenToday as dailySentenceHiddenToday } from "./features/schedule/daily-sentence.js";
 import { INBOX_COPY, inboxFailure, inboxRow, inboxStripLabel, lessonForInboxItem } from "./features/notifications/teacher-inbox.js";
 import {
@@ -6409,32 +6410,31 @@ function ReferenceMemberList({
                 <div className="shrink-0 text-right"><p className="tabular-nums" style={{ fontSize: TYPE.title, lineHeight: 1, fontWeight: 600, color: remaining <= 3 ? BAD : INK }}>{remaining}<span style={{ fontSize: TYPE.caption }}>회</span></p><p style={{ marginTop: 3, fontSize: TYPE.caption, color: SUB }}>잔여</p></div>
                 <ChevronRight size={16} style={{ color: FAINT }} />
               </div>
-              <div className="mt-2 flex min-w-0 items-center gap-2" style={{ paddingTop: 8, borderTop: `1px solid ${LINE}` }}>
-                {/* 종류별로 말한다. 한 숫자로 합치고 날짜를 하나만 적으면
-                    합계 전부가 그날 끝나는 것으로 읽힌다 -- 상세에서 지운
-                    바로 그 오해가 목록에 남는다. */}
-                {passSummary ? (
-                  <span className="truncate tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-                    {[
-                      passSummary.solo > 0 ? `1:1 ${passSummary.solo}회` : "",
-                      passSummary.duet > 0 ? `2:1 ${passSummary.duet}회` : "",
-                      passSummary.soonestOn ? `가장 빠른 만료 ${passSummary.soonestOn.slice(5).replace("-", ".")}(${passSummary.soonestRemaining}회)` : "",
-                    ].filter(Boolean).join(" · ") || "사용 중인 회원권 없음"}
-                  </span>
-                ) : (
-                  <span className="truncate" style={{ fontSize: TYPE.caption, color: SUB }}>만료 {m.contractEnd ? ymd(m.contractEnd) : "미설정"}</span>
-                )}<span style={{ color: LINE }}>·</span>
-                <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: next ? INK2 : SUB }}>다음 예약 {next ? `${md(next.date)} ${next.start}` : "없음"}</span>
+              {/* 카드 아래 (2026-11-08): 지금 회원권 줄 → 만료 · 다음 예약. 글자 15px, 넘치면 줄바꿈.
+                  종류별로 말한다 -- 한 숫자로 합치고 날짜를 하나만 적으면 합계 전부가 그날 끝나는 것으로 읽힌다. */}
+              <div className="mt-2 min-w-0" style={{ paddingTop: 10, borderTop: `1px solid ${LINE}` }}>
+                {journeyOf ? (() => {
+                  const journey = journeyOf(m.id);
+                  return hasJourney(journey) ? <div className="mb-2"><PassUsageBar journey={journey} /></div> : null;
+                })() : null}
+                {(() => {
+                  const parts = passSummary ? [
+                    passSummary.solo > 0 && passSummary.duet > 0 ? `1:1 ${passSummary.solo}회 · 2:1 ${passSummary.duet}회` : "",
+                    passSummary.soonestOn ? `만료 ${passSummary.soonestOn.slice(5).replace("-", ".")}${passSummary.solo + passSummary.duet > passSummary.soonestRemaining ? `(${passSummary.soonestRemaining}회)` : ""}` : "",
+                    passSummary.solo + passSummary.duet === 0 ? "사용 중인 회원권 없음" : "",
+                  ].filter(Boolean) : [`만료 ${m.contractEnd ? ymd(m.contractEnd) : "미설정"}`];
+                  parts.push(`다음 예약 ${next ? `${md(next.date)} ${next.start}` : "없음"}`);
+                  return (
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 tabular-nums" style={{ fontSize: TYPE.body, color: SUB, wordBreak: "keep-all" }}>
+                      {parts.map((part, index) => (
+                        <span key={part} className="min-w-0" style={{ color: index === parts.length - 1 && next ? INK2 : SUB }}>
+                          {index > 0 ? <span aria-hidden="true" style={{ color: FAINT, marginRight: 6 }}>·</span> : null}{part}
+                        </span>
+                      ))}
+                    </div>
+                  );
+                })()}
               </div>
-              {/* 강사가 "이 회원 얼마나 왔지" 를 숫자로 세지 않아도 되게. 카드에서는
-                  줄과 한 줄만, 기준 문구는 상세에만 둔다 -- 카드가 문장으로 차면
-                  목록이 아니라 글이 된다. */}
-              {journeyOf ? (() => {
-                const journey = journeyOf(m.id);
-                return hasJourney(journey)
-                  ? <div className="mt-2"><PassJourneyBar journey={journey} size="sm" /></div>
-                  : null;
-              })() : null}
             </button></div>
           );
         })}</div>
@@ -6576,6 +6576,34 @@ function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
         {error && <div className="flex items-center gap-2" style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: WARN_S, color: WARN, fontSize: TYPE.caption }}><AlertCircle size={14} />{error}{error.includes("이미") && <button type="button" className="ml-auto font-semibold" onClick={() => { const name = f.name.trim(), phone = f.phone.replace(/\D/g, ""); const d = (members || []).find((m) => String(m.name || "").trim() === name && (!phone || String(m.phone || "").replace(/\D/g, "") === phone)); if (d) onOpenExisting(d.id); }}>기존 회원 열기</button>}</div>}
       </div>
     </Sheet>
+  );
+}
+
+/* 회원 카드 · 출석 체크의 "지금 회원권" 줄 (2026-11-08). 지금 쓰는 회원권만 -- "20회 중 12회 사용" 과
+   막대 하나. 여정 전체(앱 이전 · 1차 · 2차 …)는 회원 상세의 PassJourneyBar 에 있다.
+   글자는 15px(TYPE.body), 넘치면 줄을 바꾼다 -- 칸 밖으로 나가지 않는다. */
+function PassUsageBar({ journey }) {
+  const usage = currentPassUsage(journey);
+  if (!usage) return null;
+  const percent = Math.round(usage.ratio * 100);
+  return (
+    <div className="min-w-0" data-pass-usage>
+      <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
+        <span className="min-w-0" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK2, wordBreak: "keep-all" }}>{usage.title}</span>
+        <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>{usage.usage}</span>
+      </div>
+      <div role="img" aria-label={`${usage.usage}, ${usage.remaining}회 남음`} className="mt-1.5 w-full overflow-hidden"
+        style={{ height: 8, borderRadius: 8, backgroundColor: TINT }}>
+        <div style={{ width: `${usage.used > 0 ? Math.max(3, percent) : 0}%`, height: "100%", borderRadius: 8, background: GRAD }} />
+      </div>
+      {/* 미리 끊은 다음 회원권 (2026-11-08). 합치지 않고 따로 -- 지금 것이 곧 끝난다는 사실이 보여야 한다. */}
+      {usage.waiting ? (
+        <div className="mt-1.5 flex min-w-0 items-center gap-2" data-pass-waiting>
+          <span aria-hidden="true" className="shrink-0" style={{ width: 22, height: 8, borderRadius: 8, border: `1.5px dashed ${PRIMARY}`, boxSizing: "border-box" }} />
+          <span className="min-w-0" style={{ fontSize: TYPE.body, fontWeight: 600, color: PRIMARY, wordBreak: "keep-all" }}>{usage.waiting.label}</span>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -16964,7 +16992,7 @@ function AttendanceCheck({
               </div>
               {/* 강사가 "이 회원 얼마나 왔지" 를 숫자로 세지 않아도 되게. 차감
                   직전이 그 질문이 가장 자주 떠오르는 자리다. */}
-              {hasJourney(journey) ? <div className="mt-1.5"><PassJourneyBar journey={journey} size="sm" /></div> : null}
+              {hasJourney(journey) ? <div className="mt-1.5"><PassUsageBar journey={journey} /></div> : null}
               {clientPasses.length === 0
                 ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>발급된 회원권이 없습니다.</p>
                 : clientPasses.map((pass) => {
@@ -27992,6 +28020,28 @@ export function createAppScreenSmokeCases() {
         onOpenMember={noop} />,
     ) },
     { name: "회원 목록", element: <ReferenceMemberList members={db.members} schedule={db.schedule} settings={db.settings} onSelect={noop} onAdd={noop} /> },
+    /* 카드의 "지금 회원권" 줄 (2026-11-08). 5번째 등록 · 회원권 둘 · 다 쓴 회원 -- 여정 전체가 아니라 지금 것만. */
+    ...(() => {
+      const seg = (round, total, used, active = true) => ({ kind: "pass", passId: `p${round}`, round, total, paid: total, service: 0, used, remaining: total - used, lapsed: 0, active });
+      const base = db.members[0] || {};
+      const usageMembers = [
+        { ...base, id: "pu-1", name: "강다경", regular: 8, service: 0, total: 136 },
+        { ...base, id: "pu-2", name: "강명혜", regular: 28, service: 0, total: 40, duetWith: "" },
+        { ...base, id: "pu-3", name: "강명희", regular: 0, service: 0, total: 10 },
+      ];
+      const journeys = {
+        ["pu-1"]: { segments: [{ kind: "prior", passId: "", round: 0, total: 36, used: 36, active: false }, seg(1, 20, 20, false), seg(2, 20, 20, false), seg(3, 20, 20, false), seg(4, 20, 20, false), seg(5, 20, 12)], usedTotal: 128, grandTotal: 136, currentRound: 5, hasPrior: true, prior: 36 },
+        ["pu-2"]: { segments: [seg(1, 20, 12), seg(2, 20, 0)], usedTotal: 12, grandTotal: 40, currentRound: 2, hasPrior: false, prior: 0 },
+        ["pu-3"]: { segments: [seg(1, 10, 10, false)], usedTotal: 10, grandTotal: 10, currentRound: 0, hasPrior: false, prior: 0 },
+      };
+      const summaries = {
+        ["pu-1"]: { solo: 8, duet: 0, soonestOn: "2026-12-31", soonestRemaining: 8 },
+        ["pu-2"]: { solo: 20, duet: 8, soonestOn: "2026-12-31", soonestRemaining: 8 },
+        ["pu-3"]: { solo: 0, duet: 0, soonestOn: "", soonestRemaining: 0 },
+      };
+      return [{ name: "회원 목록 · 지금 회원권", element: <ReferenceMemberList members={usageMembers} schedule={db.schedule} settings={db.settings}
+        onSelect={noop} onAdd={noop} journeyOf={(id) => journeys[id] || null} passSummaryOf={(id) => summaries[id] || null} /> }];
+    })(),
     { name: "회원 상세", element: <ReferenceMemberDetail member={member} schedule={db.schedule} photos={photos[member.id]} settings={db.settings} onBack={noop} onPatch={asyncNoop} onSaveNote={asyncNoop} onSchedule={noop} onAssess={noop} onToast={noop} /> },
     /* 소속 센터의 회원. 강사가 못 하는 셋 -- 삭제 · 홀딩 · 단가 -- 이 사라지고,
        이용권 카드의 세 칸이 조직 회원권에서 채워진다. */

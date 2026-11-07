@@ -6032,6 +6032,10 @@ describe("회원 수업 알림 문서는 서버만", () => {
       await assertFails(setDoc(doc(db, "notificationSends", "L1_c1_lesson30m"), { status: "sent" }), `${userId} 보낸 기록 쓰기`);
       await assertFails(setDoc(doc(db, "notificationState", "memberPush"), { sweptUntil: 1 }), `${userId} 훑은 자리 쓰기`);
       await assertFails(setDoc(doc(db, "runtimeConfig", "memberPush"), { mode: "all" }), `${userId} 스위치 쓰기`);
+      /* 회원 취소 → 강사 푸시 (2026-11-07). 강사 토큰 · 스위치도 서버만 -- teacherPushSettings 통로. */
+      await assertFails(getDoc(doc(db, "teacherPush", userId)), `${userId} teacherPush 읽기`);
+      await assertFails(setDoc(doc(db, "teacherPush", userId), { tokens: {} }), `${userId} teacherPush 쓰기`);
+      await assertFails(setDoc(doc(db, "runtimeConfig", "teacherPush"), { mode: "all" }), `${userId} 강사 푸시 스위치 쓰기`);
     }
   });
 });

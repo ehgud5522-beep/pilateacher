@@ -464,6 +464,18 @@ body {
 .sheet .name { font-size: 20px; font-weight: 700; margin: 4px 0 2px; }
 .cancelbox { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
 .cancelbox .blocked { margin-top: 10px; font-size: var(--t-caption); color: var(--sub); word-break: keep-all; line-height: 1.6; }
+
+/* ── 필수 업데이트 (2026-11-07) ────────────────────────────────────────
+   화면 전체를 덮는다. 닫을 길이 없다 -- 아래 앱은 그대로 두고 덮기만 한다. */
+.updatewall {
+  position: fixed; inset: 0; z-index: 80;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
+  background: var(--page);
+}
+.updatecard { width: 100%; max-width: 420px; color: var(--ink); text-align: center; }
+.updatecard .name { font-size: 22px; font-weight: 700; }
+.updatecard .blocked, .sheet .blocked { margin-top: 10px; font-size: var(--t-caption); color: var(--sub); word-break: keep-all; line-height: 1.6; }
 /* 취소 완료 (2026-11-07 대표 시안): 초록 체크 · 큰 제목 · 작은 한 줄, 가운데. */
 .canceldone { text-align: center; }
 .canceldone .donecheck { display: block; margin: 6px auto 10px; color: #16a34a; }

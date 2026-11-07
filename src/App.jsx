@@ -20039,7 +20039,7 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
     if (!ownerLevel || organization?.isLegacy || !clientId) return null;
     return (
       <p className="mt-1.5" data-member-cancel-grant-off style={{ fontSize: TYPE.caption, color: SUB }}>
-        앱 취소 횟수 · 꺼짐 — 더보기 → 운영 설정 → 회원 앱 수업 취소에서 횟수 · 기간을 저장하면 여기서 추가할 수 있어요
+        앱 취소 횟수 · 꺼짐 — 더보기 → 대표 설정 → 앱 업데이트 · 운영 스위치 → "회원 앱 수업 취소" 에서 횟수 · 기간을 저장하면 여기서 추가할 수 있어요
       </p>
     );
   }
@@ -26145,7 +26145,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     return total;
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
-    report: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 안내", "name-confirm": "강사 이름 확정", notices: "공지사항", "expiry-order": "만료일 순서 확인", "duet-unmarked": "듀엣 출석 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
+    report: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 · 운영 스위치", "name-confirm": "강사 이름 확정", notices: "공지사항", "expiry-order": "만료일 순서 확인", "duet-unmarked": "듀엣 출석 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
@@ -26216,7 +26216,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     /* 되돌릴 수 없거나 센터 전체를 세우는 것들. 접어 두는 이유가 "자주 안 써서"
        가 아니라 **지나다 누를 자리에 두지 않으려고** 다. */
     { label: "대표 설정", collapsible: true, items: [
-      ...(showAppUpdate ? [{ key: "app-update", title: "앱 업데이트 안내", description: "새 버전 알림 · 옛 앱 차단 · 강사 버전", Icon: Smartphone }] : []),
+      ...(showAppUpdate ? [{ key: "app-update", title: "앱 업데이트 · 운영 스위치", description: "새 버전 알림 · 일정 동기화 · 회원 앱 수업 취소 · 알림", Icon: Smartphone }] : []),
       /* 한 번 누르는 버튼이다. 고친 뒤에 붙은 소속에는 표시가 저절로 들어가므로
          이 화면은 **이미 있던 강사들**만을 위한 것이다. */
       ...(showAppUpdate ? [{ key: "name-confirm", title: "강사 이름 확정", description: "로그인 때마다 되돌아가던 이름 고정", Icon: Users }] : []),

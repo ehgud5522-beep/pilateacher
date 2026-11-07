@@ -162,22 +162,52 @@ async function writeRuntimeConfig(firestore, input) {
   const at = (input?.now || (() => new Date()))();
   const payload = await build(input?.value);
   const target = FIELD_TARGETS[name];
-  if (target) {
-    await firestore.collection("runtimeConfig").doc(target.document).set({
-      [target.field]: { ...payload, updatedAt: at, updatedBy: text(input?.actorId) },
-    }, { merge: true });
-    return { document: name, value: payload };
+  const configRef = firestore.collection("runtimeConfig").doc(target ? target.document : name);
+  /* 바꾸기 전 값 (2026-11-07). 칸으로 얹힌 설정은 그 칸만, 문서 설정은 얹힌 칸을 뺀 나머지만. */
+  const beforeSnapshot = await configRef.get();
+  const before = settingsOnly(name, beforeSnapshot.exists ? beforeSnapshot.data() : null);
+  const change = {
+    document: name,
+    organizationId: text(input?.organizationId),
+    actorUid: text(input?.actorId),
+    actorRole: text(input?.actorRole),
+    at,
+    before,
+    after: payload,
+  };
+  /* doc(undefined) 는 Admin SDK 가 거절한다 -- id 가 없으면 인자 없이 불러 자동 id. */
+  const changes = firestore.collection("runtimeConfigChanges");
+  const changeRef = text(input?.changeId) ? changes.doc(text(input.changeId)) : changes.doc();
+  const write = target
+    ? [configRef, { [target.field]: { ...payload, updatedAt: at, updatedBy: text(input?.actorId) } }, { merge: true }]
+    /* 다른 설정이 칸으로 얹혀 사는 문서는 합쳐 쓴다 -- 통째로 쓰면 그 칸이 지워진다.
+       updatedAt · updatedBy: 누가 언제 바꿨는가. 이 숫자가 센터 전체를 막을 수 있다. */
+    : [configRef, { ...payload, updatedAt: at, updatedBy: text(input?.actorId) },
+      Object.values(FIELD_TARGETS).some((item) => item.document === name) ? { merge: true } : undefined];
+  /* 설정과 변경 기록은 한 배치로 -- 설정만 바뀌고 기록이 없는 상태가 생기지 않게. */
+  if (typeof firestore.batch === "function") {
+    const batch = firestore.batch();
+    batch.set(...write.filter((item) => item !== undefined));
+    batch.set(changeRef, change);
+    await batch.commit();
+  } else {
+    await write[0].set(write[1], write[2]);
+    await changeRef.set(change);
   }
-  /* 다른 설정이 칸으로 얹혀 사는 문서는 합쳐 쓴다 -- 통째로 쓰면 그 칸이 지워진다. */
-  const hosted = Object.values(FIELD_TARGETS).some((item) => item.document === name);
-  await firestore.collection("runtimeConfig").doc(name).set({
-    ...payload,
-    /* 누가 언제 바꿨는가. 이 숫자가 센터 전체를 막을 수 있어, 바뀐 뒤에
-       "왜 이렇게 되어 있지" 에 답할 것이 있어야 한다. */
-    updatedAt: at,
-    updatedBy: text(input?.actorId),
-  }, hosted ? { merge: true } : undefined);
-  return { document: name, value: payload };
+  return { document: name, value: payload, change: { id: changeRef.id || "", before, after: payload, actorRole: change.actorRole, at } };
+}
+
+/**
+ * 변경 기록에 남길 "그 설정의 값" -- 시각 · 작성자와, 같은 문서에 얹혀 사는 다른 설정 칸은 뺀다.
+ * 없으면 null.
+ */
+function settingsOnly(name, data) {
+  const target = FIELD_TARGETS[name];
+  const raw = target ? data?.[target.field] : data;
+  if (!raw || typeof raw !== "object") return null;
+  const hostedFields = new Set(Object.values(FIELD_TARGETS).filter((item) => item.document === name).map((item) => item.field));
+  return Object.fromEntries(Object.entries(raw)
+    .filter(([key]) => key !== "updatedAt" && key !== "updatedBy" && !hostedFields.has(key)));
 }
 
 /** 지금 적혀 있는 값. 화면이 고치기 전에 보여준다. */
@@ -225,6 +255,7 @@ async function handleRuntimeConfigRequest(firestore, input, deps) {
   try {
     result = await writeRuntimeConfig(firestore, {
       document, value: input?.value, actorId: callerUid, now: input?.now,
+      organizationId, actorRole: text(membership.data()?.role), changeId: deps.newId?.(),
     });
   } catch (error) {
     throw Object.assign(error, { writeFailed: true });

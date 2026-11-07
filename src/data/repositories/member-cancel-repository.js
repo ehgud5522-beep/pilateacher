@@ -55,3 +55,12 @@ export function grantFailureMessage(error) {
   };
   return `${table[reason] || "처리하지 못했어요"} (코드 ${reason})`;
 }
+
+/**
+ * 추가 부여 요청 ID (2026-11-07). 한 번의 부여에 하나 -- 다시 시도할 때는 같은 값을 보내
+ * 서버가 한 번만 준다. 서버 형식: 영문 · 숫자 · _ · - 8~64자.
+ */
+export function newMemberCancelRequestId(random = globalThis.crypto) {
+  if (typeof random?.randomUUID === "function") return random.randomUUID().replaceAll("-", "");
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+}

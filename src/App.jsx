@@ -153,7 +153,7 @@ import {
   DEFAULT_LIMIT_HINT as MEMBER_CANCEL_DEFAULT_LIMIT_HINT, LIMIT_RANGE as MEMBER_CANCEL_LIMIT_RANGE,
   MEMBER_CANCEL_PERIOD, bucketKey as memberCancelBucketKey, grantFailureMessage, grantsByGranter,
   listMemberCancelGrants, memberCancelEnabledFor, monthKey as memberCancelMonthKey, readMemberCancelConfig,
-  readMemberCancelLedger, remainingIn as memberCancelRemainingIn,
+  readMemberCancelLedger, remainingIn as memberCancelRemainingIn, newMemberCancelRequestId,
   GRANT_LIMITS as MEMBER_CANCEL_GRANT_LIMITS, activePassIdFor as memberCancelActivePassId,
 } from "./data/repositories/member-cancel-repository.js";
 import { WEB_VERSION_CHECK_MS, fetchDeployedWebBuild, isNewerWebBuild, staleTabMessage } from "./features/ui/web-version.js";
@@ -19907,6 +19907,10 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
+  /* 누르는 즉시 잠근다 (상태는 다음 그리기까지 늦다). 요청 ID 는 한 번의 부여에 하나 --
+     실패 후 다시 눌러도 같은 ID 라 서버가 한 번만 준다. 성공 · 그만두기 뒤에 새로 만든다. */
+  const sendingRef = useRef(false);
+  const requestIdRef = useRef("");
   useEffect(() => {
     if (!on) return undefined;
     let alive = true;
@@ -19920,15 +19924,27 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
   const remaining = bucket && ledger !== undefined ? memberCancelRemainingIn(ledger, bucket, settings.limit) : null;
   const scope = settings.period === MEMBER_CANCEL_PERIOD.PASS ? "이 회원권" : "이번 달";
   const submit = async () => {
-    if (busy) return;
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+    if (!requestIdRef.current) requestIdRef.current = newMemberCancelRequestId();
     setBusy(true); setError("");
     try {
-      const result = await fbGrantMemberCancel({ organizationId, clientId, amount: Number(amount), reason });
+      const result = await fbGrantMemberCancel({
+        organizationId, clientId, amount: Number(amount), reason, requestId: requestIdRef.current,
+      });
       onToast?.({ ok: true, msg: `취소 횟수 ${amount}회를 더했습니다 (남은 ${result?.remaining ?? "-"}회)` });
+      requestIdRef.current = "";
       setOpen(false); setReason(""); setAmount(1); setRevision((value) => value + 1);
     } catch (thrown) {
+      /* 입력한 횟수 · 사유와 요청 ID 는 그대로 둔다 -- [주기] 를 다시 누르면 같은 요청이다. */
       setError(grantFailureMessage(thrown));
-    } finally { setBusy(false); }
+      deviceLog("member_cancel_grant_failed", {
+        feature: "member_cancel", stage: "grant", errorDomain: "functions_callable",
+        errorCode: String(thrown?.code || "unknown"), reason: String(thrown?.details?.reason || ""),
+        message: thrown?.message, role: organization?.role || "", appBuild: APP_BUILD_LABEL,
+        platform: Capacitor.getPlatform(), requestId: requestIdRef.current,
+      });
+    } finally { sendingRef.current = false; setBusy(false); }
   };
   return (
     <div className="mt-1.5" data-member-cancel-grant>
@@ -19954,7 +19970,7 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
             placeholder="사유 (필수, 예: 병원 진료)" className="h-10 w-full px-2"
             style={{ borderRadius: 8, border: `1px solid ${LINE}`, backgroundColor: CARD, color: INK, fontSize: TYPE.caption }} />
           <div className="flex gap-2">
-            <button type="button" onClick={() => setOpen(false)} disabled={busy} className="h-10 flex-1 font-bold"
+            <button type="button" onClick={() => { requestIdRef.current = ""; setOpen(false); }} disabled={busy} className="h-10 flex-1 font-bold"
               style={{ borderRadius: 8, backgroundColor: CARD, color: SUB, fontSize: TYPE.caption }}>그만두기</button>
             <button type="button" onClick={submit} disabled={busy || !reason.trim()} className="h-10 flex-1 font-bold text-white disabled:opacity-50"
               style={{ borderRadius: 8, backgroundColor: BRAND, fontSize: TYPE.caption }}>{busy ? "주는 중" : "주기"}</button>
@@ -24433,8 +24449,12 @@ function MemberCancelAdmin({ organization, instructorStore, onLoadConfig, onSave
   const rows = instructorVersionRows(instructors, {});
   const nameOf = (userId) => rows.find((row) => row.userId === userId)?.name || "이름 모름";
   const syncOn = (userId) => scheduleSyncEnabledFor(syncConfig, userId);
+  /* 누르는 즉시 잠근다. 저장은 같은 값을 다시 쓰는 일이라 두 번 가도 결과는 같지만,
+     변경 기록이 두 줄 생기지 않게. */
+  const savingRef = useRef(false);
   const save = async () => {
-    if (busy || !draft) return;
+    if (savingRef.current || !draft) return;
+    savingRef.current = true;
     setBusy(true); setMessage("");
     try {
       const result = await onSaveConfig?.(organizationId, "memberCancel", {
@@ -24443,8 +24463,14 @@ function MemberCancelAdmin({ organization, instructorStore, onLoadConfig, onSave
       fromConfig(result?.config);
       setMessage("저장했습니다. 회원이 수업 상세를 열 때부터 적용됩니다.");
     } catch (thrown) {
+      /* 입력한 값(draft)은 그대로 -- 다시 [저장] 을 누를 수 있다. */
       setMessage(`저장하지 못했어요 (코드 ${thrown?.code || thrown?.message || "unknown"})`);
-    } finally { setBusy(false); }
+      deviceLog("member_cancel_config_save_failed", {
+        feature: "member_cancel", stage: "config_save", errorDomain: "functions_callable",
+        errorCode: String(thrown?.code || "unknown"), message: thrown?.message,
+        role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+      });
+    } finally { savingRef.current = false; setBusy(false); }
   };
   const shiftMonth = (delta) => setMonth((current) => {
     const [year, mon] = current.split("-").map(Number);

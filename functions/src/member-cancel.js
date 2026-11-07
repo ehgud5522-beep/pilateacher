@@ -47,12 +47,13 @@ const HTTPS_CODE_BY_REASON = Object.freeze({
   grant_amount_invalid: "invalid-argument",
   grant_reason_required: "invalid-argument",
   grant_reason_too_long: "invalid-argument",
+  grant_request_id_invalid: "invalid-argument",
   client_not_found: "not-found",
   not_staff: "permission-denied",
 });
 
-const refusal = (reason, message = reason) => Object.assign(new Error(message), {
-  httpsCode: HTTPS_CODE_BY_REASON[reason] || "failed-precondition", reason,
+const refusal = (reason, message = reason, extra = {}) => Object.assign(new Error(message), {
+  httpsCode: HTTPS_CODE_BY_REASON[reason] || "failed-precondition", reason, ...extra,
 });
 const requestError = (httpsCode, message, reason = "") => Object.assign(new Error(message), { httpsCode, reason });
 
@@ -236,30 +237,45 @@ async function grantMemberCancel(firestore, input, deps) {
   const membershipSnapshot = await firestore.collection("memberships").doc(deps.membershipId(organizationId, callerUid)).get();
   const membership = membershipSnapshot.exists ? membershipSnapshot.data() || {} : null;
   const role = text(membership?.role);
+  /* 거절에도 역할을 단다 -- index.js 의 거절 로그가 "누가 막혔나" 를 남긴다 (2026-11-07). */
+  const refuse = (reason) => refusal(reason, reason, { role: role || "none" });
   if (!membership || text(membership.status) !== "active"
     || !["owner", "area_manager", "manager", "instructor", "staff"].includes(role)) {
-    throw refusal("not_staff");
+    throw refuse("not_staff");
   }
+  /* 요청 ID (2026-11-07). 같은 ID 로 다시 오면 한 번만 준다 -- 두 번 누르기 · 응답을 못 받고
+     다시 시도. 없으면(예전 화면) 전처럼 매번 새로 준다. */
+  const requestId = text(input?.requestId);
+  if (requestId && !/^[A-Za-z0-9_-]{8,64}$/.test(requestId)) throw refuse("grant_request_id_invalid");
   const org = firestore.collection("organizations").doc(organizationId);
   const [clientSnapshot, syncSnapshot] = await Promise.all([
     org.collection("clients").doc(clientId).get(),
     firestore.collection("runtimeConfig").doc("scheduleSync").get(),
   ]);
-  if (!clientSnapshot.exists) throw refusal("client_not_found");
-  if (!policy.mayGrantMemberCancel(role, callerUid, clientSnapshot.data())) throw refusal("grant_not_assigned");
+  if (!clientSnapshot.exists) throw refuse("client_not_found");
+  if (!policy.mayGrantMemberCancel(role, callerUid, clientSnapshot.data())) throw refuse("grant_not_assigned");
   const checked = policy.validateGrant(input);
-  if (!checked.ok) throw refusal(checked.reason);
+  if (!checked.ok) throw refuse(checked.reason);
 
   const config = policy.readMemberCancelConfig(syncSnapshot.exists ? syncSnapshot.data()?.memberCancel : null);
-  if (!config.configured || config.mode === policy.MEMBER_CANCEL_MODE.OFF) throw refusal("feature_off");
+  if (!config.configured || config.mode === policy.MEMBER_CANCEL_MODE.OFF) throw refuse("feature_off");
   const passId = config.period === policy.MEMBER_CANCEL_PERIOD.PASS
     ? policy.activePassIdFor(await readPassesFor(org, clientId), clientId, now) : "";
   const bucket = policy.bucketKey({ period: config.period, at: now, passId });
-  if (!bucket) throw refusal("no_active_pass");
+  if (!bucket) throw refuse("no_active_pass");
 
   const ledgerRef = org.collection("memberCancelLedger").doc(clientId);
-  const grantRef = org.collection("memberCancelGrants").doc(deps.newId());
+  /* 요청 ID 가 있으면 문서 id 가 곧 그 요청이다 -- 부른 사람 uid 를 앞에 붙여 다른 계정의
+     ID 와 겹치지 않게. */
+  const grantRef = org.collection("memberCancelGrants").doc(requestId ? `${callerUid}_${requestId}` : deps.newId());
   return firestore.runTransaction(async (transaction) => {
+    if (requestId) {
+      const existing = await transaction.get(grantRef);
+      if (existing.exists) {
+        const done = existing.data() || {};
+        return { grantId: grantRef.id, bucket: text(done.bucket), remaining: Number(done.remainingAfter) || 0, duplicate: true };
+      }
+    }
     const ledgerSnapshot = await transaction.get(ledgerRef);
     const ledger = ledgerSnapshot.exists ? ledgerSnapshot.data() || {} : null;
     const current = policy.bucketOf(ledger, bucket);
@@ -285,9 +301,11 @@ async function grantMemberCancel(firestore, input, deps) {
       /* 대표 화면의 월별 집계가 이 칸 하나로 거른다 (단일 필드 색인). */
       month: policy.monthKey(now),
       createdAt: now,
+      requestId: requestId || null,
+      remainingAfter: Math.max(0, config.limit + grantedAfter - current.used),
     });
     const remaining = Math.max(0, config.limit + grantedAfter - current.used);
-    return { grantId: grantRef.id, bucket, remaining };
+    return { grantId: grantRef.id, bucket, remaining, duplicate: false };
   });
 }
 

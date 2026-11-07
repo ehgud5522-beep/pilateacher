@@ -1706,6 +1706,31 @@ test("both members get a participant row, and a no-show still deducts", async ()
   assert.deepEqual(rows.map((write) => write.data.attendanceStatus), ["attended", "noshow"]);
 });
 
+test("the no-show row carries who chose 차감/미차감 — only when the chooser is the settler", async () => {
+  /* 2026-11-07 대표. 고른 사람이 확정하는 사람과 다르면 싣지 않는다 -- 규칙이 둘을
+     대조하고, 어긋나면 이 차감까지 한 배치로 거절된다. */
+  const at = new Date("2026-09-17T10:05:00.000Z");
+  const store = fakeStore();
+  await deductPass(ORG, duetPass(), deductInput({
+    lessonId: "lesson-1", attendanceByClientId: { "client-b": "noshow" },
+    noshowChoiceByClientId: { "client-b": { charge: false, by: "instructor-a", at }, "client-a": { charge: true, by: "instructor-a", at } },
+  }), deductOptions(store));
+  const rows = store.calls.commit[0].filter((write) => write.path.includes("/participants/"));
+  assert.deepEqual(rows[1].data, {
+    organizationId: ORG, lessonId: "lesson-1", clientId: "client-b", attendanceStatus: "noshow",
+    noshowCharge: false, noshowChosenBy: "instructor-a", noshowChosenAt: at,
+  });
+  assert.ok(!("noshowCharge" in rows[0].data), "출석한 사람에게는 붙지 않는다");
+
+  const other = fakeStore();
+  await deductPass(ORG, duetPass(), deductInput({
+    lessonId: "lesson-1", attendanceByClientId: { "client-b": "noshow" },
+    noshowChoiceByClientId: { "client-b": { charge: false, by: "someone-else", at } },
+  }), deductOptions(other));
+  const otherRows = other.calls.commit[0].filter((write) => write.path.includes("/participants/"));
+  assert.ok(!("noshowCharge" in otherRows[1].data));
+});
+
 test("the instructor's running total goes up for both members", async () => {
   // 강사는 그 시간에 두 사람을 각각 가르쳤다.
   const store = fakeStore();

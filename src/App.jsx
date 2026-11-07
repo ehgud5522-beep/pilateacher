@@ -159,6 +159,7 @@ import {
   lastUpdatedLabel, mergeRosterRefresh, refreshRosterOnce, shouldRefreshOnResume,
 } from "./features/roster/roster-refresh.js";
 import { refreshAfterSettlement, settleRefreshTargets } from "./features/roster/settle-refresh.js";
+import { noshowRecordFor, uncoveredChoiceClients } from "./features/schedule/noshow-record.js";
 import {
   REALTIME_SCOPE, applyClientChanges, missingPassClientIds, readsOfSnapshot, removesOnLeave,
   rosterRealtimeEnabledFor, rosterRealtimeScope, shouldLogReads,
@@ -172,7 +173,7 @@ import {
   transferableSessions,
 } from "./data/schema/pass-transfer.js";
 import {
-  DEDUCT_BACKDATE_LIMIT_DAYS, HOLD_MAX_DAYS, listPassesIssuedSince, readSettledRosterDocs, adjustPass, adjustDirectionOf, cancelPass, changePassExpiry,
+  DEDUCT_BACKDATE_LIMIT_DAYS, HOLD_MAX_DAYS, listPassesIssuedSince, readSettledRosterDocs, recordLessonAttendance, adjustPass, adjustDirectionOf, cancelPass, changePassExpiry,
   mayAdjustRemaining,
   isFreshlyIssuedPass,
   correctDeduction, deductPass, holdPass, isCancellablePass, loadPassReconcileRows,
@@ -31742,6 +31743,10 @@ export default function App() {
       /* 수업이 일어난 시각으로 차감한다. 누른 시각으로 하면 밤에 몰아 확정한
          수업이 그날로 기록되고, 급여가 다른 달로 넘어갈 수 있다. */
       const occurredAt = new Date(`${lesson.date}T${lesson.start || "00:00"}:00`);
+      /* 노쇼 차감 / 미차감과 고른 사람을 서버에 남긴다 (2026-11-07, noshow-record.js).
+         고른 사람이 지금 확정하는 계정일 때만 -- 규칙이 둘을 대조한다. */
+      const noshowRecord = noshowRecordFor(lesson, rosterMembers, { userId: account?.id || "", attendeesOf });
+      const covered = new Set();
       const results = [];
       const skips = [...plan.skips];
       for (const item of plan.deductions) {
@@ -31761,7 +31766,9 @@ export default function App() {
             /* 누가 왔고 누가 안 왔는지. 듀엣은 한 명이 노쇼여도 차감되므로,
                이것이 없으면 두 달 뒤 "그날 나는 안 갔는데"에 답할 것이 없다. */
             attendanceByClientId: item.attendanceByClientId,
+            noshowChoiceByClientId: noshowRecord.choices,
           });
+          for (const clientId of item.clientIds || [item.clientId]) covered.add(clientId);
           results.push({
             memberId: item.memberId,
             // 공유 회원권에서 나간 한 건은 두 사람의 줄에 모두 적힌다.
@@ -31790,6 +31797,49 @@ export default function App() {
       const outcome = settlementOutcome({
         attempted: plan.deductions.length, written: results.length, skipped: skips.length,
       });
+      /* 차감 배치가 쓰지 않은 참석 문서. 차감할 회차가 없던 수업(전원 노쇼 미차감 · 취소)은
+         서버의 수업도 닫는다 -- 기기만 닫고 서버가 "예정" 이면 다른 기기와 회원 앱이 계속
+         예정 수업으로 본다. 실패해도 이 확정은 그대로다(차감은 이미 끝났거나 없다). 원본
+         코드를 진단에 남긴다. */
+      const closeOnServer = outcome === SETTLEMENT_OUTCOME.NOTHING;
+      const leftover = closeOnServer
+        ? Object.keys(noshowRecord.attendance)
+        : uncoveredChoiceClients(noshowRecord.choices, covered);
+      if (leftover.length > 0) {
+        try {
+          const firstMember = rosterMembers.find((member) => member.orgClientId === leftover[0]);
+          await recordLessonAttendance(organizationContext.organizationId, {
+            lessonId: lesson.id,
+            createdBy: account?.id || "",
+            close: closeOnServer,
+            clientIds: leftover,
+            attendance: noshowRecord.attendance,
+            choices: noshowRecord.choices,
+            lesson: {
+              clientIds: Object.keys(noshowRecord.attendance),
+              locationId: firstMember?.orgLocationId || "",
+              instructorId: account?.id || "",
+              startsAt: occurredAt,
+            },
+          });
+          deviceLog("noshow_choice_recorded", {
+            feature: "lesson_settlement", stage: closeOnServer ? "close_without_deduction" : "record_choice",
+            count: leftover.length, lessonId,
+          });
+        } catch (error) {
+          deviceLog("noshow_choice_record_failed", {
+            feature: "lesson_settlement", stage: closeOnServer ? "close_without_deduction" : "record_choice",
+            errorDomain: "firestore", errorCode: error?.code || error?.name || "unknown",
+            message: error?.message, lessonId,
+          });
+        }
+      }
+      if (noshowRecord.skippedOtherChooser > 0) {
+        /* 다른 계정이 고른 노쇼. 서버에는 상태만 가고 선택은 기기에만 남는다. */
+        deviceLog("noshow_choice_not_recorded", {
+          feature: "lesson_settlement", stage: "other_chooser", count: noshowRecord.skippedOtherChooser, lessonId,
+        });
+      }
       const attempted = recordSettlementAttempt(lesson, { results, skips, outcome });
       if (!saveAttendanceOnce(lessonId, {
         ...db,

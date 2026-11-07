@@ -722,9 +722,32 @@ service cloud.firestore {
             && !exists(/databases/$(database)/documents/organizations/$(organizationId)/lessons/$(lessonId)/participants/$(request.resource.data.clientId))
             && existsAfter(/databases/$(database)/documents/organizations/$(organizationId)/lessons/$(lessonId)/participants/$(request.resource.data.clientId));
         }
+        /* 원장 없이 닫히는 수업 (2026-11-07). 차감할 회차가 아예 없던 수업 -- 전원 노쇼
+           미차감이거나 미차감 · 취소. 기기는 닫았는데 서버가 "예정" 이면 다른 기기와 회원
+           앱이 계속 예정 수업으로 본다. 그래서 settledWithoutDeduction 표시와 함께 닫되,
+           **같은 배치의 참석 문서**가 전원 취소이거나 미차감을 고른 노쇼일 때만 받는다 --
+           차감했어야 할 수업을 원장 없이 닫는 길이 되지 않게. 한두 명 수업만(1:1 · 듀엣);
+           그보다 큰 수업은 규칙이 참석을 셀 수 없어 받지 않는다. */
+        function notChargedAfter(clientId) {
+          let path = /databases/$(database)/documents/organizations/$(organizationId)/lessons/$(lessonId)/participants/$(clientId);
+          return existsAfter(path)
+            && (
+              getAfter(path).data.get("attendanceStatus", "") == "cancelled"
+              || (getAfter(path).data.get("attendanceStatus", "") == "noshow"
+                && getAfter(path).data.get("noshowCharge", true) == false)
+            );
+        }
+        function closedWithoutDeduction() {
+          let ids = request.resource.data.get("clientIds", []);
+          return request.resource.data.get("settledWithoutDeduction", false) == true
+            && !("settledPassId" in request.resource.data)
+            && ids is list && ids.size() >= 1 && ids.size() <= 2
+            && notChargedAfter(ids[0])
+            && (ids.size() < 2 || notChargedAfter(ids[1]));
+        }
         function completedBySettlement(previousRevision) {
           return legacyStoreAppSettlement()
-            || (settledWithLedger()
+            || ((settledWithLedger() || closedWithoutDeduction())
               && (!("revision" in request.resource.data) || request.resource.data.revision == previousRevision));
         }
         allow create: if request.resource.data.organizationId == organizationId
@@ -744,6 +767,46 @@ service cloud.firestore {
         allow delete: if false;
 
         match /participants/{clientId} {
+          /* ── 노쇼 차감 / 미차감과 고른 사람 (2026-11-07 대표) ─────────────────
+             확정할 때 강사가 고른 것을 참석 문서에 남긴다 (noshow-record.js):
+               noshowCharge    bool       true 차감 · false 미차감
+               noshowChosenBy  string     고른 사람 uid
+               noshowChosenAt  timestamp  고른 시각 (기기 시각)
+             셋은 함께 오고, 노쇼인 참석에만 붙는다. **고른 사람은 쓰는 사람이다** --
+             남의 이름으로 "그 사람이 미차감을 골랐다" 를 적지 못하게. 이미 적힌 값을
+             그대로 다시 쓰는 것(같은 문서를 합쳐 쓰기)은 누구든 된다.
+
+             칸 목록을 닫는다. 지금 쓰는 것은 차감 배치(organizationId · lessonId ·
+             clientId · attendanceStatus)와 이중 쓰기 어댑터(updatedAt · schemaVersion ·
+             dataKind · createdBy) 뿐이다 (2026-11-07 운영 문서 2,892건이 앞의 넷만
+             가졌다). 자유 문장 칸은 열지 않는다 -- 열면 언젠가 회원 이름이 들어간다.
+
+             고른 시각은 기기 시각이라 서버보다 조금 앞설 수 있다. 10분까지 받는다 --
+             막으면 그 확정의 차감까지 한 배치로 거절된다. */
+          function participantKeysOk() {
+            return request.resource.data.keys().hasOnly([
+              "organizationId", "lessonId", "clientId", "attendanceStatus",
+              "updatedAt", "schemaVersion", "dataKind", "createdBy",
+              "noshowCharge", "noshowChosenBy", "noshowChosenAt"
+            ]);
+          }
+          function noshowChoiceOk(previous) {
+            let data = request.resource.data;
+            let present = "noshowCharge" in data || "noshowChosenBy" in data || "noshowChosenAt" in data;
+            let unchanged = previous.get("noshowCharge", null) == data.get("noshowCharge", null)
+              && previous.get("noshowChosenBy", null) == data.get("noshowChosenBy", null)
+              && previous.get("noshowChosenAt", null) == data.get("noshowChosenAt", null);
+            return !present || (
+              data.get("attendanceStatus", "") == "noshow"
+              && data.keys().hasAll(["noshowCharge", "noshowChosenBy", "noshowChosenAt"])
+              && data.noshowCharge is bool
+              && data.noshowChosenBy is string
+              && data.noshowChosenBy.size() > 0
+              && data.noshowChosenAt is timestamp
+              && data.noshowChosenAt <= request.time + duration.value(10, "m")
+              && (data.noshowChosenBy == request.auth.uid || unchanged)
+            );
+          }
           // See the locations block for why get and list are split.
           allow get: if isCentreStaff(organizationId)
             && resource.data.organizationId == organizationId;
@@ -751,11 +814,15 @@ service cloud.firestore {
           allow create: if request.resource.data.organizationId == organizationId
             && request.resource.data.lessonId == lessonId
             && request.resource.data.clientId == clientId
-            && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);
+            && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"])
+            && participantKeysOk()
+            && noshowChoiceOk({});
           allow update: if resource.data.organizationId == organizationId
             && request.resource.data.organizationId == organizationId
             && immutable(["lessonId", "clientId", "organizationId"])
-            && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);
+            && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"])
+            && participantKeysOk()
+            && noshowChoiceOk(resource.data);
           allow delete: if false;
         }
       }

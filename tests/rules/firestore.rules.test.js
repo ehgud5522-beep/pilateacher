@@ -59,6 +59,8 @@ import { buildMigrationSnapshot } from "../../src/features/backup/backup-safety.
 import { deleteObject, getBytes, getMetadata, ref, uploadBytes } from "firebase/storage";
 import { createRequire } from "node:module";
 import { listNotices, visibleNotices } from "../../src/data/repositories/notice-repository.js";
+import { listTeacherInbox, markTeacherInboxRead } from "../../src/data/repositories/teacher-inbox-repository.js";
+import { readMemberCancelLedger } from "../../src/data/repositories/member-cancel-repository.js";
 
 /* 서버 함수 본문(CommonJS)을 그대로 부른다 -- 공지 쓰기는 manageNotice 하나뿐이다. */
 const require = createRequire(import.meta.url);
@@ -788,6 +790,21 @@ describe("PT passes and their ledger", () => {
         passRef(userId, ORG_A, `pass-by-${userId}`),
         passFixture(ORG_A, `pass-by-${userId}`),
       ), userId);
+    }
+  });
+
+  test("a typed base unit price rides the same issuing door", async () => {
+    /* 2026-11-07 대표 결정: 발급 화면에서 강사 기준 단가를 직접 정한다. 칸이
+       셋 늘지만(unitPriceSource · standardUnitPrice · unitPriceReason) passes
+       create 는 hasAll(하한)이라 규칙을 고치지 않는다. 정할 수 있는 사람은
+       발급할 수 있는 사람과 같다 -- 강사 · staff 는 발급 문부터 닫혀 있다. */
+    const typed = (id) => passFixture(ORG_A, id, {
+      baseUnitPrice: 33000, unitPriceSource: "manual", standardUnitPrice: 30000, unitPriceReason: "지점 단가",
+    });
+    await assertSucceeds(setDoc(passRef(users.owner, ORG_A, "pass-typed-owner"), typed("pass-typed-owner")));
+    await assertSucceeds(setDoc(passRef(users.manager, ORG_A, "pass-typed-manager"), typed("pass-typed-manager")));
+    for (const userId of [users.instructor, users.staff]) {
+      await assertFails(setDoc(passRef(userId, ORG_A, `pass-typed-${userId}`), typed(`pass-typed-${userId}`)), userId);
     }
   });
 
@@ -6032,7 +6049,59 @@ describe("회원 수업 알림 문서는 서버만", () => {
       await assertFails(setDoc(doc(db, "notificationSends", "L1_c1_lesson30m"), { status: "sent" }), `${userId} 보낸 기록 쓰기`);
       await assertFails(setDoc(doc(db, "notificationState", "memberPush"), { sweptUntil: 1 }), `${userId} 훑은 자리 쓰기`);
       await assertFails(setDoc(doc(db, "runtimeConfig", "memberPush"), { mode: "all" }), `${userId} 스위치 쓰기`);
+      /* 회원 취소 → 강사 푸시 (2026-11-07). 강사 토큰 · 스위치도 서버만 -- teacherPushSettings 통로. */
+      await assertFails(getDoc(doc(db, "teacherPush", userId)), `${userId} teacherPush 읽기`);
+      await assertFails(setDoc(doc(db, "teacherPush", userId), { tokens: {} }), `${userId} teacherPush 쓰기`);
+      await assertFails(setDoc(doc(db, "runtimeConfig", "teacherPush"), { mode: "all" }), `${userId} 강사 푸시 스위치 쓰기`);
     }
+  });
+});
+
+/* ── 강사 알림함 (2026-11-07) ─────────────────────────────────────────────
+   users/{uid}/inbox 는 서버가 만든다. 본인은 읽고, readAt 을 서버 시각으로 한 번
+   적는다. 앱 코드(teacher-inbox-repository.js)를 그대로 규칙에 통과시킨다. */
+describe("강사 알림함: 본인만 읽고, 읽음은 한 번", () => {
+  const seedInbox = async (uid, itemId = "rec-1", extra = {}) => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "users", uid, "inbox", itemId), {
+        kind: "member_cancel", organizationId: ORG_A, lessonId: "L1", clientId: "client-a", recordId: itemId,
+        title: "[회원 수업 취소]", body: "11/8(일) 10:00 수업이 회원 요청으로 취소되었어요",
+        createdAt: Timestamp.fromDate(new Date("2026-11-07T00:00:00Z")), ...extra,
+      });
+    });
+  };
+
+  test("본인은 목록을 읽고 읽음을 한 번 적는다 — 서버 시각", async () => {
+    await seedInbox(users.instructor);
+    const firestore = dbFor(users.instructor);
+    const items = await listTeacherInbox(users.instructor, { firestore });
+    assert.equal(items.length, 1);
+    assert.equal(items[0].lessonId, "L1");
+    await assertSucceeds(markTeacherInboxRead(users.instructor, "rec-1", { firestore }));
+    const [after] = await listTeacherInbox(users.instructor, { firestore });
+    assert.ok(after.readAt, "readAt 이 남는다");
+    await assertFails(markTeacherInboxRead(users.instructor, "rec-1", { firestore }), "두 번째 읽음은 거절 -- 되돌리기 · 덮기 없음");
+  });
+
+  test("남의 알림함은 대표라도 읽지 못한다", async () => {
+    await seedInbox(users.instructor);
+    for (const userId of [users.owner, users.member, users.outsider]) {
+      await assertFails(listTeacherInbox(users.instructor, { firestore: dbFor(userId) }), `${userId} 목록`);
+      await assertFails(getDoc(doc(dbFor(userId), "users", users.instructor, "inbox", "rec-1")), `${userId} 한 건`);
+      await assertFails(markTeacherInboxRead(users.instructor, "rec-1", { firestore: dbFor(userId) }), `${userId} 읽음`);
+    }
+    await assertFails(listTeacherInbox(users.instructor, { firestore: dbFor(null) }), "로그인 안 한 사람");
+  });
+
+  test("본인도 만들기 · 지우기 · 다른 칸 고치기 · 기기 시각은 거절", async () => {
+    await seedInbox(users.instructor);
+    const firestore = dbFor(users.instructor);
+    const ref = doc(firestore, "users", users.instructor, "inbox", "rec-1");
+    await assertFails(setDoc(doc(firestore, "users", users.instructor, "inbox", "fake"), { kind: "member_cancel", createdAt: serverTimestamp() }), "만들기");
+    await assertFails(deleteDoc(ref), "지우기");
+    await assertFails(updateDoc(ref, { body: "바꾼 문구" }), "다른 칸");
+    await assertFails(updateDoc(ref, { readAt: serverTimestamp(), lessonId: "L2" }), "읽음에 다른 칸을 얹기");
+    await assertFails(updateDoc(ref, { readAt: Timestamp.fromDate(new Date("2020-01-01T00:00:00Z")) }), "기기가 정한 시각");
   });
 });
 
@@ -6092,6 +6161,19 @@ describe("member lesson cancellation records", () => {
     await assertFails(getDoc(record(dbFor(APP_MEMBER))));
     await assertFails(getDoc(ledger(dbFor(users.outsider))));
     await assertFails(getDocs(collection(dbFor(users.owner), "organizations", ORG_A, "memberCancelLedger")), "횟수 목록은 훑지 않는다");
+  });
+
+  /* 2026-11-07 대표 화면: 취소 · 부여가 한 번도 없던 회원은 원장 문서가 없다. 그때도 직원은
+     "없음" 을 읽어야 한다 -- 거절되면 회원 상세가 "읽지 못했어요 (코드 permission-denied)" 를 띄운다.
+     앱 코드(readMemberCancelLedger)를 그대로 규칙에 통과시킨다. */
+  test("staff read a member with no count yet as 'none' — not permission-denied; the member and outsiders still cannot", async () => {
+    for (const userId of [users.owner, users.area_manager, users.manager, users.instructor, users.staff]) {
+      const found = await readMemberCancelLedger(ORG_A, "client-never-cancelled", { firestore: dbFor(userId) });
+      assert.equal(found, null, `${userId} 없는 원장은 null`);
+    }
+    await assertFails(getDoc(doc(dbFor(APP_MEMBER), "organizations", ORG_A, "memberCancelLedger", "client-never-cancelled")), "회원");
+    await assertFails(getDoc(doc(dbFor(users.outsider), "organizations", ORG_A, "memberCancelLedger", "client-never-cancelled")), "다른 센터");
+    await assertFails(getDoc(doc(dbFor(null), "organizations", ORG_A, "memberCancelLedger", "client-never-cancelled")), "로그인 안 함");
   });
 
   test("grant records (with the reason text) are for the owner and the area manager only", async () => {

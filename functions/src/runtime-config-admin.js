@@ -131,6 +131,9 @@ const WRITERS = Object.freeze({
   /* 회원 수업 알림 (2026-11-07, 지시서 2차). listed 의 userIds 는 회원 앱 계정 uid 다.
      읽는 것은 서버(sendMemberLessonReminders)뿐이라 규칙에 읽기 문이 필요 없다. */
   memberPush: scheduleSyncPayload,
+  /* 회원 취소 → 강사 푸시 (2026-11-07). listed 의 userIds 는 **강사** 계정 uid 다.
+     서버(memberCancelLesson)만 읽는다. 없으면 꺼짐. */
+  teacherPush: scheduleSyncPayload,
   /* 회원 앱 수업 취소 (5차 1단계). scheduleSync 문서의 memberCancel 칸 -- 아래 참고. */
   memberCancel: memberCancelPayload,
 });

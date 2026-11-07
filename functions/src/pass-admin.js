@@ -281,6 +281,10 @@ async function runHandover(firestore, input) {
     expiresAt,
     handedOver: false,
     baseUnitPrice,
+    /* 발급과 같은 칸 (pay-rates.mjs ISSUE_UNIT_PRICE_SOURCE, 2026-11-07).
+       양도는 언제나 1:1 신규 표값이다. pass-repository 의 transferPass 와 같다. */
+    unitPriceSource: "table",
+    standardUnitPrice: baseUnitPrice,
     serviceUsed: 0,
     instructorId,
     status: PASS_STATUS.ACTIVE,

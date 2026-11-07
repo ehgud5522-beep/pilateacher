@@ -37,6 +37,8 @@ export const MEMBER_FEATURE = Object.freeze({
   /* 수업 알림 (2026-11-07). 토큰 값은 적지 않는다 -- 있었는지만. */
   PUSH: "member_push",
   LESSON_CANCEL: "member_lesson_cancel",
+  /* 업데이트 안내 (2026-11-07, 지시서 11번). */
+  APP_UPDATE: "app_update",
 });
 
 /** 그 기능의 어느 단계인가. */
@@ -52,6 +54,8 @@ export const MEMBER_STAGE = Object.freeze({
   CACHE_HIT: "cache_hit",
   CANCEL_STATUS: "cancel_status",
   CANCEL_CALL: "cancel_call",
+  UPDATE_CHECK: "update_check",
+  UPDATE_START: "update_start",
   DONE: "done",
   FAILED: "failed",
 });

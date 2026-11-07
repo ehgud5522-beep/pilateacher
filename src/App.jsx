@@ -136,6 +136,9 @@ import {
 import {
   MEMBER_NOTE_MAX, memberNoteReadFailure, memberNoteSaveFailure, readCentreLessons, readMemberNote, saveMemberNote,
 } from "./data/repositories/member-note-repository.js";
+import {
+  MEMBER_NOTE_ACTION, MEMBER_NOTE_CHOICE, MEMBER_NOTE_VIEW, memberNoteSaveAction, memberNoteView,
+} from "./features/members/member-note-choice.js";
 import { PUBLISH_OUTCOME, publishScheduledLessons, reopenSettledLesson } from "./data/repositories/lesson-schedule-repository.js";
 import { findCompletedLessonsAt, listSettledGroupLessons, readLessonStates, subscribeMyLessons } from "./data/repositories/lesson-sync-repository.js";
 import { settledDuetsWithUnmarked, unmarkedSettleMessage } from "./features/schedule/duet-attendance.js";
@@ -3341,21 +3344,28 @@ const MEMBER_NOTE_PLACEHOLDER = "오늘 좋았던 점, 다음까지 해 보면 �
  * 되지만 보이는 것은 확정 뒤라는 것을 화면이 먼저 말한다 -- 말하지 않으면
  * 강사는 저장하고 나서 안 보인다고 하게 된다.
  */
-function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast }) {
-  const [body, setBody] = useState("");
-  const [loaded, setLoaded] = useState(false);
+function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast, initialChoice = "", initialSaved = null }) {
+  const [body, setBody] = useState(initialSaved || "");
+  const [loaded, setLoaded] = useState(initialSaved !== null);
   const [readError, setReadError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [savedBody, setSavedBody] = useState("");
+  const [savedBody, setSavedBody] = useState(initialSaved || "");
+  /* 선택형 (2026-11-07 대표): 기본은 미선택 -- 미선택은 "아니오" 와 같고 아무것도 쓰지 않는다.
+     수업기록 저장은 이 선택과 상관없다. */
+  const [choice, setChoice] = useState(initialChoice);
+  const [editing, setEditing] = useState(false);
+  const [reload, setReload] = useState(0);
 
   /* 회원을 바꾸면 그 회원의 말을 다시 읽는다. 안 읽으면 앞 회원에게 쓰던
      문장이 다음 회원 칸에 그대로 남는다 -- 그대로 저장되면 남의 말이 간다. */
   useEffect(() => {
+    if (initialSaved !== null && reload === 0) return undefined;
     let alive = true;
     setLoaded(false);
     setReadError("");
     setBody("");
     setSavedBody("");
+    setEditing(false);
     if (!lessonId || !clientId || typeof onRead !== "function") { setLoaded(true); return undefined; }
     (async () => {
       try {
@@ -3364,21 +3374,17 @@ function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast 
         setBody(String(found || ""));
         setSavedBody(String(found || ""));
       } catch (error) {
-        /* 못 읽은 것과 안 쓴 것은 다르다. 빈 칸으로 그려 두면 강사는 지웠다고
-           읽고 그 위에 덮어쓴다. */
-        /* 종류마다 할 일이 다르다. permission-denied 를 "불러오지 못했어요"
-           하나로 보내면 강사는 연결 문제인지 권한 문제인지 알 수 없다. */
+        /* 못 읽은 것과 안 쓴 것은 다르다. 빈 칸으로 알고 [예] → 저장하면 먼젓번 말을
+           덮는다 -- 그래서 못 읽으면 묻지 않고 다시 읽기만 둔다. 종류마다 문구가 다르다. */
         if (alive) setReadError(memberNoteReadFailure(error).message);
       } finally {
         if (alive) setLoaded(true);
       }
     })();
     return () => { alive = false; };
-  }, [lessonId, clientId, onRead]);
+  }, [lessonId, clientId, onRead, reload, initialSaved]);
 
   if (typeof onSave !== "function") return null;
-  const trimmed = body.trim().slice(0, MEMBER_NOTE_MAX);
-  const dirty = trimmed !== savedBody.trim();
 
   /* 센터 회원과 맞물리지 않은 회원에게는 회원 앱이 없다. 칸을 열어 두면 강사는
      쓰고 나서 아무 데도 가지 않은 것을 나중에 안다. */
@@ -3393,40 +3399,98 @@ function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast 
     );
   }
 
+  const view = memberNoteView({ loaded, readError, savedBody, choice, editing });
+  const trimmed = body.trim().slice(0, MEMBER_NOTE_MAX);
+  const action = memberNoteSaveAction(trimmed, savedBody);
+  const visibleWhen = settled
+    ? "회원 앱의 수업 탭에 이 수업과 함께 보입니다."
+    : "수업을 확정해 회원권이 차감되면 회원 앱에 보입니다. 지금 저장해 두어도 됩니다.";
+  const pill = (active) => ({ backgroundColor: active ? PRIMARY : CARD, color: active ? "#fff" : INK, border: `1px solid ${active ? PRIMARY : LINE}` });
+
+  const save = async () => {
+    if (saving || action === MEMBER_NOTE_ACTION.NONE) return;
+    setSaving(true);
+    try {
+      /* 한 수업 · 한 회원에 문서 하나다 (`${lessonId}_${clientId}`). 고쳐 저장하면 덮어쓰고,
+         알림을 보내지 않는다 -- 회원 앱은 다음에 열 때 바뀐 말을 본다. */
+      const saved = await onSave(lessonId, clientId, action === MEMBER_NOTE_ACTION.DELETE ? "" : trimmed);
+      if (saved === false) return;
+      setSavedBody(action === MEMBER_NOTE_ACTION.DELETE ? "" : trimmed);
+      setEditing(false);
+      if (action === MEMBER_NOTE_ACTION.DELETE) setChoice(MEMBER_NOTE_CHOICE.NONE);
+      onToast?.({ ok: true, msg: action === MEMBER_NOTE_ACTION.DELETE ? "회원에게 보낸 피드백을 지웠습니다." : "회원에게 보낼 피드백을 저장했습니다." });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
-    <div data-member-note className="space-y-1.5 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
-      <div className="flex items-center gap-2">
-        <p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: INK }}>회원에게 보낼 말 <span style={{ fontWeight: 600, color: FAINT }}>(선택)</span></p>
-        <span className="shrink-0 text-caption tabular-nums" style={{ color: FAINT }}>{trimmed.length}/{MEMBER_NOTE_MAX}</span>
-      </div>
-      {/* 쓰기 전에 누가 읽는지 말한다. 수업기록 칸과 나란히 있어서 섞어 쓰기 쉽다. */}
-      <p className="text-xs font-bold" style={{ color: PRIMARY }}>이 내용은 회원에게 보입니다.</p>
-      {readError ? <p role="alert" className="text-xs font-bold" style={{ color: BAD }}>{readError}</p> : null}
-      <textarea rows={2} value={body} disabled={!loaded} maxLength={MEMBER_NOTE_MAX}
-        onChange={(event) => setBody(event.target.value)}
-        placeholder={loaded ? MEMBER_NOTE_PLACEHOLDER : "불러오는 중…"}
-        className={`${inputCls} h-auto resize-none py-2.5 leading-relaxed disabled:opacity-60`} />
-      <p className="text-xs leading-relaxed" style={{ color: INK2 }}>
-        {settled
-          ? "회원 앱의 수업 탭에 이 수업과 함께 보입니다."
-          : "수업을 확정해 회원권이 차감되면 회원 앱에 보입니다. 지금 저장해 두어도 됩니다."}
-      </p>
-      <button type="button" disabled={!loaded || saving || !dirty}
-        onClick={async () => {
-          setSaving(true);
-          try {
-            const saved = await onSave(lessonId, clientId, trimmed);
-            if (saved === false) return;
-            setSavedBody(trimmed);
-            onToast?.({ ok: true, msg: trimmed ? "회원에게 보낼 말을 저장했습니다." : "회원에게 보낼 말을 지웠습니다." });
-          } finally {
-            setSaving(false);
-          }
-        }}
-        className="h-10 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35"
-        style={{ backgroundColor: PRIMARY }}>
-        {saving ? "저장 중" : dirty ? "저장" : "저장됨"}
-      </button>
+    <div data-member-note data-member-note-view={view} className="space-y-1.5 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
+      {view === MEMBER_NOTE_VIEW.LOADING && (
+        <p className="text-xs font-bold" style={{ color: SUB }}>회원 피드백 불러오는 중…</p>
+      )}
+
+      {view === MEMBER_NOTE_VIEW.ERROR && (
+        <>
+          <p role="alert" className="text-xs font-bold" style={{ color: BAD }}>{readError}</p>
+          <button type="button" onClick={() => setReload((value) => value + 1)} className="h-9 w-full rounded-lg text-xs font-extrabold"
+            style={{ backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>다시 불러오기</button>
+        </>
+      )}
+
+      {(view === MEMBER_NOTE_VIEW.ASK || view === MEMBER_NOTE_VIEW.DECLINED) && (
+        <>
+          <p className="text-xs font-extrabold" style={{ color: INK }}>이번 수업에 회원에게 피드백을 보내시겠어요?</p>
+          <div className="flex gap-2" role="group" aria-label="회원 피드백 보내기">
+            <button type="button" data-member-note-yes aria-pressed={choice === MEMBER_NOTE_CHOICE.YES}
+              onClick={() => setChoice(MEMBER_NOTE_CHOICE.YES)} className="h-10 flex-1 rounded-lg text-xs font-extrabold" style={pill(false)}>예</button>
+            <button type="button" data-member-note-no aria-pressed={choice === MEMBER_NOTE_CHOICE.NO}
+              onClick={() => setChoice(MEMBER_NOTE_CHOICE.NO)} className="h-10 flex-1 rounded-lg text-xs font-extrabold" style={pill(choice === MEMBER_NOTE_CHOICE.NO)}>아니오</button>
+          </div>
+          {view === MEMBER_NOTE_VIEW.DECLINED && (
+            <p className="text-xs" style={{ color: SUB }}>이번 수업은 회원에게 피드백을 보내지 않아요.</p>
+          )}
+        </>
+      )}
+
+      {view === MEMBER_NOTE_VIEW.SAVED && (
+        <>
+          <div className="flex items-center gap-2">
+            <p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: INK }}>회원 피드백 <span style={{ color: GOOD }}>· 작성 완료</span></p>
+            <button type="button" data-member-note-edit onClick={() => { setBody(savedBody); setEditing(true); }}
+              className="h-8 shrink-0 rounded-lg px-3 text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY, border: `1px solid ${LINE}` }}>수정</button>
+          </div>
+          <p className="whitespace-pre-wrap text-xs leading-relaxed" style={{ color: INK2 }}>{savedBody}</p>
+          <p className="text-xs leading-relaxed" style={{ color: SUB }}>{visibleWhen}</p>
+        </>
+      )}
+
+      {view === MEMBER_NOTE_VIEW.EDIT && (
+        <>
+          <div className="flex items-center gap-2">
+            <p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: INK }}>회원에게 보낼 피드백</p>
+            <span className="shrink-0 text-caption tabular-nums" style={{ color: FAINT }}>{trimmed.length}/{MEMBER_NOTE_MAX}</span>
+          </div>
+          {/* 쓰기 전에 누가 읽는지 말한다. 수업기록 칸과 나란히 있어서 섞어 쓰기 쉽다. */}
+          <p className="text-xs font-bold" style={{ color: PRIMARY }}>이 내용은 회원에게 보입니다.</p>
+          <textarea rows={2} value={body} maxLength={MEMBER_NOTE_MAX} autoFocus
+            onChange={(event) => setBody(event.target.value)}
+            placeholder={MEMBER_NOTE_PLACEHOLDER}
+            className={`${inputCls} h-auto resize-none py-2.5 leading-relaxed`} />
+          <p className="text-xs leading-relaxed" style={{ color: INK2 }}>{visibleWhen}</p>
+          {!trimmed && !savedBody.trim() ? <p className="text-xs" style={{ color: SUB }}>내용이 비어 있으면 보내지 않아요.</p> : null}
+          <div className="flex gap-2">
+            <button type="button" disabled={saving}
+              onClick={() => { setBody(savedBody); setEditing(false); if (!savedBody.trim()) setChoice(MEMBER_NOTE_CHOICE.NONE); }}
+              className="h-10 flex-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>취소</button>
+            <button type="button" data-member-note-save disabled={saving || action === MEMBER_NOTE_ACTION.NONE} onClick={save}
+              className="h-10 flex-1 rounded-lg text-xs font-extrabold text-white disabled:opacity-35"
+              style={{ backgroundColor: action === MEMBER_NOTE_ACTION.DELETE ? BAD : PRIMARY }}>
+              {saving ? "저장 중" : action === MEMBER_NOTE_ACTION.DELETE ? "삭제" : "저장"}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -27615,6 +27679,15 @@ export function createAppScreenSmokeCases() {
       orgSettledOutcome: "complete",
       attendees: [settleAttendee("m-local-1", { orgPassId: "p1", orgEntryId: "settle-1_deduct" })],
     }), { onReadMemberNote: asyncNoop, onSaveMemberNote: asyncNoop, onToast: noop }) },
+    /* 선택형 (2026-11-07 대표). 읽어 온 뒤의 세 모양: 묻기 · [예] 로 연 입력칸 · 작성 완료. */
+    { name: "회원 피드백 · 묻기", element: provider(<SchedMemberNote lessonId="L1" clientId="c1" settled={false}
+      onRead={asyncNoop} onSave={asyncNoop} onToast={noop} initialSaved="" />) },
+    { name: "회원 피드백 · 예 · 입력칸", element: provider(<SchedMemberNote lessonId="L1" clientId="c1" settled={false}
+      onRead={asyncNoop} onSave={asyncNoop} onToast={noop} initialSaved="" initialChoice="yes" />) },
+    { name: "회원 피드백 · 아니오", element: provider(<SchedMemberNote lessonId="L1" clientId="c1" settled={false}
+      onRead={asyncNoop} onSave={asyncNoop} onToast={noop} initialSaved="" initialChoice="no" />) },
+    { name: "회원 피드백 · 작성 완료", element: provider(<SchedMemberNote lessonId="L1" clientId="c1" settled
+      onRead={asyncNoop} onSave={asyncNoop} onToast={noop} initialSaved="오늘 골반 정렬이 좋았어요. 다음까지 브릿지 10회!" />) },
     { name: "일정 탭 · 소속 · 확정됨 · 대표", element: scheduleWithSettlement(settleLessonOf({
       orgSettledAt: "2026-09-19T07:00:00.000Z",
       attendees: [settleAttendee("m-local-1", { orgPassId: "p1", orgEntryId: "settle-1_deduct" })],

@@ -95,6 +95,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 소속 · 회원에게 보낼 말",
     "일정 탭 · 소속 · 회원에게 보낼 말 · 연결 안 됨",
     "일정 탭 · 소속 · 회원에게 보낼 말 · 확정됨",
+    "회원 피드백 · 묻기",
+    "회원 피드백 · 예 · 입력칸",
+    "회원 피드백 · 아니오",
+    "회원 피드백 · 작성 완료",
     "일정 탭 · 소속 · 확정됨 · 대표",
     "일정 탭 · 개인 모드 · 확정 없음",
     "회원 목록",
@@ -2029,44 +2033,50 @@ test("a failed lesson keeps its reason and its retry even before it starts", asy
 test("the member-facing note sits beside the lesson record, not inside it", async (t) => {
   const markupOf = await issueScreens(t);
   const sheet = markupOf("일정 탭 · 소속 · 회원에게 보낼 말");
-
-  assert.match(sheet, /회원에게 보낼 말/);
-  // 강사가 자기를 위해 쓰는 기록도 그 자리에 그대로 있다 -- 한쪽이 다른 쪽을
-  // 밀어내면 강사는 둘 중 하나를 포기한다.
+  // 강사가 자기를 위해 쓰는 기록도 그 자리에 그대로 있다 -- 회원 피드백 선택과 상관없다.
   assert.match(sheet, /기록하기/);
   assert.match(sheet, /직접입력/);
-  // 회원에게 가는 칸이라는 것을 칸 자체가 말한다.
   assert.match(sheet, /data-member-note/);
 });
 
-test("before the note is loaded the box says so instead of looking empty", async (t) => {
-  /* 빈 칸으로 보이면 강사는 아직 안 썼다고 읽고 그 위에 덮어쓴다 -- 먼젓번에
-     보낸 말이 소리 없이 사라진다. */
+test("before the note is loaded the box says so and asks nothing", async (t) => {
+  /* 못 읽은 채로 [예] → 저장하면 먼젓번에 보낸 말이 덮인다. 읽기 전에는 묻지도 열지도 않는다. */
   const markupOf = await issueScreens(t);
   const sheet = markupOf("일정 탭 · 소속 · 회원에게 보낼 말");
-
-  assert.match(sheet, /불러오는 중…/);
-  assert.match(sheet, /disabled=""/, "읽어 오기 전인데 입력이 열려 있다");
+  assert.match(sheet, /회원 피드백 불러오는 중…/);
+  assert.doesNotMatch(sheet, /data-member-note-yes/);
+  assert.doesNotMatch(sheet, /<textarea[^>]*placeholder="오늘 좋았던 점/);
 });
 
-test("the note says when the member will actually see it", async (t) => {
-  /* 확정 전에 저장하면 회원 앱에는 아직 없다 -- 회원의 수업 이력은 차감으로
-     만들어지기 때문이다. 말하지 않으면 강사는 저장하고 나서 안 보인다고 한다.
-     실제로 그 일이 있었고, 그래서 이 기능이 생겼다. */
+test("member feedback is a choice: the question and yes / no only, the box opens on yes", async (t) => {
   const markupOf = await issueScreens(t);
+  const ask = markupOf("회원 피드백 · 묻기");
+  assert.match(ask, /이번 수업에 회원에게 피드백을 보내시겠어요\?/);
+  assert.match(ask, /data-member-note-yes/);
+  assert.match(ask, /data-member-note-no/);
+  assert.doesNotMatch(ask, /<textarea/, "고르기 전에는 입력칸이 없다");
 
-  const before = markupOf("일정 탭 · 소속 · 회원에게 보낼 말");
-  assert.match(before, /수업을 확정해 회원권이 차감되면 회원 앱에 보입니다/);
+  const no = markupOf("회원 피드백 · 아니오");
+  assert.doesNotMatch(no, /<textarea/, "아니오면 입력칸이 열리지 않는다");
+  assert.match(no, /보내지 않아요/);
 
-  const after = markupOf("일정 탭 · 소속 · 회원에게 보낼 말 · 확정됨");
-  assert.match(after, /회원 앱의 수업 탭에 이 수업과 함께 보입니다/);
-  assert.doesNotMatch(after, /확정해 회원권이 차감되면/);
+  const yes = markupOf("회원 피드백 · 예 · 입력칸");
+  assert.match(yes, /<textarea/);
+  assert.match(yes, /이 내용은 회원에게 보입니다/);
+  assert.match(yes, /수업을 확정해 회원권이 차감되면 회원 앱에 보입니다/);
+  assert.match(yes, /내용이 비어 있으면 보내지 않아요/);
+  assert.match(yes, /data-member-note-save[^>]*disabled=""/, "비어 있으면 저장 버튼이 꺼진다");
 });
 
-test("the note says up front that the member will read it", async (t) => {
-  /* 수업기록 칸 바로 옆이라 강사끼리 쓰는 말을 여기 적기 쉽다. 쓰기 전에 말한다. */
+test("a saved note shows as done with an edit button, and when the member will see it", async (t) => {
   const markupOf = await issueScreens(t);
-  assert.match(markupOf("일정 탭 · 소속 · 회원에게 보낼 말"), /이 내용은 회원에게 보입니다/);
+  const saved = markupOf("회원 피드백 · 작성 완료");
+  assert.match(saved, /작성 완료/);
+  assert.match(saved, /data-member-note-edit/);
+  assert.match(saved, /브릿지 10회/);
+  assert.match(saved, /회원 앱의 수업 탭에 이 수업과 함께 보입니다/);
+  assert.doesNotMatch(saved, /data-member-note-yes/, "저장된 말이 있으면 다시 묻지 않는다");
+  assert.doesNotMatch(saved, /<textarea/);
 });
 
 test("a member not linked to the centre gets no note box, and the sheet says why", async (t) => {

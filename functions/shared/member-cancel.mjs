@@ -78,13 +78,15 @@ export function toDate(value) {
  * @returns {{ mode: string, userIds: string[], limit: number | null, period: string, configured: boolean }}
  */
 export function readMemberCancelConfig(raw) {
-  const mode = Object.values(MEMBER_CANCEL_MODE).includes(text(raw?.mode)) ? text(raw.mode) : MEMBER_CANCEL_MODE.OFF;
+  const modes = /** @type {string[]} */ (Object.values(MEMBER_CANCEL_MODE));
+  const periods = /** @type {string[]} */ (Object.values(MEMBER_CANCEL_PERIOD));
+  const mode = modes.includes(text(raw?.mode)) ? text(raw.mode) : MEMBER_CANCEL_MODE.OFF;
   const userIds = [...new Set((Array.isArray(raw?.userIds) ? raw.userIds : []).map(text).filter(Boolean))];
   const rawLimit = raw?.limit;
   const limit = rawLimit !== null && rawLimit !== undefined && rawLimit !== "" && Number.isInteger(Number(rawLimit))
     && Number(rawLimit) >= LIMIT_RANGE.min && Number(rawLimit) <= LIMIT_RANGE.max
     ? Number(rawLimit) : null;
-  const period = Object.values(MEMBER_CANCEL_PERIOD).includes(text(raw?.period)) ? text(raw.period) : "";
+  const period = periods.includes(text(raw?.period)) ? text(raw.period) : "";
   return { mode, userIds, limit, period, configured: limit !== null && Boolean(period) };
 }
 
@@ -127,6 +129,8 @@ export function monthKey(at) {
 /**
  * 횟수를 세는 칸. 월 기준이면 **취소하는 달**(한국 시각), 회원권 기준이면 그 회원권.
  * 세지 못하면 빈 문자열.
+ *
+ * @param {{ period?: string, at?: any, passId?: string }} [input]
  */
 export function bucketKey({ period, at, passId } = {}) {
   if (period === MEMBER_CANCEL_PERIOD.MONTH) {

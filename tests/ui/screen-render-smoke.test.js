@@ -79,6 +79,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 소속 · 디오사 50분 · B 없음",
     "일정 탭 · 소속 · 1:1 노쇼",
     "일정 탭 · 소속 · 2:1 둘 다 노쇼",
+    "일정 탭 · 소속 · 2:1 한 명 미표시",
+    "일정 탭 · 소속 · 1:1 노쇼 차감",
+    "일정 탭 · 소속 · 1:1 노쇼 미차감",
+    "일정 탭 · 소속 · 2:1 노쇼 한 명만 고름",
     "일정 탭 · 소속 · 예상 단가",
     "일정 탭 · 소속 · 예상 단가 · 세션업 기간",
     "일정 탭 · 소속 · 예상 단가 · 서비스",
@@ -117,6 +121,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 소속 확인 실패",
     "더보기 탭 · 앱 업데이트 안내",
     "더보기 탭 · 만료일 순서 확인",
+    "듀엣 출석 확인",
     "더보기 탭 · 묶음 펼침",
     "더보기 탭 · 강사 이름 확정",
     "더보기 탭 · 강사 이름 확정 · 할 것 없음",
@@ -142,6 +147,13 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "센터 회원 상세 · 이력 · 대표",
     "센터 회원 상세 · 이력 · 총괄매니저",
     "센터 회원 상세 · 이력 · FC매니저",
+    "센터 회원 상세 · 이름 수정",
+    "센터 회원 상세 · 앱 취소 횟수",
+    "일정 탭 · 회원 취소 N건",
+    "운영 설정 · 회원 앱 수업 취소",
+    "센터 회원 상세 · 보관 가능",
+    "센터 회원 상세 · 보관 확인",
+    "센터 회원 상세 · 보관됨",
     "센터 회원 상세 · 대표",
     "센터 회원 상세 · 차감 보정 확인",
     "센터 회원 상세 · 발급 취소 확인",
@@ -250,6 +262,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 관리 · 강사 칩 · 활성 없음 펼침",
     "회원 관리 · 강사 칩 · 검색",
     "회원 관리 · 강사 칩 · 회원권 조회 실패",
+    "회원 관리 · 보관된 회원",
     "더보기 탭 · 매니저",
     "회원권 상품",
     "회원권 상품 · 폰 폭",
@@ -2256,20 +2269,35 @@ test("the session up history line says what grew and who did it", async (t) => {
    번호는 회원의 정체다. 고치는 것과 보는 것은 다른 일이라, 고치는 창에서도
    전체 번호를 보여 주지 않는다. */
 
-test("a no-show lesson still offers the confirm button and says it will deduct", async (t) => {
+test("a no-show lesson still offers the confirm button, asks 차감/미차감, and locks until chosen", async (t) => {
   /* 2026-10-04 에 대표가 본 증상: 노쇼로 표시하면 확정할 자리가 사라졌다.
      진짜 원인은 큐(needsSettlement)였지만, 화면 쪽도 함께 고정해 둔다 --
-     확정 버튼이 사라지는 회귀가 나면 큐 테스트만으로는 안 잡힌다. */
+     확정 버튼이 사라지는 회귀가 나면 큐 테스트만으로는 안 잡힌다.
+
+     2026-11-06 대표: 노쇼는 확정할 때 "노쇼 차감 / 노쇼 미차감" 을 고른다.
+     고르기 전에는 버튼이 **있되 잠기고** 이유를 말한다. */
   const markupOf = await issueScreens(t);
-  for (const name of ["일정 탭 · 소속 · 1:1 노쇼", "일정 탭 · 소속 · 2:1 둘 다 노쇼"]) {
+  const settleButton = (markup) => markup.match(/<button[^>]*>(?:수업 확정|다시 확정)[^<]*<\/button>/)?.[0] || "";
+  for (const name of ["일정 탭 · 소속 · 1:1 노쇼", "일정 탭 · 소속 · 2:1 둘 다 노쇼", "일정 탭 · 소속 · 2:1 노쇼 한 명만 고름"]) {
     const markup = markupOf(name);
     assert.match(markup, /수업 확정/, name);
-    /* 노쇼는 확정 전까지 아무것도 움직이지 않는다. 그 말을 하지 않으면 강사는
-       노쇼를 누른 것으로 끝난 줄 안다. */
-    assert.match(markup, /노쇼도 1회 차감됩니다/, name);
-    // 소속 모드에서는 고를 수 없는 것을 고르게 두지 않는다.
-    assert.doesNotMatch(markup, />비차감</, name);
+    assert.match(markup, />노쇼 차감</, name);
+    assert.match(markup, />노쇼 미차감</, name);
+    assert.match(markup, /data-settle-block-reason/, `${name}: 왜 잠겼는지 말한다`);
+    assert.match(settleButton(markup), /disabled=""/, `${name}: 고르기 전에는 확정이 잠긴다`);
+    // 예전의 "언제나 차감" 안내는 사라졌다.
+    assert.doesNotMatch(markup, /노쇼도 1회 차감됩니다/, name);
   }
+  const charged = markupOf("일정 탭 · 소속 · 1:1 노쇼 차감");
+  assert.doesNotMatch(charged, /data-settle-block-reason/);
+  assert.doesNotMatch(settleButton(charged), /disabled=""/);
+  assert.match(charged, /출석과 같은 단가로 급여에 잡힙니다/);
+  assert.match(settleButton(charged), /1명 차감/, "노쇼 차감은 차감 인원에 든다");
+
+  const waived = markupOf("일정 탭 · 소속 · 1:1 노쇼 미차감");
+  assert.doesNotMatch(settleButton(waived), /disabled=""/);
+  assert.match(waived, /차감과 급여 없이 노쇼로만 남습니다/);
+  assert.doesNotMatch(settleButton(waived), /명 차감/, "노쇼 미차감은 차감 인원에 들지 않는다");
 });
 
 test("an add-on care lesson shows both rate lines and the picker", async (t) => {
@@ -3202,4 +3230,21 @@ test("이관 서비스 보정은 바뀔 값을 전후로 보여준다", async ()
   const clean = markupOf("이관 서비스 보정 · 보정할 것 없음");
   assert.match(clean, /보정할 것 없음/);
   assert.equal(clean.includes("확인했습니다"), false, "고칠 것이 없으면 확정 버튼을 내지 않는다");
+});
+
+test("member app cancellation: the count on the first screen, the grant button, the owner's switch", async () => {
+  const markup = await screenMarkup();
+  const schedule = markup("일정 탭 · 회원 취소 N건");
+  assert.match(schedule, /data-member-cancel-count/);
+  assert.match(schedule, /회원 취소 \d+건/);
+  assert.doesNotMatch(markup("일정 탭"), /data-member-cancel-count/, "기능이 꺼진 강사에게는 없다");
+
+  const detail = markup("센터 회원 상세 · 앱 취소 횟수");
+  assert.match(detail, /data-member-cancel-grant/);
+  assert.match(detail, /취소 횟수 추가/, "대표에게는 버튼이 보인다");
+  assert.doesNotMatch(markup("센터 회원 상세 · 이름 수정"), /data-member-cancel-grant/, "설정이 없으면 그리지 않는다");
+
+  const admin = markup("운영 설정 · 회원 앱 수업 취소");
+  assert.match(admin, /data-member-cancel-admin/);
+  assert.match(admin, /강사별 취소 횟수 추가 부여/);
 });

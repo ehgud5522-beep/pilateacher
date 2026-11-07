@@ -95,6 +95,30 @@ function scheduleSyncPayload(input) {
   return { mode, userIds };
 }
 
+/**
+ * 회원 앱 수업 취소 스위치 · 횟수 · 적용 기간 (2026-11-07, 5차 1단계).
+ *
+ * 켜는 범위는 일정 동기화와 같은 모양(off · listed · all)이고, listed 의 userIds 는
+ * **강사** 계정이다 -- 그 강사의 수업에만 회원 취소를 받는다. 서버는 그 강사의 일정
+ * 동기화도 켜져 있어야 받는다 (functions/shared/member-cancel.mjs).
+ *
+ * 횟수(limit)와 적용 기간(period)은 반드시 적는다. 비어 있으면 기능이 꺼진 것으로
+ * 읽힌다 -- 코드에 기본값을 두지 않는다 (대표 결정: 값은 설정 화면에서).
+ */
+async function memberCancelPayload(input) {
+  const policy = await import("../shared/member-cancel.mjs");
+  const { mode, userIds } = scheduleSyncPayload(input);
+  const rawLimit = input?.limit;
+  const limit = Number(rawLimit);
+  if (rawLimit === null || rawLimit === undefined || rawLimit === "" || !Number.isInteger(limit)
+    || limit < policy.LIMIT_RANGE.min || limit > policy.LIMIT_RANGE.max) {
+    throw new Error("member_cancel_limit_invalid");
+  }
+  const period = text(input?.period);
+  if (!Object.values(policy.MEMBER_CANCEL_PERIOD).includes(period)) throw new Error("member_cancel_period_invalid");
+  return { mode, userIds, limit, period };
+}
+
 const WRITERS = Object.freeze({
   appUpdate: appUpdatePayload,
   settlement: settlementPayload,
@@ -104,6 +128,8 @@ const WRITERS = Object.freeze({
   /* 센터 회원 명단 실시간 (2026-11-04, 2단계). 모양은 같다. 문서는 따로 두지
      않는다 -- 아래 FIELD_TARGETS 참고. */
   rosterRealtime: scheduleSyncPayload,
+  /* 회원 앱 수업 취소 (5차 1단계). scheduleSync 문서의 memberCancel 칸 -- 아래 참고. */
+  memberCancel: memberCancelPayload,
 });
 
 /**
@@ -116,6 +142,9 @@ const WRITERS = Object.freeze({
  */
 const FIELD_TARGETS = Object.freeze({
   rosterRealtime: { document: "scheduleSync", field: "rosterRealtime" },
+  /* 같은 이유로 scheduleSync 에 얹는다. 강사 앱은 이 문서를 이미 읽고, 서버는 같은
+     문서에서 그 강사의 동기화 스위치와 함께 읽는다. 회원 앱은 이 문서를 읽지 않는다. */
+  memberCancel: { document: "scheduleSync", field: "memberCancel" },
 });
 
 /**
@@ -131,24 +160,54 @@ async function writeRuntimeConfig(firestore, input) {
   if (!build) throw new Error(CONFIG_ERROR.UNKNOWN_DOCUMENT);
 
   const at = (input?.now || (() => new Date()))();
-  const payload = build(input?.value);
+  const payload = await build(input?.value);
   const target = FIELD_TARGETS[name];
-  if (target) {
-    await firestore.collection("runtimeConfig").doc(target.document).set({
-      [target.field]: { ...payload, updatedAt: at, updatedBy: text(input?.actorId) },
-    }, { merge: true });
-    return { document: name, value: payload };
+  const configRef = firestore.collection("runtimeConfig").doc(target ? target.document : name);
+  /* 바꾸기 전 값 (2026-11-07). 칸으로 얹힌 설정은 그 칸만, 문서 설정은 얹힌 칸을 뺀 나머지만. */
+  const beforeSnapshot = await configRef.get();
+  const before = settingsOnly(name, beforeSnapshot.exists ? beforeSnapshot.data() : null);
+  const change = {
+    document: name,
+    organizationId: text(input?.organizationId),
+    actorUid: text(input?.actorId),
+    actorRole: text(input?.actorRole),
+    at,
+    before,
+    after: payload,
+  };
+  /* doc(undefined) 는 Admin SDK 가 거절한다 -- id 가 없으면 인자 없이 불러 자동 id. */
+  const changes = firestore.collection("runtimeConfigChanges");
+  const changeRef = text(input?.changeId) ? changes.doc(text(input.changeId)) : changes.doc();
+  const write = target
+    ? [configRef, { [target.field]: { ...payload, updatedAt: at, updatedBy: text(input?.actorId) } }, { merge: true }]
+    /* 다른 설정이 칸으로 얹혀 사는 문서는 합쳐 쓴다 -- 통째로 쓰면 그 칸이 지워진다.
+       updatedAt · updatedBy: 누가 언제 바꿨는가. 이 숫자가 센터 전체를 막을 수 있다. */
+    : [configRef, { ...payload, updatedAt: at, updatedBy: text(input?.actorId) },
+      Object.values(FIELD_TARGETS).some((item) => item.document === name) ? { merge: true } : undefined];
+  /* 설정과 변경 기록은 한 배치로 -- 설정만 바뀌고 기록이 없는 상태가 생기지 않게. */
+  if (typeof firestore.batch === "function") {
+    const batch = firestore.batch();
+    batch.set(...write.filter((item) => item !== undefined));
+    batch.set(changeRef, change);
+    await batch.commit();
+  } else {
+    await write[0].set(write[1], write[2]);
+    await changeRef.set(change);
   }
-  /* 다른 설정이 칸으로 얹혀 사는 문서는 합쳐 쓴다 -- 통째로 쓰면 그 칸이 지워진다. */
-  const hosted = Object.values(FIELD_TARGETS).some((item) => item.document === name);
-  await firestore.collection("runtimeConfig").doc(name).set({
-    ...payload,
-    /* 누가 언제 바꿨는가. 이 숫자가 센터 전체를 막을 수 있어, 바뀐 뒤에
-       "왜 이렇게 되어 있지" 에 답할 것이 있어야 한다. */
-    updatedAt: at,
-    updatedBy: text(input?.actorId),
-  }, hosted ? { merge: true } : undefined);
-  return { document: name, value: payload };
+  return { document: name, value: payload, change: { id: changeRef.id || "", before, after: payload, actorRole: change.actorRole, at } };
+}
+
+/**
+ * 변경 기록에 남길 "그 설정의 값" -- 시각 · 작성자와, 같은 문서에 얹혀 사는 다른 설정 칸은 뺀다.
+ * 없으면 null.
+ */
+function settingsOnly(name, data) {
+  const target = FIELD_TARGETS[name];
+  const raw = target ? data?.[target.field] : data;
+  if (!raw || typeof raw !== "object") return null;
+  const hostedFields = new Set(Object.values(FIELD_TARGETS).filter((item) => item.document === name).map((item) => item.field));
+  return Object.fromEntries(Object.entries(raw)
+    .filter(([key]) => key !== "updatedAt" && key !== "updatedBy" && !hostedFields.has(key)));
 }
 
 /** 지금 적혀 있는 값. 화면이 고치기 전에 보여준다. */
@@ -196,6 +255,7 @@ async function handleRuntimeConfigRequest(firestore, input, deps) {
   try {
     result = await writeRuntimeConfig(firestore, {
       document, value: input?.value, actorId: callerUid, now: input?.now,
+      organizationId, actorRole: text(membership.data()?.role), changeId: deps.newId?.(),
     });
   } catch (error) {
     throw Object.assign(error, { writeFailed: true });
@@ -210,6 +270,7 @@ module.exports = {
   appUpdatePayload,
   settlementPayload,
   scheduleSyncPayload,
+  memberCancelPayload,
   FIELD_TARGETS,
   readRuntimeConfig,
   writeRuntimeConfig,

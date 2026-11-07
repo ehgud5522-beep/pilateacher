@@ -38,9 +38,10 @@ test("받아 합칠 때 회원 행을 넘기지 않는다 — 상담 메모 · �
   assert.doesNotMatch(listener, /members: merged\.members/);
 });
 
-test("화면 안내 — 메모 · 상담 메모 · 목표는 '이 기기에만', 개인 일정 이름은 '다른 기기에도'", async () => {
+test("화면 안내 — 메모 · 상담 메모 · 목표는 '다른 기기에는 보이지 않아요', 개인 일정 이름은 '다른 기기에도'", async () => {
   const app = await source();
-  assert.ok(app.includes('const DEVICE_ONLY_HINT = "이 기기에만 저장돼요";'));
+  /* 2026-11-07 대표: "이 기기에만" 은 틀린 말이었다 -- 본인 계정 백업에는 실린다. */
+  assert.ok(app.includes('const DEVICE_ONLY_HINT = "다른 기기에는 보이지 않아요 (본인 계정 백업에 포함)";'));
   assert.ok(app.includes('const SHARED_TITLE_HINT = "다른 기기에도 보여요";'));
   assert.ok(app.includes('<Sheet title={sheet === "memo" ? "상담 메모 추가" : "수업 기록"} onClose={() => setSheet(null)}><div className="space-y-2"><DeviceOnlyNote />'), "상담 메모 · 수업 기록");
   assert.ok(app.includes('<Sheet title="상담 메모 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2"><DeviceOnlyNote />'));

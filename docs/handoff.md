@@ -1,5 +1,45 @@
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-11-07 — 회원 앱 수업 취소 5차 1단계 (`feat/member-cancel`, 배포 · 병합 전)
+
+- **스위치 꺼진 채로 만든 것.** `runtimeConfig/scheduleSync.memberCancel` 칸(mode · userIds · limit · period).
+  비어 있으면 꺼짐. 켜지는 조건: 설정 저장 + 그 수업 강사가 시범 목록 + **그 강사의 일정 동기화가 켜짐**.
+  판정 한 벌은 `functions/shared/member-cancel.mjs` (서버 · 강사 앱 · 회원 앱 공용)
+- 서버: callable `memberCancelLesson`(action status · cancel), `grantMemberCancel`. 트랜잭션 하나로 수업 변경 ·
+  횟수 · 기록. 중복 클릭은 "이미 취소함" 성공. 마감은 서버 시각 24시간. 개인은 status cancelled(deletedAt 없음),
+  듀엣은 그 사람만 clientIds 에서 빠짐. 둘 다 revision +1, `memberCancellations.{clientId}` 표시
+- 기록: `memberCancelLedger/{clientId}`(칸 m:YYYY-MM · p:{passId} 의 used · granted), `memberCancellations`,
+  `memberCancelGrants`(사유 · 누가 · 역할 · month). 월은 한국 시각. 다시 일정에 넣어도 횟수는 안 돌아감
+- 회원 앱: 예정 수업 → 수업 상세 시트(마감 · 남은 횟수 · [수업 취소] → 확인). 문구 `member/src/cancel-copy.js`.
+  투영 schedule 에 **lessonId 를 새로 싣는다** -- 옛 투영(다시 만들기 전)은 상세가 열리지 않는다
+- 강사 앱: 동기화 받기가 회원 취소를 출석 "취소" + memberCancelledAt 으로, 일정 탭 하단 "회원 취소 N건",
+  회원 상세 "취소 횟수 추가"(대표 · 총괄 · 담당), 운영 설정 카드(스위치 · 3회 안내값 · 월/회원권 · 강사별 월 부여 건수)
+- 규칙: 세 컬렉션 쓰기 닫음, 읽기는 직원(부여 기록은 대표 · 총괄). **배포는 운영본 `efcaf678` + 이 블록 29줄만**
+  (규칙 2차 제외). 후보 만들기: 운영본을 받아 `match /lessons/{lessonId} {` 앞에 저장소의 블록을 끼운다.
+  `RULES_UNDER_TEST=<후보 파일> npm run test:rules` 로 후보 그대로 시험 -- 11-07 결과 385/393, 실패 8 = 규칙 2차 7 +
+  날짜 고정 픽스처 1(occurred_at_too_old, 저장소 파일에서도 같음)
+- 후속(#145 계열, 11-07): 운영 설정 저장마다 `runtimeConfigChanges/{id}`(누가 uid · 역할 · 언제 · before · after,
+  서버만 씀 · 앱은 안 읽음 → 규칙 변경 없음) + 같은 내용의 `runtime_config_updated` 로그. 추가 부여는 요청 ID
+  (`memberCancelGrants/{uid}_{requestId}`)로 한 번만, ID 없는 예전 호출은 그대로. 강사 앱 부여 · 설정 저장 실패는
+  deviceLog(`member_cancel_grant_failed` · `member_cancel_config_save_failed`)
+- **배포 순서(지시 뒤)**: 규칙 → Functions(memberCancelLesson · grantMemberCancel · 투영 트리거) → 강사 웹 →
+  회원 앱 빌드(Apple 심사 끝난 뒤 별도 버전, 푸시와 다른 빌드). 켜기는 운영 설정에서 강사 한 명
+- 남은 것: 강사가 다시 넣은 개인 수업은 기기의 "다른 곳의 취소" 규칙에 걸려 되살려지지 않을 수 있음(기존 동작) ·
+  #143 의 30분 전 알림은 status · clientIds 로 고르므로 취소된 회원은 자동으로 빠짐(병합 시 확인) ·
+  시트 화면은 실기기에서 아직 안 봄
+
+## 2026-11-04 — 회원 이름 수정 · 보관 (`feat/client-rename-archive`)
+
+- 삭제는 넣지 않았다. 원장 · 급여 회원별 보기 · 강사 폰 사진 · 회원 앱 연결 · `csv_{번호}` 재등록이 회원 문서에
+  기대고 있다. clients `allow delete: if false` 그대로
+- 보관: 회원 문서 `archived: true` + `archivedAt` · `archivedBy`. 쓸 수 있는 회원권(isDeductablePass, 듀엣 짝 포함)이
+  남으면 막는다(`active_pass`). 회원 탭 · 검색 · 수업 등록 회원 선택(mergeRoster) · 회원권 발급 · 회원 관리 목록에서
+  빠지고, 회원 관리 "보관된 회원 N명" 묶음에서 되살린다. listClients 는 거르지 않는다(급여 · 감사 · 이력의 이름)
+- 이름 수정: 회원 상세(대표 · 총괄 · FC). 이름 한 칸 update + 감사 `client_renamed`(이름 없음) 한 배치
+- 규칙: auditActions 에 `client_renamed` · `client_archived`, mayRecordAudit 이 canRegisterClient 로. **배포는
+  규칙(운영본 + 이 블록) → 강사 웹.** 규칙이 먼저 안 나가면 두 기능이 permission-denied. Functions 배포는 필요 없음
+  (회원 앱 이름은 rebuildMemberViewOnClientWrite 가 다시 만든다)
+
 ## 2026-11-04 — 화면 개선 다섯 건 병합 · 강사 웹 7ff08e0 (대표 지시)
 
 - 병합: #125 담당 강사 고르기(지점 칩 · 검색 · 맡은 지점 밖 instructor_out_of_scope, 규칙은 그대로) ·

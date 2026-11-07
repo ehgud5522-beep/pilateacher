@@ -317,7 +317,12 @@ const HISTORY_LABEL = {
  *   monthsBack  처음 보여 줄 달. 0 이 이번 달이다. 화면은 늘 0 으로 열고,
  *               테스트가 과거 달을 그려 보는 데 쓴다.
  */
-export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords }) {
+/**
+ * onOpenLesson (2026-11-07, 수업 취소): 예정 수업을 누르면 수업 상세가 열린다. 상세의
+ * 취소 버튼은 서버가 켜져 있다고 답할 때만 그린다 (lesson-sheet.jsx). 수업 id 가 없는
+ * 옛 회원 데이터(서버가 다시 만들기 전)는 누를 수 없다.
+ */
+export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, onOpenLesson }) {
   const history = Array.isArray(view?.history) ? view.history : [];
   const dates = useMemo(() => attendedDates(history), [history]);
   const planned = useMemo(() => plannedDates(view?.schedule), [view?.schedule]);
@@ -399,7 +404,10 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords }) 
           <div className="stack tight">
             {lessonsThatDay.map((row, index) => (
               <LessonCard key={`${text(row.when)}-${index}`} row={row}
-                location={view?.locationName} onOpen={row.planned ? undefined : onOpenRecords} />
+                location={view?.locationName}
+                onOpen={row.planned
+                  ? (onOpenLesson && text(row.lessonId) ? () => onOpenLesson(row) : undefined)
+                  : onOpenRecords} />
             ))}
           </div>
         ) : (

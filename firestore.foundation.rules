@@ -676,6 +676,35 @@ service cloud.firestore {
         allow create, update, delete: if false;
       }
 
+      /* ── 회원 앱 수업 취소 (2026-11-07, 5차 1단계) ─────────────────────────
+         회원의 취소 · 강사의 추가 부여는 서버 함수(memberCancelLesson ·
+         grantMemberCancel)만 쓴다 -- 횟수 차감과 수업 변경이 한 트랜잭션이어야
+         하고 마감은 서버 시각으로 재야 한다. 그래서 **세 곳 모두 쓰기는 닫는다.**
+         회원은 어느 것도 읽지 않는다 (남은 횟수는 서버 함수가 돌려준다).
+         회원은 lessons 를 쓰지도 못한다 -- 아래 lessons 의 쓰기는 센터 직원만이다.
+
+         - memberCancelLedger/{clientId}: 칸별 사용 · 추가. 강사 앱 회원 상세가 남은
+           횟수를 그린다 -- 센터 직원이 문서 하나씩
+         - memberCancellations: 취소 기록. 센터 직원 (강사 첫 화면 "회원 취소 N건")
+         - memberCancelGrants: 추가 부여 기록. 대표 화면의 강사별 월 집계 -- 대표 ·
+           총괄매니저만 (사유 문장이 들어 있다) */
+      match /memberCancelLedger/{clientId} {
+        allow get: if isCentreStaff(organizationId)
+          && resource.data.organizationId == organizationId;
+        allow list: if false;
+        allow create, update, delete: if false;
+      }
+      match /memberCancellations/{recordId} {
+        allow get: if isCentreStaff(organizationId)
+          && resource.data.organizationId == organizationId;
+        allow list: if isCentreStaff(organizationId);
+        allow create, update, delete: if false;
+      }
+      match /memberCancelGrants/{grantId} {
+        allow get, list: if hasRole(organizationId, ["owner", "area_manager"]);
+        allow create, update, delete: if false;
+      }
+
       match /lessons/{lessonId} {
         // See the locations block for why get and list are split.
         /* 없는 문서도 읽게 둔다 (2026-10-31). 강사 일정을 서버에 쓸 때 앱은 확정된
@@ -2134,7 +2163,13 @@ service cloud.firestore {
            상품 문서는 createdBy 로 "누가 만들었나" 를 들고 있지만, 보관은
            status 한 칸만 바꾸므로 누가 언제 내렸는지가 어디에도 없었다.
            Keep in sync with AUDIT_ACTION in audit-repository.js. */
-        "product_added", "product_archived"
+        "product_added", "product_archived",
+        /* 회원 이름 수정 · 보관 (2026-11-04 대표). 대표·총괄·FC매니저 -- 아래
+           mayRecordAudit 이 이 둘을 canRegisterClient 로 넓힌다. 이름은 이 기록에
+           담기지 않는다 (아래 hasOnly 에 문장 칸이 없다). 삭제는 여전히 없다 --
+           clients 의 delete 는 false 그대로다.
+           Keep in sync with AUDIT_ACTION in audit-repository.js. */
+        "client_renamed", "client_archived"
       ];
     }
 
@@ -2173,7 +2208,11 @@ service cloud.firestore {
                빼는 쪽으로 고치게 된다. 조작할 수 있는 사람이 기록도 남긴다. */
             : action in ["product_added", "product_archived"]
               ? canManageProducts(organizationId)
-              : hasRole(organizationId, ownerLevel())
+              /* 회원 이름 수정 · 보관은 회원을 등록하는 사람이 한다. 조작(회원
+                 문서 update)과 기록이 한 배치라, 기록을 좁히면 조작도 막힌다. */
+              : action in ["client_renamed", "client_archived"]
+                ? canRegisterClient(organizationId)
+                : hasRole(organizationId, ownerLevel())
         );
     }
 

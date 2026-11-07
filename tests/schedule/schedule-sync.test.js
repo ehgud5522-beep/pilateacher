@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  applyPublishedRevisions, mergeServerLessons, reapplyChanges, syncWindow,
+  applyPublishedRevisions, mergeServerLessons, reapplyChanges, syncWindow, upcomingMemberCancels,
 } from "../../src/features/schedule/schedule-sync.js";
+import { scheduledLessonDocument } from "../../src/features/schedule/schedule-publish.js";
 import { PUBLISH_OUTCOME, decideScheduleWrite } from "../../src/data/repositories/lesson-schedule-repository.js";
 import { canEditLessonInfo, lessonDeletePolicy, settledLockNotice } from "../../src/features/schedule/schedule-edit.js";
 import { canSettleLesson, needsSettlement } from "../../src/features/schedule/lesson-settlement.js";
@@ -209,4 +210,58 @@ test("두 PC 가 같은 수업을 거의 동시에 넣어 둘 다 서버에 있�
   assert.deepEqual(first.duplicates, [{ serverId: "L-pc-b", localId: "L-pc-a" }]);
   const again = merge(first.schedule, docs);
   assert.deepEqual(again.duplicates, [], "이미 들어온 뒤로는 다시 알리지 않는다");
+});
+
+/* ── 회원 앱에서 회원이 취소한 수업 (2026-11-07, 5차 1단계) ────────────────
+   서버 함수가 수업 문서를 강사 기기의 취소와 같은 모양으로 바꾸고 번호를 올린다.
+   동기화가 켜진 기기는 그것을 출석 "취소" 로 받고, 회원 취소라고 표시한다. */
+
+const booked = (memberId) => ({ memberId, status: "booked", deductFrom: null, noshowFee: null });
+const MARK = { cancelledAt: new Date("2026-11-02T01:00:00Z"), by: "member", recordId: "r1" };
+
+test("개인 수업을 회원이 취소하면 출석이 취소로 · 회원 취소 표시 · 일정은 남는다", () => {
+  const result = merge([local({ attendees: [booked("m-1")], syncRevision: 3 })], [doc({
+    status: "cancelled", revision: 4, memberCancellations: { "client-1": MARK },
+  })]);
+  assert.equal(result.summary.attendanceCancelled, 1);
+  assert.equal(result.schedule.length, 1, "일정은 지우지 않는다");
+  const [attendee] = result.schedule[0].attendees;
+  assert.equal(attendee.status, "cancel");
+  assert.equal(attendee.memberCancelledAt, "2026-11-02T01:00:00.000Z");
+});
+
+test("듀엣에서 한 명만 취소하면 그 사람은 취소로 남고 상대 예약은 그대로", () => {
+  const duet = local({ type: "듀엣", attendees: [booked("m-1"), booked("client-2")], syncRevision: 3 });
+  const result = merge([duet], [doc({
+    scheduleType: "듀엣", lessonType: "2:1", clientIds: ["client-2"], revision: 4,
+    memberCancellations: { "client-1": MARK },
+  })]);
+  const byId = Object.fromEntries(result.schedule[0].attendees.map((attendee) => [attendee.memberId, attendee]));
+  assert.equal(byId["client-2"].status, "booked");
+  assert.equal(byId["m-1"].status, "cancel", "빠진 사람이 사라지지 않는다");
+  assert.ok(byId["m-1"].memberCancelledAt);
+  /* 이 기기가 다시 보내도 서버와 같은 모양이다 -- 취소한 사람을 되살리지 않는다. */
+  const published = scheduledLessonDocument({ entry: result.schedule[0], members: ROSTER, organizationId: "org", instructorId: "me" });
+  assert.deepEqual(published.data.clientIds, ["client-2"]);
+  assert.equal(published.data.status, "scheduled");
+});
+
+test("강사가 다시 넣어 clientIds 에 돌아온 회원은 표시가 남아 있어도 취소로 되돌리지 않는다", () => {
+  const duet = local({ type: "듀엣", attendees: [booked("m-1"), booked("client-2")], syncRevision: 5 });
+  const result = merge([duet], [doc({
+    scheduleType: "듀엣", lessonType: "2:1", clientIds: ["client-1", "client-2"], revision: 6,
+    memberCancellations: { "client-1": MARK },
+  })]);
+  assert.deepEqual(result.schedule[0].attendees.map((attendee) => attendee.status), ["booked", "booked"]);
+});
+
+test("첫 화면 '회원 취소 N건' — 오늘부터 앞으로, 지금도 취소인 회원 취소만", () => {
+  const now = new Date(2026, 10, 3, 9);
+  const schedule = [
+    { date: "2026-11-02", attendees: [{ memberId: "a", status: "cancel", memberCancelledAt: "x" }] },
+    { date: "2026-11-03", attendees: [{ memberId: "a", status: "cancel", memberCancelledAt: "x" }, { memberId: "b", status: "cancel" }] },
+    { date: "2026-11-05", attendees: [{ memberId: "c", status: "booked", memberCancelledAt: "x" }] },
+    { date: "2026-11-06", attendees: [{ memberId: "d", status: "cancel", memberCancelledAt: "x" }] },
+  ];
+  assert.equal(upcomingMemberCancels(schedule, now), 2);
 });

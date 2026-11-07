@@ -89,3 +89,64 @@ export async function findCompletedLessonsAt(input) {
   }
   return [...found.values()];
 }
+
+/**
+ * 큐에 걸린 수업들의 서버 상태 (2026-11-07, "확인할 수업" 정리).
+ *
+ * 문서 하나씩 get 이다 -- 규칙이 센터 직원에게 get 을 열어 두었고(없는 문서도),
+ * 질의를 쓰지 않으므로 색인이 필요 없다. 부르는 쪽이 id 수를 상한으로 자르고
+ * 기기에 답을 적어 둔다 (lesson-queue.js 의 lessonIdsToCheck).
+ *
+ * 돌려주는 것은 id → 문서(없으면 null). **못 읽은 id 는 빠진다** -- "없다" 와 "모른다"
+ * 를 섞지 않는다. 실패 코드는 failures 에 원본 그대로.
+ *
+ * @param {{ firestore?: any, organizationId: string, lessonIds: Array<string> }} input
+ * @returns {Promise<{ documents: Record<string, any | null>, failures: Array<{ lessonId: string, code: string }> }>}
+ */
+export async function readLessonStates(input) {
+  const { doc, getDoc, getFirestore } = await import("firebase/firestore");
+  const firestore = input.firestore || getFirestore();
+  const organizationId = text(input.organizationId);
+  /** @type {Record<string, any>} */
+  const documents = {};
+  /** @type {Array<{ lessonId: string, code: string }>} */
+  const failures = [];
+  const ids = [...new Set((Array.isArray(input.lessonIds) ? input.lessonIds : []).map(text).filter(Boolean))];
+  await Promise.all(ids.map(async (lessonId) => {
+    try {
+      const snapshot = await getDoc(doc(firestore, paths.lesson(organizationId, lessonId)));
+      documents[lessonId] = snapshot.exists() ? snapshot.data() : null;
+    } catch (error) {
+      failures.push({ lessonId, code: text(error?.code) || "unknown" });
+    }
+  }));
+  return { documents, failures };
+}
+
+/**
+ * 확정된 여러 명 수업과 그 참석 문서 -- 대표 확인 목록이 읽는다 (duet-attendance.js).
+ *
+ * 읽기만 한다. startsAt 하나에 거는 범위라 기본 색인으로 된다 (status 까지 걸면
+ * 복합 색인이 필요하다). 그 기간의 수업 문서를 모두 읽고, 확정된 여러 명 수업만
+ * 참석 문서를 더 읽는다 -- 60일이면 수업 문서 수 + 듀엣 수 × 2 남짓이다.
+ *
+ * @param {{ firestore?: any, organizationId: string, since: Date }} input
+ * @returns {Promise<{ lessons: Array<any>, participantsByLesson: Map<string, Array<any>>, reads: number }>}
+ */
+export async function listSettledGroupLessons(input) {
+  const { collection, getDocs, getFirestore, query, where } = await import("firebase/firestore");
+  const firestore = input.firestore || getFirestore();
+  const path = lessonsCollection(text(input.organizationId));
+  const page = await getDocs(query(collection(firestore, path), where("startsAt", ">=", input.since)));
+  const lessons = page.docs.map((document) => /** @type {any} */ ({ id: document.id, ...document.data() }))
+    .filter((lesson) => text(lesson.status) === "completed"
+      && Array.isArray(lesson.clientIds) && lesson.clientIds.length >= 2 && !lesson.deletedAt);
+  const participantsByLesson = new Map();
+  let reads = page.size;
+  for (const lesson of lessons) {
+    const parts = await getDocs(collection(firestore, `${path}/${lesson.id}/participants`));
+    reads += parts.size;
+    participantsByLesson.set(lesson.id, parts.docs.map((document) => ({ id: document.id, ...document.data() })));
+  }
+  return { lessons, participantsByLesson, reads };
+}

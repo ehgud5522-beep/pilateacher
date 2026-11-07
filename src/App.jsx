@@ -178,6 +178,7 @@ import {
 } from "./features/roster/roster-realtime.js";
 import { readPassesForClients, subscribeClients } from "./data/repositories/client-realtime.js";
 import { markTeacherInboxRead, subscribeTeacherInbox } from "./data/repositories/teacher-inbox-repository.js";
+import { dailySentence, hideToday as hideDailySentenceToday, isHiddenToday as dailySentenceHiddenToday } from "./features/schedule/daily-sentence.js";
 import { INBOX_COPY, inboxFailure, inboxRow, inboxStripLabel, lessonForInboxItem } from "./features/notifications/teacher-inbox.js";
 import {
   MEMBER_CANCEL_VIEW_COPY, ackKey as memberCancelAckKey, acksFromInbox, freesSlot, hasMemberCancel, isMemberCancelledAttendee,
@@ -3863,6 +3864,8 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
         </button>
       </div>
 
+      <DailySentenceBanner />
+
       {/* ─── 메인 시간표 영역 (flex-1, 내부 스크롤) ─── */}
       <div className="min-h-0 flex-1 overflow-hidden" style={{ backgroundColor: CARD }}>
         {focusedMemberId && (
@@ -4928,6 +4931,39 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
  */
 /* 강사 알림함 (2026-11-07). 회원이 회원 앱에서 취소한 수업이 여기에 한 건씩 온다.
    누르면 읽음으로 적고 그 수업을 연다. 문구 · 판정은 features/notifications/teacher-inbox.js. */
+/* 오늘의 한 문장 (2026-11-08). 일정 화면 주 범위 아래 한 줄 -- 팝업 · 움직이는 문구가 아니다.
+   누르면 펼쳐 "오늘의 작은 실천", "오늘은 닫기" 로 그날 하루 숨긴다. 문장은 features/schedule/daily-sentence.js. */
+export function DailySentenceBanner({ now = () => new Date(), storage = globalThis.localStorage, initialOpen = false }) {
+  const today = now();
+  const sentence = dailySentence(today);
+  const [hidden, setHidden] = useState(() => dailySentenceHiddenToday(storage, today));
+  const [open, setOpen] = useState(initialOpen);
+  if (hidden) return null;
+  return (
+    <div className="shrink-0 px-3 py-1.5" data-daily-sentence={sentence.kind} style={{ backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
+      <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open}
+        className="flex w-full min-w-0 items-center gap-2 rounded-xl px-2.5 py-1.5 text-left"
+        style={{ background: "var(--grad-soft)", border: `1px solid ${RING}` }}>
+        <Sparkles size={14} style={{ color: PRIMARY, flexShrink: 0 }} aria-hidden="true" />
+        <span className="min-w-0 flex-1">
+          <span className="block font-bold" style={{ fontSize: TYPE.caption, letterSpacing: "0.02em", color: PRIMARY }}>오늘의 한 문장 · {sentence.label}</span>
+          <span className={`block text-xs font-semibold ${open ? "" : "truncate"}`} style={{ color: INK, lineHeight: 1.45 }}>{sentence.message}</span>
+        </span>
+        <ChevronDown size={14} style={{ color: SUB, flexShrink: 0, transform: open ? "rotate(180deg)" : "none", transition: "transform .15s ease" }} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div className="mt-1.5 flex items-start gap-2 px-2.5 pb-0.5">
+          <p className="min-w-0 flex-1 text-xs" style={{ color: INK2, lineHeight: 1.5 }}>
+            <b style={{ color: PRIMARY }}>오늘의 작은 실천</b> · {sentence.action}
+          </p>
+          <button type="button" data-daily-sentence-hide onClick={() => { hideDailySentenceToday(storage, today); setHidden(true); }}
+            className="shrink-0 text-xs font-bold" style={{ color: SUB }}>오늘은 닫기</button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function TeacherInboxSheet({ items, error, members, onClose, onPick }) {
   const rows = (Array.isArray(items) ? items : []).map((item) => ({ item, row: inboxRow(item, members) }));
   return (
@@ -28235,6 +28271,9 @@ export function createAppScreenSmokeCases() {
       id: "mc-acked", type: "개인", date: shift(todayISO(), 1),
       attendees: [settleAttendee("m-local-1", { status: "cancel", memberCancelledAt: "2026-11-07T01:00:00.000Z" })],
     }), { memberCancelAcked: true }) },
+    /* 오늘의 한 문장 (2026-11-08). 월요일(자부심), 접힘 · 펼침. 저장소 없이 -- 닫은 적 없는 화면. */
+    { name: "오늘의 한 문장 · 접힘", element: provider(<DailySentenceBanner now={() => new Date(2026, 10, 9, 9)} storage={null} />) },
+    { name: "오늘의 한 문장 · 펼침", element: provider(<DailySentenceBanner now={() => new Date(2026, 10, 9, 9)} storage={null} initialOpen />) },
     { name: "일정 탭 · 강사 알림함 띠", element: provider(<ScheduleManager memberCancelOn
       inbox={{ items: [{ id: "rec-1", lessonId: busyDb.schedule[0]?.id, clientId: "", title: "[회원 수업 취소]", body: "11/8(일) 10:00 수업이 회원 요청으로 취소되었어요", createdAt: "2026-11-07T00:00:00.000Z" }], error: null, onRead: noop }}
       db={busyDb}

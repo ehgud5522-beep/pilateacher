@@ -28,6 +28,8 @@ test("한 줄: 이름은 강사 명단에서, 없으면 이름 없이", () => {
   assert.equal(row.received, "5분 전");
   assert.equal(row.body, "11/8(일) 10:00 수업이 회원 요청으로 취소되었어요");
   assert.equal(inboxRow(item(), [], NOW).who, "", "명단에 없으면 이름 없음");
+  /* 옛 기기 회원과 이어진 사람은 기기 id 가 다르다 -- 센터 회원 id(orgClientId)로 찾는다. */
+  assert.equal(inboxRow(item(), [{ id: "m-local-7", orgClientId: "client-a", name: "박둘" }], NOW).who, "박둘 회원");
 });
 
 test("받은 시각 표시", () => {

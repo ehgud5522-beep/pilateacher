@@ -17,7 +17,7 @@ import { TYPE } from "../../src/features/ui/type-scale.js";
 import { BRAND_MARK } from "./brand.js";
 import { classifyPhoneAuthError } from "./auth-errors.js";
 import {
-  callMemberCancel, deleteMemberAccount, linkMemberAccount, memberPushSettings, resetRecaptcha, signOutMember, startPhoneSignIn,
+  callMemberCancel, callMemberRating, deleteMemberAccount, linkMemberAccount, memberPushSettings, resetRecaptcha, signOutMember, startPhoneSignIn,
   watchAuth, db,
 } from "./firebase.js";
 import {
@@ -40,6 +40,9 @@ import {
   NotMigrated, Preparing, Records, SlowConnection,
 } from "./screens.jsx";
 import { LessonSheet } from "./lesson-sheet.jsx";
+import { LessonRatingCard } from "./lesson-rating.jsx";
+import { addRatingSeen, readRatingSeen } from "./rating-copy.js";
+import { pickRatingCandidate } from "../../functions/shared/lesson-rating.mjs";
 
 /* 아이콘은 인라인 SVG 다. 아이콘 묶음을 하나 들이면 번들이 늘고, 이 앱이
    쓰는 것은 넷뿐이다. */
@@ -327,6 +330,11 @@ function SignIn({ signedIn, deletion = false }) {
   );
 }
 
+/** 기기 칸. 사생활 보호 모드 등에서 접근이 막히면 null -- 화면은 그래도 돈다. */
+function deviceBox() {
+  try { return globalThis.localStorage || null; } catch (_error) { return null; }
+}
+
 /* ── 회원 화면 ───────────────────────────────────────────────────────── */
 
 function Member({ userId, initialTab = "home" }) {
@@ -346,6 +354,13 @@ function Member({ userId, initialTab = "home" }) {
      취소가 안 된 줄 안다. */
   const [openLesson, setOpenLesson] = useState(null);
   const [cancelledIds, setCancelledIds] = useState(() => new Set());
+  /* 수업 후 별점 평가 (2026-11-09). 보냈거나 "다음에" 를 누른 수업 id -- 다시 묻지 않는다. */
+  const [ratingSeen, setRatingSeen] = useState(() => new Set(readRatingSeen(deviceBox())));
+  /* keep: 보낸 직후 -- 기기에는 적되 "고마워요" 카드는 이번 화면에 그대로 둔다. */
+  const markRatingSeen = useCallback((lessonId, { keep = false } = {}) => {
+    const next = addRatingSeen(deviceBox(), lessonId);
+    if (!keep) setRatingSeen((previous) => new Set([...previous, ...next, text(lessonId)]));
+  }, []);
 
   /* quiet: 앱으로 돌아왔을 때 조용히 다시 읽는다. 화면을 "잠시만요" 로 바꾸지
      않고, 실패하면 보던 것을 그대로 둔다 -- 돌아올 때마다 깜빡이거나 오류를
@@ -574,8 +589,19 @@ function Member({ userId, initialTab = "home" }) {
     const schedule = Array.isArray(current.view.schedule)
       ? current.view.schedule.filter((lesson) => !cancelledIds.has(text(lesson?.lessonId)))
       : current.view.schedule;
-    body = <Home view={{ ...current.view, schedule }} onOpenRecords={() => setTab("records")}
-      onOpenLesson={setOpenLesson} />;
+    /* 평가 카드는 연결돼 있을 때만 -- 오프라인 사본을 보는 중에는 보낼 수 없다. 카드를 그릴지는
+       서버가 정한다 (스위치가 꺼져 있으면 아무것도 그리지 않는다). */
+    const rateLesson = state.offlineAt ? null : pickRatingCandidate(current.view.history, { skip: ratingSeen });
+    body = (
+      <div className="stack">
+        {rateLesson ? (
+          <LessonRatingCard key={`${current.link.organizationId}/${current.link.clientId}/${text(rateLesson.lessonId)}`}
+            lesson={rateLesson} place={current.link} api={callMemberRating} onSeen={markRatingSeen} />
+        ) : null}
+        <Home view={{ ...current.view, schedule }} onOpenRecords={() => setTab("records")}
+          onOpenLesson={setOpenLesson} />
+      </div>
+    );
   }
 
   /* 회원 데이터가 없으면 어느 탭이든 "준비 중" 이라 마이페이지의 로그아웃도

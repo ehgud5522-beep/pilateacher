@@ -89,7 +89,9 @@ function lessonTypeOf(pass, productSessionTypes, shared) {
 /* lessonType 은 그 수업이 어떤 회원권에서 차감됐는지로 정한다 -- 회원 앱이
    이력 한 줄을 "1:1 필라테스 수업" 으로 부른다 (2026-10-30). passId 는 내보내지
    않는다. */
-const HISTORY_FIELDS = Object.freeze(["occurredAt", "type", "lessonType", "instructorName", "memberNote"]);
+/* lessonId (2026-11-09, 수업 후 별점 평가): 회원이 평가할 수업을 가리키는 값. 차감에만 싣는다.
+   예정 수업의 lessonId 와 같은 값이고, 그 문서를 회원이 읽을 수는 없다. */
+const HISTORY_FIELDS = Object.freeze(["occurredAt", "type", "lessonType", "instructorName", "memberNote", "lessonId"]);
 
 /**
  * 회원에게 보낼 말의 길이.
@@ -288,6 +290,7 @@ function buildMemberView(input) {
          원문은 강사가 다음 수업을 준비하려고 쓴 글이고 읽는 사람이 다르다.
          두 칸이 나뉘어 있다는 것이 이 줄의 전부다. */
       memberNote: memberNoteFor(entry, input?.memberNotes),
+      lessonId: text(entry.type) === LEDGER_TYPE_DEDUCT ? text(entry.lessonId) : "",
     }))
     .filter((entry) => entry.occurredAt)
     .sort((left, right) => right.occurredAt - left.occurredAt);

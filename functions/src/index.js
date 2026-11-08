@@ -35,6 +35,7 @@ const { handleRuntimeConfigRequest } = require("./runtime-config-admin");
 const { handleMemberPushSettings, runMemberPush } = require("./member-push");
 const { handleNoticeRequest } = require("./notice-admin");
 const { grantMemberCancel, memberCancelLesson, memberCancelStatus } = require("./member-cancel");
+const { lessonRatingStats, lessonRatingStatus, submitLessonRating } = require("./lesson-rating");
 const { cancelThenNotifyTeacher, handleTeacherPushSettings } = require("./teacher-cancel-push");
 const { monthlyPayFor, planAccountSwap, runAccountSwap } = require("./instructor-swap");
 const { reconcileOrganization } = require("./pass-reconcile-nightly");
@@ -975,6 +976,72 @@ exports.grantMemberCancel = onCall({
       errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
     });
     throw new HttpsError("unavailable", "member_cancel_grant_failed", { reason: "member_cancel_grant_failed" });
+  }
+});
+
+/* ── 수업 후 별점 평가 (2026-11-09 대표 요청) ───────────────────────────
+   회원 앱이 쓰고(action "status" · "submit"), 대표 화면이 집계를 읽는다. 규칙은 두 컬렉션을
+   아무에게도 열지 않는다 -- 이 통로뿐이다. 근거는 lesson-rating.js 머리말.
+   스위치는 runtimeConfig/scheduleSync.memberRating (처음에는 꺼짐). */
+const lessonRatingLog = (level, event, fields) => logger[level](event, { feature: "lesson_rating", ...fields });
+
+exports.memberLessonRating = onCall(MEMBER_LINK_OPTIONS, async (request) => {
+  const action = String(request?.data?.action || "").trim() === "submit" ? "submit" : "status";
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const lessonId = String(request?.data?.lessonId || "").trim();
+  const input = {
+    callerUid: request?.auth?.uid, organizationId,
+    clientId: request?.data?.clientId, lessonId, scores: request?.data?.scores,
+  };
+  try {
+    if (action === "status") return await lessonRatingStatus(firestore, input);
+    const result = await submitLessonRating(firestore, input);
+    /* 점수 · uid · 이름은 남기지 않는다 (§7 · 강사 비공개). 수업 id 와 결과만. */
+    lessonRatingLog("info", "lesson_rating_done", {
+      stage: "submit", organizationId, lessonId, outcome: result.outcome, correlationId: result.ratingId,
+    });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      lessonRatingLog("warn", "lesson_rating_refused", {
+        stage: action, organizationId, lessonId, errorDomain: "lesson_rating",
+        errorCode: error.reason || error.httpsCode, field: error.field || "",
+      });
+      throw new HttpsError(error.httpsCode, error.message, { reason: error.reason || "" });
+    }
+    lessonRatingLog("error", "lesson_rating_failed", {
+      stage: action, organizationId, lessonId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+    throw new HttpsError("unavailable", "lesson_rating_failed", { reason: "lesson_rating_failed" });
+  }
+});
+
+/* 대표 화면: 강사별 누적 응답 수 · 항목별 평균. 대표만. 개별 응답은 읽지 않는다. */
+exports.lessonRatingStats = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 30,
+  invoker: "public",
+}, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  try {
+    const result = await lessonRatingStats(firestore, {
+      callerUid: request?.auth?.uid, organizationId,
+    }, { membershipId, isActiveOwner });
+    lessonRatingLog("info", "lesson_rating_stats_read", { stage: "stats", organizationId, instructors: result.rows.length });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      lessonRatingLog("warn", "lesson_rating_stats_refused", {
+        stage: "stats", organizationId, errorDomain: "lesson_rating", errorCode: error.reason || error.httpsCode, role: error.role || "",
+      });
+      throw new HttpsError(error.httpsCode, error.message, { reason: error.reason || "" });
+    }
+    lessonRatingLog("error", "lesson_rating_stats_failed", {
+      stage: "stats", organizationId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+    throw new HttpsError("unavailable", "lesson_rating_stats_failed", { reason: "lesson_rating_stats_failed" });
   }
 });
 

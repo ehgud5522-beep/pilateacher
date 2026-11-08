@@ -6186,3 +6186,50 @@ describe("member lesson cancellation records", () => {
     }
   });
 });
+
+/* ── 수업 후 별점 평가 (2026-11-09 대표 요청) ─────────────────────────────
+
+   "강사님에게는 공개되지 않습니다." 평가 · 강사별 집계는 서버 함수만 쓰고 읽는다
+   (functions/src/lesson-rating.js). 규칙은 두 경로를 **누구에게도** 열지 않는다 --
+   담당 강사 · 매니저 · 대표 · 평가한 회원 본인까지. */
+describe("lesson ratings stay hidden from the app", () => {
+  const rating = (db) => doc(db, "organizations", ORG_A, "lessonRatings", `lesson-r_${APP_MEMBER_CLIENT}`);
+  const stats = (db) => doc(db, "organizations", ORG_A, "lessonRatingStats", users.instructor);
+
+  beforeEach(async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(rating(db), {
+        organizationId: ORG_A, clientId: APP_MEMBER_CLIENT, lessonId: "lesson-r", instructorId: users.instructor,
+        scores: { body: 4, care: 5, again: 5 }, createdByUid: APP_MEMBER,
+      });
+      await setDoc(stats(db), {
+        organizationId: ORG_A, instructorId: users.instructor, count: 1,
+        items: { body: { sum: 4, count: 1 }, care: { sum: 5, count: 1 }, again: { sum: 5, count: 1 } },
+      });
+    });
+  });
+
+  test("nobody reads a rating or the per-instructor totals — not the instructor, not the owner, not the member", async () => {
+    for (const userId of [users.instructor, users.owner, users.area_manager, users.manager, users.staff, APP_MEMBER, users.outsider, null]) {
+      await assertFails(getDoc(rating(dbFor(userId))), `${userId} 평가 한 건`);
+      await assertFails(getDoc(stats(dbFor(userId))), `${userId} 강사 집계`);
+      await assertFails(getDocs(collection(dbFor(userId), "organizations", ORG_A, "lessonRatings")), `${userId} 평가 목록`);
+      await assertFails(getDocs(query(collection(dbFor(userId), "organizations", ORG_A, "lessonRatings"), where("instructorId", "==", users.instructor))), `${userId} 강사별 평가`);
+      await assertFails(getDocs(collection(dbFor(userId), "organizations", ORG_A, "lessonRatingStats")), `${userId} 집계 목록`);
+    }
+  });
+
+  test("nobody writes a rating or the totals from the app — only the server function does", async () => {
+    for (const userId of [APP_MEMBER, users.instructor, users.owner, users.area_manager, users.manager, users.staff]) {
+      const db = dbFor(userId);
+      await assertFails(setDoc(doc(db, "organizations", ORG_A, "lessonRatings", `lesson-x_${APP_MEMBER_CLIENT}`), {
+        organizationId: ORG_A, clientId: APP_MEMBER_CLIENT, lessonId: "lesson-x", scores: { body: 5, care: 5, again: 5 },
+      }), `${userId} 평가 쓰기`);
+      await assertFails(updateDoc(rating(db), { "scores.body": 1 }), `${userId} 평가 고치기`);
+      await assertFails(deleteDoc(rating(db)), `${userId} 평가 지우기`);
+      await assertFails(updateDoc(stats(db), { count: 99 }), `${userId} 집계 고치기`);
+      await assertFails(setDoc(doc(db, "organizations", ORG_A, "lessonRatingStats", "someone"), { count: 1 }), `${userId} 집계 만들기`);
+    }
+  });
+});

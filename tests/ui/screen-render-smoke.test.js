@@ -163,10 +163,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "수업 관리 · 회원 취소 확인함",
     "오늘의 한 문장 · 접힘",
     "오늘의 한 문장 · 펼침",
-    "일정 탭 · 대표님 전달사항",
-    "대표님 전달사항 · 대표 설정",
-    "대표님 전달사항 · 비어 있음",
-    "대표님 전달사항 · 저장 실패",
+    "일정 탭 · 이사님 전달사항",
+    "이사님 전달사항 · 대표 설정",
+    "이사님 전달사항 · 비어 있음",
+    "이사님 전달사항 · 저장 실패",
     "일정 탭 · 강사 알림함 띠",
     "강사 알림함 시트",
     "강사 알림함 시트 · 열지 못함",
@@ -3392,23 +3392,23 @@ test("member app cancellation: the count on the first screen, the grant button, 
 
 test("owner message: one line at the top of the schedule tab, the owner writes it in owner settings", async () => {
   const markup = await screenMarkup();
-  const tab = markup("일정 탭 · 대표님 전달사항");
+  const tab = markup("일정 탭 · 이사님 전달사항");
   assert.match(tab, /data-owner-message/);
-  assert.match(tab, /대표님 전달사항/);
+  assert.match(tab, /이사님 전달사항/);
   assert.match(tab, /이번 주 금요일 저녁 7시 전체 회의 있어요/);
   assert.ok(tab.indexOf("data-owner-message") < tab.indexOf("data-daily-sentence="), "한 문장보다 위");
   assert.ok(tab.indexOf("data-pay-card") < tab.indexOf("data-owner-message"), "급여 한 줄이 맨 위");
   assert.doesNotMatch(tab, /확정 대기/, "확정 대기는 일정 탭 첫 화면에 없다");
   assert.doesNotMatch(markup("일정 탭"), /data-owner-message/, "비어 있으면 아무것도 안 보인다");
 
-  const admin = markup("대표님 전달사항 · 대표 설정");
+  const admin = markup("이사님 전달사항 · 대표 설정");
   assert.match(admin, /data-owner-message-input/);
   assert.match(admin, /강사 화면 미리보기/);
   assert.match(admin, /data-owner-message-delete/);
-  assert.match(admin, /대표만 바꿀 수 있습니다/);
-  const empty = markup("대표님 전달사항 · 비어 있음");
+  assert.match(admin, /이사님\(대표 계정\)만 바꿀 수 있습니다/);
+  const empty = markup("이사님 전달사항 · 비어 있음");
   assert.doesNotMatch(empty, /data-owner-message-delete/, "지울 것이 없으면 지우기 버튼도 없다");
-  const failed = markup("대표님 전달사항 · 저장 실패");
+  const failed = markup("이사님 전달사항 · 저장 실패");
   assert.match(failed, /data-owner-message-error/);
   assert.match(failed, /코드 notice_owner_message_owner_only/, "실패는 원본 코드와 함께");
 });

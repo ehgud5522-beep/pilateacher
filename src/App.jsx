@@ -4999,7 +4999,7 @@ export function DailySentenceBanner({ now = () => new Date(), storage = globalTh
   );
 }
 
-/* 대표님 전달사항 (2026-11-08 대표 요청). 대표가 더보기 → 대표 설정 → 대표님 전달사항에 적은 짧은
+/* 이사님 전달사항 (2026-11-08 대표 요청). 대표가 더보기 → 대표 설정 → 이사님 전달사항에 적은 짧은
    글자를 일정 탭 맨 위(한 문장 위)에 그대로 보인다. 비어 있으면 아무것도 그리지 않는다.
    저장은 공지 문서(kind: owner_message) -- functions/shared/notices.mjs. */
 export function OwnerMessageBar({ message = "" }) {
@@ -5009,7 +5009,7 @@ export function OwnerMessageBar({ message = "" }) {
     <div className="shrink-0 flex items-start gap-2 px-4 py-2" data-owner-message style={{ backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
       <Megaphone size={15} style={{ color: PRIMARY, flexShrink: 0, marginTop: 2 }} aria-hidden="true" />
       <p className="min-w-0 flex-1 text-sm" style={{ color: INK, lineHeight: 1.45, overflowWrap: "anywhere" }}>
-        <b style={{ color: PRIMARY }}>대표님 전달사항</b> · {body}
+        <b style={{ color: PRIMARY }}>이사님 전달사항</b> · {body}
       </p>
     </div>
   );
@@ -24310,11 +24310,11 @@ const noticeFailure = (error, verb) => {
   if (reason === "notice_not_author") return `자기가 쓴 공지만 ${verb}할 수 있어요 (코드 ${reason})`;
   if (reason === "notice_not_owner_level") return `대표 · 총괄매니저만 ${verb}할 수 있어요 (코드 ${reason})`;
   if (reason === "notice_not_found") return `이미 지워진 공지예요 (코드 ${reason})`;
-  if (reason === "notice_owner_message_owner_only") return `대표님 전달사항은 대표만 ${verb}할 수 있어요 (코드 ${reason})`;
+  if (reason === "notice_owner_message_owner_only") return `이사님 전달사항은 이사님만 ${verb}할 수 있어요 (코드 ${reason})`;
   return `${verb}하지 못했어요 (코드 ${reason || code})`;
 };
 
-/* ── 대표님 전달사항 (더보기 → 대표 설정, 2026-11-08 대표 요청) ─────────────────
+/* ── 이사님 전달사항 (더보기 → 대표 설정, 2026-11-08 대표 요청) ─────────────────
    대표가 적는 짧은 한 줄. 강사 일정 탭 맨 위(한 문장 위)에 선다. 비우면(지우면) 아무것도 안 보인다.
    저장은 공지 문서 하나(kind: owner_message) -- 쓰기 · 고치기 · 지우기는 서버 함수 manageNotice,
    **대표만** (총괄매니저도 거절, notice-admin.js). 규칙 · 경로는 그대로다.
@@ -24366,7 +24366,7 @@ export function OwnerMessageAdmin({ organization, noticeStore, onManage, onToast
         organizationId, action: current ? "update" : "create", noticeId: current?.id,
         value: { kind: NOTICE_KIND.OWNER_MESSAGE, body },
       }, { call: onManage });
-      onToast?.({ ok: true, msg: "대표님 전달사항을 저장했습니다." });
+      onToast?.({ ok: true, msg: "이사님 전달사항을 저장했습니다." });
       onSaved?.(body);
       await reload();
     } catch (error) {
@@ -24381,7 +24381,7 @@ export function OwnerMessageAdmin({ organization, noticeStore, onManage, onToast
     setSaving(true);
     try {
       await manageNotice({ organizationId, action: "delete", noticeId: current.id }, { call: onManage });
-      onToast?.({ ok: true, msg: "대표님 전달사항을 지웠습니다." });
+      onToast?.({ ok: true, msg: "이사님 전달사항을 지웠습니다." });
       onSaved?.("");
       setConfirmDelete(false);
       await reload();
@@ -24394,9 +24394,9 @@ export function OwnerMessageAdmin({ organization, noticeStore, onManage, onToast
 
   return (
     <section data-owner-message-admin style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
-      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>대표님 전달사항</h2>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>이사님 전달사항</h2>
       <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        강사 앱 · 웹 일정 탭 맨 위에 한 줄로 보입니다. 비워 두면 아무것도 보이지 않습니다. 대표만 바꿀 수 있습니다.
+        강사 앱 · 웹 일정 탭 맨 위에 한 줄로 보입니다. 비워 두면 아무것도 보이지 않습니다. 이사님(대표 계정)만 바꿀 수 있습니다.
       </p>
       {loading ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
       {!loading && loadError ? (
@@ -26559,7 +26559,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     return total;
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
-    report: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 · 운영 스위치", "owner-message": "대표님 전달사항", "name-confirm": "강사 이름 확정", notices: "공지사항", "expiry-order": "만료일 순서 확인", "duet-unmarked": "듀엣 출석 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
+    report: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 · 운영 스위치", "owner-message": "이사님 전달사항", "name-confirm": "강사 이름 확정", notices: "공지사항", "expiry-order": "만료일 순서 확인", "duet-unmarked": "듀엣 출석 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
@@ -26631,7 +26631,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
        가 아니라 **지나다 누를 자리에 두지 않으려고** 다. */
     { label: "대표 설정", collapsible: true, items: [
       /* 대표만 -- 이름이 "대표님" 전달사항이다. 서버도 같은 선을 긋는다 (notice-admin.js). */
-      ...(showAppUpdate ? [{ key: "owner-message", title: "대표님 전달사항", description: "강사 일정 탭 맨 위에 보일 한 줄", Icon: Megaphone }] : []),
+      ...(showAppUpdate ? [{ key: "owner-message", title: "이사님 전달사항", description: "강사 일정 탭 맨 위에 보일 한 줄", Icon: Megaphone }] : []),
       ...(showAppUpdate ? [{ key: "app-update", title: "앱 업데이트 · 운영 스위치", description: "새 버전 알림 · 일정 동기화 · 회원 앱 수업 취소 · 알림", Icon: Smartphone }] : []),
       /* 한 번 누르는 버튼이다. 고친 뒤에 붙은 소속에는 표시가 저절로 들어가므로
          이 화면은 **이미 있던 강사들**만을 위한 것이다. */
@@ -28435,19 +28435,19 @@ export function createAppScreenSmokeCases() {
     /* 오늘의 한 문장 (2026-11-08). 월요일(자부심), 접힘 · 펼침. 저장소 없이 -- 닫은 적 없는 화면. */
     { name: "오늘의 한 문장 · 접힘", element: provider(<DailySentenceBanner now={() => new Date(2026, 10, 9, 9)} storage={null} random={() => 0} />) },
     { name: "오늘의 한 문장 · 펼침", element: provider(<DailySentenceBanner now={() => new Date(2026, 10, 9, 9)} storage={null} random={() => 0} initialOpen />) },
-    /* 대표님 전달사항 (2026-11-08). 일정 탭 맨 위(한 문장 위)에 한 줄, 대표가 더보기 → 대표 설정에서 적는다. */
-    { name: "일정 탭 · 대표님 전달사항", element: provider(<ScheduleManager db={db} photos={photos} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop}
+    /* 이사님 전달사항 (2026-11-08). 일정 탭 맨 위(한 문장 위)에 한 줄, 대표가 더보기 → 대표 설정에서 적는다. */
+    { name: "일정 탭 · 이사님 전달사항", element: provider(<ScheduleManager db={db} photos={photos} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop}
       ownerMessage="이번 주 금요일 저녁 7시 전체 회의 있어요"
       payCard={<InstructorPayCard pay={smokePay} loading={false} error="" upcoming={{ total: 300000, sessions: 12, lessons: 12, blocked: 0 }} onOpen={noop} />} />) },
-    { name: "대표님 전달사항 · 대표 설정", element: provider(
+    { name: "이사님 전달사항 · 대표 설정", element: provider(
       <OwnerMessageAdmin organization={readyOrganizationContext(smokeOwner)} noticeStore={smokeNoticeStore} onManage={noop} onToast={noop}
         initialState={{ current: { id: "m1", body: "이번 주 금요일 저녁 7시 전체 회의 있어요" } }} />) },
-    { name: "대표님 전달사항 · 비어 있음", element: provider(
+    { name: "이사님 전달사항 · 비어 있음", element: provider(
       <OwnerMessageAdmin organization={readyOrganizationContext(smokeOwner)} noticeStore={smokeNoticeStore} onManage={noop} onToast={noop}
         initialState={{ current: null }} />) },
-    { name: "대표님 전달사항 · 저장 실패", element: provider(
+    { name: "이사님 전달사항 · 저장 실패", element: provider(
       <OwnerMessageAdmin organization={readyOrganizationContext(smokeOwner)} noticeStore={smokeNoticeStore} onManage={noop} onToast={noop}
-        initialState={{ current: null, draft: "회의 있어요", formError: "대표님 전달사항은 대표만 저장할 수 있어요 (코드 notice_owner_message_owner_only)" }} />) },
+        initialState={{ current: null, draft: "회의 있어요", formError: "이사님 전달사항은 이사님만 저장할 수 있어요 (코드 notice_owner_message_owner_only)" }} />) },
     { name: "일정 탭 · 강사 알림함 띠", element: provider(<ScheduleManager memberCancelOn
       inbox={{ items: [{ id: "rec-1", lessonId: busyDb.schedule[0]?.id, clientId: "", title: "[회원 수업 취소]", body: "11/8(일) 10:00 수업이 회원 요청으로 취소되었어요", createdAt: "2026-11-07T00:00:00.000Z" }], error: null, onRead: noop }}
       db={busyDb}
@@ -29971,7 +29971,7 @@ export default function App() {
      확인은 **그 기기에만** 적는다 (2026-10-31 대표 결정) -- 서버에 읽음 기록이
      없다. 그래서 폰을 바꾸면 기간 안의 공지가 다시 한 번 뜬다. */
   const [noticeQueue, setNoticeQueue] = useState([]);
-  /* 대표님 전달사항 (일정 탭 맨 위). 공지와 같은 목록에서 읽는다. */
+  /* 이사님 전달사항 (일정 탭 맨 위). 공지와 같은 목록에서 읽는다. */
   const [ownerMessage, setOwnerMessage] = useState("");
   const noticeStore = useMemo(() => createFirestoreNoticeStore(), []);
   /* 소속을 알기 전에 적어 두는 자리. 계정 읽기가 소속 조회보다 먼저 끝나므로
@@ -30204,7 +30204,7 @@ export default function App() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [phase, refreshNotices]);
 
-  /* 대표님 전달사항은 30초 넘게 나갔다 돌아올 때마다 새로 읽는다 -- 대표가 PC 에서 고치고 폰을
+  /* 이사님 전달사항은 30초 넘게 나갔다 돌아올 때마다 새로 읽는다 -- 대표가 PC 에서 고치고 폰을
      다시 열었을 때 옛 문구가 남아 있지 않게. 공지 팝업 큐는 건드리지 않는다 (위 하루 한 번 그대로). */
   const refreshOwnerMessage = useCallback(async () => {
     if (!organizationRoster || !account?.id || !organizationContext.organizationId) return;

@@ -86,7 +86,19 @@ npx firebase deploy --project pilateacher --config firebase.ai-gateway.json --on
 - 새로 만듦: teacherPushSettings (강사 앱은 아직 부르지 않음)
 - 롤백: 이 함수들을 `9e2af9e` 에서 같은 명령으로 (teacherPushSettings 는 지우거나 둔다 -- 부르는 곳이 없다)
 
-## 롤백
+## 수업 후 별점 평가 함수 — 2026-11-09 배포 (#167)
+
+main `5dba6d0` 에서:
+
+```bash
+npx firebase deploy --project pilateacher --config firebase.ai-gateway.json --only "functions:memberLessonRating,functions:lessonRatingStats,functions:updateRuntimeConfig,functions:rebuildMemberViews,functions:verifyMemberViews,functions:rebuildMemberViewOnPassWrite,functions:rebuildMemberViewOnClientWrite,functions:rebuildMemberViewOnLessonNoteWrite,functions:rebuildMemberViewOnLessonWrite"
+```
+
+- 새로 만듦: memberLessonRating (회원 앱 status · submit) · lessonRatingStats (대표 집계)
+- 갱신: updateRuntimeConfig (memberRating 스위치 칸) · 회원 투영 함수 6개 (history 차감 줄에 lessonId)
+- 확인: 두 새 함수에 빈 요청 → `UNAUTHENTICATED` + `reason: unauthenticated` (살아 있음)
+- 롤백: 이 함수들을 `837a8c5` 에서 같은 명령으로 (새 두 함수는 지우거나 둔다 -- 스위치가 꺼져 있으면 아무것도 쓰지 않는다)
+
 
 트래픽만 이전 revision 으로 되돌린다.
 

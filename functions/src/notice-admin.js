@@ -17,6 +17,11 @@
  * - 총괄매니저: 쓰고, **자기가 쓴 공지만** 고치고 지운다
  * - 그 밖(FC매니저 · 매니저 · 강사 · 회원 · 소속 없음): 거절
  *
+ * - **대표님 전달사항(kind: owner_message)은 대표만** (2026-11-08) -- 이름이 "대표님"
+ *   전달사항이고 대표가 "내가 직접 설정" 하겠다고 했다. 총괄매니저는 거절한다
+ *   (notice_owner_message_owner_only). 공지 ↔ 전달사항으로 종류를 바꾸지 못한다 --
+ *   고치기의 종류는 언제나 지금 문서의 종류다.
+ *
  * 받는 칸은 제목 · 본문 · 대상 지점 · 중요 · 표시 종료일뿐이다 (shared/notices.mjs).
  * 작성자 이름은 소속 문서의 displayName 을 서버가 적는다 -- 보낸 값을 믿지 않는다.
  */
@@ -37,6 +42,7 @@ const NOTICE_REASON = Object.freeze({
   INVALID: "notice_invalid",
   NOT_FOUND: "notice_not_found",
   UNKNOWN_ACTION: "notice_unknown_action",
+  OWNER_MESSAGE_OWNER_ONLY: "notice_owner_message_owner_only",
 });
 
 /** 요청을 거부할 때. index.js 가 httpsCode 와 reason 을 그대로 HttpsError 로 바꾼다. */
@@ -75,7 +81,10 @@ async function handleNoticeRequest(firestore, input, deps) {
   const at = (input?.now || (() => new Date()))();
   const shared = await loadShared();
 
+  const ownerOnly = () => requestError("permission-denied", NOTICE_REASON.OWNER_MESSAGE_OWNER_ONLY, "Only the owner can write the owner message.");
+
   if (action === "create") {
+    if (shared.isOwnerMessage(input?.value) && role !== "owner") throw ownerOnly();
     const refused = shared.noticeError(input?.value, { today: seoulDay(at) });
     if (refused) throw requestError("invalid-argument", NOTICE_REASON.INVALID, refused);
     const noticeId = text(deps.newId());
@@ -99,6 +108,8 @@ async function handleNoticeRequest(firestore, input, deps) {
   const snapshot = await reference.get();
   const current = snapshot.exists ? snapshot.data() : null;
   if (!current || text(current.organizationId) !== organizationId) throw requestError("not-found", NOTICE_REASON.NOT_FOUND);
+  const currentIsMessage = shared.isOwnerMessage(current);
+  if (currentIsMessage && role !== "owner") throw ownerOnly();
   /* 총괄매니저는 자기가 쓴 공지만. 대표는 전부. */
   if (role === "area_manager" && text(current.createdBy) !== callerUid) {
     throw requestError("permission-denied", NOTICE_REASON.NOT_AUTHOR, "An area manager can only change their own notices.");
@@ -109,12 +120,16 @@ async function handleNoticeRequest(firestore, input, deps) {
     return { action, noticeId };
   }
 
-  const refused = shared.noticeError(input?.value, { today: seoulDay(at) });
+  /* 종류는 지금 문서를 따른다 -- 보낸 kind 로 공지를 전달사항으로(또는 반대로) 바꾸지 않는다. */
+  const sent = { ...(input?.value && typeof input.value === "object" ? input.value : {}) };
+  delete sent.kind;
+  const next = currentIsMessage ? { ...sent, kind: shared.NOTICE_KIND.OWNER_MESSAGE } : sent;
+  const refused = shared.noticeError(next, { today: seoulDay(at) });
   if (refused) throw requestError("invalid-argument", NOTICE_REASON.INVALID, refused);
   /* 통째로 다시 쓴다 -- 옛 공지의 이미지 · 링크 · 직급 칸이 남지 않게. 쓴 사람과 시각은 그대로. */
   await reference.set({
     organizationId,
-    ...shared.noticeContent(input?.value),
+    ...shared.noticeContent(next),
     status: shared.NOTICE_STATUS.ACTIVE,
     createdAt: current.createdAt ?? at,
     createdBy: text(current.createdBy),

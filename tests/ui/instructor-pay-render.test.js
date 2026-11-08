@@ -41,19 +41,23 @@ const fixedHeights = (html) => [...html.matchAll(/style="([^"]*)"/g)]
 const tapHeights = (html) => [...html.matchAll(/<button[^>]*style="([^"]*)"/g)]
   .map((m) => Number((m[1].match(/(?:min-height|(?:^|;)height):(\d+)px/) || [])[1] || 0));
 
-test("카드: 문구 · 확정 대기 · 자세히 보기, 카드 전체가 버튼", async () => {
+test("카드 (2026-11-08 한 줄): 이번 달 급여 · 자세히 보기만, 카드 전체가 버튼", async () => {
   const html = await markupOf("예상 급여 카드 · 큰 글씨");
   assert.match(html, /^<div style="--t-caption:26px/, "폰 글씨 최대를 흉내 낸 화면이다");
   assert.match(html, /이번 달 급여/);
   assert.match(html, /₩130,000/);
-  assert.match(html, /\(확정된 수업 기준\)/);
-  assert.match(html, /확정 대기 1건 \(\+₩25,000\)/);
-  assert.match(html, /이번 달 급여 자세히 보기/);
+  /* 대표: "이번 달 급여 검정 글씨만, 확정 대기는 자세히 보기에서". 보조 문구 · 확정 대기는 내 급여 화면으로. */
+  assert.doesNotMatch(html, /확정된 수업 기준/);
+  assert.doesNotMatch(html, /확정 대기/);
+  assert.match(html, /data-pay-more[^>]*>자세히 보기/);
   // 버튼은 하나 -- 안에 버튼을 두지 않는다. "자세히 보기" 도 그 버튼 안이다.
   assert.equal((html.match(/<button/g) || []).length, 1);
   assert.match(html, /<button[^>]*data-pay-card[\s\S]*data-pay-more[\s\S]*<\/button>/);
-  // 금액은 본문보다 크다.
-  assert.match(html, /data-pay-amount="true" style="font-size:var\(--t-display\)/);
+  // 금액은 본문보다 크고 검정이다 (칸을 줄이려고 display → heading).
+  assert.match(html, /data-pay-amount="true" style="font-size:var\(--t-heading\)/);
+  const labelColor = (html.match(/color:([^";]+)">이번 달 급여</) || [])[1];
+  const amountColor = (html.match(/data-pay-amount="true" style="[^"]*color:([^";]+)"/) || [])[1];
+  assert.ok(labelColor && labelColor === amountColor, `글자와 금액이 같은 검정: ${labelColor} / ${amountColor}`);
 });
 
 test("카드 · 큰 글씨: 고정 높이 없이 접히고, 누르는 곳은 44px 이상", async () => {

@@ -80,7 +80,7 @@ import { payHeadline, unitPriceSummary } from "./features/schedule/instructor-pa
 import {
   NOTICE_BODY_MAX, NOTICE_TITLE_MAX, confirmNotice as confirmNoticeOnDevice, confirmedNoticeIds,
   createFirestoreNoticeStore, listNotices, manageNotice, noticeError, noticeInWindow, noticeMillis,
-  pendingNotices, visibleNotices,
+  pendingNotices, visibleNotices, NOTICE_KIND, OWNER_MESSAGE_MAX, currentOwnerMessage, isOwnerMessage,
 } from "./data/repositories/notice-repository.js";
 import {
   DEFAULT_SCHEDULE_COLORS, SCHEDULE_COLOR_PRESETS, isDefaultScheduleColors,
@@ -182,7 +182,7 @@ import {
 import { readPassesForClients, subscribeClients } from "./data/repositories/client-realtime.js";
 import { markTeacherInboxRead, subscribeTeacherInbox } from "./data/repositories/teacher-inbox-repository.js";
 import { currentPassUsage } from "./features/membership/pass-usage.js";
-import { dailySentence, hideToday as hideDailySentenceToday, isHiddenToday as dailySentenceHiddenToday } from "./features/schedule/daily-sentence.js";
+import { hideToday as hideDailySentenceToday, isHiddenToday as dailySentenceHiddenToday, pickSentence, readLastSentence, rememberSentence } from "./features/schedule/daily-sentence.js";
 import { INBOX_COPY, inboxFailure, inboxRow, inboxStripLabel, lessonForInboxItem } from "./features/notifications/teacher-inbox.js";
 import {
   MEMBER_CANCEL_VIEW_COPY, ackKey as memberCancelAckKey, acksFromInbox, freesSlot, hasMemberCancel, isMemberCancelledAttendee,
@@ -455,7 +455,7 @@ import {
   ACCOUNT_DELETION_PHASE_LABELS, ACCOUNT_DELETION_PHASES, DELETE_CONFIRMATION_PHRASE,
   collectOwnedBlobIds, runAccountDeletion,
 } from "./features/account/account-deletion.js";
-import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Redo2, Palette, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, Share2, TriangleAlert as AlertTriangle, CircleAlert as AlertCircle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play, RefreshCw } from "lucide-react";
+import { Users, Settings as SettingsIcon, Search, ChevronRight, ChevronLeft, Plus, Camera, MessageSquare, Check, X, Trash2, ArrowLeft, Target, ClipboardList, RotateCcw, Redo2, Palette, Sparkles, Copy, ArrowUpRight, ArrowDownRight, Loader as Loader2, Pencil, UserPlus, Activity, Ticket, Calendar, Clock, Bell, Download, Share2, TriangleAlert as AlertTriangle, CircleAlert as AlertCircle, LogOut, Mail, Star, Sun, Moon, Smartphone, Move, Crosshair, ChevronDown, ImagePlus, SlidersHorizontal, CalendarDays, ArrowUpDown, Minus, Upload, Link2, Users as Users2, Play, RefreshCw, Megaphone } from "lucide-react";
 import { TYPE } from "./features/ui/type-scale.js";
 import { overlayZ } from "./features/ui/overlay-stack.js";
 
@@ -3489,7 +3489,7 @@ function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast,
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null, memberCancelOn = false, inbox = null,
+function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null, ownerMessage = "", memberCancelOn = false, inbox = null,
   /* 큐 정리용 서버 상태 읽기 (2026-11-07, lesson-queue.js). 센터 소속일 때만 넘어온다. */
   readQueueLessonStates = null }) {
   const initialDisplay = useMemo(() => {
@@ -3868,6 +3868,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
         </button>
       </div>
 
+      <OwnerMessageBar message={ownerMessage} />
       <DailySentenceBanner />
 
       {/* ─── 메인 시간표 영역 (flex-1, 내부 스크롤) ─── */}
@@ -4935,23 +4936,53 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
  */
 /* 강사 알림함 (2026-11-07). 회원이 회원 앱에서 취소한 수업이 여기에 한 건씩 온다.
    누르면 읽음으로 적고 그 수업을 연다. 문구 · 판정은 features/notifications/teacher-inbox.js. */
-/* 오늘의 한 문장 (2026-11-08). 일정 화면 주 범위 아래 한 줄 -- 팝업 · 움직이는 문구가 아니다.
-   누르면 펼쳐 "오늘의 작은 실천", "오늘은 닫기" 로 그날 하루 숨긴다. 문장은 features/schedule/daily-sentence.js. */
-export function DailySentenceBanner({ now = () => new Date(), storage = globalThis.localStorage, initialOpen = false }) {
-  const today = now();
-  const sentence = dailySentence(today);
-  const [hidden, setHidden] = useState(() => dailySentenceHiddenToday(storage, today));
+/* 한 문장 (2026-11-08). 일정 화면 주 범위 아래 한 줄 -- 팝업이 아니다.
+   대표 요청(같은 날 오후): "오늘의 한 문장" 라벨을 빼고, 앱을 열 때마다(새로 실행 · 백그라운드에서
+   돌아올 때) 다른 문장으로, 나타날 때 조금 움직이게. 직전 문장은 이 기기에 적어 두고 다음에는
+   고르지 않는다 (features/schedule/daily-sentence.js 의 pickSentence).
+   움직임: 글자가 살짝 올라오며 나타나고(transform · opacity 만 -- 칸 높이는 그대로), 카드 테두리가
+   한 번 은은하게 빛난다. prefers-reduced-motion 이면 움직이지 않는다 (index.css).
+   누르면 펼쳐 "오늘의 작은 실천", "오늘은 닫기" 로 그날 하루 숨긴다. */
+export function DailySentenceBanner({ now = () => new Date(), storage = globalThis.localStorage, initialOpen = false, random = Math.random }) {
+  const [sentence, setSentence] = useState(() => pickSentence({ date: now(), previous: readLastSentence(storage), random }));
+  const [reveal, setReveal] = useState(0);
+  const [hidden, setHidden] = useState(() => dailySentenceHiddenToday(storage, now()));
   const [open, setOpen] = useState(initialOpen);
+  const currentRef = useRef(sentence.message);
+  currentRef.current = sentence.message;
+  useEffect(() => { rememberSentence(storage, sentence.message); }, [storage, sentence.message]);
+  /* 돌아올 때마다 새 문장. 웹은 visibilitychange, 폰은 appStateChange 도 -- 둘이 겹쳐 와도
+     잠깐 사이(1초)에 두 번 바뀌지 않게 한다. */
+  useEffect(() => {
+    let lastAt = 0;
+    const back = () => {
+      const at = Date.now();
+      if (at - lastAt < 1000) return;
+      lastAt = at;
+      const date = now();
+      setHidden(dailySentenceHiddenToday(storage, date));
+      setSentence(pickSentence({ date, previous: currentRef.current, random }));
+      setReveal((value) => value + 1);
+    };
+    const onVisibility = () => { if (document.visibilityState === "visible") back(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    let listener = null;
+    if (Capacitor.isNativePlatform()) {
+      Promise.resolve(CapacitorApp.addListener("appStateChange", ({ isActive }) => { if (isActive) back(); }))
+        .then((handle) => { listener = handle; }).catch(() => {});
+    }
+    return () => { document.removeEventListener("visibilitychange", onVisibility); listener?.remove?.(); };
+  }, [storage]); // now · random 은 처음 값으로 충분하다 (스모크 · 테스트가 넘기는 고정 함수)
   if (hidden) return null;
+  const today = now();
   return (
     <div className="shrink-0 px-3 py-1.5" data-daily-sentence={sentence.kind} style={{ backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
-      <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open}
-        className="flex w-full min-w-0 items-center gap-2 rounded-xl px-2.5 py-1.5 text-left"
+      <button type="button" key={`card-${reveal}`} onClick={() => setOpen((value) => !value)} aria-expanded={open}
+        className="pt-sentence-glow flex w-full min-w-0 items-center gap-2 rounded-xl px-2.5 py-2 text-left"
         style={{ background: "var(--grad-soft)", border: `1px solid ${RING}` }}>
-        <Sparkles size={14} style={{ color: PRIMARY, flexShrink: 0 }} aria-hidden="true" />
-        <span className="min-w-0 flex-1">
-          <span className="block font-bold" style={{ fontSize: TYPE.caption, letterSpacing: "0.02em", color: PRIMARY }}>오늘의 한 문장 · {sentence.label}</span>
-          <span className={`block text-xs font-semibold ${open ? "" : "truncate"}`} style={{ color: INK, lineHeight: 1.45 }}>{sentence.message}</span>
+        <Sparkles size={15} className="pt-sentence-spark" style={{ color: PRIMARY, flexShrink: 0 }} aria-hidden="true" />
+        <span className="min-w-0 flex-1" aria-live="polite">
+          <span key={`text-${reveal}`} data-daily-sentence-text className={`pt-sentence-in block text-sm font-semibold ${open ? "" : "truncate"}`} style={{ color: INK, lineHeight: 1.45 }}>{sentence.message}</span>
         </span>
         <ChevronDown size={14} style={{ color: SUB, flexShrink: 0, transform: open ? "rotate(180deg)" : "none", transition: "transform .15s ease" }} aria-hidden="true" />
       </button>
@@ -4964,6 +4995,22 @@ export function DailySentenceBanner({ now = () => new Date(), storage = globalTh
             className="shrink-0 text-xs font-bold" style={{ color: SUB }}>오늘은 닫기</button>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/* 대표님 전달사항 (2026-11-08 대표 요청). 대표가 더보기 → 대표 설정 → 대표님 전달사항에 적은 짧은
+   글자를 일정 탭 맨 위(한 문장 위)에 그대로 보인다. 비어 있으면 아무것도 그리지 않는다.
+   저장은 공지 문서(kind: owner_message) -- functions/shared/notices.mjs. */
+export function OwnerMessageBar({ message = "" }) {
+  const body = String(message || "").trim();
+  if (!body) return null;
+  return (
+    <div className="shrink-0 flex items-start gap-2 px-4 py-2" data-owner-message style={{ backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
+      <Megaphone size={15} style={{ color: PRIMARY, flexShrink: 0, marginTop: 2 }} aria-hidden="true" />
+      <p className="min-w-0 flex-1 text-sm" style={{ color: INK, lineHeight: 1.45, overflowWrap: "anywhere" }}>
+        <b style={{ color: PRIMARY }}>대표님 전달사항</b> · {body}
+      </p>
     </div>
   );
 }
@@ -16399,47 +16446,37 @@ const SMOKE_LARGE_TEXT = {
   "--t-heading": "40px", "--t-display": "48px", "--t-hero": "64px",
 };
 
+/* 일정 탭 맨 위 한 줄 (2026-11-08 대표 요청 "칸을 최소화하면서 글씨는 잘 보이게").
+   왼쪽 "이번 달 급여 ₩X"(검정), 오른쪽 "자세히 보기 ›". 확정 대기 · "확정된 수업 기준" ·
+   회원권 없어 빠지지 않는 수업은 **자세히 보기(내 급여 화면) 맨 위 요약으로 옮겼다** --
+   거기에 확정 대기 N건 · 금액이 같은 계산(upcomingPayRows)으로 있다. 큰 글씨에서는 줄이
+   접힌다 (높이 고정 없음). upcoming 은 받기만 하고 그리지 않는다 (부르는 쪽 그대로). */
 function InstructorPayCard({ pay, loading, error, upcoming = null, onOpen }) {
   const headline = payHeadline(pay, upcoming);
   /* 카드 전체가 하나의 버튼이다. 오른쪽 "자세히 보기" 는 같은 버튼 안의 글자라
      어디를 눌러도 같은 화면으로 간다 -- 버튼 안에 버튼을 두지 않는다. */
   return (
     <button type="button" onClick={onOpen} data-pay-card className="w-full text-left"
-      style={{ minHeight: 64, padding: "12px 16px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-        <div className="min-w-0" style={{ flex: "1 1 12rem" }}>
+      style={{ minHeight: 48, padding: "6px 12px 6px 16px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+        <div className="min-w-0" style={{ flex: "1 1 10rem" }}>
           {loading ? (
             <p style={{ fontSize: TYPE.body, fontWeight: 600, color: SUB }}>이번 달 급여 불러오는 중…</p>
           ) : error ? (
             // 0원으로 보이면 강사가 "이번 달 수업이 없었나" 하고 넘어간다.
             <p style={{ fontSize: TYPE.body, color: BAD }}>이번 달 급여를 불러오지 못했습니다 (코드 {error})</p>
           ) : (
-            <>
-              <p className="flex flex-wrap items-baseline gap-x-1.5" style={{ overflowWrap: "anywhere" }}>
-                <span style={{ fontSize: TYPE.body, fontWeight: 600, color: INK2 }}>이번 달 급여</span>
-                <span className="tabular-nums" data-pay-amount style={{ fontSize: TYPE.display, lineHeight: 1.2, fontWeight: 800, color: INK }}>
-                  ₩{won(headline.confirmed)}
-                </span>
-                <span style={{ fontSize: TYPE.caption, color: SUB }}>(확정된 수업 기준)</span>
-              </p>
-              {headline.pendingLessons > 0 ? (
-                <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 600, color: BRAND_D }}>
-                  확정 대기 {headline.pendingLessons}건 (+₩{won(headline.pendingAmount)})
-                </p>
-              ) : null}
-              {/* 빠질 수 없는 사람이 있으면 그 수업은 확정해도 금액이 0 이다.
-                  확정 대기에서 빼 두고, 그런 것이 있다는 사실만 말한다. */}
-              {upcoming?.blocked ? (
-                <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: WARN }}>
-                  회원권이 없어 빠지지 않는 수업 {upcoming.blocked}건
-                </p>
-              ) : null}
-            </>
+            <p className="flex flex-wrap items-baseline gap-x-2" style={{ overflowWrap: "anywhere" }}>
+              <span style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>이번 달 급여</span>
+              <span className="tabular-nums" data-pay-amount style={{ fontSize: TYPE.heading, lineHeight: 1.25, fontWeight: 800, color: INK }}>
+                ₩{won(headline.confirmed)}
+              </span>
+            </p>
           )}
         </div>
         <span className="flex items-center gap-0.5" data-pay-more
           style={{ minHeight: PAY_TAP, fontSize: TYPE.body, fontWeight: 700, color: BRAND_D }}>
-          이번 달 급여 자세히 보기 <ChevronRight size={18} />
+          자세히 보기 <ChevronRight size={18} />
         </span>
       </div>
     </button>
@@ -24273,8 +24310,141 @@ const noticeFailure = (error, verb) => {
   if (reason === "notice_not_author") return `자기가 쓴 공지만 ${verb}할 수 있어요 (코드 ${reason})`;
   if (reason === "notice_not_owner_level") return `대표 · 총괄매니저만 ${verb}할 수 있어요 (코드 ${reason})`;
   if (reason === "notice_not_found") return `이미 지워진 공지예요 (코드 ${reason})`;
+  if (reason === "notice_owner_message_owner_only") return `대표님 전달사항은 대표만 ${verb}할 수 있어요 (코드 ${reason})`;
   return `${verb}하지 못했어요 (코드 ${reason || code})`;
 };
+
+/* ── 대표님 전달사항 (더보기 → 대표 설정, 2026-11-08 대표 요청) ─────────────────
+   대표가 적는 짧은 한 줄. 강사 일정 탭 맨 위(한 문장 위)에 선다. 비우면(지우면) 아무것도 안 보인다.
+   저장은 공지 문서 하나(kind: owner_message) -- 쓰기 · 고치기 · 지우기는 서버 함수 manageNotice,
+   **대표만** (총괄매니저도 거절, notice-admin.js). 규칙 · 경로는 그대로다.
+   강사 화면에는 앱을 열 때와 30초 넘게 나갔다 돌아올 때 새로 읽힌다. */
+export function OwnerMessageAdmin({ organization, noticeStore, onManage, onToast, onSaved, initialState = null }) {
+  const [current, setCurrent] = useState(initialState?.current ?? null);
+  const [draft, setDraft] = useState(initialState?.draft ?? initialState?.current?.body ?? "");
+  const [loading, setLoading] = useState(!initialState);
+  const [loadError, setLoadError] = useState(initialState?.loadError || "");
+  const [formError, setFormError] = useState(initialState?.formError || "");
+  const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const organizationId = organization?.organizationId || "";
+
+  const reload = useCallback(async () => {
+    if (!organizationId) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      const found = currentOwnerMessage({ notices: await listNotices(organizationId, { store: noticeStore }) });
+      setCurrent(found);
+      setDraft(found?.body || "");
+    } catch (error) {
+      deviceLog("owner_message_load_failed", { feature: "owner_message", stage: "list", errorDomain: "firestore", ...deviceError(error) });
+      setLoadError(error?.code || "unknown");
+    } finally {
+      setLoading(false);
+    }
+  }, [organizationId, noticeStore]);
+  useEffect(() => { if (!initialState) reload(); }, [reload, initialState]);
+
+  const fail = (stage, error, verb) => {
+    const reason = String(error?.details?.reason || error?.reason || "").trim();
+    deviceLog("owner_message_save_failed", {
+      feature: "owner_message", stage, errorDomain: reason ? "callable_manage_notice" : "gateway_http",
+      ...deviceError(error), reason,
+    });
+    setFormError(noticeFailure(error, verb));
+  };
+
+  const body = String(draft || "").trim();
+  const save = async (event) => {
+    event.preventDefault();
+    setFormError("");
+    if (!body) { setFormError("전달사항을 입력해 주세요. 비우려면 [지우기] 를 눌러 주세요."); return; }
+    setSaving(true);
+    try {
+      await manageNotice({
+        organizationId, action: current ? "update" : "create", noticeId: current?.id,
+        value: { kind: NOTICE_KIND.OWNER_MESSAGE, body },
+      }, { call: onManage });
+      onToast?.({ ok: true, msg: "대표님 전달사항을 저장했습니다." });
+      onSaved?.(body);
+      await reload();
+    } catch (error) {
+      fail(current ? "update" : "create", error, "저장");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const remove = async () => {
+    if (!current) return;
+    setFormError("");
+    setSaving(true);
+    try {
+      await manageNotice({ organizationId, action: "delete", noticeId: current.id }, { call: onManage });
+      onToast?.({ ok: true, msg: "대표님 전달사항을 지웠습니다." });
+      onSaved?.("");
+      setConfirmDelete(false);
+      await reload();
+    } catch (error) {
+      fail("delete", error, "삭제");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section data-owner-message-admin style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>대표님 전달사항</h2>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        강사 앱 · 웹 일정 탭 맨 위에 한 줄로 보입니다. 비워 두면 아무것도 보이지 않습니다. 대표만 바꿀 수 있습니다.
+      </p>
+      {loading ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+      {!loading && loadError ? (
+        <div className="mt-3">
+          <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>불러오지 못했습니다 (코드 {loadError}).</p>
+          <button type="button" onClick={reload} className="mt-2 h-10 w-full rounded-lg font-bold" style={{ backgroundColor: CANVAS, color: INK, fontSize: TYPE.caption }}>다시 시도</button>
+        </div>
+      ) : null}
+      {!loading && !loadError ? (
+        <form onSubmit={save} className="mt-3">
+          <textarea value={draft} onChange={(event) => setDraft(event.target.value.slice(0, OWNER_MESSAGE_MAX))} rows={3}
+            data-owner-message-input maxLength={OWNER_MESSAGE_MAX} placeholder="예) 이번 주 금요일 저녁 7시 전체 회의 있어요"
+            className="w-full resize-none rounded-lg px-3 py-2 outline-none"
+            style={{ fontSize: TYPE.body, lineHeight: 1.5, color: INK, backgroundColor: CANVAS, border: `1px solid ${LINE}` }} />
+          <p className="mt-1 text-right tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{body.length}/{OWNER_MESSAGE_MAX}</p>
+          {body ? (
+            <div className="mt-2 overflow-hidden rounded-lg" style={{ border: `1px solid ${LINE}` }}>
+              <p className="px-3 pt-2" style={{ fontSize: TYPE.caption, fontWeight: 600, color: SUB }}>강사 화면 미리보기</p>
+              <OwnerMessageBar message={body.replace(/\s+/g, " ")} />
+            </div>
+          ) : null}
+          {formError ? <p role="alert" data-owner-message-error className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
+          <div className="mt-3 flex gap-2">
+            {current ? (
+              confirmDelete ? (
+                <>
+                  <button type="button" onClick={remove} disabled={saving} className="h-11 flex-1 rounded-lg font-bold disabled:opacity-50"
+                    style={{ backgroundColor: BAD, color: "#fff", fontSize: TYPE.body }}>지우기 확인</button>
+                  <button type="button" onClick={() => setConfirmDelete(false)} disabled={saving} className="h-11 flex-1 rounded-lg font-bold"
+                    style={{ backgroundColor: CANVAS, color: INK, fontSize: TYPE.body }}>취소</button>
+                </>
+              ) : (
+                <button type="button" data-owner-message-delete onClick={() => setConfirmDelete(true)} disabled={saving}
+                  className="h-11 rounded-lg px-4 font-bold disabled:opacity-50" style={{ backgroundColor: CANVAS, color: BAD, fontSize: TYPE.body }}>지우기</button>
+              )
+            ) : null}
+            {!confirmDelete ? (
+              <button type="submit" data-owner-message-save disabled={saving || !body || body === (current?.body || "")}
+                className="h-11 flex-1 rounded-lg font-bold disabled:opacity-50" style={{ backgroundColor: PRIMARY, color: "#fff", fontSize: TYPE.body }}>
+                {saving ? "저장 중…" : "저장"}
+              </button>
+            ) : null}
+          </div>
+        </form>
+      ) : null}
+    </section>
+  );
+}
 
 /* ── 공지사항 화면 (더보기 → 공지사항) ─────────────────────────────────────
    대표 · 총괄매니저가 쓰고, 센터 직원이 읽는다. 쓰기 · 고치기 · 지우기는 서버 함수
@@ -24451,7 +24621,7 @@ function NoticeCentre({
 
   /* 쓰는 사람은 전부(기간이 끝난 것도 "기간 끝남" 으로), 읽는 사람은 대상 · 기간 안의 것만. */
   const shown = canWrite
-    ? [...notices].sort((left, right) => noticeMillis(right.createdAt) - noticeMillis(left.createdAt) || String(right.id || "").localeCompare(String(left.id || "")))
+    ? notices.filter((notice) => !isOwnerMessage(notice)).sort((left, right) => noticeMillis(right.createdAt) - noticeMillis(left.createdAt) || String(right.id || "").localeCompare(String(left.id || "")))
     : visibleNotices({ notices, today, who });
 
   return (
@@ -26030,7 +26200,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
      보게 되고, 그 차이는 아무 데도 적히지 않는다. 지난달 원장만 이 화면을
      열었을 때 따로 읽는다. */
   currentUserId = "", rosterClients = [], rosterPasses = [], monthReportState = null, onOpenPay,
-  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, onSnapshotBackup, snapshotBusy = false, onRosterChanged, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, onPreviewInstructorNames, onConfirmInstructorNames, noticeStore, onManageNotice, noticeWho = null, initialView = "hub", initialOpenGroups = null, nameConfirmState = null, noticeState = null }) {
+  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, onSnapshotBackup, snapshotBusy = false, onRosterChanged, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, onPreviewInstructorNames, onConfirmInstructorNames, noticeStore, onManageNotice, noticeWho = null, onOwnerMessageSaved, ownerMessageState = null, initialView = "hub", initialOpenGroups = null, nameConfirmState = null, noticeState = null }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
 
@@ -26389,7 +26559,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     return total;
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
-    report: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 · 운영 스위치", "name-confirm": "강사 이름 확정", notices: "공지사항", "expiry-order": "만료일 순서 확인", "duet-unmarked": "듀엣 출석 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
+    report: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 · 운영 스위치", "owner-message": "대표님 전달사항", "name-confirm": "강사 이름 확정", notices: "공지사항", "expiry-order": "만료일 순서 확인", "duet-unmarked": "듀엣 출석 확인", assessment: "변화 기록 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
@@ -26460,6 +26630,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     /* 되돌릴 수 없거나 센터 전체를 세우는 것들. 접어 두는 이유가 "자주 안 써서"
        가 아니라 **지나다 누를 자리에 두지 않으려고** 다. */
     { label: "대표 설정", collapsible: true, items: [
+      /* 대표만 -- 이름이 "대표님" 전달사항이다. 서버도 같은 선을 긋는다 (notice-admin.js). */
+      ...(showAppUpdate ? [{ key: "owner-message", title: "대표님 전달사항", description: "강사 일정 탭 맨 위에 보일 한 줄", Icon: Megaphone }] : []),
       ...(showAppUpdate ? [{ key: "app-update", title: "앱 업데이트 · 운영 스위치", description: "새 버전 알림 · 일정 동기화 · 회원 앱 수업 취소 · 알림", Icon: Smartphone }] : []),
       /* 한 번 누르는 버튼이다. 고친 뒤에 붙은 소속에는 표시가 저절로 들어가므로
          이 화면은 **이미 있던 강사들**만을 위한 것이다. */
@@ -27032,6 +27204,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
           <NoticeCentre organization={organization} currentUserId={account?.id || ""} who={noticeWho}
             noticeStore={noticeStore} locationStore={locationStore} onManage={onManageNotice}
             onRetryOrganization={onRetryOrganization} onToast={onToast} initialState={noticeState} />
+        )}
+        {view === "owner-message" && showAppUpdate && (
+          <OwnerMessageAdmin organization={organization} noticeStore={noticeStore} onManage={onManageNotice}
+            onToast={onToast} onSaved={onOwnerMessageSaved} initialState={ownerMessageState} />
         )}
         {view === "name-confirm" && showAppUpdate && (
           <InstructorNameConfirm organization={organization} initialState={nameConfirmState}
@@ -28257,8 +28433,21 @@ export function createAppScreenSmokeCases() {
       attendees: [settleAttendee("m-local-1", { status: "cancel", memberCancelledAt: "2026-11-07T01:00:00.000Z" })],
     }), { memberCancelAcked: true }) },
     /* 오늘의 한 문장 (2026-11-08). 월요일(자부심), 접힘 · 펼침. 저장소 없이 -- 닫은 적 없는 화면. */
-    { name: "오늘의 한 문장 · 접힘", element: provider(<DailySentenceBanner now={() => new Date(2026, 10, 9, 9)} storage={null} />) },
-    { name: "오늘의 한 문장 · 펼침", element: provider(<DailySentenceBanner now={() => new Date(2026, 10, 9, 9)} storage={null} initialOpen />) },
+    { name: "오늘의 한 문장 · 접힘", element: provider(<DailySentenceBanner now={() => new Date(2026, 10, 9, 9)} storage={null} random={() => 0} />) },
+    { name: "오늘의 한 문장 · 펼침", element: provider(<DailySentenceBanner now={() => new Date(2026, 10, 9, 9)} storage={null} random={() => 0} initialOpen />) },
+    /* 대표님 전달사항 (2026-11-08). 일정 탭 맨 위(한 문장 위)에 한 줄, 대표가 더보기 → 대표 설정에서 적는다. */
+    { name: "일정 탭 · 대표님 전달사항", element: provider(<ScheduleManager db={db} photos={photos} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop}
+      ownerMessage="이번 주 금요일 저녁 7시 전체 회의 있어요"
+      payCard={<InstructorPayCard pay={smokePay} loading={false} error="" upcoming={{ total: 300000, sessions: 12, lessons: 12, blocked: 0 }} onOpen={noop} />} />) },
+    { name: "대표님 전달사항 · 대표 설정", element: provider(
+      <OwnerMessageAdmin organization={readyOrganizationContext(smokeOwner)} noticeStore={smokeNoticeStore} onManage={noop} onToast={noop}
+        initialState={{ current: { id: "m1", body: "이번 주 금요일 저녁 7시 전체 회의 있어요" } }} />) },
+    { name: "대표님 전달사항 · 비어 있음", element: provider(
+      <OwnerMessageAdmin organization={readyOrganizationContext(smokeOwner)} noticeStore={smokeNoticeStore} onManage={noop} onToast={noop}
+        initialState={{ current: null }} />) },
+    { name: "대표님 전달사항 · 저장 실패", element: provider(
+      <OwnerMessageAdmin organization={readyOrganizationContext(smokeOwner)} noticeStore={smokeNoticeStore} onManage={noop} onToast={noop}
+        initialState={{ current: null, draft: "회의 있어요", formError: "대표님 전달사항은 대표만 저장할 수 있어요 (코드 notice_owner_message_owner_only)" }} />) },
     { name: "일정 탭 · 강사 알림함 띠", element: provider(<ScheduleManager memberCancelOn
       inbox={{ items: [{ id: "rec-1", lessonId: busyDb.schedule[0]?.id, clientId: "", title: "[회원 수업 취소]", body: "11/8(일) 10:00 수업이 회원 요청으로 취소되었어요", createdAt: "2026-11-07T00:00:00.000Z" }], error: null, onRead: noop }}
       db={busyDb}
@@ -29782,6 +29971,8 @@ export default function App() {
      확인은 **그 기기에만** 적는다 (2026-10-31 대표 결정) -- 서버에 읽음 기록이
      없다. 그래서 폰을 바꾸면 기간 안의 공지가 다시 한 번 뜬다. */
   const [noticeQueue, setNoticeQueue] = useState([]);
+  /* 대표님 전달사항 (일정 탭 맨 위). 공지와 같은 목록에서 읽는다. */
+  const [ownerMessage, setOwnerMessage] = useState("");
   const noticeStore = useMemo(() => createFirestoreNoticeStore(), []);
   /* 소속을 알기 전에 적어 두는 자리. 계정 읽기가 소속 조회보다 먼저 끝나므로
      그 자리에서 물으면 센터 소속인지 모르는 채로 묻게 된다 (restore-offer.js). */
@@ -29827,6 +30018,7 @@ export default function App() {
     if (!organizationRoster || !account?.id || !organizationContext.organizationId) return;
     try {
       const notices = await listNotices(organizationContext.organizationId, { store: noticeStore });
+      setOwnerMessage(currentOwnerMessage({ notices })?.body || "");
       const confirmed = confirmedNoticeIds(globalThis.localStorage, account.id);
       setNoticeQueue(pendingNotices({ notices, confirmedIds: confirmed, today: todayISO(), who: noticeWho })
         .filter((item) => !noticeLaterRef.current.has(String(item.id))));
@@ -30011,6 +30203,29 @@ export default function App() {
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [phase, refreshNotices]);
+
+  /* 대표님 전달사항은 30초 넘게 나갔다 돌아올 때마다 새로 읽는다 -- 대표가 PC 에서 고치고 폰을
+     다시 열었을 때 옛 문구가 남아 있지 않게. 공지 팝업 큐는 건드리지 않는다 (위 하루 한 번 그대로). */
+  const refreshOwnerMessage = useCallback(async () => {
+    if (!organizationRoster || !account?.id || !organizationContext.organizationId) return;
+    try {
+      const notices = await listNotices(organizationContext.organizationId, { store: noticeStore });
+      setOwnerMessage(currentOwnerMessage({ notices })?.body || "");
+    } catch (error) {
+      deviceLog("owner_message_load_failed", { feature: "owner_message", stage: "resume_list", errorDomain: "firestore", ...deviceError(error) });
+    }
+  }, [organizationRoster, account?.id, organizationContext.organizationId, noticeStore]);
+  useEffect(() => {
+    if (phase !== "app") return undefined;
+    let hiddenAt = null;
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") { if (hiddenAt === null) hiddenAt = Date.now(); return; }
+      if (shouldRefreshOnResume({ hiddenAt, now: Date.now() })) refreshOwnerMessage();
+      hiddenAt = null;
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [phase, refreshOwnerMessage]);
 
   useEffect(() => {
     if (phase !== "app" || !account?.id) return undefined;
@@ -33630,7 +33845,7 @@ export default function App() {
         ) : null}
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <Guard key={tab}>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} viewerLocationIds={organizationContext.locationIds || []} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterInMemberTab} centreAccount={centreAccount} onOpenCentreRegistration={canOpenCentreRegistration ? openCentreRegistration : undefined} unlinkedLocal={centreAccount && roster ? roster.unlinkedLocal || [] : []} onUploadUnlinked={canOpenCentreRegistration ? uploadUnlinkedMember : undefined} onLinkUnlinked={linkUnlinkedMember} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
@@ -33673,7 +33888,7 @@ export default function App() {
               instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError}
               currentUserId={account?.id || ""} rosterClients={rosterClients} rosterPasses={rosterPasses}
               onOpenPay={canSeeOwnPay ? () => setPayOpen(true) : undefined} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
-              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={() => openPreviousPhoneRestore()} onSnapshotBackup={takeMigrationSnapshot} snapshotBusy={snapshotBusy} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onSwapInstructorAccount={swapInstructorAccount} onPreviewInstructorNames={previewInstructorNames} onConfirmInstructorNames={confirmInstructorNames} noticeStore={noticeStore} onManageNotice={fbManageNotice} noticeWho={noticeWho} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
+              onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={() => openPreviousPhoneRestore()} onSnapshotBackup={takeMigrationSnapshot} snapshotBusy={snapshotBusy} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onSwapInstructorAccount={swapInstructorAccount} onPreviewInstructorNames={previewInstructorNames} onConfirmInstructorNames={confirmInstructorNames} noticeStore={noticeStore} onManageNotice={fbManageNotice} noticeWho={noticeWho} onOwnerMessageSaved={setOwnerMessage} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
           </Guard>
         </div>
         {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서

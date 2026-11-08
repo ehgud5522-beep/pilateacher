@@ -163,6 +163,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "수업 관리 · 회원 취소 확인함",
     "오늘의 한 문장 · 접힘",
     "오늘의 한 문장 · 펼침",
+    "일정 탭 · 대표님 전달사항",
+    "대표님 전달사항 · 대표 설정",
+    "대표님 전달사항 · 비어 있음",
+    "대표님 전달사항 · 저장 실패",
     "일정 탭 · 강사 알림함 띠",
     "강사 알림함 시트",
     "강사 알림함 시트 · 열지 못함",
@@ -1467,15 +1471,18 @@ test("a failed read never shows itself as zero won", async (t) => {
 });
 
 test("the card shows the month total and nothing else", async (t) => {
+  /* 2026-11-08 대표: "이번 달 급여 검정 글씨만, 오른쪽에 자세히 보기, 칸은 최소로". */
   const markupOf = await issueScreens(t);
   const card = markupOf("예상 급여 카드");
   assert.match(card, /이번 달 급여/);
   assert.match(card, /₩130,000/);
-  assert.match(card, /\(확정된 수업 기준\)/);
+  assert.doesNotMatch(card, /확정된 수업 기준/, "보조 문구는 첫 화면에서 뺐다");
   // 카드 전체가 버튼이고, 오른쪽 글자가 어디로 가는지 말한다.
-  assert.match(card, /이번 달 급여 자세히 보기/);
+  assert.match(card, /data-pay-more[^>]*>자세히 보기/);
+  assert.doesNotMatch(card, /이번 달 급여 자세히 보기/, "오른쪽은 짧게");
   // 카드는 총액만 말한다. 자세한 것은 눌러서 본다.
   assert.doesNotMatch(card, /최근 차감/);
+  assert.match(card, /min-height:48px/, "한 줄 높이");
 });
 
 test("the monthly report stopped being a second place to read your pay", async (t) => {
@@ -2659,11 +2666,17 @@ test("confirmed pay and planned pay are two numbers, never one", async (t) => {
   const markupOf = await issueScreens(t);
   const card = markupOf("예상 급여 카드 · 예정 포함");
 
-  assert.match(card, /확정된 수업 기준/);
-  // 확정 대기는 따로 한 줄. 합계에 섞지 않는다.
-  assert.match(card, /확정 대기 3건 \(\+₩90,000\)/);
-  // 빠질 수 없는 수업은 예정에서 빼 두고, 그런 것이 있다는 사실만 말한다.
-  assert.match(card, /회원권이 없어 빠지지 않는 수업 1건/);
+  /* 2026-11-08 대표: 확정 대기는 "자세히 보기" 를 눌러서 본다. 카드는 확정 금액 하나뿐 --
+     합치지도 않는다 (₩130,000 그대로, 대기 ₩90,000 을 더한 ₩220,000 이 아니다). */
+  assert.match(card, /₩130,000/);
+  assert.doesNotMatch(card, /₩220,000/);
+  assert.doesNotMatch(card, /확정 대기/);
+  assert.doesNotMatch(card, /회원권이 없어 빠지지 않는 수업/);
+  // 옮겨 간 자리: 내 급여 화면 맨 위 요약에 확정 대기 건수 · 금액이 따로 있다.
+  const detail = markupOf("이달 예상 급여 · 확정 대기 · 보정");
+  assert.match(detail, /data-pay-summary/);
+  assert.match(detail, /확정 대기/);
+  assert.match(detail, /data-pay-pending/);
 });
 
 test("a notice popup has two buttons, and an important one cannot be put off", async (t) => {
@@ -3307,7 +3320,11 @@ test("daily sentence: one line under the week, tap to see today's small step, cl
   const markup = await screenMarkup();
   const folded = markup("오늘의 한 문장 · 접힘");
   assert.match(folded, /data-daily-sentence="pride"/, "월요일은 자부심");
-  assert.match(folded, /오늘의 한 문장 · 강사의 자부심/);
+  /* 2026-11-08 대표: "오늘의 한 문장" 이라는 말은 뺀다. 문장 하나만, 나타날 때 움직인다. */
+  assert.doesNotMatch(folded, /오늘의 한 문장/);
+  assert.doesNotMatch(folded, /강사의 자부심/, "종류 라벨도 없다 -- 칸을 줄인다");
+  assert.match(folded, /pt-sentence-in/, "글자가 올라오며 나타난다");
+  assert.match(folded, /pt-sentence-glow/);
   assert.match(folded, /aria-expanded="false"/);
   assert.doesNotMatch(folded, /오늘의 작은 실천/, "접혀 있을 때는 한 줄뿐");
   const opened = markup("오늘의 한 문장 · 펼침");
@@ -3371,4 +3388,27 @@ test("member app cancellation: the count on the first screen, the grant button, 
   const admin = markup("운영 설정 · 회원 앱 수업 취소");
   assert.match(admin, /data-member-cancel-admin/);
   assert.match(admin, /강사별 취소 횟수 추가 부여/);
+});
+
+test("owner message: one line at the top of the schedule tab, the owner writes it in owner settings", async () => {
+  const markup = await screenMarkup();
+  const tab = markup("일정 탭 · 대표님 전달사항");
+  assert.match(tab, /data-owner-message/);
+  assert.match(tab, /대표님 전달사항/);
+  assert.match(tab, /이번 주 금요일 저녁 7시 전체 회의 있어요/);
+  assert.ok(tab.indexOf("data-owner-message") < tab.indexOf("data-daily-sentence="), "한 문장보다 위");
+  assert.ok(tab.indexOf("data-pay-card") < tab.indexOf("data-owner-message"), "급여 한 줄이 맨 위");
+  assert.doesNotMatch(tab, /확정 대기/, "확정 대기는 일정 탭 첫 화면에 없다");
+  assert.doesNotMatch(markup("일정 탭"), /data-owner-message/, "비어 있으면 아무것도 안 보인다");
+
+  const admin = markup("대표님 전달사항 · 대표 설정");
+  assert.match(admin, /data-owner-message-input/);
+  assert.match(admin, /강사 화면 미리보기/);
+  assert.match(admin, /data-owner-message-delete/);
+  assert.match(admin, /대표만 바꿀 수 있습니다/);
+  const empty = markup("대표님 전달사항 · 비어 있음");
+  assert.doesNotMatch(empty, /data-owner-message-delete/, "지울 것이 없으면 지우기 버튼도 없다");
+  const failed = markup("대표님 전달사항 · 저장 실패");
+  assert.match(failed, /data-owner-message-error/);
+  assert.match(failed, /코드 notice_owner_message_owner_only/, "실패는 원본 코드와 함께");
 });

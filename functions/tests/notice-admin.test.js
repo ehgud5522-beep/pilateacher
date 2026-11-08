@@ -88,3 +88,45 @@ test("글 검사 — 중요 공지는 표시 종료일 필수, 지난 종료일 
   await call(firestore, "uid-owner", "create", { value: value({ important: true, endsOn: "2026-10-31" }) });
   await assert.rejects(call(firestore, "uid-owner", "rename", {}), (error) => error.reason === "notice_unknown_action");
 });
+
+/* ── 대표님 전달사항 (2026-11-08) ── 같은 공지 문서, kind: owner_message. 대표만. */
+const message = (body = "이번 주 금요일 회식 있어요") => ({ kind: "owner_message", body });
+
+test("전달사항: 대표만 쓴다 — 제목은 서버가 적고 대상 · 중요 · 종료일은 버린다, 줄바꿈은 한 줄로", async () => {
+  const firestore = fakeFirestore();
+  const created = await call(firestore, "uid-owner", "create", { value: { ...message("첫 줄\n둘째 줄"), title: "아무거나", important: true, endsOn: "2026-12-01", locationIds: ["bansong"] } });
+  const stored = firestore.store.get(path(created.noticeId));
+  assert.equal(stored.kind, "owner_message");
+  assert.equal(stored.title, "대표님 전달사항");
+  assert.equal(stored.body, "첫 줄 둘째 줄");
+  assert.equal(stored.important, false);
+  assert.deepEqual(stored.locationIds, []);
+  assert.equal("endsOn" in stored, false);
+  await assert.rejects(call(firestore, "uid-area", "create", { value: message() }),
+    (error) => error.httpsCode === "permission-denied" && error.reason === "notice_owner_message_owner_only", "총괄매니저는 거절");
+  await assert.rejects(call(firestore, "uid-teacher", "create", { value: message() }),
+    (error) => error.reason === "notice_not_owner_level", "강사는 앞에서 거절");
+  await assert.rejects(call(firestore, "uid-owner", "create", { value: message("") }),
+    (error) => error.httpsCode === "invalid-argument" && error.reason === "notice_invalid");
+  await assert.rejects(call(firestore, "uid-owner", "create", { value: message("가".repeat(121)) }),
+    (error) => error.reason === "notice_invalid" && /120자/.test(error.message));
+});
+
+test("전달사항: 고치기 · 지우기도 대표만, 종류는 바꿀 수 없다", async () => {
+  const firestore = fakeFirestore();
+  const { noticeId } = await call(firestore, "uid-owner", "create", { value: message() });
+  await assert.rejects(call(firestore, "uid-area", "update", { noticeId, value: message("바꿈") }),
+    (error) => error.reason === "notice_owner_message_owner_only");
+  await assert.rejects(call(firestore, "uid-area", "delete", { noticeId }),
+    (error) => error.reason === "notice_owner_message_owner_only");
+  /* kind 를 빼고 보내도 전달사항으로 남는다 (제목 없이 본문만이어도 통과). */
+  await call(firestore, "uid-owner", "update", { noticeId, value: { body: "바꾼 문구" } });
+  assert.equal(firestore.store.get(path(noticeId)).kind, "owner_message");
+  assert.equal(firestore.store.get(path(noticeId)).body, "바꾼 문구");
+  /* 보통 공지를 kind 로 전달사항으로 바꾸지 못한다. */
+  const plain = await call(firestore, "uid-area", "create", { value: value() });
+  await call(firestore, "uid-area", "update", { noticeId: plain.noticeId, value: { ...value(), kind: "owner_message" } });
+  assert.equal("kind" in firestore.store.get(path(plain.noticeId)), false);
+  await call(firestore, "uid-owner", "delete", { noticeId });
+  assert.equal(firestore.store.has(path(noticeId)), false);
+});

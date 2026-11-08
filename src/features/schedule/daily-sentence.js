@@ -1,5 +1,7 @@
 /**
- * 오늘의 한 문장 (2026-11-08 대표 제안 · 확정). **순수 함수만.**
+ * 한 문장 (2026-11-08 대표 제안 · 확정). 순수 함수와 기기 저장 몇 줄.
+ * 2026-11-08 오후 대표 요청: "오늘의 한 문장" 라벨을 빼고, 앱을 열 때마다 바뀐다 -- 아래 pickSentence.
+ * dailySentence(날짜 고정)는 남겨 둔다 (옛 테스트 · 다른 자리에서 하루 고정 문장이 필요할 때).
  *
  * 일정 화면 주 범위 바로 아래 한 줄. 팝업도 움직이는 문구도 아니다 -- 강사는 앱을 열면 먼저
  * 일정을 봐야 한다. 누르면 펼쳐져 "오늘의 작은 실천" 이 보이고, "오늘은 닫기" 로 그날 하루 숨긴다.
@@ -157,4 +159,34 @@ export function isHiddenToday(storage, date = new Date()) {
 
 export function hideToday(storage, date = new Date()) {
   try { storage?.setItem?.(DAILY_SENTENCE_HIDE_KEY, dayKey(date)); } catch (_error) { /* 저장 못 하면 이번 화면에서만 닫힌다 */ }
+}
+
+/* ── 열 때마다 바뀌는 한 문장 (2026-11-08 대표 요청) ─────────────────────────────
+   "앱에서 끄고 킬 때마다 한 문장이 계속 바뀌게". 새로 실행할 때와 백그라운드에서 돌아올 때마다
+   그날 종류(요일) 안에서 새로 고른다. **직전과 같은 문장은 연달아 나오지 않는다** -- 직전 문장은
+   이 기기에 적어 둔다 (못 적으면 이번 실행 동안 화면이 기억한다). 요일별 종류는 그대로다. */
+export const LAST_SENTENCE_KEY = "pilateacher.dailySentence.last";
+
+export function readLastSentence(storage) {
+  try { return text(storage?.getItem?.(LAST_SENTENCE_KEY)); } catch (_error) { return ""; }
+}
+
+export function rememberSentence(storage, message) {
+  try { storage?.setItem?.(LAST_SENTENCE_KEY, text(message)); } catch (_error) { /* 못 적으면 화면이 기억한다 */ }
+}
+
+/**
+ * 그날 종류에서 한 문장. previous 와 같은 문장은 고르지 않는다 (종류에 문장이 둘 이상이면).
+ * @param {{ date?: Date, previous?: string, random?: () => number }} [input]
+ * @returns {{ kind: string, label: string, message: string, action: string, day: string }}
+ */
+export function pickSentence({ date = new Date(), previous = "", random = Math.random } = {}) {
+  const kind = WEEKDAY_KIND[date.getDay()];
+  const list = SENTENCES[kind];
+  const last = text(previous);
+  const choices = list.length > 1 ? list.filter((item) => item.message !== last) : list;
+  const roll = Number(random());
+  const index = Math.min(choices.length - 1, Math.max(0, Math.floor((Number.isFinite(roll) ? roll : 0) * choices.length)));
+  const picked = choices[index];
+  return { kind, label: SENTENCE_KIND_LABEL[kind], message: picked.message, action: picked.action, day: dayKey(date) };
 }

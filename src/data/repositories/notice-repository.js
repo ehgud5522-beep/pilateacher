@@ -16,7 +16,7 @@ import { readCollection } from "./repository-read.js";
 import { noticeError } from "../../../functions/shared/notices.mjs";
 
 export {
-  NOTICE_BODY_MAX, NOTICE_TITLE_MAX,
+  NOTICE_BODY_MAX, NOTICE_KIND, NOTICE_TITLE_MAX, OWNER_MESSAGE_MAX, OWNER_MESSAGE_TITLE, currentOwnerMessage, isOwnerMessage,
   noticeError, noticeInWindow, noticeMillis, noticeTargets, pendingNotices, visibleNotices,
 } from "../../../functions/shared/notices.mjs";
 

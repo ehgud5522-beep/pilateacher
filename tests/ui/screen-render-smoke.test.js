@@ -171,6 +171,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "강사 알림함 시트",
     "강사 알림함 시트 · 열지 못함",
     "운영 설정 · 회원 앱 수업 취소",
+    "운영 설정 · 수업 후 별점 집계",
+    "운영 설정 · 수업 후 별점 집계 · 읽지 못함",
     "센터 회원 상세 · 보관 가능",
     "센터 회원 상세 · 보관 확인",
     "센터 회원 상세 · 보관됨",
@@ -3388,6 +3390,20 @@ test("member app cancellation: the count on the first screen, the grant button, 
   const admin = markup("운영 설정 · 회원 앱 수업 취소");
   assert.match(admin, /data-member-cancel-admin/);
   assert.match(admin, /강사별 취소 횟수 추가 부여/);
+});
+
+test("lesson ratings: the owner sees per-instructor counts and averages only, failures carry a code", async () => {
+  const markup = await screenMarkup();
+  const stats = markup("운영 설정 · 수업 후 별점 집계");
+  assert.match(stats, /data-lesson-rating-stats/);
+  assert.match(stats, /강사에게는 공개되지 않고/);
+  assert.match(stats, /정예진/);
+  assert.match(stats, /누적 12건/);
+  assert.match(stats, /★ 4\.6/);
+  assert.match(stats, /이름 모름/, "이름을 모르는 강사");
+  assert.match(stats, /—/, "응답 없는 항목은 평균 대신 줄표");
+  const failed = markup("운영 설정 · 수업 후 별점 집계 · 읽지 못함");
+  assert.match(failed, /평가 집계를 읽지 못했어요 \(코드 not_owner\)/);
 });
 
 test("owner message: one line at the top of the schedule tab, the owner writes it in owner settings", async () => {

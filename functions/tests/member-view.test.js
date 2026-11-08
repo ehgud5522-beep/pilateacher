@@ -438,6 +438,19 @@ test("되돌린 차감과 담당 강사 변경에는 말을 붙이지 않는다"
   assert.equal(byType.transfer, "");
 });
 
+test("차감 이력에는 수업 id 가 실린다 -- 회원 앱 별점 평가가 가리킬 값 (정정 · 이관에는 없음)", () => {
+  /* 2026-11-09. 예정 수업의 lessonId 와 같은 값이다. 회원은 그 수업 문서를 읽지 못한다. */
+  const view = build({
+    ledger: [
+      entry({ id: "d", lessonId: "lesson-1" }),
+      entry({ id: "c", type: "correction", lessonId: "lesson-1", occurredAt: new Date(2026, 8, 19) }),
+      entry({ id: "t", type: "transfer", lessonId: "lesson-1", occurredAt: new Date(2026, 8, 17) }),
+    ],
+  });
+  const byType = Object.fromEntries(view.history.map((row) => [row.type, row.lessonId]));
+  assert.deepEqual(byType, { deduct: "lesson-1", correction: "", transfer: "" });
+});
+
 test("긴 말은 투영에서 잘린다", () => {
   /* 화면과 리포지토리가 이미 막지만, 투영은 회원에게 나가는 마지막 관문이라
      스스로 지켜야 한다. */

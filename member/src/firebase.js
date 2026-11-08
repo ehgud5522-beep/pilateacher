@@ -185,6 +185,19 @@ export async function callMemberCancel({ action, organizationId, clientId, lesso
 }
 
 /**
+ * 수업 후 별점 평가 (2026-11-09). action "status" 는 쓰지 않고 카드를 그릴지만 묻는다.
+ * "submit" 이 점수를 보낸다. 판정 · 담당 강사는 서버가 수업 문서에서 읽는다 -- 보내는 것은
+ * 어느 수업인지와 점수뿐이고, 본인 확인은 토큰의 uid 로 한다.
+ */
+export async function callMemberRating({ action, organizationId, clientId, lessonId, scores }) {
+  const call = httpsCallable(functions, "memberLessonRating");
+  const response = await call(action === "submit"
+    ? { action, organizationId, clientId, lessonId, scores }
+    : { action: "status", organizationId, clientId, lessonId });
+  return response?.data || null;
+}
+
+/**
  * 업데이트 안내 설정 (2026-11-07, 지시서 11번). Firebase Remote Config 에서 읽는다 --
  * 콘솔에서 바꾸면 앱을 다시 내지 않고 적용된다. 키 · 기본값은 app-update.js.
  *

@@ -723,6 +723,20 @@ service cloud.firestore {
         allow create, update, delete: if false;
       }
 
+      /* ── 수업 후 별점 평가 (2026-11-09 대표 요청) ─────────────────────────
+         "강사님에게는 공개되지 않습니다." 그래서 **누구에게도 열지 않는다** -- 강사 ·
+         매니저는 물론 대표 · 회원 본인도 앱에서 직접 읽거나 쓰지 못한다.
+         쓰기는 서버 함수(memberLessonRating)만, 대표 화면의 강사별 건수 · 평균은
+         서버 함수(lessonRatingStats)가 집계 문서만 읽어 돌려준다.
+         규칙에 문을 적어 두는 것은 "여기는 닫혀 있다" 를 테스트로 고정하기 위해서다 --
+         아래 lessons 처럼 센터 직원에게 열린 문이 실수로 이 경로까지 넓어지지 않게. */
+      match /lessonRatings/{ratingId} {
+        allow read, write: if false;
+      }
+      match /lessonRatingStats/{instructorId} {
+        allow read, write: if false;
+      }
+
       match /lessons/{lessonId} {
         // See the locations block for why get and list are split.
         /* 없는 문서도 읽게 둔다 (2026-10-31). 강사 일정을 서버에 쓸 때 앱은 확정된

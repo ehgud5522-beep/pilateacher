@@ -20,7 +20,7 @@ android {
         /* Codemagic 이 빌드 번호를 넘긴다 (-PmemberVersionCode=$BUILD_NUMBER).
            Play 는 같은 번호를 두 번 받지 않는다. 로컬은 1 이다. */
         versionCode((project.findProperty('memberVersionCode') ?: '1') as Integer)
-        versionName "1.1.1"
+        versionName "1.1.2"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

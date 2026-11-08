@@ -62,3 +62,26 @@ body,
   --on-brand: #FFFFFF;
   --theme: light;
 }
+
+/* 일정 탭 한 문장 (2026-11-08). 나타날 때 한 번만 -- 글자가 살짝 올라오고, 카드 테두리가 은은하게
+   한 번 빛난다. transform · opacity · box-shadow 만 움직여 칸 높이가 튀지 않는다. */
+@keyframes pt-sentence-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes pt-sentence-glow {
+  0% { box-shadow: 0 0 0 0 var(--ring); }
+  45% { box-shadow: 0 0 0 4px var(--ring); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes pt-sentence-spark {
+  0% { transform: scale(.6) rotate(-20deg); opacity: 0; }
+  60% { transform: scale(1.15) rotate(8deg); opacity: 1; }
+  100% { transform: none; opacity: 1; }
+}
+.pt-sentence-in { animation: pt-sentence-in .7s cubic-bezier(.2, .7, .2, 1) .12s both; }
+.pt-sentence-glow { animation: pt-sentence-glow 1.4s ease-out .1s both; }
+.pt-sentence-spark { animation: pt-sentence-spark .8s cubic-bezier(.2, .7, .2, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .pt-sentence-in, .pt-sentence-glow, .pt-sentence-spark { animation: none; }
+}

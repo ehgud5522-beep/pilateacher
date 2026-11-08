@@ -21,8 +21,8 @@ android {
         applicationId "com.pilateacher.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 71
-        versionName "1.1.48"
+        versionCode 72
+        versionName "1.1.49"
         if (codemagicBuild) {
             def ciCode = System.getenv('ANDROID_VERSION_CODE')
             if (!ciCode || !(ciCode ==~ /[1-9][0-9]*/) || ciCode.toLong() > 2100000000L) {

@@ -24,6 +24,13 @@
  * 전체 강사 또는 지점 선택. 비워 두면 전체다 -- 빈 목록을 "아무도 아님" 으로
  * 읽으면 공지를 쓰고 아무에게도 안 보이는 일이 생긴다. 옛 공지의 직급 · 역할
  * 조건은 그대로 따른다 (새로 걸 수는 없다).
+ *
+ * ── 이사님 전달사항 (2026-11-08 대표 요청) ──
+ * 같은 공지 문서에 `kind: "owner_message"` 를 적은 것. 팝업 · 공지 목록에는 나오지 않고,
+ * 강사 일정 탭 맨 위에 한 줄로 선다. 짧은 글자만(OWNER_MESSAGE_MAX) -- 제목 · 대상 ·
+ * 중요 · 종료일은 받지 않는다 (제목은 서버가 "이사님 전달사항" 으로 적는다 -- 이 칸을
+ * 모르는 옛 앱에서는 그 제목의 공지로 보인다). **대표만** 쓰고 고치고 지운다
+ * (notice-admin.js). 새 경로가 아니라 규칙은 그대로다.
  */
 
 const text = (value) => String(value ?? "").trim();
@@ -32,8 +39,20 @@ const list = (value) => (Array.isArray(value) ? value.map(text).filter(Boolean) 
 /** 공지 문서의 칸. 서버 함수가 이것만 쓴다. */
 export const NOTICE_FIELDS = Object.freeze([
   "organizationId", "title", "body", "endsOn", "important", "locationIds",
-  "status", "createdAt", "createdBy", "createdByName", "updatedAt", "updatedBy",
+  "status", "createdAt", "createdBy", "createdByName", "updatedAt", "updatedBy", "kind",
 ]);
+
+/** 공지의 종류. 칸이 없으면 보통 공지다 (옛 공지 전부). */
+export const NOTICE_KIND = Object.freeze({
+  NOTICE: "notice",
+  OWNER_MESSAGE: "owner_message",
+});
+
+export const OWNER_MESSAGE_TITLE = "이사님 전달사항";
+export const OWNER_MESSAGE_MAX = 120;
+
+/** 이사님 전달사항인가. */
+export const isOwnerMessage = (notice) => text(notice?.kind) === NOTICE_KIND.OWNER_MESSAGE;
 
 /** 옛 공지의 끝냄 표시. 새 공지는 지운다 -- ended 인 옛 공지는 띄우지 않는다. */
 export const NOTICE_STATUS = Object.freeze({
@@ -108,6 +127,8 @@ const newestFirst = (left, right) => (
 export function visibleNotices({ notices, today, who } = {}) {
   return (Array.isArray(notices) ? notices : [])
     .filter(Boolean)
+    /* 이사님 전달사항은 일정 탭 맨 위에만 선다 -- 팝업 · 목록에 섞지 않는다. */
+    .filter((notice) => !isOwnerMessage(notice))
     .filter((notice) => noticeInWindow(notice, today))
     .filter((notice) => noticeTargets(notice, who))
     .sort(newestFirst);
@@ -131,6 +152,12 @@ export function pendingNotices({ notices, confirmedIds, today, who } = {}) {
  * @param {{ today?: string }} [options]
  */
 export function noticeError(draft, options = {}) {
+  if (isOwnerMessage(draft)) {
+    const message = text(draft?.body);
+    if (!message) return "전달사항을 입력해 주세요.";
+    if (message.length > OWNER_MESSAGE_MAX) return `전달사항은 ${OWNER_MESSAGE_MAX}자까지입니다.`;
+    return "";
+  }
   const title = text(draft?.title);
   const body = text(draft?.body);
   if (!title) return "제목을 입력해 주세요.";
@@ -152,6 +179,16 @@ export function noticeError(draft, options = {}) {
  * @param {any} draft
  */
 export function noticeContent(draft) {
+  if (isOwnerMessage(draft)) {
+    /* 한 줄로 선다 -- 줄바꿈은 띄어쓰기로. 대상 · 중요 · 종료일은 받지 않는다. */
+    return {
+      kind: NOTICE_KIND.OWNER_MESSAGE,
+      title: OWNER_MESSAGE_TITLE,
+      body: text(draft?.body).replace(/\s+/g, " "),
+      important: false,
+      locationIds: [],
+    };
+  }
   const content = {
     title: text(draft?.title),
     body: String(draft?.body ?? "").trim(),
@@ -160,4 +197,19 @@ export function noticeContent(draft) {
   };
   const endsOn = text(draft?.endsOn);
   return endsOn ? { ...content, endsOn } : content;
+}
+
+/**
+ * 일정 탭 맨 위의 이사님 전달사항. 가장 최근 것 하나의 글자, 없으면 빈 문자열.
+ * 대상 · 종료일은 보지 않는다 (받지 않는 칸이다). 옛 끝냄 표시(ended)만 거른다.
+ *
+ * @param {{ notices?: Array<any> }} input
+ * @returns {{ id: string, body: string, updatedAt: any } | null}
+ */
+export function currentOwnerMessage({ notices } = {}) {
+  const found = (Array.isArray(notices) ? notices : [])
+    .filter((notice) => notice && isOwnerMessage(notice) && text(notice.status) !== NOTICE_STATUS.ENDED && text(notice.body))
+    .sort((left, right) => noticeMillis(right.updatedAt || right.createdAt) - noticeMillis(left.updatedAt || left.createdAt)
+      || text(right.id).localeCompare(text(left.id)))[0];
+  return found ? { id: text(found.id), body: text(found.body), updatedAt: found.updatedAt ?? found.createdAt ?? null } : null;
 }

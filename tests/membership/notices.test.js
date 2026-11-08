@@ -97,3 +97,36 @@ test("쓰기는 서버 함수로 — 화면이 먼저 거르고, 지우기는 �
   );
   assert.equal(calls.length, 2, "거른 글은 서버로 가지 않는다");
 });
+
+/* ── 이사님 전달사항 (2026-11-08) ── 같은 공지 문서 kind: owner_message. 팝업 · 목록에 섞이지 않고 일정 탭 맨 위에만. */
+import { currentOwnerMessage, isOwnerMessage, OWNER_MESSAGE_MAX } from "../../src/data/repositories/notice-repository.js";
+
+test("전달사항은 팝업 · 공지 목록에 나오지 않는다", () => {
+  const message = notice({ id: "m1", kind: "owner_message", title: "이사님 전달사항", body: "회의 있어요" });
+  const plain = notice({ id: "n2" });
+  assert.deepEqual(visibleNotices({ notices: [message, plain], today: TODAY, who: who() }).map((item) => item.id), ["n2"]);
+  assert.deepEqual(pendingNotices({ notices: [message], today: TODAY, who: who() }), []);
+  assert.equal(isOwnerMessage(message), true);
+  assert.equal(isOwnerMessage(plain), false);
+});
+
+test("전달사항: 가장 최근 것 하나, 비었거나 끝낸 것은 없음", () => {
+  const at = (ms) => ({ toMillis: () => ms });
+  const older = notice({ id: "m1", kind: "owner_message", body: "옛 문구", updatedAt: at(1000) });
+  const newer = notice({ id: "m2", kind: "owner_message", body: "새 문구", updatedAt: at(2000) });
+  assert.equal(currentOwnerMessage({ notices: [older, newer, notice()] }).body, "새 문구");
+  assert.equal(currentOwnerMessage({ notices: [notice()] }), null, "보통 공지는 전달사항이 아니다");
+  assert.equal(currentOwnerMessage({ notices: [notice({ kind: "owner_message", body: "  " })] }), null);
+  assert.equal(currentOwnerMessage({ notices: [notice({ kind: "owner_message", body: "끝", status: "ended" })] }), null);
+  assert.equal(currentOwnerMessage({}), null);
+});
+
+test("전달사항 글 검사 · 저장 칸 — 본문만, 120자, 줄바꿈은 한 줄로", () => {
+  assert.equal(noticeError({ kind: "owner_message", body: "회의" }), "", "제목 없이 통과");
+  assert.match(noticeError({ kind: "owner_message", body: "" }), /전달사항을 입력/);
+  assert.match(noticeError({ kind: "owner_message", body: "가".repeat(OWNER_MESSAGE_MAX + 1) }), /120자/);
+  assert.deepEqual(noticeContent({ kind: "owner_message", body: "a\n b", important: true, locationIds: ["x"], endsOn: "2026-12-01" }), {
+    kind: "owner_message", title: "이사님 전달사항", body: "a b", important: false, locationIds: [],
+  });
+  assert.equal("kind" in noticeContent({ title: "휴무", body: "본문" }), false, "보통 공지에는 kind 를 적지 않는다");
+});

@@ -28,7 +28,7 @@ test("필수: 화면 전체를 덮고 [지금 업데이트] 만 — 닫기 · �
   const html = render("required");
   assert.match(html, /class="updatewall"/);
   assert.match(html, /data-update-now/);
-  assert.match(html, /지금 업데이트/);
+  assert.match(html, /업데이트하기/);
   assert.doesNotMatch(html, /data-update-later|나중에|닫기/);
   assert.match(html, /이 버전은 더 이상 사용할 수 없어요/);
   assert.match(html, /aria-hidden="true"[^>]*><p id="app-below">입력 중이던 화면/, "앱은 그대로 두고 가린다");

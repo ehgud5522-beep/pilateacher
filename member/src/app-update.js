@@ -13,11 +13,12 @@
  *      Android 는 Play 가 말하는 versionCode 가 최소 버전에 못 미치면 막지 않고 권유만 한다
  *   3. 스토어를 확인하지 못하면(네트워크 · Play 서비스 없음) 필수를 권유로 낮춘다 -- 모르면 막지 않는다
  *
- * 설정 · 빌드 번호를 모르면 아무것도 띄우지 않는다 (update-gate.js 와 같은 원칙).
+ * 운영 설정이 없어도 스토어가 새 버전을 확인하면 업데이트를 권유한다.
+ * 스토어 확인도 실패하고 운영 설정도 없으면 아무것도 띄우지 않는다.
  * 웹(회원 웹)은 배포가 곧 최신이라 띄우지 않는다 -- 웹 캐시 갱신과 네이티브 업데이트는 따로다.
  */
 
-import { UPDATE_PROMPT, buildNumberOf, updatePrompt } from "../../src/features/app-update/update-gate.js";
+import { UPDATE_PROMPT, buildNumberOf, dismissedThisBuild, snoozedToday, updatePrompt } from "../../src/features/app-update/update-gate.js";
 
 export { UPDATE_PROMPT };
 
@@ -36,7 +37,7 @@ export const MEMBER_UPDATE_KEYS = Object.freeze({
   iosStoreUrl: "member_ios_store_url",
 });
 
-/** 콘솔에 값이 없을 때의 기본 -- 전부 비어 있다 = 아무것도 띄우지 않는다. */
+/** 콘솔에 값이 없으면 스토어의 최신 버전 확인만 사용한다. 강제 업데이트는 하지 않는다. */
 export const MEMBER_UPDATE_DEFAULTS = Object.freeze(Object.fromEntries(
   Object.values(MEMBER_UPDATE_KEYS).map((key) => [key, ""]),
 ));
@@ -45,7 +46,7 @@ export const MEMBER_UPDATE_COPY = Object.freeze({
   title: "새 버전이 나왔어요",
   optional: "업데이트하면 새 기능과 고친 점이 함께 적용돼요.",
   required: "이 버전은 더 이상 사용할 수 없어요. 업데이트한 뒤 이용해 주세요.",
-  update: "지금 업데이트",
+  update: "업데이트하기",
   later: "나중에",
   updating: "업데이트 여는 중…",
   failed: "업데이트를 시작하지 못했어요. 다시 시도해 주세요.",
@@ -128,7 +129,18 @@ export function decideMemberUpdate(input) {
 
   const decided = base(true);
   let reason = decided.prompt === UPDATE_PROMPT.REQUIRED ? "below_minimum" : decided.prompt === UPDATE_PROMPT.OPTIONAL ? "below_latest" : "up_to_date";
-  if (decided.prompt === UPDATE_PROMPT.NONE) return { prompt: UPDATE_PROMPT.NONE, reason, latestBuild: null };
+  if (decided.prompt === UPDATE_PROMPT.NONE) {
+    // 스토어가 새 버전을 확인하면 운영자가 최신 번호를 따로 등록하지 않아도 안내한다.
+    // 이 경로는 권유만 한다. 강제 업데이트는 기존 최소 빌드와 스위치로만 결정한다.
+    const installed = buildNumberOf(input?.installedBuild);
+    const available = buildNumberOf(store.availableBuild);
+    const newer = available === null || installed === null || available > installed;
+    if ((platform === "android" || platform === "ios") && store.available === true && newer
+      && !snoozedToday(input?.snoozedAt, input?.now) && !dismissedThisBuild(input?.dismissedBuild, available)) {
+      return { prompt: UPDATE_PROMPT.OPTIONAL, reason: "store_has_update", latestBuild: available };
+    }
+    return { prompt: UPDATE_PROMPT.NONE, reason, latestBuild: null };
+  }
 
   /* 스토어에 새 버전이 없으면 보낼 곳이 없다 -- 막지도 권하지도 않는다. */
   if (store.available === false) return { prompt: UPDATE_PROMPT.NONE, reason: "store_has_no_update", latestBuild: null };

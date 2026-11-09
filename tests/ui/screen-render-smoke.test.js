@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { act, cloneElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { JSDOM } from "jsdom";
 import { createServer } from "vite";
 import { SHEET_Z } from "../../src/features/ui/overlay-stack.js";
 import react from "@vitejs/plugin-react";
@@ -65,6 +67,85 @@ const screenMarkup = async () => {
   const byName = new Map(loaded.createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   return (name) => renderToStaticMarkup(byName.get(name));
 };
+
+test("saving a lesson journal keeps the feedback draft and settlement in the same sheet", async () => {
+  const dom = new JSDOM("<div id='root'></div>", { url: "http://localhost", pretendToBeVisual: true });
+  const { window } = dom;
+  window.scrollTo = () => {};
+  const globals = {
+    window,
+    document: window.document,
+    requestAnimationFrame: window.requestAnimationFrame.bind(window),
+    cancelAnimationFrame: window.cancelAnimationFrame.bind(window),
+    IS_REACT_ACT_ENVIRONMENT: true,
+  };
+  const previous = Object.fromEntries(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const restoreGlobals = () => {
+    for (const [key, descriptor] of Object.entries(previous)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  };
+  Object.assign(globalThis, globals);
+  let root;
+  try {
+    const { createRoot } = await import("react-dom/client");
+    restoreGlobals();
+    const { createAppScreenSmokeCases } = await screenModule();
+    Object.assign(globalThis, globals);
+    const { element } = createAppScreenSmokeCases().find(({ name }) => name === "일정 탭 · 소속 · 회원에게 보낼 말");
+    const organization = element.props.children;
+    const form = organization.props.children;
+    const container = window.document.getElementById("root");
+    root = createRoot(container);
+    const calls = [];
+    let saveSucceeds = false;
+    const screen = cloneElement(element, {}, cloneElement(organization, {}, cloneElement(form, {
+      onClose: () => calls.push("closed"),
+      onSaveNote: async (_memberId, _type, _lessonId, body) => {
+        calls.push(body);
+        return saveSucceeds;
+      },
+      onReadMemberNote: async () => "",
+      onSaveMemberNote: async (_lessonId, _clientId, body) => calls.push(body),
+      onSettleLesson: async () => calls.push("settled"),
+    })));
+    const click = (button) => act(async () => button.click());
+    const type = (textarea, value) => act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set.call(textarea, value);
+      textarea.dispatchEvent(new window.Event("input", { bubbles: true }));
+    });
+    const find = (selector) => container.querySelector(selector);
+    await act(async () => root.render(screen));
+    const sheet = find('[role="dialog"]');
+    assert.ok(sheet);
+    await click(find("[data-member-note-yes]"));
+    const feedback = find("[data-member-note] textarea");
+    await type(feedback, "회원에게 보낼 피드백");
+    await click(find("[data-direct-record]"));
+    const journal = find("[data-lesson-record-entry] textarea");
+    await type(journal, "강사 수업일지");
+    await click(find("[data-lesson-record-entry] button"));
+    assert.equal(journal.value, "강사 수업일지");
+    assert.equal(find("[data-lesson-record-entry] textarea"), journal);
+
+    saveSucceeds = true;
+    await click(find("[data-lesson-record-entry] button"));
+    assert.equal(find("[data-lesson-record-entry]"), null);
+    assert.equal(find('[role="dialog"]'), sheet);
+    assert.equal(find("[data-member-note] textarea"), feedback);
+    assert.equal(feedback.value, "회원에게 보낼 피드백");
+    await click(find("[data-member-note-save]"));
+    assert.match(find("[data-member-note]").textContent, /작성 완료/);
+    const settle = [...sheet.querySelectorAll("button")].find((button) => button.textContent.startsWith("수업 확정"));
+    await click(settle);
+    assert.deepEqual(calls, ["강사 수업일지", "강사 수업일지", "회원에게 보낼 피드백", "settled"]);
+  } finally {
+    if (root) await act(async () => root.unmount());
+    dom.window.close();
+    restoreGlobals();
+  }
+});
 
 test("all primary tabs and detail surfaces render without a ReferenceError", async (t) => {
   const { createAppScreenSmokeCases } = await screenModule();

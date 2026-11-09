@@ -398,7 +398,11 @@ async function rebuildMemberViews(db, input) {
         errorDomain: "firestore",
         // 원본 코드를 그대로 남긴다 -- 정규화하면 원인 확정이 불가능해진다.
         errorCode: error?.code || "unknown",
-        message: String(error?.message || error).slice(0, 300),
+        /* message 칸은 로거가 제목("member_view_rebuild_failed")으로 덮는다 --
+           2026-11-09 로그에 원본 문구가 하나도 없었다. 따로 담는다. */
+        errorName: String(error?.name || ""),
+        errorMessage: String(error?.message || error).slice(0, 300),
+        errorAt: String(error?.stack || "").split("\n").slice(1, 3).map((line) => line.trim()).join(" | ").slice(0, 300),
         organizationId: input.organizationId,
         clientId,
       });

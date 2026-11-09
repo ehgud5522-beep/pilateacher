@@ -81,8 +81,8 @@ test("토큰을 못 받거나 서버가 거절하면 원본 코드를 남긴다 
 
 test("설정 두 개 — 모르는 값은 켜짐", () => {
   assert.deepEqual(normalizePrefs(null), DEFAULT_PREFS);
-  assert.deepEqual(normalizePrefs({ lesson30h: false }), { lesson30h: false, lesson30m: true });
-  assert.deepEqual(PUSH_ROWS.map((row) => row.kind), [PUSH_KIND.LESSON_30H, PUSH_KIND.LESSON_30M]);
+  assert.deepEqual(normalizePrefs({ lessonRating: false }), { lessonRating: false, lesson30m: true });
+  assert.deepEqual(PUSH_ROWS.map((row) => row.kind), [PUSH_KIND.LESSON_RATING, PUSH_KIND.LESSON_30M]);
 });
 
 test("알림을 누르면 홈(달력)으로", () => {
@@ -116,12 +116,12 @@ const basePush = { support: PUSH_SUPPORT.NATIVE, permission: PUSH_PERMISSION.GRA
 
 test("설정 카드 — 두 알림이 따로 켜고 꺼진다", async () => {
   const { PushSettings } = await screens();
-  const html = renderToStaticMarkup(createElement(PushSettings, { push: { ...basePush, prefs: { lesson30h: true, lesson30m: false } } }));
-  assert.match(html, /수업 30시간 전/);
-  assert.match(html, /취소 마감 안내/);
+  const html = renderToStaticMarkup(createElement(PushSettings, { push: { ...basePush, prefs: { lessonRating: true, lesson30m: false } } }));
+  assert.match(html, /수업 후 평가/);
+  assert.match(html, /수업 종료 10분 뒤 · 한 번만/);
   assert.match(html, /수업 30분 전/);
   assert.match(html, /수업 리마인드/);
-  assert.match(html, /data-push-row="lesson30h"[\s\S]*?aria-checked="true"/);
+  assert.match(html, /data-push-row="lessonRating"[\s\S]*?aria-checked="true"/);
   assert.match(html, /data-push-row="lesson30m"[\s\S]*?aria-checked="false"/);
 });
 
@@ -135,4 +135,15 @@ test("설정 카드 — 웹은 '앱에서만', 권한이 꺼졌으면 켜는 길
   assert.match(blocked, /휴대폰 설정에서 켜 주세요/);
   const failed = renderToStaticMarkup(createElement(PushSettings, { push: { ...basePush, errorCode: "unavailable" } }));
   assert.match(failed, /\(코드 unavailable\)/);
+});
+
+test("평가 알림은 소속·회원·수업을 담아야 하며 기존 알림 전체 끔을 존중한다", async () => {
+  const { ratingTarget } = await import("../../member/src/push.js");
+  const data = { kind: "lessonRating", open: "rating", organizationId: "org", clientId: "c1", lessonId: "L1" };
+  assert.deepEqual(ratingTarget({ data }), { organizationId: "org", clientId: "c1", lessonId: "L1" });
+  assert.equal(ratingTarget({ data: { ...data, lessonId: "a/b" } }), null);
+  assert.equal(ratingTarget({ data: { ...data, clientId: "" } }), null);
+  assert.equal(ratingTarget({ data: { ...data, kind: "lesson30m" } }), null);
+  assert.equal(normalizePrefs({ lesson30h: false, lesson30m: false }).lessonRating, false);
+  assert.equal(normalizePrefs({ lesson30h: false, lesson30m: false, lessonRating: true }).lessonRating, true);
 });

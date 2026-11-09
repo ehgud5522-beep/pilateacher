@@ -54,10 +54,10 @@ test("모든 화면이 ReferenceError 없이 그려진다", async (t) => {
 
 /* ── 홈 ──────────────────────────────────────────────────────────────── */
 
-test("홈은 달력 → 그날 수업 → 남은 횟수 → 최근 수업 기록 순서다", async (t) => {
+test("홈은 회원권 · 피드백을 먼저 보여 주고 달력 · 수업 기록으로 이어진다", async (t) => {
   const markupOf = await memberScreens(t);
   const home = markupOf("홈");
-  const order = ["2026년 9월", "오늘 수업", "내 회원권", "최근 수업 기록"].map((word) => home.indexOf(word));
+  const order = ["내 회원권", "선생님 피드백", "2026년 9월", "오늘 수업", "최근 수업 기록"].map((word) => home.indexOf(word));
   assert.ok(order.every((at) => at >= 0), `빠진 칸: ${order}`);
   assert.deepEqual([...order].sort((a, b) => a - b), order, "순서가 다르다");
   assert.match(home, /김하나님/);
@@ -106,7 +106,8 @@ test("최근 수업 기록은 두 건, 한마디가 있는 것만 말풍선", as
   const home = markupOf("홈");
   const recent = home.slice(home.indexOf("최근 수업 기록"));
   assert.equal((recent.match(/<li>/g) || []).length, 2);
-  assert.match(recent, /class="note">오늘도 자세가 좋아졌어요/);
+  assert.match(home, /class="feedback-message">오늘도 자세가 좋아졌어요/);
+  assert.doesNotMatch(recent, /class="note">오늘도 자세가 좋아졌어요/, "위에 보여 준 피드백을 반복하지 않는다");
   assert.match(recent, /더보기 ›/);
 });
 

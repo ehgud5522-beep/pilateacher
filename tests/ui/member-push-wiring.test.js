@@ -45,6 +45,6 @@ test("서버 — 스위치 문서는 runtimeConfig/memberPush, 대표 통로로 
   const admin = await readFile(new URL("../../functions/src/runtime-config-admin.js", import.meta.url), "utf8");
   assert.match(admin, /memberPush: scheduleSyncPayload/);
   const index = await readFile(new URL("../../functions/src/index.js", import.meta.url), "utf8");
-  assert.match(index, /exports\.sendMemberLessonReminders = onSchedule\(\{[\s\S]*?schedule: "every 5 minutes"/);
+  assert.match(index, /exports\.sendMemberLessonReminders = onSchedule\(\{[\s\S]*?schedule: "every 1 minutes"/);
   assert.match(index, /exports\.memberPushSettings = onCall\(MEMBER_LINK_OPTIONS/);
 });

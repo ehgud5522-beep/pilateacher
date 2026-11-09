@@ -1376,12 +1376,12 @@ exports.rebuildInstructorIdsNightly = onSchedule({
 });
 
 /* ── 회원 수업 알림 (2026-11-07 대표, 지시서 2차 기본 기능) ─────────────────
-   5분마다 30시간 전 · 30분 전 알림을 보낸다. 스위치(runtimeConfig/memberPush)가
+   1분마다 종료 10분 뒤 평가 · 시작 30분 전 알림을 확인한다. 스위치(runtimeConfig/memberPush)가
    꺼져 있으면 칸만 앞으로 민다. 근거와 한계는 member-push.js 머리말에 있다.
    로그에는 개수만 남긴다 -- 이름 · 번호 · 토큰 없음 (§7). */
 exports.sendMemberLessonReminders = onSchedule({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",
-  schedule: "every 5 minutes",
+  schedule: "every 1 minutes",
   timeZone: "Asia/Seoul",
   memory: "256MiB",
   timeoutSeconds: 240,

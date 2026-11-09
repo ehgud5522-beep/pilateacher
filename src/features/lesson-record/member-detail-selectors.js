@@ -1,3 +1,5 @@
+import { isLockedBySettlement } from "../schedule/schedule-edit.js";
+
 const PREFIX_NAMES = "오늘 수업|수업|변화|회원 반응|반응|다음 확인|다음";
 
 export const LESSON_RECORD_PREFIX = new RegExp(`^\\s*(${PREFIX_NAMES})\\s*[:：]\\s*`);
@@ -345,6 +347,7 @@ const attendanceStatusFor = (lesson, memberId) => {
 };
 
 export function isPastUnresolvedAttendance({ lesson, memberId, now = new Date() } = {}) {
+  if (isLockedBySettlement(lesson)) return false;
   const status = attendanceStatusFor(lesson, memberId);
   return Boolean(status) && lessonEnded(lesson, now) && !SETTLED_ATTENDANCE.has(status);
 }

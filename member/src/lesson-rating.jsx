@@ -23,7 +23,7 @@ function Star({ filled }) {
   return (
     <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M12 2.8l2.8 5.7 6.3.9-4.6 4.4 1.1 6.2L12 17l-5.6 3 1.1-6.2-4.6-4.4 6.3-.9z"
-        fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+        fill="currentColor" fillOpacity={filled ? 1 : 0} stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -113,7 +113,7 @@ export function LessonRatingCard({ lesson, place, api, onSeen, initialPhase = "l
 
   if (phase === "done") {
     return (
-      <section className="card ratecard" role="status" data-lesson-rating="done">
+      <section className="card ratecard app-motion-feedback" role="status" data-lesson-rating="done">
         <p className="ratecap">{RATING_COPY.CAPTION}</p>
         <p className="ratetitle">{RATING_COPY.THANKS}</p>
         <p className="muted" style={{ fontSize: TYPE.caption }}>{RATING_COPY.THANKS_NOTE}</p>

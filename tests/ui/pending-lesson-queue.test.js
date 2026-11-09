@@ -20,6 +20,20 @@ const member = (notes, overrides = {}) => ({ id: "m1", name: "김회원", status
 const queueFor = (members, schedule, pendingDrafts = []) =>
   selectPendingLessonSessions({ members, schedule, pendingDrafts, now: NOW });
 
+test("legacy settled duet never requests locked attendance but retains missing records", () => {
+  const members = [member([]), member([], { id: "m2" })];
+  const duet = lesson({ type: "2:1", attendees: [
+    { memberId: "m1", status: "done" }, { memberId: "m2", status: "booked" },
+  ] });
+  assert.ok(queueFor(members, [duet]).sessions.some((item) => item.reasons.includes("attendance")));
+  for (const marker of [{ orgSettledAt: "2026-09-01T03:00:00Z" }, { settledElsewhereAt: "2026-09-01T03:00:00Z" }]) {
+    const pending = queueFor(members, [{ ...duet, ...marker }]);
+    assert.equal(pending.sessions.some((item) => item.reasons.includes("attendance")), false);
+    assert.ok(pending.sessions.some((item) => item.memberId === "m1" && item.reasons.includes("record")));
+    assert.equal(duet.attendees[1].status, "booked", "historical attendance is not rewritten");
+  }
+});
+
 /* ---------------------------------------------------------------- A ------ */
 
 test("a lesson whose only record is an unconfirmed draft stays in the queue", () => {

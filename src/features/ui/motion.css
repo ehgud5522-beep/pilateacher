@@ -1,0 +1,59 @@
+:root {
+  --motion-ease: cubic-bezier(.2, .7, .2, 1);
+  --motion-quick: 160ms;
+  --motion-open: 220ms;
+}
+
+@keyframes app-content-in {
+  from { opacity: .55; }
+  to { opacity: 1; }
+}
+
+@keyframes app-sheet-in {
+  from { transform: translateY(14px); }
+  to { transform: translateY(0); }
+}
+
+@keyframes app-sheet-out {
+  from { transform: translateY(var(--sheet-drag-offset, 0px)); }
+  to { transform: translateY(calc(var(--sheet-drag-offset, 0px) + 14px)); }
+}
+
+@keyframes app-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes app-scrim-out {
+  to { opacity: 0; }
+}
+
+@keyframes app-feedback-in {
+  from { opacity: .65; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .app-motion-tab { transition: color var(--motion-quick) ease; }
+  .app-motion-tab-mark { transition: opacity var(--motion-quick) ease, transform var(--motion-quick) var(--motion-ease); }
+  .app-motion-content { animation: app-content-in var(--motion-quick) var(--motion-ease); }
+  .app-motion-overlay { animation: app-scrim-in var(--motion-open) var(--motion-ease); }
+  .app-motion-sheet { animation: app-sheet-in var(--motion-open) var(--motion-ease); }
+  .app-motion-overlay[data-closing] { animation: app-scrim-out var(--motion-quick) ease-in both; }
+  .app-motion-overlay[data-closing] .app-motion-sheet {
+    animation: app-sheet-out var(--motion-quick) ease-in both;
+  }
+  .app-motion-feedback { animation: app-feedback-in var(--motion-open) var(--motion-ease); }
+  .app-motion-highlight, [data-motion-highlight] { animation: app-feedback-in 420ms var(--motion-ease); }
+  .app-motion-collapse {
+    display: grid;
+    grid-template-rows: 1fr;
+    transition: grid-template-rows var(--motion-quick) var(--motion-ease), opacity var(--motion-quick) ease;
+  }
+  .app-motion-collapse[data-closing] { grid-template-rows: 0fr; opacity: 0; }
+}
+
+.app-motion-tab-mark { opacity: 0; transform: scaleX(.55); }
+.app-motion-tab[aria-current="page"] .app-motion-tab-mark { opacity: 1; transform: scaleX(1); }
+.app-motion-collapse-clip { min-height: 0; }
+.app-motion-collapse[data-closing] .app-motion-collapse-clip { overflow: hidden; }

@@ -12,6 +12,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
+import { useMotionClose } from "../../src/features/ui/use-motion-close.js";
 import {
   CANCEL_DONE_TITLE, blockedMessage, cancelDoneNote, cancelFailure, deadlineLabel, remainingLabel,
 } from "./cancel-copy.js";
@@ -35,6 +36,15 @@ function whenLabel(value) {
  * }} props
  */
 export function LessonSheet({ lesson, place, offline = false, api, onClose, onCancelled }) {
+  const { closing, close } = useMotionClose(onClose);
+  const closeButton = useRef(null);
+  useEffect(() => {
+    const previous = document.activeElement;
+    closeButton.current?.focus({ preventScroll: true });
+    return () => {
+      if (previous?.isConnected) previous.focus?.({ preventScroll: true });
+    };
+  }, []);
   const lessonId = text(lesson?.lessonId);
   const request = { organizationId: text(place?.organizationId), clientId: text(place?.clientId), lessonId };
   /* phase: loading · off · ready · confirm · sending · done · failed */
@@ -105,11 +115,11 @@ export function LessonSheet({ lesson, place, offline = false, api, onClose, onCa
   const tags = [text(lesson?.instructorName) ? `${text(lesson.instructorName)} 강사` : "", text(lesson?.locationName)].filter(Boolean);
 
   return (
-    <div className="sheetwrap" role="dialog" aria-modal="true" aria-label="수업 상세">
-      <div className="sheet">
+    <div className="sheetwrap app-motion-overlay" data-closing={closing || undefined} role="dialog" aria-modal="true" aria-label="수업 상세">
+      <div className="sheet app-motion-sheet" inert={closing ? "" : undefined}>
         <div className="sheethead">
           <p className="cap">예정 수업</p>
-          <button type="button" className="x" onClick={onClose} aria-label="닫기">✕</button>
+          <button ref={closeButton} type="button" className="x" onClick={close} aria-label="닫기">✕</button>
         </div>
         <p className="name">{lessonName(lesson)}</p>
         <p className="num" style={{ fontSize: TYPE.body }}>{whenLabel(lesson?.startsAt)}</p>
@@ -143,7 +153,7 @@ export function LessonSheet({ lesson, place, offline = false, api, onClose, onCa
         ) : null}
 
         {phase === "done" ? (
-          <div className="cancelbox canceldone" role="status">
+          <div className="cancelbox canceldone app-motion-feedback" role="status">
             <svg className="donecheck" width="40" height="40" viewBox="0 0 40 40" aria-hidden="true">
               <circle cx="20" cy="20" r="17" fill="none" stroke="currentColor" strokeWidth="3" />
               <path d="M12.5 20.5l5 5 10-11" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
@@ -153,7 +163,7 @@ export function LessonSheet({ lesson, place, offline = false, api, onClose, onCa
             {remainingLabel({ remaining: done?.remaining, period: status?.period }) ? (
               <p className="muted" style={{ fontSize: TYPE.caption }}>{remainingLabel({ remaining: done.remaining, period: status?.period })}</p>
             ) : null}
-            <button type="button" className="btn mt" onClick={onClose}>닫기</button>
+            <button type="button" className="btn mt" onClick={close}>닫기</button>
           </div>
         ) : null}
 

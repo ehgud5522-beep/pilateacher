@@ -257,11 +257,11 @@ const LessonIcon = () => (
 );
 
 /** 수업 한 건 카드. 시각 · 수업 이름 · 강사 · 지점. 그룹 표기는 없다. */
-function LessonCard({ row, location, onOpen }) {
+function LessonCard({ row, location, onOpen, highlighted = false }) {
   const when = row.when || row.occurredAt;
   const time = timeLabel(when);
   return (
-    <button type="button" className={`lesson${row.planned ? " planned" : ""}`} onClick={onOpen}>
+    <button type="button" className={`lesson${row.planned ? " planned" : ""}`} data-motion-highlight={highlighted || undefined} onClick={onOpen}>
       <span className="time num">{time || dayLabel(when)}</span>
       <span className="icon"><LessonIcon /></span>
       <span className="what">
@@ -348,6 +348,7 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, on
   const selected = picked || atMidnight(now);
   const isToday = sameDay(selected, now);
   const lessonsThatDay = dayLessons(view, selected);
+  const highlightedLesson = isToday ? lessonsThatDay.find((row) => row.planned) : null;
 
   const summary = homeSummary(view, isUsable, now);
   const left = daysUntil(summary.expiresAt, now);
@@ -404,7 +405,7 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, on
         {lessonsThatDay.length ? (
           <div className="stack tight">
             {lessonsThatDay.map((row, index) => (
-              <LessonCard key={`${text(row.when)}-${index}`} row={row}
+              <LessonCard key={`${text(row.when)}-${index}`} row={row} highlighted={row === highlightedLesson}
                 location={view?.locationName}
                 onOpen={row.planned
                   ? (onOpenLesson && text(row.lessonId) ? () => onOpenLesson(row) : undefined)

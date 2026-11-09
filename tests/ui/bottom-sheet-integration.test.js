@@ -15,8 +15,9 @@ test("bottom sheet separates its real drag handle, fixed header, and native scro
   assert.doesNotMatch(sheet, /className="w-full overflow-y-auto"/);
 });
 
-test("bottom sheet keeps X immediate and backdrop dismissal target-safe", () => {
-  assert.match(sheet, /if \(dismissible && e\.target === e\.currentTarget\) onClose\(\)/);
-  assert.match(sheet, /<button onClick=\{onClose\} aria-label="닫기"/);
+test("bottom sheet shares the close path and keeps backdrop dismissal target-safe", () => {
+  assert.match(sheet, /if \(dismissible && e\.target === e\.currentTarget\) close\(\)/);
+  assert.match(sheet, /<button onClick=\{close\} aria-label="닫기"/);
+  assert.match(sheet, /useMotionClose\(onClose, animateClose\)/);
   assert.match(sheet, /addEventListener\("touchmove", touchMove, \{ passive: false \}\)/);
 });

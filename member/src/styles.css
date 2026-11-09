@@ -391,6 +391,23 @@ body {
 .tab svg { width: 21px; height: 21px; }
 .tab.on { color: var(--rose); }
 .tab.on span { font-weight: 700; }
+.tab-indicator {
+  position: absolute;
+  left: 0;
+  bottom: 5px;
+  width: calc(100% / 3);
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  transform: translateX(calc(var(--member-tab-index) * 100%));
+}
+.tab-indicator::after {
+  content: "";
+  width: 16px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--rose);
+}
 
 /* 계정 삭제. 되돌릴 수 없는 자리라 홈에서 가장 먼 아래에 두고, 색으로
    소리치지 않는다 -- 붉은 카드는 지나가던 사람을 누르게 만든다. 읽고
@@ -452,7 +469,7 @@ body {
 }
 .sheet {
   width: 100%; max-width: 480px;
-  max-height: 88vh; overflow-y: auto;
+  max-height: 88vh; overflow-y: auto; overscroll-behavior: contain;
   padding: 18px 16px calc(20px + env(safe-area-inset-bottom));
   border-radius: 20px 20px 0 0;
   background: var(--page);
@@ -496,6 +513,10 @@ body {
   border: 0; background: transparent; color: #F5B400; font-family: inherit;
 }
 .ratecard .star:disabled { opacity: .6; }
+@media (prefers-reduced-motion: no-preference) {
+  .tab-indicator { transition: transform var(--motion-open) var(--motion-ease); }
+  .ratecard .star path { transition: fill-opacity var(--motion-quick) ease; }
+}
 .ratecard .starnum { font-size: 12px; color: var(--sub); }
 .ratecard .starnum.picked { color: var(--ink); font-weight: 800; }
 .ratecard .ratescale { margin-top: 6px; }

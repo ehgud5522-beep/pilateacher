@@ -627,7 +627,7 @@ function Member({ userId, initialTab = "home" }) {
           ))}
         </div>
       ) : null}
-      {body}
+      <div key={tab} className="app-motion-content">{body}</div>
       {openLesson && current ? (
         <LessonSheet lesson={openLesson} place={current.link} offline={Boolean(state.offlineAt)}
           api={callMemberCancel}
@@ -643,10 +643,11 @@ function Member({ userId, initialTab = "home" }) {
 
 function Tabs({ tab, onPick }) {
   return (
-    <nav className="tabs">
+    <nav className="tabs" aria-label="주요 메뉴" style={{ "--member-tab-index": Math.max(0, TABS.findIndex((item) => item.key === tab)) }}>
+      <span className="tab-indicator" aria-hidden="true" />
       {TABS.map((item) => (
         <button key={item.key} type="button"
-          className={`tab${tab === item.key ? " on" : ""}`}
+          className={`tab app-motion-tab${tab === item.key ? " on" : ""}`}
           aria-current={tab === item.key ? "page" : undefined}
           onClick={() => onPick(item.key)}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"

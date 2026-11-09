@@ -72,11 +72,13 @@ test("saving a lesson journal keeps the feedback draft and settlement in the sam
   const dom = new JSDOM("<div id='root'></div>", { url: "http://localhost", pretendToBeVisual: true });
   const { window } = dom;
   window.scrollTo = () => {};
+  let reducedMotion = true;
   const globals = {
     window,
     document: window.document,
     requestAnimationFrame: window.requestAnimationFrame.bind(window),
     cancelAnimationFrame: window.cancelAnimationFrame.bind(window),
+    matchMedia: (query) => ({ matches: query.includes("no-preference") ? !reducedMotion : reducedMotion }),
     IS_REACT_ACT_ENVIRONMENT: true,
   };
   const previous = Object.fromEntries(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -130,7 +132,11 @@ test("saving a lesson journal keeps the feedback draft and settlement in the sam
     assert.equal(find("[data-lesson-record-entry] textarea"), journal);
 
     saveSucceeds = true;
+    reducedMotion = false;
     await click(find("[data-lesson-record-entry] button"));
+    assert.ok(find("[data-lesson-record-entry][data-closing]"));
+    assert.equal(find('[role="dialog"]'), sheet);
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 200)));
     assert.equal(find("[data-lesson-record-entry]"), null);
     assert.equal(find('[role="dialog"]'), sheet);
     assert.equal(find("[data-member-note] textarea"), feedback);
@@ -140,10 +146,59 @@ test("saving a lesson journal keeps the feedback draft and settlement in the sam
     const settle = [...sheet.querySelectorAll("button")].find((button) => button.textContent.startsWith("수업 확정"));
     await click(settle);
     assert.deepEqual(calls, ["강사 수업일지", "강사 수업일지", "회원에게 보낼 피드백", "settled"]);
+    reducedMotion = true;
+    await click(sheet.querySelector('button[aria-label="닫기"]'));
+    assert.equal(calls.at(-1), "closed");
+    assert.equal(find(".app-motion-overlay[data-closing]"), null);
   } finally {
     if (root) await act(async () => root.unmount());
     dom.window.close();
     restoreGlobals();
+  }
+});
+
+test("duet attendance uses one bulk action from either member, while no-show remains individual", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
+  const dom = new JSDOM("<div id='root'></div>", { url: "http://localhost", pretendToBeVisual: true });
+  dom.window.scrollTo = () => {};
+  const globals = {
+    window: dom.window, document: dom.window.document,
+    requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
+    cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
+    IS_REACT_ACT_ENVIRONMENT: true,
+  };
+  const previous = Object.fromEntries(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  Object.assign(globalThis, globals);
+  let root;
+  try {
+    const { createRoot } = await import("react-dom/client");
+    const { element } = createAppScreenSmokeCases().find(({ name }) => name === "일정 탭 · 소속 · 2:1 한 명 미표시");
+    const organization = element.props.children;
+    const form = organization.props.children;
+    const calls = [];
+    const container = dom.window.document.getElementById("root");
+    root = createRoot(container);
+    await act(async () => root.render(cloneElement(element, {}, cloneElement(organization, {}, cloneElement(form, {
+      onStatus: (...args) => calls.push(["individual", ...args]),
+      onStatusAll: (...args) => calls.push(["all", ...args]),
+    })))));
+    const buttons = () => [...container.querySelectorAll("button")];
+    assert.equal(buttons().some((button) => button.textContent.trim() === "출석"), false);
+    const attendance = buttons().filter((button) => button.textContent.trim() === "둘 다 출석");
+    assert.ok(attendance.length >= 2);
+    for (const button of attendance) await act(async () => button.click());
+    assert.equal(calls.length, attendance.length);
+    assert.ok(calls.every(([kind, , status]) => kind === "all" && status === "done"));
+    await act(async () => buttons().find((button) => button.textContent.trim() === "노쇼").click());
+    assert.equal(calls.at(-1)[0], "individual");
+    assert.equal(calls.at(-1)[2], "noshow");
+  } finally {
+    if (root) await act(async () => root.unmount());
+    dom.window.close();
+    for (const [key, descriptor] of Object.entries(previous)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
   }
 });
 
@@ -892,7 +947,7 @@ test("the schedule settles the lesson, and says what that will cost before it do
   assert.match(after, /확정됨 · 회원권 차감 완료/);
   assert.match(after, /회원권 1회 차감됨/);
   assert.doesNotMatch(after, /수업 확정/);
-  assert.match(after, /disabled=""[^<]*>출석</, "확정 후에는 출석을 바꿀 수 없다");
+  assert.match(after, /disabled=""[^<]*>둘 다 출석</, "확정 후에는 출석을 바꿀 수 없다");
   assert.doesNotMatch(after, /전체 출석/);
 
   /* 되돌리기는 대표만 본다. 강사가 방금 누른 것을 스스로 지울 수 있으면
@@ -926,7 +981,7 @@ test("the schedule settles the lesson, and says what that will cost before it do
   assert.match(failed, /Missing baseUnitPrice/);
   assert.match(failed, /이 수업은 급여에 들어가지 않습니다/);
   // 잠기지 않았으니 출석도 그대로 바꿀 수 있어야 한다.
-  assert.doesNotMatch(failed, /disabled=""[^<]*>출석</);
+  assert.doesNotMatch(failed, /disabled=""[^<]*>둘 다 출석</);
 
   // 개인 모드에는 조직 회원권이 없다. 확정할 것이 없으므로 블록도 없다.
   const personal = markupOf("일정 탭 · 개인 모드 · 확정 없음");

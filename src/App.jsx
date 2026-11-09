@@ -4358,6 +4358,8 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
   const [recordMode, setRecordMode] = useState(null);
   const [recordFallback, setRecordFallback] = useState("");
   const [recordBody, setRecordBody] = useState("");
+  const [recordSaving, setRecordSaving] = useState(false);
+  const closeRecordEntry = () => setRecordMode(null);
   const recordSectionRef = useRef(null);
   const [picker, setPicker] = useState(null);
   /* 회원 선택 시트를 열 때마다 명단을 새로 읽는다 (2026-11-04). FC가 방금 등록 ·
@@ -4642,7 +4644,7 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
                 const active = a.memberId === activeMemberId;
                 return (
                   <div key={a.memberId} className="min-w-0 rounded-xl p-3 text-left" style={{ backgroundColor: active ? TINT : CANVAS, border: `1px solid ${active ? "#D9D7EE" : LINE}` }}>
-                    <button type="button" onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); setRecordBody(""); }} className="w-full min-w-0 text-left">
+                    <button type="button" disabled={recordSaving} onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); setRecordBody(""); }} className="w-full min-w-0 text-left">
                       <span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: active ? PRIMARY : INK }}>{m?.name || "삭제된 회원"}</span><span className="shrink-0 rounded-full px-2 py-0.5 text-caption font-extrabold" data-member-cancel-badge={isMemberCancelledAttendee(a) ? "" : undefined} style={isMemberCancelledAttendee(a) ? { backgroundColor: WARN_S, color: WARN } : { backgroundColor: stOf(a.status).bg, color: stOf(a.status).color }}>{isMemberCancelledAttendee(a) ? MEMBER_CANCEL_VIEW_COPY.BADGE : stOf(a.status).label}</span></span>
                       <span className="mt-0.5 block text-xs" style={{ color: SUB }}>잔여 {left(m)}회{m?.contractEnd ? ` · ${m.contractEnd.slice(5).replace("-", ".")}까지` : ""}</span>
                       {/* 확정하면 얼마가 되는지. 눌러 본 뒤에 아는 것과 누르기 전에
@@ -4787,9 +4789,16 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
                 {activeAttendee.status !== "booked" && <>
                 {!aiRecordingAvailable(aiRecording) && <p className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>AI 정리 잠시 점검 중 · 직접 입력으로 기록할 수 있어요.</p>}
                 <div className="grid grid-cols-2 gap-2">
-                  {aiRecordingAvailable(aiRecording) && <button onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "voice" ? null : "voice"); }} className="flex h-12 items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, color: recordMode === "voice" ? "#fff" : PRIMARY, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}` }}><Smartphone size={15} /> 기록하기</button>}
-                  <button data-direct-record onClick={() => { setRecordFallback(""); if (recordMode !== "write") setRecordBody(editingNote?.body || ""); setRecordMode(recordMode === "write" ? null : "write"); }} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> {editingNote ? "기록 수정" : "직접입력"}</button>
-                  <button onClick={async () => { const stored = await onNoComment?.(activeMemberId, draft.type, draft.id); if (stored !== false) onClose(); }} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>노코멘트</button>
+                  {aiRecordingAvailable(aiRecording) && <button disabled={recordSaving} onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "voice" ? null : "voice"); }} className="flex h-12 items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, color: recordMode === "voice" ? "#fff" : PRIMARY, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}` }}><Smartphone size={15} /> 기록하기</button>}
+                  <button data-direct-record disabled={recordSaving} onClick={() => { setRecordFallback(""); if (recordMode !== "write") setRecordBody(editingNote?.body || ""); setRecordMode(recordMode === "write" ? null : "write"); }} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> {editingNote ? "기록 수정" : "직접입력"}</button>
+                  <button disabled={recordSaving || Boolean(editingNote) || Boolean(recordMode)} onClick={async () => {
+                    setRecordSaving(true);
+                    try {
+                      await onNoComment?.(activeMemberId, draft.type, draft.id);
+                    } finally {
+                      setRecordSaving(false);
+                    }
+                  }} className="h-12 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>노코멘트</button>
                   <button onClick={onClose} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB, border: `1px solid ${LINE}` }}>나중에</button>
                 </div>
 
@@ -4797,8 +4806,19 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
                   <div ref={recordSectionRef} data-lesson-record-entry className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
                     <DeviceOnlyNote />
                     {recordFallback &&<p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
-                    {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
-                    {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={async () => { const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null, editingNote ? { existingNoteId: editingNote.id } : null); if (stored === true) onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>{editingNote ? "수정 저장" : "저장"}</button></>}
+                    {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id} onLater={closeRecordEntry} onClose={closeRecordEntry} onDeferred={closeRecordEntry} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
+                    {recordMode === "write" && <>
+                      <textarea rows={4} value={recordBody} readOnly={recordSaving} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
+                      <button disabled={recordSaving || !recordBody.trim()} onClick={async () => {
+                        setRecordSaving(true);
+                        try {
+                          const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null, editingNote ? { existingNoteId: editingNote.id } : null);
+                          if (stored === true) closeRecordEntry();
+                        } finally {
+                          setRecordSaving(false);
+                        }
+                      }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>{editingNote ? "수정 저장" : "저장"}</button>
+                    </>}
                   </div>
                 )}
 

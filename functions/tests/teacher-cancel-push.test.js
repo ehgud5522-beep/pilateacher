@@ -312,7 +312,7 @@ test("알림함 쓰기가 실패해도 취소 · 푸시는 그대로 — failed 
   db.collection = (name) => {
     const ref = original(name);
     if (name !== "users") return ref;
-    return { doc: (id) => ({ collection: () => ({ doc: () => ({ create: async () => { throw Object.assign(new Error("quota"), { code: "resource-exhausted" }); } }) }) }) };
+    return { doc: () => ({ collection: () => ({ doc: () => ({ create: async () => { throw Object.assign(new Error("quota"), { code: "resource-exhausted" }); } }) }) }) };
   };
   const log = fakeLog();
   const messaging = fakeMessaging();

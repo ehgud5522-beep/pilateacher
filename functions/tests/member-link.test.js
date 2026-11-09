@@ -44,10 +44,11 @@ const client = (overrides = {}) => ({
  * 센터별 명부를 받아 서비스를 만든다. 쓰기는 실제로 하지 않고 무엇을 쓰려
  * 했는지만 모은다 -- 판정이 이 파일의 관심사다.
  */
-function service({ roster = { [ORG]: [] }, memberships = {}, links = [] } = {}) {
+function service({ roster = { [ORG]: [] }, memberships = {}, links = [], ensureMemberView } = {}) {
   const writes = [];
   const removals = [];
   const built = createMemberLinkService({
+    ...(ensureMemberView ? { ensureMemberView } : {}),
     listOrganizationIds: async () => Object.keys(roster),
     findClientsByPhone: async (organizationId, phone) => (
       (roster[organizationId] || []).filter((row) => row.phone === phone)
@@ -313,4 +314,78 @@ test("decideLink 는 hold 를 쓸 수 있는 상태로 본다", () => {
     { organizationId: ORG, clientId: "a", locationId: "loc-1", status: "hold" },
   ], MEMBER);
   assert.equal(decision.status, LINK_STATUS.LINKED);
+});
+
+/* ── 연결 직후 투영 확인 (2026-11-09) ──────────────────────────────────────
+   같은 계정으로 다시 이으면 명부 쓰기가 바뀐 것이 없어 트리거가 불리지 않는다.
+   투영이 없던 회원은 회원 앱에서 "회원권 정보를 준비하고 있어요" 에 머물렀다. */
+
+test("이어지면 회원마다 투영을 확인한다 -- 이미 이어진 회원을 다시 불러도", async () => {
+  const asked = [];
+  const link = service({
+    roster: { [ORG]: [client({ userId: MEMBER })] },
+    ensureMemberView: async (input) => { asked.push(input); return "written"; },
+  });
+  const result = await link.linkForCaller(callerRequest());
+
+  assert.equal(result.status, LINK_STATUS.LINKED);
+  assert.deepEqual(asked.map(({ organizationId, clientId, userId }) => ({ organizationId, clientId, userId })),
+    [{ organizationId: ORG, clientId: "client-1", userId: MEMBER }]);
+  assert.ok(asked[0].at instanceof Date);
+  assert.deepEqual(result.views, [{ outcome: "written" }]);
+});
+
+test("여러 지점이면 지점마다 확인한다", async () => {
+  const asked = [];
+  const link = service({
+    roster: {
+      [ORG]: [client({ clientId: "client-1", locationId: "loc-1" })],
+      [OTHER_ORG]: [client({ organizationId: OTHER_ORG, clientId: "client-9", locationId: "loc-9" })],
+    },
+    ensureMemberView: async (input) => { asked.push(input.clientId); return "present"; },
+  });
+  const result = await link.linkForCaller(callerRequest());
+
+  assert.equal(result.status, LINK_STATUS.MULTI_LOCATION);
+  assert.deepEqual(asked.sort(), ["client-1", "client-9"]);
+});
+
+test("잇지 않은 결과(번호 없음 · 남의 번호)에는 투영을 만들지 않는다", async () => {
+  let asked = 0;
+  const ensureMemberView = async () => { asked += 1; return "written"; };
+  const none = await service({ ensureMemberView }).linkForCaller(callerRequest());
+  const taken = await service({ roster: { [ORG]: [client({ userId: "uid-other" })] }, ensureMemberView })
+    .linkForCaller(callerRequest());
+
+  assert.equal(none.status, LINK_STATUS.NOT_FOUND);
+  assert.equal(taken.status, LINK_STATUS.TAKEN);
+  assert.equal(asked, 0);
+  assert.deepEqual(none.views, []);
+});
+
+test("투영 확인이 실패해도 연결은 성공이다 -- 원본 코드를 결과에 남긴다", async () => {
+  const link = service({
+    roster: { [ORG]: [client()] },
+    ensureMemberView: async () => { throw Object.assign(new Error("boom"), { code: "deadline-exceeded" }); },
+  });
+  const result = await link.linkForCaller(callerRequest());
+
+  assert.equal(result.status, LINK_STATUS.LINKED);
+  assert.equal(link.writes.length, 1);
+  assert.deepEqual(result.views, [{ outcome: "failed", code: "deadline-exceeded" }]);
+});
+
+test("대표가 손으로 이어도 투영을 확인한다", async () => {
+  const asked = [];
+  const link = service({
+    roster: { [ORG]: [client()] }, memberships: ownerMembership,
+    ensureMemberView: async (input) => { asked.push(input.clientId); return "written"; },
+  });
+  const result = await link.linkByOwner({
+    auth: { uid: OWNER },
+    data: { userId: MEMBER, organizationId: ORG, clientId: "client-1" },
+  });
+
+  assert.deepEqual(asked, ["client-1"]);
+  assert.deepEqual(result.views, [{ outcome: "written" }]);
 });

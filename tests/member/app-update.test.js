@@ -43,10 +43,23 @@ test("강제 적용 스위치가 꺼져 있으면 최소 버전 아래여도 권
   assert.equal(decide({ installedBuild: "115", snoozedAt: "2026-11-06T08:00:00" }).prompt, UPDATE_PROMPT.OPTIONAL, "날짜가 바뀌면 다시");
 });
 
-test("모르면 띄우지 않는다 — 설정 없음 · 빌드 번호 모름 · 웹", () => {
-  assert.equal(decideMemberUpdate({ config: readMemberUpdateConfig({}), platform: "android", installedBuild: "100", store: { available: true } }).prompt, UPDATE_PROMPT.NONE);
-  assert.equal(decide({ installedBuild: "" }).prompt, UPDATE_PROMPT.NONE);
+test("설정이 없어도 스토어에 새 버전이 있으면 권유 — Android와 iOS, 오늘 나중에는 유지", () => {
+  for (const platform of ["android", "ios"]) {
+    const input = { config: readMemberUpdateConfig({}), platform, installedBuild: "100", store: { available: true }, now: new Date("2026-11-07T10:00:00") };
+    assert.equal(decideMemberUpdate(input).prompt, UPDATE_PROMPT.OPTIONAL);
+    assert.equal(decideMemberUpdate(input).reason, "store_has_update");
+    assert.equal(decideMemberUpdate({ ...input, snoozedAt: "2026-11-07T08:00:00" }).prompt, UPDATE_PROMPT.NONE);
+    assert.equal(decideMemberUpdate({ ...input, snoozedAt: "2026-11-06T08:00:00" }).prompt, UPDATE_PROMPT.OPTIONAL);
+    assert.equal(decideMemberUpdate({ ...input, store: { available: null } }).prompt, UPDATE_PROMPT.NONE);
+    assert.equal(decideMemberUpdate({ ...input, store: { available: false } }).prompt, UPDATE_PROMPT.NONE);
+  }
+});
+
+test("설치 빌드 번호를 못 읽어도 스토어가 확인하면 권유, 웹과 같은 Play 빌드는 제외", () => {
+  assert.equal(decide({ installedBuild: "" }).prompt, UPDATE_PROMPT.OPTIONAL);
   assert.equal(decide({ platform: "web" }).prompt, UPDATE_PROMPT.NONE);
+  assert.equal(decide({ installedBuild: "120", config: readMemberUpdateConfig({}) }).prompt, UPDATE_PROMPT.NONE);
+  assert.equal(decide({ installedBuild: "120", store: { available: true, availableBuild: 121 } }).prompt, UPDATE_PROMPT.OPTIONAL);
 });
 
 test("스토어 답 읽기 — Android 는 Play 의 가용성 · versionCode, iOS 는 스토어 버전명 비교", () => {

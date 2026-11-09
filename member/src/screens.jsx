@@ -389,7 +389,7 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, on
               className={`day${cell.attended ? " on" : ""}${cell.planned ? " plan" : ""}${cell.today ? " today" : ""}${sameDay(cell.date, selected) ? " picked" : ""}`}
               onClick={() => setPicked(cell.date)}>
               <b>{cell.day}</b>
-              {cell.attended || cell.planned ? <i /> : null}
+              {cell.attended || cell.planned ? <i aria-hidden="true" /> : null}
             </button>
           )))}
         </div>

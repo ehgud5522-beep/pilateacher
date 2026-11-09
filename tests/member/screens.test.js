@@ -67,7 +67,7 @@ test("달력은 오늘과 수업 있는 날을 다르게 그린다", async (t) =
   const markupOf = await memberScreens(t);
   const home = markupOf("홈");
   // 24일(오늘)은 수업도 있었다.
-  assert.match(home, /class="day on today picked"[^>]*><b>24<\/b><i><\/i>/);
+  assert.match(home, /class="day on today picked"[^>]*><b>24<\/b><i aria-hidden="true"><\/i>/);
   assert.match(home, /aria-label="9월 22일 · 수업 있음"/);
   assert.match(home, /aria-label="9월 23일"/);
   assert.match(home, /이번 달 8번/);

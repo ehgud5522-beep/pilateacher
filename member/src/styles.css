@@ -158,8 +158,8 @@ body {
 .dow span { text-align: center; font-size: 11px; color: var(--faint); }
 .grid { display: grid; grid-template-columns: repeat(7, 1fr); row-gap: 2px; }
 .day {
-  position: relative; height: 44px; padding: 0; border: 0; background: transparent;
-  display: flex; align-items: center; justify-content: center;
+  position: relative; height: 48px; padding: 2px 0; border: 0; background: transparent;
+  display: grid; grid-template-rows: 34px 6px; row-gap: 4px; justify-items: center; align-items: center;
   font-family: inherit; color: var(--ink);
 }
 .day b {
@@ -169,7 +169,6 @@ body {
 }
 .day.on b { font-weight: 800; }
 .day i {
-  position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%);
   width: 4px; height: 4px; border-radius: 50%; background: var(--rose);
 }
 /* 예정된 날은 속이 빈 점. 받은 수업(꽉 찬 점)과 한눈에 갈린다. */

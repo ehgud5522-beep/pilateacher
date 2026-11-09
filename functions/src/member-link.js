@@ -192,6 +192,7 @@ function decideLink(input, userId) {
  *   removeLink: (input: any) => Promise<any>,
  *   listLinksByStatus: (status: string) => Promise<Array<any>>,
  *   phoneFromToken?: (value: any) => string,
+ *   ensureMemberView?: (input: { organizationId: string, clientId: string, userId: string, at: Date }) => Promise<string>,
  *   now?: () => Date,
  * }} dependencies
  */
@@ -205,8 +206,34 @@ function createMemberLinkService(dependencies) {
     removeLink,
     listLinksByStatus,
     phoneFromToken = null,
+    ensureMemberView = null,
     now = () => new Date(),
   } = dependencies || {};
+
+  /**
+   * 이어진 회원마다 투영이 있는지 확인하고 없으면 만든다 (2026-11-09).
+   * 같은 계정으로 다시 이으면 명부 쓰기가 바뀐 것이 없어 트리거가 불리지 않는다 --
+   * 그때 투영이 없으면 회원 앱이 "준비 중" 에 머문다 (member-view-triggers.js
+   * ensureMemberView 머리말).
+   *
+   * **연결은 이미 끝났다.** 여기서 실패해도 연결을 실패로 돌리지 않는다 -- 결과에
+   * 회원별 결과 코드를 담아 로그가 남기게 한다 (원본 코드 그대로).
+   */
+  async function ensureViews(userId, links, at) {
+    if (typeof ensureMemberView !== "function") return [];
+    const outcomes = [];
+    for (const link of links) {
+      try {
+        const outcome = await ensureMemberView({
+          organizationId: link.organizationId, clientId: link.clientId, userId, at,
+        });
+        outcomes.push({ outcome: text(outcome) || "unknown" });
+      } catch (error) {
+        outcomes.push({ outcome: "failed", code: text(error?.code) || "member_view_ensure_failed" });
+      }
+    }
+    return outcomes;
+  }
 
   /** 이 사람이 이 센터에서 대표와 같은 자리인가. 규칙의 hasRole(ownerLevel()) 과 같다. */
   async function requireOwner(organizationId, callerUid) {
@@ -253,10 +280,11 @@ function createMemberLinkService(dependencies) {
     if (!phone) throw new MemberLinkError("phone_not_verified", { stage: STAGES.AUTHORIZE });
 
     const decision = decideLink(await findCandidates(phone), userId);
+    const at = now();
 
     try {
       await writeLink({
-        userId, phone, at: now(),
+        userId, phone, at,
         status: decision.status,
         links: decision.links,
         candidates: decision.candidates,
@@ -267,10 +295,14 @@ function createMemberLinkService(dependencies) {
       throw new MemberLinkError("link_unavailable", { stage: STAGES.WRITE, cause: error });
     }
 
+    const views = LINKED_STATUSES.includes(decision.status)
+      ? await ensureViews(userId, decision.links, at) : [];
+
     return {
       status: decision.status,
       candidateCount: decision.candidateCount,
       links: decision.links.map(({ organizationId, clientId }) => ({ organizationId, clientId })),
+      views,
     };
   }
 
@@ -314,12 +346,13 @@ function createMemberLinkService(dependencies) {
       organizationId, clientId, userId,
       locationId: text(client.locationId), status: text(client.status),
     };
+    const at = now();
 
     try {
       await writeLink({
         /* 번호는 적지 않는다. 대표가 고른 길에는 인증된 번호가 없고, 회원이
            직접 불렀을 때 적힌 값이 있으면 그대로 둔다. */
-        userId, phone: "", at: now(),
+        userId, phone: "", at,
         status, links: [link], candidates: [], candidateCount: 1,
         linkedBy: callerUid,
         audit: {
@@ -331,7 +364,7 @@ function createMemberLinkService(dependencies) {
       throw new MemberLinkError("link_unavailable", { stage: STAGES.WRITE, cause: error });
     }
 
-    return { status, links: [{ organizationId, clientId }] };
+    return { status, links: [{ organizationId, clientId }], views: await ensureViews(userId, [link], at) };
   }
 
   /**

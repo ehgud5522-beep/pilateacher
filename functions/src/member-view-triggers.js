@@ -337,6 +337,38 @@ async function rebuildMemberView(db, input) {
 }
 
 /**
+ * 연결 직후 투영이 있는지 보고, 없으면 그 자리에서 만든다 (2026-11-09).
+ *
+ * ── 왜 ──
+ * 투영은 clients 쓰기 트리거가 만든다. 그런데 이미 같은 계정에 이어진 회원이
+ * 다시 연결하면 `clients.userId` 에 같은 값을 쓰게 되고, **바뀐 것이 없는 쓰기는
+ * 트리거를 부르지 않는다.** 그 사이 투영이 지워졌으면(지점 데이터 초기화 등)
+ * 회원 앱은 앱을 몇 번 다시 열어도 "회원권 정보를 준비하고 있어요" 에 머문다.
+ * 2026-11-09 실제로 있었다 -- 연결은 성공했는데 트리거 로그가 한 줄도 없었다.
+ *
+ * 있고 주인이 맞으면 손대지 않는다 ("present"). 주인이 다르면 규칙이 회원의
+ * 읽기를 거절하므로(같은 "준비 중" 화면) 다시 만든다.
+ *
+ * @param {any} db
+ * @param {{ organizationId: string, clientId: string, userId: string, eventAt?: Date, buildJourney?: any, log?: any }} input
+ * @returns {Promise<"present" | "written" | "skipped" | "deleted" | "absent" | "no_client">}
+ */
+async function ensureMemberView(db, input) {
+  const organizationId = text(input?.organizationId);
+  const clientId = text(input?.clientId);
+  if (!organizationId || !clientId) return "no_client";
+  const snapshot = await db.collection("organizations").doc(organizationId)
+    .collection("memberViews").doc(clientId).get();
+  if (snapshot.exists && text(snapshot.data()?.userId) === text(input?.userId)) return "present";
+  return rebuildMemberView(db, {
+    organizationId, clientId,
+    eventAt: input?.eventAt instanceof Date ? input.eventAt : new Date(),
+    buildJourney: input?.buildJourney,
+    log: input?.log,
+  });
+}
+
+/**
  * 여러 회원을 다시 만든다. 하나가 실패해도 나머지는 계속한다.
  *
  * 듀엣에서 한쪽 실패가 다른 쪽을 막으면 안 된다. 그리고 트리거 전체를 던지게
@@ -366,7 +398,11 @@ async function rebuildMemberViews(db, input) {
         errorDomain: "firestore",
         // 원본 코드를 그대로 남긴다 -- 정규화하면 원인 확정이 불가능해진다.
         errorCode: error?.code || "unknown",
-        message: String(error?.message || error).slice(0, 300),
+        /* message 칸은 로거가 제목("member_view_rebuild_failed")으로 덮는다 --
+           2026-11-09 로그에 원본 문구가 하나도 없었다. 따로 담는다. */
+        errorName: String(error?.name || ""),
+        errorMessage: String(error?.message || error).slice(0, 300),
+        errorAt: String(error?.stack || "").split("\n").slice(1, 3).map((line) => line.trim()).join(" | ").slice(0, 300),
         organizationId: input.organizationId,
         clientId,
       });
@@ -383,6 +419,7 @@ module.exports = {
   clientIdsFromLessonNoteChange,
   clientIdsFromPassChange,
   collectMemberViewInput,
+  ensureMemberView,
   rebuildMemberView,
   rebuildMemberViews,
 };

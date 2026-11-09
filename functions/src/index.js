@@ -10,7 +10,7 @@ const { HttpsError, onCall, onRequest } = require("firebase-functions/v2/https")
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onDocumentWritten } = require("firebase-functions/v2/firestore");
 const {
-  clientIdsFromLessonChange, clientIdsFromLessonNoteChange, clientIdsFromPassChange, rebuildMemberViews,
+  clientIdsFromLessonChange, clientIdsFromLessonNoteChange, clientIdsFromPassChange, ensureMemberView, rebuildMemberViews,
 } = require("./member-view-triggers");
 const { createAccountDeletionService } = require("./account-deletion");
 const { createAIGatewayHandler } = require("./ai-gateway");
@@ -110,7 +110,15 @@ const memberLookupService = createMemberLookupService({
 });
 
 const memberLinkPorts = createFirestoreMemberLinkPorts({ firestore, FieldValue });
-const memberLinkService = createMemberLinkService(memberLinkPorts);
+const memberLinkService = createMemberLinkService({
+  ...memberLinkPorts,
+  /* 연결 직후 투영 확인 (2026-11-09). 같은 계정으로 다시 이으면 트리거가 불리지
+     않아, 투영이 없던 회원이 "준비 중" 에 머물렀다. */
+  ensureMemberView: async ({ organizationId, clientId, userId, at }) => ensureMemberView(firestore, {
+    organizationId, clientId, userId, eventAt: at,
+    buildJourney: await loadBuildJourney(), log: logger,
+  }),
+});
 
 /* 회원이 자기 계정을 지우는 통로. 쓰기 모양은 연결과 같은 파일이 들고 있다 --
    갈라지면 한쪽만 고쳐진다. */
@@ -302,6 +310,9 @@ function memberLinkCallable(stage, run) {
         feature: "member_link", stage,
         organizationId: String(request?.data?.organizationId || ""),
         status: String(result?.status || ""),
+        /* 연결된 회원마다 투영 확인 결과: present · written · failed(원본 코드) … */
+        views: (Array.isArray(result?.views) ? result.views : [])
+          .map((item) => [item?.outcome, item?.code].filter(Boolean).join(":")),
       });
       return result;
     } catch (error) {

@@ -97,6 +97,7 @@ import {
 import { installFocusVisibilityGuard } from "./features/ui/focus-visibility.js";
 import { scheduleMemberLayoutSnapshots } from "./features/ui/member-layout-diagnostics.js";
 import { scrollRecordSectionIntoView } from "./features/ui/record-section-scroll.js";
+import { useMotionClose } from "./features/ui/use-motion-close.js";
 import {
   BODY_VIEW_ENABLED, POSTURE_STORAGE_KEYS, POSTURE_VIEW_DEFS, POSTURE_VIEW_KEYS,
   assessmentDisplayDate, assessmentMediaForView, commonPostureComparisonViews, compareAssessmentMetrics, completeAssessmentRecords, correctedPoseSource, countPosturePhotoRecords, normalizeAssessmentSets, normalizePostureView, postureAnalysisPlane,
@@ -1960,16 +1961,15 @@ function AppOverlay({ layer, name, children }) {
     </div>
   );
 }
-function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, children, dismissible = true, aboveTabBar = false }) {
+function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, children, dismissible = true, aboveTabBar = false, animateClose = false }) {
+  const { closing, close } = useMotionClose(onClose, animateClose);
   const panelRef = useRef(null);
   const scrollRef = useRef(null);
   const dragRef = useRef(null);
   const returnFocus = useRef(null);
-  const closeRef = useRef(onClose);
   const dismissibleRef = useRef(dismissible);
-  closeRef.current = onClose;
   dismissibleRef.current = dismissible;
-  useBackClose(true, onClose, !dismissible);
+  useBackClose(true, close, !dismissible);
   useScrollLock();
   useEffect(() => {
     returnFocus.current = returnFocusRef?.current || document.activeElement;
@@ -1978,7 +1978,7 @@ function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, childre
     const first = focusable()[0];
     requestAnimationFrame(() => (first || panel)?.focus());
     const onKey = (e) => {
-      if (e.key === "Escape") { e.preventDefault(); if (dismissibleRef.current) closeRef.current(); return; }
+      if (e.key === "Escape") { e.preventDefault(); if (dismissibleRef.current) close(); return; }
       if (e.key !== "Tab") return;
       const items = focusable();
       if (!items.length) { e.preventDefault(); panelRef.current?.focus(); return; }
@@ -1993,7 +1993,7 @@ function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, childre
       const target = returnFocus.current;
       requestAnimationFrame(() => { try { target?.focus?.(); } catch (e) {} });
     };
-  }, []);
+  }, [close]);
   useEffect(() => {
     requestAnimationFrame(() => {
       const panel = panelRef.current;
@@ -2005,7 +2005,9 @@ function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, childre
   const paintDrag = useCallback((offset, spring = false) => {
     const panel = panelRef.current;
     if (!panel) return;
-    panel.style.transition = spring ? "transform .24s cubic-bezier(.22,1,.36,1)" : "none";
+    const canAnimate = globalThis.matchMedia?.("(prefers-reduced-motion: no-preference)")?.matches;
+    panel.style.transition = spring && canAnimate ? "transform var(--motion-open) var(--motion-ease)" : "none";
+    panel.style.setProperty("--sheet-drag-offset", `${Math.max(0, offset)}px`);
     panel.style.transform = offset > 0 ? `translate3d(0,${offset}px,0)` : "translate3d(0,0,0)";
   }, []);
   const finishDrag = useCallback(() => {
@@ -2014,11 +2016,11 @@ function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, childre
     dragRef.current = null;
     const distance = drag.lastOffset || 0;
     if (dismissibleRef.current && shouldDismissSheet({ distance, elapsedMs: performance.now() - drag.startedAt })) {
-      closeRef.current();
+      close();
       return;
     }
     paintDrag(0, true);
-  }, [paintDrag]);
+  }, [close, paintDrag]);
   const startHandleDrag = (event) => {
     if (!dismissible || (event.pointerType === "mouse" && event.button !== 0)) return;
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -2075,11 +2077,11 @@ function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, childre
     };
   }, [dismissible, finishDrag, paintDrag]);
   return (
-    <div className="fixed left-0 right-0 top-0 z-50 flex items-end justify-center px-0 sm:px-3" style={{ bottom: aboveTabBar ? "calc(var(--pt-tabbar-height) + max(env(safe-area-inset-bottom, 0px), 8px))" : 0, backgroundColor: SCRIM, animation: "sheet-fade .18s ease-out" }} onPointerDown={(e) => { if (dismissible && e.target === e.currentTarget) onClose(); }}>
-      <section ref={panelRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="schedule-sheet-title" aria-busy={!dismissible}
-        className="pt-schedule-sheet flex w-full min-h-0 flex-col overflow-hidden"
+    <div className="app-motion-overlay fixed left-0 right-0 top-0 z-50 flex items-end justify-center px-0 sm:px-3" data-closing={closing || undefined} style={{ bottom: aboveTabBar ? "calc(var(--pt-tabbar-height) + max(env(safe-area-inset-bottom, 0px), 8px))" : 0, backgroundColor: SCRIM }} onPointerDown={(e) => { if (dismissible && e.target === e.currentTarget) close(); }}>
+      <section ref={panelRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="schedule-sheet-title" aria-busy={!dismissible} inert={closing ? "" : undefined}
+        className="app-motion-sheet pt-schedule-sheet flex w-full min-h-0 flex-col overflow-hidden"
         style={{ maxHeight: "92dvh", borderRadius: "20px 20px 0 0", backgroundColor: CARD,
-          border: `1px solid ${LINE}`, borderBottom: 0, boxShadow: "0 -18px 54px rgba(28,36,51,.18)", paddingBottom: aboveTabBar ? 0 : "env(safe-area-inset-bottom, 0px)", animation: "sheet-rise .24s cubic-bezier(.2,.8,.2,1)" }}>
+          border: `1px solid ${LINE}`, borderBottom: 0, boxShadow: "0 -18px 54px rgba(28,36,51,.18)", paddingBottom: aboveTabBar ? 0 : "env(safe-area-inset-bottom, 0px)" }}>
         {dismissible && <button type="button" aria-label="아래로 끌어 닫기" onPointerDown={startHandleDrag} onPointerMove={moveHandleDrag} onPointerUp={finishDrag} onPointerCancel={finishDrag}
           className="flex h-7 w-full shrink-0 touch-none cursor-grab items-center justify-center active:cursor-grabbing">
           <span aria-hidden="true" style={{ width: 36, height: 4, borderRadius: 999, backgroundColor: LINE }} />
@@ -2089,7 +2091,7 @@ function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, childre
             <h3 id="schedule-sheet-title" style={{ fontSize: TYPE.title, lineHeight: 1.35, fontWeight: 700, color: INK }}>{title}</h3>
             {subtitle && <p className="mt-1 text-xs tabular-nums" style={{ color: SUB }}>{subtitle}</p>}
           </div>
-          {dismissible && <button onClick={onClose} aria-label="닫기" className="flex h-10 w-10 shrink-0 items-center justify-center" style={{ marginTop: -2, marginRight: -6, borderRadius: 10, backgroundColor: CANVAS, color: SUB }}>
+          {dismissible && <button onClick={close} aria-label="닫기" className="flex h-10 w-10 shrink-0 items-center justify-center" style={{ marginTop: -2, marginRight: -6, borderRadius: 10, backgroundColor: CANVAS, color: SUB }}>
             <X size={18} />
           </button>}
         </div>
@@ -2873,11 +2875,11 @@ function Tabs({ tab, setTab }) {
         {items.map((it) => {
           const on = tab === it.key, Icon = it.icon;
           return (
-            <button key={it.key} type="button" aria-current={on ? "page" : undefined} onClick={() => setTab(it.key)} className="relative flex flex-1 flex-col items-center justify-center gap-0.5 text-caption font-medium"
+            <button key={it.key} type="button" aria-current={on ? "page" : undefined} onClick={() => setTab(it.key)} className="app-motion-tab relative flex flex-1 flex-col items-center justify-center gap-0.5 text-caption font-medium"
               style={{ height: "var(--pt-tabbar-height)", color: on ? BRAND : SUB }}>
               <span className="relative flex items-center justify-center">
                 <Icon size={20} strokeWidth={on ? 2.2 : 1.7} />
-                {on && <span aria-hidden="true" className="absolute" style={{ bottom: -3, width: 18, height: 2, borderRadius: 1, backgroundColor: BRAND }} />}
+                <span aria-hidden="true" className="app-motion-tab-mark absolute" style={{ bottom: -3, width: 18, height: 2, borderRadius: 1, backgroundColor: BRAND }} />
               </span>
               <span style={{ fontWeight: on ? 700 : 500 }}>{it.label}</span>
             </button>
@@ -3228,9 +3230,9 @@ function SchedSettleBlock({ s, members, canSettle, settled, settledElsewhere = f
 
   if (settled) return (
     <div className="mt-2 rounded-xl p-2.5" style={{ backgroundColor: line.bg }}>
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="app-motion-feedback flex flex-wrap items-center gap-2">
         <Check size={13} style={{ color: line.tone }} />
-        <span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: line.tone }}>{line.label}</span>
+        <span className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: line.tone }} role="status">{line.label}</span>
         {/* 되돌리기는 대표만 본다. 차감 보정과 같은 선이다.
 
             이관 초기화로 사라진 회원권을 가리키는 확정에는 내지 않는다 --
@@ -3449,7 +3451,7 @@ function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast,
 
       {view === MEMBER_NOTE_VIEW.SAVED && (
         <>
-          <div className="flex items-center gap-2">
+          <div className="app-motion-feedback flex items-center gap-2">
             <p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: INK }}>회원 피드백 <span style={{ color: GOOD }}>· 작성 완료</span></p>
             <button type="button" data-member-note-edit onClick={() => { setBody(savedBody); setEditing(true); }}
               className="h-8 shrink-0 rounded-lg px-3 text-xs font-extrabold" style={{ backgroundColor: CARD, color: PRIMARY, border: `1px solid ${LINE}` }}>수정</button>
@@ -4359,7 +4361,8 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
   const [recordFallback, setRecordFallback] = useState("");
   const [recordBody, setRecordBody] = useState("");
   const [recordSaving, setRecordSaving] = useState(false);
-  const closeRecordEntry = () => setRecordMode(null);
+  const { closing: recordClosing, close: closeRecordEntry } = useMotionClose(() => setRecordMode(null), recordMode === "write");
+  const recordBusy = recordSaving || recordClosing;
   const recordSectionRef = useRef(null);
   const [picker, setPicker] = useState(null);
   /* 회원 선택 시트를 열 때마다 명단을 새로 읽는다 (2026-11-04). FC가 방금 등록 ·
@@ -4478,7 +4481,7 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
   };
   return (
     <>
-    <ScheduleBottomSheet title={draft.id ? (isMemberLesson ? "수업 관리" : "일정 수정") : "일정 등록"} subtitle={`${dow(f.date)} ${f.date?.slice(5).replace("-", ".") || ""}${draft.id ? ` · ${draft.start}~${draft.end || addMin(draft.start, Number(draft.dur) || 50)}` : ""}`} returnFocusRef={returnFocusRef} onClose={onClose}>
+    <ScheduleBottomSheet title={draft.id ? (isMemberLesson ? "수업 관리" : "일정 수정") : "일정 등록"} subtitle={`${dow(f.date)} ${f.date?.slice(5).replace("-", ".") || ""}${draft.id ? ` · ${draft.start}~${draft.end || addMin(draft.start, Number(draft.dur) || 50)}` : ""}`} returnFocusRef={returnFocusRef} onClose={onClose} animateClose={recordMode !== "voice"}>
       <div className="space-y-4">
         {/* 회원이 앱에서 취소한 수업 (2026-11-07). 지우지 않고 남긴다 -- [확인] 하면 첫 화면 "회원 취소 N건" 에서
             빠진다. 개인 수업이면 그 시간이 비었다고 함께 말한다. */}
@@ -4644,7 +4647,7 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
                 const active = a.memberId === activeMemberId;
                 return (
                   <div key={a.memberId} className="min-w-0 rounded-xl p-3 text-left" style={{ backgroundColor: active ? TINT : CANVAS, border: `1px solid ${active ? "#D9D7EE" : LINE}` }}>
-                    <button type="button" disabled={recordSaving} onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); setRecordBody(""); }} className="w-full min-w-0 text-left">
+                    <button type="button" disabled={recordBusy} onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); setRecordBody(""); }} className="w-full min-w-0 text-left">
                       <span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: active ? PRIMARY : INK }}>{m?.name || "삭제된 회원"}</span><span className="shrink-0 rounded-full px-2 py-0.5 text-caption font-extrabold" data-member-cancel-badge={isMemberCancelledAttendee(a) ? "" : undefined} style={isMemberCancelledAttendee(a) ? { backgroundColor: WARN_S, color: WARN } : { backgroundColor: stOf(a.status).bg, color: stOf(a.status).color }}>{isMemberCancelledAttendee(a) ? MEMBER_CANCEL_VIEW_COPY.BADGE : stOf(a.status).label}</span></span>
                       <span className="mt-0.5 block text-xs" style={{ color: SUB }}>잔여 {left(m)}회{m?.contractEnd ? ` · ${m.contractEnd.slice(5).replace("-", ".")}까지` : ""}</span>
                       {/* 확정하면 얼마가 되는지. 눌러 본 뒤에 아는 것과 누르기 전에
@@ -4686,8 +4689,11 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
                   <p className="mb-1.5 text-xs font-extrabold" style={{ color: INK }}>출석 · 차감</p>
                   <div className="grid grid-cols-3 gap-2">
                     {[{ k: "done", l: "출석" }, { k: "noshow", l: "노쇼" }, { k: "cancel", l: "취소" }].map((o) => (
-                      <button key={o.k} disabled={settledLesson} onClick={() => onStatus?.(draft.id, o.k, activeMemberId)} className="h-9 rounded-lg text-xs font-bold disabled:opacity-40"
-                        style={activeAttendee.status === o.k ? { backgroundColor: stOf(o.k).color, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>{o.l}</button>
+                      <button key={o.k} disabled={settledLesson} onClick={() => {
+                        if (isDuet && o.k === "done") onStatusAll?.(draft.id, "done");
+                        else onStatus?.(draft.id, o.k, activeMemberId);
+                      }} className="h-9 rounded-lg text-xs font-bold disabled:opacity-40"
+                        style={activeAttendee.status === o.k ? { backgroundColor: stOf(o.k).color, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>{isDuet && o.k === "done" ? "둘 다 출석" : o.l}</button>
                     ))}
                   </div>
                   {!settledLesson && activeAttendee.status !== "booked" && <button type="button" onClick={() => onStatus?.(draft.id, "booked", activeMemberId)} className="mt-2 h-9 w-full rounded-lg text-xs font-bold" style={{ backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>처리 되돌리기</button>}
@@ -4789,9 +4795,9 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
                 {activeAttendee.status !== "booked" && <>
                 {!aiRecordingAvailable(aiRecording) && <p className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>AI 정리 잠시 점검 중 · 직접 입력으로 기록할 수 있어요.</p>}
                 <div className="grid grid-cols-2 gap-2">
-                  {aiRecordingAvailable(aiRecording) && <button disabled={recordSaving} onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "voice" ? null : "voice"); }} className="flex h-12 items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, color: recordMode === "voice" ? "#fff" : PRIMARY, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}` }}><Smartphone size={15} /> 기록하기</button>}
-                  <button data-direct-record disabled={recordSaving} onClick={() => { setRecordFallback(""); if (recordMode !== "write") setRecordBody(editingNote?.body || ""); setRecordMode(recordMode === "write" ? null : "write"); }} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> {editingNote ? "기록 수정" : "직접입력"}</button>
-                  <button disabled={recordSaving || Boolean(editingNote) || Boolean(recordMode)} onClick={async () => {
+                  {aiRecordingAvailable(aiRecording) && <button disabled={recordBusy} onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "voice" ? null : "voice"); }} className="flex h-12 items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, color: recordMode === "voice" ? "#fff" : PRIMARY, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}` }}><Smartphone size={15} /> 기록하기</button>}
+                  <button data-direct-record disabled={recordBusy} onClick={() => { setRecordFallback(""); if (recordMode !== "write") setRecordBody(editingNote?.body || ""); if (recordMode === "write") closeRecordEntry(); else setRecordMode("write"); }} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> {editingNote ? "기록 수정" : "직접입력"}</button>
+                  <button disabled={recordBusy || Boolean(editingNote) || Boolean(recordMode)} onClick={async () => {
                     setRecordSaving(true);
                     try {
                       await onNoComment?.(activeMemberId, draft.type, draft.id);
@@ -4803,22 +4809,30 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
                 </div>
 
                 {recordMode && (
-                  <div ref={recordSectionRef} data-lesson-record-entry className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
-                    <DeviceOnlyNote />
-                    {recordFallback &&<p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
-                    {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id} onLater={closeRecordEntry} onClose={closeRecordEntry} onDeferred={closeRecordEntry} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
-                    {recordMode === "write" && <>
-                      <textarea rows={4} value={recordBody} readOnly={recordSaving} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
-                      <button disabled={recordSaving || !recordBody.trim()} onClick={async () => {
-                        setRecordSaving(true);
-                        try {
-                          const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null, editingNote ? { existingNoteId: editingNote.id } : null);
-                          if (stored === true) closeRecordEntry();
-                        } finally {
-                          setRecordSaving(false);
-                        }
-                      }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>{editingNote ? "수정 저장" : "저장"}</button>
-                    </>}
+                  <div ref={recordSectionRef} data-lesson-record-entry className="app-motion-collapse" data-closing={recordClosing || undefined} inert={recordClosing ? "" : undefined}>
+                    <div className="app-motion-collapse-clip">
+                      <div className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
+                        <DeviceOnlyNote />
+                        {recordFallback && <p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
+                        {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id}
+                          onLater={closeRecordEntry} onClose={closeRecordEntry} onDeferred={closeRecordEntry}
+                          onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }}
+                          onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)}
+                          onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
+                        {recordMode === "write" && <>
+                          <textarea rows={4} value={recordBody} readOnly={recordSaving} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
+                          <button disabled={recordSaving || !recordBody.trim()} onClick={async () => {
+                            setRecordSaving(true);
+                            try {
+                              const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null, editingNote ? { existingNoteId: editingNote.id } : null);
+                              if (stored === true) closeRecordEntry();
+                            } finally {
+                              setRecordSaving(false);
+                            }
+                          }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>{editingNote ? "수정 저장" : "저장"}</button>
+                        </>}
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -5028,7 +5042,7 @@ export function OwnerMessageBar({ message = "" }) {
   return (
     <div className="shrink-0 flex items-start gap-2 px-4 py-2" data-owner-message style={{ backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
       <Megaphone size={15} style={{ color: PRIMARY, flexShrink: 0, marginTop: 2 }} aria-hidden="true" />
-      <p className="min-w-0 flex-1 text-sm" style={{ color: INK, lineHeight: 1.45, overflowWrap: "anywhere" }}>
+      <p key={body} className="app-motion-highlight min-w-0 flex-1 text-sm" style={{ color: INK, lineHeight: 1.45, overflowWrap: "anywhere" }}>
         <b style={{ color: PRIMARY }}>이사님 전달사항</b> · {body}
       </p>
     </div>
@@ -11420,7 +11434,7 @@ function NextClassCard({ members, schedule, photos, onStatus, onOpenMember, onWr
       )}
       {step === null && (
         <div className="mt-3 grid min-w-0 grid-cols-3 gap-1.5">
-          <button onClick={() => { onStatus(s.id, "done", m.id); setHeld({ s, m }); setStep("done"); }} className="rounded-2xl py-2.5 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>출석</button>
+          <button onClick={() => { onStatus(s.id, "done", m.id); setHeld({ s, m }); setStep("done"); }} className="rounded-2xl py-2.5 text-xs font-extrabold text-white" style={{ backgroundColor: GOOD }}>{lessonTypeKeyOf(s) === "duet" ? "둘 다 출석" : "출석"}</button>
           <button onClick={() => { onStatus(s.id, "noshow", m.id); setHeld({ s, m }); setStep("noshow"); }} className="rounded-2xl py-2.5 text-xs font-extrabold" style={{ backgroundColor: BAD_S, color: BAD }}>노쇼</button>
           <button onClick={() => onStatus(s.id, "cancel", m.id)} className="rounded-2xl py-2.5 text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB }}>취소</button>
         </div>
@@ -32598,6 +32612,7 @@ export default function App() {
   const setStatus = (id, status, memberId) => {
     const s0 = db.schedule.find((x) => x.id === id);
     if (!s0) return;
+    if (status === "done" && lessonTypeKeyOf(s0) === "duet") return setStatusAll(id, status);
     const list = attendeesOf(s0);
     if (!list.length) return;
     const mid = memberId || list[0].memberId;
@@ -33838,10 +33853,8 @@ export default function App() {
       @keyframes bar { 0% { width: 0 } 70% { width: 82% } 100% { width: 100% } }
       .loadbar { animation: bar 1.5s cubic-bezier(.3,.9,.3,1) both }
       @keyframes weekIn { from { opacity: .35; transform: translateX(10px) } to { opacity: 1; transform: none } }
-      @keyframes sheetIn { from { transform: translate(-50%, 18px); opacity: .72 } to { transform: translate(-50%, 0); opacity: 1 } }
-      @keyframes sheet-rise { from { transform: translateY(24px); opacity: .72 } to { transform: translateY(0); opacity: 1 } }
-      @keyframes sheet-fade { from { background-color: rgba(28,36,51,0) } to { background-color: ${SCRIM} } }
-      .sheet-in { animation: sheetIn .18s ease-out both; }
+      @keyframes sheetIn { from { transform: translate(-50%, 14px); opacity: .78 } to { transform: translate(-50%, 0); opacity: 1 } }
+      .sheet-in { animation: sheetIn var(--motion-open) var(--motion-ease) both; }
       @keyframes rowRise { 0% { transform: translateY(18px); opacity: .3 } 55% { transform: translateY(-5px); opacity: 1 } 78% { transform: translateY(2px) } 100% { transform: translateY(0) } }
       @keyframes rowSink { 0% { transform: translateY(-12px) scale(.98); opacity: .45 } 70% { transform: translateY(2px) scale(1) } 100% { transform: translateY(0); opacity: 1 } }
       .week-strip { animation: weekIn .22s ease both }
@@ -33944,8 +33957,8 @@ export default function App() {
             ) : null}
           </div>
         ) : null}
-        <div className="relative min-h-0 flex-1 overflow-hidden">
-          <Guard key={tab}>
+        <div key={tab} className="app-motion-content relative min-h-0 flex-1 overflow-hidden">
+          <Guard>
             {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} viewerLocationIds={organizationContext.locationIds || []} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterInMemberTab} centreAccount={centreAccount} onOpenCentreRegistration={canOpenCentreRegistration ? openCentreRegistration : undefined} unlinkedLocal={centreAccount && roster ? roster.unlinkedLocal || [] : []} onUploadUnlinked={canOpenCentreRegistration ? uploadUnlinkedMember : undefined} onLinkUnlinked={linkUnlinkedMember} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
@@ -34270,7 +34283,7 @@ export default function App() {
           날 저장은 됐는데 아무 말도 없는 화면이 된다. */}
       {toast && (
         <div className="fixed inset-x-0 flex justify-center px-4" style={{ zIndex: overlayZ("TOAST"), bottom: "calc(62px + max(env(safe-area-inset-bottom, 0px), 8px))" }}>
-          <div className="flex max-w-[360px] items-center gap-2 px-4 py-2.5" style={{ borderRadius: 8, backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>
+          <div key={toast.msg} className={`${toast.ok ? "app-motion-feedback " : ""}flex max-w-[360px] items-center gap-2 px-4 py-2.5`} style={{ borderRadius: 8, backgroundColor: toast.ok ? TOAST : BAD, boxShadow: SHADOW }}>
             {toast.ok ? <Check size={14} color="#fff" /> : <AlertTriangle size={14} color="#fff" />}
             <span className="text-sm font-bold text-white">{toast.msg}</span>
             {toast.action && <button type="button" onClick={() => { const { run } = toast.action; setToast(null); run(); }}

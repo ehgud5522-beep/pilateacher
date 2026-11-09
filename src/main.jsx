@@ -4,6 +4,7 @@ import { Capacitor } from "@capacitor/core";
 import App from "./App.jsx";
 import { SERVICE_WORKER_ACTION, purgeServiceWorkers, serviceWorkerAction } from "./features/ui/service-worker.js";
 import "./index.css";
+import "./features/ui/motion.css";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>

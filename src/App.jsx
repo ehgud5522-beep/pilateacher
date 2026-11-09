@@ -41,7 +41,7 @@ import {
   fbLoadAppUpdateConfig,
   fbSwapInstructorAccount,
   fbConfirmInstructorNames,
-  fbGrantMemberCancel, fbManageNotice, fbUpdateRuntimeConfig,
+  fbGrantMemberCancel, fbLessonRatingStats, fbManageNotice, fbUpdateRuntimeConfig,
   fbHandoverPass,
   fbSessionUpPass,
   fbResetMigratedData,
@@ -4358,6 +4358,8 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
   const [recordMode, setRecordMode] = useState(null);
   const [recordFallback, setRecordFallback] = useState("");
   const [recordBody, setRecordBody] = useState("");
+  const [recordSaving, setRecordSaving] = useState(false);
+  const closeRecordEntry = () => setRecordMode(null);
   const recordSectionRef = useRef(null);
   const [picker, setPicker] = useState(null);
   /* 회원 선택 시트를 열 때마다 명단을 새로 읽는다 (2026-11-04). FC가 방금 등록 ·
@@ -4642,7 +4644,7 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
                 const active = a.memberId === activeMemberId;
                 return (
                   <div key={a.memberId} className="min-w-0 rounded-xl p-3 text-left" style={{ backgroundColor: active ? TINT : CANVAS, border: `1px solid ${active ? "#D9D7EE" : LINE}` }}>
-                    <button type="button" onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); setRecordBody(""); }} className="w-full min-w-0 text-left">
+                    <button type="button" disabled={recordSaving} onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); setRecordBody(""); }} className="w-full min-w-0 text-left">
                       <span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: active ? PRIMARY : INK }}>{m?.name || "삭제된 회원"}</span><span className="shrink-0 rounded-full px-2 py-0.5 text-caption font-extrabold" data-member-cancel-badge={isMemberCancelledAttendee(a) ? "" : undefined} style={isMemberCancelledAttendee(a) ? { backgroundColor: WARN_S, color: WARN } : { backgroundColor: stOf(a.status).bg, color: stOf(a.status).color }}>{isMemberCancelledAttendee(a) ? MEMBER_CANCEL_VIEW_COPY.BADGE : stOf(a.status).label}</span></span>
                       <span className="mt-0.5 block text-xs" style={{ color: SUB }}>잔여 {left(m)}회{m?.contractEnd ? ` · ${m.contractEnd.slice(5).replace("-", ".")}까지` : ""}</span>
                       {/* 확정하면 얼마가 되는지. 눌러 본 뒤에 아는 것과 누르기 전에
@@ -4787,9 +4789,16 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
                 {activeAttendee.status !== "booked" && <>
                 {!aiRecordingAvailable(aiRecording) && <p className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>AI 정리 잠시 점검 중 · 직접 입력으로 기록할 수 있어요.</p>}
                 <div className="grid grid-cols-2 gap-2">
-                  {aiRecordingAvailable(aiRecording) && <button onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "voice" ? null : "voice"); }} className="flex h-12 items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, color: recordMode === "voice" ? "#fff" : PRIMARY, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}` }}><Smartphone size={15} /> 기록하기</button>}
-                  <button data-direct-record onClick={() => { setRecordFallback(""); if (recordMode !== "write") setRecordBody(editingNote?.body || ""); setRecordMode(recordMode === "write" ? null : "write"); }} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> {editingNote ? "기록 수정" : "직접입력"}</button>
-                  <button onClick={async () => { const stored = await onNoComment?.(activeMemberId, draft.type, draft.id); if (stored !== false) onClose(); }} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>노코멘트</button>
+                  {aiRecordingAvailable(aiRecording) && <button disabled={recordSaving} onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "voice" ? null : "voice"); }} className="flex h-12 items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, color: recordMode === "voice" ? "#fff" : PRIMARY, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}` }}><Smartphone size={15} /> 기록하기</button>}
+                  <button data-direct-record disabled={recordSaving} onClick={() => { setRecordFallback(""); if (recordMode !== "write") setRecordBody(editingNote?.body || ""); setRecordMode(recordMode === "write" ? null : "write"); }} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> {editingNote ? "기록 수정" : "직접입력"}</button>
+                  <button disabled={recordSaving || Boolean(editingNote) || Boolean(recordMode)} onClick={async () => {
+                    setRecordSaving(true);
+                    try {
+                      await onNoComment?.(activeMemberId, draft.type, draft.id);
+                    } finally {
+                      setRecordSaving(false);
+                    }
+                  }} className="h-12 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>노코멘트</button>
                   <button onClick={onClose} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB, border: `1px solid ${LINE}` }}>나중에</button>
                 </div>
 
@@ -4797,8 +4806,19 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
                   <div ref={recordSectionRef} data-lesson-record-entry className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
                     <DeviceOnlyNote />
                     {recordFallback &&<p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
-                    {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
-                    {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={async () => { const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null, editingNote ? { existingNoteId: editingNote.id } : null); if (stored === true) onClose(); }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>{editingNote ? "수정 저장" : "저장"}</button></>}
+                    {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id} onLater={closeRecordEntry} onClose={closeRecordEntry} onDeferred={closeRecordEntry} onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }} onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
+                    {recordMode === "write" && <>
+                      <textarea rows={4} value={recordBody} readOnly={recordSaving} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
+                      <button disabled={recordSaving || !recordBody.trim()} onClick={async () => {
+                        setRecordSaving(true);
+                        try {
+                          const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null, editingNote ? { existingNoteId: editingNote.id } : null);
+                          if (stored === true) closeRecordEntry();
+                        } finally {
+                          setRecordSaving(false);
+                        }
+                      }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>{editingNote ? "수정 저장" : "저장"}</button>
+                    </>}
                   </div>
                 )}
 
@@ -24944,6 +24964,70 @@ function ScheduleSyncAdmin({
 }
 
 /**
+ * 수업 후 별점 평가 (2026-11-09 대표 요청) — 대표 화면의 강사별 집계.
+ *
+ * 강사 이름 · 누적 응답 수 · 항목별 평균(과 그 항목 응답 수)만 그린다. 회원 이름 · 수업 ·
+ * 개별 점수는 서버가 돌려주지도 않는다 (functions/src/lesson-rating.js). 평가 문서와 집계
+ * 문서는 규칙이 아무에게도 열지 않아, 이 화면은 서버 함수(lessonRatingStats)로만 읽는다.
+ * 항목 문구는 functions/shared/lesson-rating.mjs 한 곳 -- 서버가 함께 돌려준다.
+ */
+function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, initialState = null }) {
+  const [state, setState] = useState(() => initialState || { rows: null, items: [], error: "" });
+  const organizationId = organization?.organizationId || "";
+  const load = useCallback(async () => {
+    if (!organizationId) return;
+    setState((current) => ({ ...current, error: "", rows: null }));
+    try {
+      const result = await onLoad({ organizationId });
+      setState({ rows: Array.isArray(result?.rows) ? result.rows : [], items: Array.isArray(result?.items) ? result.items : [], error: "" });
+    } catch (thrown) {
+      const code = String(thrown?.details?.reason || thrown?.code || "unknown").replace(/^functions\//, "");
+      setState({ rows: [], items: [], error: `평가 집계를 읽지 못했어요 (코드 ${code})` });
+      deviceLog("lesson_rating_stats_failed", {
+        feature: "lesson_rating", stage: "stats_read", errorDomain: "functions_callable",
+        errorCode: String(thrown?.code || "unknown"), message: thrown?.message,
+        role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+      });
+    }
+  }, [organizationId, onLoad, organization?.role]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const questionOf = (id) => state.items.find((item) => item.id === id)?.question || id;
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-lesson-rating-stats>
+      <div className="flex items-center justify-between">
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>수업 후 별점 · 강사별 집계</h2>
+        <button type="button" onClick={load} className="h-9 px-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
+      </div>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        회원이 보니따 앱에서 수업 뒤에 남긴 별점(1~5)의 누적 평균과 응답 수입니다. 강사에게는 공개되지 않고, 회원 이름 · 개별 응답은 대표님도 볼 수 없습니다.
+      </p>
+      {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
+      {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
+      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>아직 받은 평가가 없습니다.</p> : null}
+      <div className="mt-3 space-y-2">
+        {(state.rows || []).map((row) => (
+          <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-rating-row>
+            <div className="flex items-center justify-between gap-2">
+              <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>{row.instructorName || "이름 모름"}</span>
+              <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>누적 {row.count}건</span>
+            </div>
+            {(row.items || []).map((item) => (
+              <div key={item.id} className="mt-1 flex items-center justify-between gap-2">
+                <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: SUB }}>{questionOf(item.id)}</span>
+                <span className="tabular-nums font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
+                  {item.average === null || item.average === undefined ? "—" : `★ ${Number(item.average).toFixed(1)}`}
+                  <span className="font-normal" style={{ color: SUB }}>{` · ${item.count}건`}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/**
  * 회원 앱 수업 취소 (2026-11-07, 5차 1단계) — 대표 설정 · 강사별 추가 부여 현황.
  *
  * 켜는 범위는 강사 단위 시범(고른 강사만)부터. **그 강사의 일정 동기화가 켜져 있어야**
@@ -27226,6 +27310,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               description="켜진 계정은 상담 · 휴무 같은 개인 일정(제목 · 날짜 · 시각)과 그룹 수업을 본인의 다른 PC · 폰과 주고받습니다. 본인만 볼 수 있고 대표 · FC · 다른 강사는 볼 수 없습니다. 30일 전 ~ 60일 뒤의 것만 주고받습니다. 메모 · 상담 메모 · 회원 목표는 입력한 기기에만 남습니다. 꺼진 계정은 서버에 아무것도 올리지 않습니다." />
             <MemberCancelAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig} />
+            {/* 수업 후 별점 평가 (2026-11-09). 고른 계정은 **강사** -- 그 강사의 수업에만 회원 앱이 평가를 묻는다. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="memberRating" title="회원 앱 수업 후 별점"
+              description="켜진 강사의 수업이 끝나면 회원 앱 홈에 별점 카드(항목 3개, 1~5점)가 3일 동안 뜹니다. 평가는 강사에게 공개되지 않고, 아래 집계에서 강사별 평균 · 응답 수만 볼 수 있습니다. 강사 한 명씩 켜세요." />
+            <LessonRatingStatsAdmin organization={organization} />
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="rosterRealtime" title="회원 명단 실시간"
@@ -28459,6 +28549,17 @@ export function createAppScreenSmokeCases() {
       error={{ kind: "permission", code: "permission-denied", message: "알림함을 아직 열 수 없어요 (코드 permission-denied)" }} onClose={noop} onPick={noop} />) },
     { name: "운영 설정 · 회원 앱 수업 취소", element: providerWith(smokeOwner, (
       <MemberCancelAdmin organization={readyOrganizationContext(smokeOwner)} onLoadConfig={() => Promise.resolve(null)} onSaveConfig={noop} />
+    )) },
+    { name: "운영 설정 · 수업 후 별점 집계", element: providerWith(smokeOwner, (
+      <LessonRatingStatsAdmin organization={readyOrganizationContext(smokeOwner)} onLoad={() => Promise.resolve(null)}
+        initialState={{ error: "", items: [{ id: "body", question: "항목 1 (스모크 예시)" }], rows: [
+          { instructorId: "u1", instructorName: "정예진", count: 12, items: [{ id: "body", average: 4.6, count: 12 }] },
+          { instructorId: "u2", instructorName: "", count: 1, items: [{ id: "body", average: null, count: 0 }] },
+        ] }} />
+    )) },
+    { name: "운영 설정 · 수업 후 별점 집계 · 읽지 못함", element: providerWith(smokeOwner, (
+      <LessonRatingStatsAdmin organization={readyOrganizationContext(smokeOwner)} onLoad={() => Promise.resolve(null)}
+        initialState={{ error: "평가 집계를 읽지 못했어요 (코드 not_owner)", items: [], rows: [] }} />
     )) },
     { name: "센터 회원 상세 · 보관 가능", element: ownerClientDetail({ history: smokeEndedHistory }) },
     { name: "센터 회원 상세 · 보관 확인", element: ownerClientDetail({ history: smokeEndedHistory, initialArchive: "archive" }) },

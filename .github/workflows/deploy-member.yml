@@ -17,7 +17,7 @@
 #   2. action 에 target 으로 회원 앱 사이트를 이름으로 지정한다.
 #
 # ── paths 가 왜 이렇게 생겼나 ──
-# 회원 앱은 member/ 밖의 공용 파일 여섯 개를 import 한다. 그 파일이 바뀌면
+# 회원 앱은 member/ 밖의 공용 파일 몇 개를 import 한다. 그 파일이 바뀌면
 # 회원 앱 번들도 바뀌므로 배포해야 한다. 목록은 손으로 적되,
 # tests/member/deploy-paths.test.js 가 실제 import 그래프와 맞는지 확인한다 --
 # 회원 앱이 새 공용 파일을 가져오면서 여기 적는 것을 잊으면 테스트가 깨진다.
@@ -38,6 +38,7 @@ on:
       - "src/data/schema/display-names.js"
       - "src/data/schema/constants.js"
       - "src/data/schema/deduction-pricing.js"
+      - "functions/shared/lesson-rating.mjs"
       - "src/features/app-update/update-gate.js"
       - "package.json"
       - "package-lock.json"
@@ -55,6 +56,7 @@ on:
       - "src/data/schema/display-names.js"
       - "src/data/schema/constants.js"
       - "src/data/schema/deduction-pricing.js"
+      - "functions/shared/lesson-rating.mjs"
       - "src/features/app-update/update-gate.js"
       - "package.json"
       - "package-lock.json"

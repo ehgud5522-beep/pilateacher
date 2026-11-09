@@ -1,5 +1,29 @@
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-11-09 — 수업 상세에서 일지 저장 후 계속 진행
+
+- 일정에서 연 수업 상세는 직접 입력 저장, 노코멘트, 음성 기록 완료 후에도 열어 둔다. 일지 입력만 접고 같은 화면에서 회원 피드백과 수업 확정을 이어갈 수 있다.
+- 직접 입력 저장이 실패하면 입력 내용을 그대로 둔다. 운영 배포 및 실기기 확인은 아직 진행하지 않았다.
+
+## 2026-11-09 — 보니따 VIP 수업 후 별점 평가 (`feat/member-lesson-rating`, 병합 · 배포 전, 스위치 꺼짐)
+
+- 대표 요청: "매 수업 어땠는지 별 표시로 빠르게 · 강사님에겐 비공개 · 강사별 몇 점 받는지 누적 횟수로". 대표가 보낸 화면은 회원 앱에
+  없어서 새로 만듦 (카카오 의견 보내기 링크만 있었다)
+- 항목 · 문구 · 기간(3일) · 판정 · 집계는 `functions/shared/lesson-rating.mjs` **한 곳**. 항목 3개: body(대표 화면 그대로) · care · again
+  (뒤 둘은 제안 -- PR 설명에 후보). id 는 저장 열쇠라 바꾸지 말고 새 id 로 추가
+- 회원 앱 홈 맨 위 카드(`member/src/lesson-rating.jsx`): 기간 안 가장 최근 출석(차감) 수업 하나. 서버에 먼저 물어 꺼져 있으면 아무것도
+  안 그림. "다음에 할게요" · 보낸 수업은 기기(`pilateacher.member.ratingSeen`, 수업 id 만)에 적어 다시 안 묻는다. 이를 위해 회원 투영
+  history 에 `lessonId` 를 실음(차감만) -- 서버가 회원 문서를 다시 만들기 전의 옛 문서에는 없어서 카드가 안 뜬다
+- 저장 · 읽기: 서버 함수 `memberLessonRating`(status · submit) · `lessonRatingStats`(대표만). `lessonRatings/{lessonId}_{clientId}` +
+  `lessonRatingStats/{instructorId}` 한 트랜잭션, 두 번 눌러도 집계 한 번. 담당 강사는 수업 문서에서 읽음
+- **규칙**: 두 경로 `allow read, write: if false` (대표 · 강사 · 회원 모두). 규칙 파일 · 테스트만 -- **미배포**. 운영 규칙에 이 블록이
+  없어도 기본 거절이라 동작은 같다(문서화 · 테스트 고정 목적)
+- 스위치 `runtimeConfig/scheduleSync.memberRating` (off · listed(강사 uid) · all), 없으면 꺼짐. 대표 설정 → 앱 업데이트 · 운영 스위치에
+  "회원 앱 수업 후 별점" 카드 + "수업 후 별점 · 강사별 집계" 카드(이름 · 누적 건수 · 항목별 평균만)
+- **배포 순서**: Functions(memberLessonRating · lessonRatingStats · updateRuntimeConfig) → 회원 투영 다시 만들기(또는 다음 변경 때 자연히)
+  → 회원 웹 · 앱 → 대표가 강사 한 명 켜기. `deploy-member.yml` paths 에 공용 파일 추가함 -- 병합하면 회원 웹이 자동 배포된다
+- 확인 못 한 것: 실기기 · 운영 서버 · 에뮬레이터 밖 실제 트랜잭션
+
 ## 2026-11-08 — 일정 탭 맨 위 정리 · 한 문장 · 이사님 전달사항 (`feat/schedule-top-compact`, 배포 · 병합 전)
 
 - 대표 요청(스크린샷). 1.1.47 에 넣지 않음. 같은 날 "대표 → 이사" 로 이름을 바꿈(화면 글자만 -- 권한은 그대로 대표(owner) 계정)

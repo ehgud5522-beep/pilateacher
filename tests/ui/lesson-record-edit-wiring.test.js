@@ -31,9 +31,8 @@ test("(2) 다시 열면 직접 입력 기록을 불러와 같은 기록을 고�
   assert.match(app, /task\.s\.id, recordBody\.trim\(\), null, queueEditingNote \? \{ existingNoteId: queueEditingNote\.id \} : null\)/);
 });
 
-test("저장 실패는 입력을 지킨다 — 성공(true)일 때만 닫고, 로그인이 풀린 저장은 실패로", async () => {
+test("로그인이 풀렸거나 기록이 비어 있으면 저장 실패로 처리한다", async () => {
   const app = await source();
-  assert.match(app, /if \(stored === true\) onClose\(\);/, "일정 시트는 true 일 때만 닫는다");
   assert.match(app, /if \(stored !== true\) \{\s*\n\s*deviceLog\("lesson_note_save_failed"/);
   assert.match(app, /\(코드 no_account\)/);
   assert.match(app, /\(코드 empty_record\)/, "빈 기록도 말없이 끝나지 않는다");

@@ -10,7 +10,7 @@ const { HttpsError, onCall, onRequest } = require("firebase-functions/v2/https")
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onDocumentWritten } = require("firebase-functions/v2/firestore");
 const {
-  clientIdsFromLessonChange, clientIdsFromLessonNoteChange, clientIdsFromPassChange, rebuildMemberViews,
+  clientIdsFromLessonChange, clientIdsFromLessonNoteChange, clientIdsFromPassChange, ensureMemberView, rebuildMemberViews,
 } = require("./member-view-triggers");
 const { createAccountDeletionService } = require("./account-deletion");
 const { createAIGatewayHandler } = require("./ai-gateway");
@@ -35,6 +35,7 @@ const { handleRuntimeConfigRequest } = require("./runtime-config-admin");
 const { handleMemberPushSettings, runMemberPush } = require("./member-push");
 const { handleNoticeRequest } = require("./notice-admin");
 const { grantMemberCancel, memberCancelLesson, memberCancelStatus } = require("./member-cancel");
+const { lessonRatingStats, lessonRatingStatus, submitLessonRating } = require("./lesson-rating");
 const { cancelThenNotifyTeacher, handleTeacherPushSettings } = require("./teacher-cancel-push");
 const { monthlyPayFor, planAccountSwap, runAccountSwap } = require("./instructor-swap");
 const { reconcileOrganization } = require("./pass-reconcile-nightly");
@@ -109,7 +110,15 @@ const memberLookupService = createMemberLookupService({
 });
 
 const memberLinkPorts = createFirestoreMemberLinkPorts({ firestore, FieldValue });
-const memberLinkService = createMemberLinkService(memberLinkPorts);
+const memberLinkService = createMemberLinkService({
+  ...memberLinkPorts,
+  /* 연결 직후 투영 확인 (2026-11-09). 같은 계정으로 다시 이으면 트리거가 불리지
+     않아, 투영이 없던 회원이 "준비 중" 에 머물렀다. */
+  ensureMemberView: async ({ organizationId, clientId, userId, at }) => ensureMemberView(firestore, {
+    organizationId, clientId, userId, eventAt: at,
+    buildJourney: await loadBuildJourney(), log: logger,
+  }),
+});
 
 /* 회원이 자기 계정을 지우는 통로. 쓰기 모양은 연결과 같은 파일이 들고 있다 --
    갈라지면 한쪽만 고쳐진다. */
@@ -301,6 +310,9 @@ function memberLinkCallable(stage, run) {
         feature: "member_link", stage,
         organizationId: String(request?.data?.organizationId || ""),
         status: String(result?.status || ""),
+        /* 연결된 회원마다 투영 확인 결과: present · written · failed(원본 코드) … */
+        views: (Array.isArray(result?.views) ? result.views : [])
+          .map((item) => [item?.outcome, item?.code].filter(Boolean).join(":")),
       });
       return result;
     } catch (error) {
@@ -975,6 +987,72 @@ exports.grantMemberCancel = onCall({
       errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
     });
     throw new HttpsError("unavailable", "member_cancel_grant_failed", { reason: "member_cancel_grant_failed" });
+  }
+});
+
+/* ── 수업 후 별점 평가 (2026-11-09 대표 요청) ───────────────────────────
+   회원 앱이 쓰고(action "status" · "submit"), 대표 화면이 집계를 읽는다. 규칙은 두 컬렉션을
+   아무에게도 열지 않는다 -- 이 통로뿐이다. 근거는 lesson-rating.js 머리말.
+   스위치는 runtimeConfig/scheduleSync.memberRating (처음에는 꺼짐). */
+const lessonRatingLog = (level, event, fields) => logger[level](event, { feature: "lesson_rating", ...fields });
+
+exports.memberLessonRating = onCall(MEMBER_LINK_OPTIONS, async (request) => {
+  const action = String(request?.data?.action || "").trim() === "submit" ? "submit" : "status";
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const lessonId = String(request?.data?.lessonId || "").trim();
+  const input = {
+    callerUid: request?.auth?.uid, organizationId,
+    clientId: request?.data?.clientId, lessonId, scores: request?.data?.scores,
+  };
+  try {
+    if (action === "status") return await lessonRatingStatus(firestore, input);
+    const result = await submitLessonRating(firestore, input);
+    /* 점수 · uid · 이름은 남기지 않는다 (§7 · 강사 비공개). 수업 id 와 결과만. */
+    lessonRatingLog("info", "lesson_rating_done", {
+      stage: "submit", organizationId, lessonId, outcome: result.outcome, correlationId: result.ratingId,
+    });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      lessonRatingLog("warn", "lesson_rating_refused", {
+        stage: action, organizationId, lessonId, errorDomain: "lesson_rating",
+        errorCode: error.reason || error.httpsCode, field: error.field || "",
+      });
+      throw new HttpsError(error.httpsCode, error.message, { reason: error.reason || "" });
+    }
+    lessonRatingLog("error", "lesson_rating_failed", {
+      stage: action, organizationId, lessonId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+    throw new HttpsError("unavailable", "lesson_rating_failed", { reason: "lesson_rating_failed" });
+  }
+});
+
+/* 대표 화면: 강사별 누적 응답 수 · 항목별 평균. 대표만. 개별 응답은 읽지 않는다. */
+exports.lessonRatingStats = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 30,
+  invoker: "public",
+}, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  try {
+    const result = await lessonRatingStats(firestore, {
+      callerUid: request?.auth?.uid, organizationId,
+    }, { membershipId, isActiveOwner });
+    lessonRatingLog("info", "lesson_rating_stats_read", { stage: "stats", organizationId, instructors: result.rows.length });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      lessonRatingLog("warn", "lesson_rating_stats_refused", {
+        stage: "stats", organizationId, errorDomain: "lesson_rating", errorCode: error.reason || error.httpsCode, role: error.role || "",
+      });
+      throw new HttpsError(error.httpsCode, error.message, { reason: error.reason || "" });
+    }
+    lessonRatingLog("error", "lesson_rating_stats_failed", {
+      stage: "stats", organizationId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+    throw new HttpsError("unavailable", "lesson_rating_stats_failed", { reason: "lesson_rating_stats_failed" });
   }
 });
 

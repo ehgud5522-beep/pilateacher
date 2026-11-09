@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  clientIdsFromLessonNoteChange, collectMemberViewInput,
+  clientIdsFromLessonNoteChange, collectMemberViewInput, ensureMemberView,
 } = require("../src/member-view-triggers");
 
 /**
@@ -164,4 +164,32 @@ test("before 도 본다 -- 규칙이 느슨해지는 날 조용히 틀리지 않
 test("회원을 모르는 변화는 아무 투영도 건드리지 않는다", () => {
   assert.deepEqual(clientIdsFromLessonNoteChange(null, {}), []);
   assert.deepEqual(clientIdsFromLessonNoteChange(null, null), []);
+});
+
+/* ── 연결 직후 투영 확인 (2026-11-09) ── */
+
+test("ensureMemberView: 투영이 있고 주인이 같으면 손대지 않는다", async () => {
+  const documents = baseDocuments();
+  documents[`${ORG}/memberViews/client-a`] = { userId: "uid-1", clientId: "client-a" };
+  const db = fakeFirestore(documents);
+  /* runTransaction 이 없는 대역이다 -- 다시 만들러 가면 여기서 던진다. */
+  const outcome = await ensureMemberView(db, { organizationId: "center-a", clientId: "client-a", userId: "uid-1" });
+  assert.equal(outcome, "present");
+});
+
+test("ensureMemberView: 투영이 없으면 다시 만들러 간다 (회원 문서가 없으면 no_client)", async () => {
+  const db = fakeFirestore({});
+  const outcome = await ensureMemberView(db, { organizationId: "center-a", clientId: "client-a", userId: "uid-1" });
+  assert.equal(outcome, "no_client");
+});
+
+test("ensureMemberView: 주인이 다른 투영은 '있다' 로 보지 않는다 -- 회원 읽기가 거절된다", async () => {
+  const documents = baseDocuments();
+  documents[`${ORG}/memberViews/client-a`] = { userId: "uid-old", clientId: "client-a" };
+  const db = fakeFirestore(documents);
+  await assert.rejects(
+    ensureMemberView(db, { organizationId: "center-a", clientId: "client-a", userId: "uid-1" }),
+    /runTransaction/,
+    "다시 만들기(트랜잭션)까지 간다",
+  );
 });

@@ -136,6 +136,9 @@ const WRITERS = Object.freeze({
   teacherPush: scheduleSyncPayload,
   /* 회원 앱 수업 취소 (5차 1단계). scheduleSync 문서의 memberCancel 칸 -- 아래 참고. */
   memberCancel: memberCancelPayload,
+  /* 수업 후 별점 평가 (2026-11-09). listed 의 userIds 는 **강사** 계정 uid -- 그 강사의 수업에만
+     평가를 받는다. 서버(memberLessonRating)만 읽는다. 없으면 꺼짐. scheduleSync 문서의 칸. */
+  memberRating: scheduleSyncPayload,
 });
 
 /**
@@ -151,6 +154,8 @@ const FIELD_TARGETS = Object.freeze({
   /* 같은 이유로 scheduleSync 에 얹는다. 강사 앱은 이 문서를 이미 읽고, 서버는 같은
      문서에서 그 강사의 동기화 스위치와 함께 읽는다. 회원 앱은 이 문서를 읽지 않는다. */
   memberCancel: { document: "scheduleSync", field: "memberCancel" },
+  /* 별점 평가 스위치. 새 문서를 만들면 규칙 배포가 필요해 이미 있는 문서에 얹는다. */
+  memberRating: { document: "scheduleSync", field: "memberRating" },
 });
 
 /**

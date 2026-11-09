@@ -310,3 +310,10 @@ test("옛 앱의 30시간 설정 요청은 받아도 다시 켜지지 않는다"
   assert.equal(result.prefs.lesson30h, undefined);
   assert.equal(result.prefs.lessonRating, true);
 });
+
+test("옛 앱에서 두 알림을 모두 꺼도 새 평가 알림이 켜지지 않는다", async () => {
+  const db = world(); db.store.set("memberLinks/member-1", {});
+  const result = await handleMemberPushSettings(db, { callerUid: "member-1", action: "save", prefs: { lesson30h: false, lesson30m: false } });
+  assert.deepEqual(result.prefs, { lessonRating: false, lesson30m: false });
+  assert.equal(PUSH_COPY.lesson30h, undefined);
+});

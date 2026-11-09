@@ -355,12 +355,9 @@ async function handleMemberPushSettings(firestore, input) {
         prefs[kind] = raw[kind];
       }
     }
-    // 옛 앱이 없어진 30시간 설정만 보내도 오류를 내지 않는다. 발송은 항상 중단된다.
+    // 옛 앱에서 알림을 모두 끄는 선택도 보존한다. 30시간 발송 자체는 항상 중단된다.
     if ("lesson30h" in raw && typeof raw.lesson30h !== "boolean") throw settingsError("invalid-argument", "push_prefs_invalid");
-    if (!Object.keys(prefs).length && typeof raw.lesson30h === "boolean") {
-      const previous = (await ref.get()).data();
-      return { prefs: prefsOf(previous), devices: tokensOf(previous).length };
-    }
+    if (typeof raw.lesson30h === "boolean") prefs.lesson30h = raw.lesson30h;
     if (!Object.keys(prefs).length) throw settingsError("invalid-argument", "push_prefs_invalid");
     await ref.set({ prefs, updatedAt: at }, { merge: true });
   } else if (action !== "get") {

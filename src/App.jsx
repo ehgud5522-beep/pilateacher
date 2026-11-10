@@ -25027,7 +25027,7 @@ function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, in
             </div>
             {(row.items || []).map((item) => (
               <div key={item.id} className="mt-1 flex items-center justify-between gap-2">
-                <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: SUB }}>{questionOf(item.id)}</span>
+                <span className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, color: SUB }}>{item.id === "body" ? "몸 컨디션 · 참고 지표" : questionOf(item.id)}</span>
                 <span className="tabular-nums font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
                   {item.average === null || item.average === undefined ? "—" : `★ ${Number(item.average).toFixed(1)}`}
                   <span className="font-normal" style={{ color: SUB }}>{` · ${item.count}건`}</span>

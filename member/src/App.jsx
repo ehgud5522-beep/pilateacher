@@ -22,7 +22,7 @@ import {
 } from "./firebase.js";
 import {
   DEFAULT_PREFS, PUSH_PERMISSION, PUSH_SUPPORT, forgetPushDevice, normalizePrefs, permissionGuide,
-  platformOf, pushPlugin, registerDevice, tapTarget,
+  platformOf, pushPlugin, registerDevice, tapTarget, ratingTarget,
 } from "./push.js";
 import { wantsAccountDeletion } from "./delete-account.js";
 import { LINK_RESULT, linkResultScreen, needsLinkCall } from "./link-result.js";
@@ -356,10 +356,14 @@ function Member({ userId, initialTab = "home" }) {
   const [cancelledIds, setCancelledIds] = useState(() => new Set());
   /* 수업 후 별점 평가 (2026-11-09). 보냈거나 "다음에" 를 누른 수업 id -- 다시 묻지 않는다. */
   const [ratingSeen, setRatingSeen] = useState(() => new Set(readRatingSeen(deviceBox())));
+  const [requestedRating, setRequestedRating] = useState(null);
   /* keep: 보낸 직후 -- 기기에는 적되 "고마워요" 카드는 이번 화면에 그대로 둔다. */
   const markRatingSeen = useCallback((lessonId, { keep = false } = {}) => {
     const next = addRatingSeen(deviceBox(), lessonId);
-    if (!keep) setRatingSeen((previous) => new Set([...previous, ...next, text(lessonId)]));
+    if (!keep) {
+      setRatingSeen((previous) => new Set([...previous, ...next, text(lessonId)]));
+      setRequestedRating(null);
+    }
   }, []);
 
   /* quiet: 앱으로 돌아왔을 때 조용히 다시 읽는다. 화면을 "잠시만요" 로 바꾸지
@@ -465,7 +469,12 @@ function Member({ userId, initialTab = "home" }) {
   useEffect(() => {
     if (!plugin?.addListener) return undefined;
     let handle = null;
-    Promise.resolve(plugin.addListener("notificationActionPerformed", (event) => setTab(tapTarget(event?.notification))))
+    Promise.resolve(plugin.addListener("notificationActionPerformed", (event) => {
+      setTab(tapTarget(event?.notification));
+      const target = ratingTarget(event?.notification);
+      setRequestedRating(target ? { ...target, openedAt: Date.now() } : null);
+      window.scrollTo?.({ top: 0, behavior: "instant" });
+    }))
       .then((value) => { handle = value; }).catch(() => {});
     return () => { handle?.remove?.(); };
   }, [plugin]);
@@ -535,6 +544,12 @@ function Member({ userId, initialTab = "home" }) {
     }
   };
 
+  useEffect(() => {
+    if (!requestedRating) return;
+    const index = (state.places || []).findIndex((item) => item.link.organizationId === requestedRating.organizationId && item.link.clientId === requestedRating.clientId);
+    if (index >= 0) setPlace(index);
+  }, [requestedRating, state.places]);
+
   /* 불러오지 못했거나 연결이 안 된 화면에서도 로그아웃은 보인다. 다른 번호로
      들어가야 하는 사람이 갇히지 않게. */
   if (state.stage === "loading") {
@@ -591,11 +606,12 @@ function Member({ userId, initialTab = "home" }) {
       : current.view.schedule;
     /* 평가 카드는 연결돼 있을 때만 -- 오프라인 사본을 보는 중에는 보낼 수 없다. 카드를 그릴지는
        서버가 정한다 (스위치가 꺼져 있으면 아무것도 그리지 않는다). */
-    const rateLesson = state.offlineAt ? null : pickRatingCandidate(current.view.history, { skip: ratingSeen });
+    const requestedHere = requestedRating && requestedRating.organizationId === current.link.organizationId && requestedRating.clientId === current.link.clientId;
+    const rateLesson = state.offlineAt ? null : requestedHere ? requestedRating : pickRatingCandidate(current.view.history, { skip: ratingSeen });
     body = (
       <div className="stack">
         {rateLesson ? (
-          <LessonRatingCard key={`${current.link.organizationId}/${current.link.clientId}/${text(rateLesson.lessonId)}`}
+          <LessonRatingCard key={`${current.link.organizationId}/${current.link.clientId}/${text(rateLesson.lessonId)}/${requestedHere ? requestedRating.openedAt : "home"}`}
             lesson={rateLesson} place={current.link} api={callMemberRating} onSeen={markRatingSeen} />
         ) : null}
         <Home view={{ ...current.view, schedule }} onOpenRecords={() => setTab("records")}

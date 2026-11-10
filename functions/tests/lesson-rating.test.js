@@ -85,6 +85,8 @@ function seed({ rating = { mode: "listed", userIds: ["teacher-1"] }, lesson = {}
     "runtimeConfig/scheduleSync": { mode: "all", ...(rating ? { memberRating: rating } : {}) },
     [`organizations/${ORG}/clients/client-a`]: { organizationId: ORG, userId: "member-uid-a", name: "회원A", phone: "01011112222" },
     [`organizations/${ORG}/clients/client-b`]: { organizationId: ORG, userId: "member-uid-b" },
+    [lessonPath("L1") + "/participants/client-a"]: { attendanceStatus: "attended" },
+    [lessonPath("L1") + "/participants/client-b"]: { attendanceStatus: "attended" },
     [lessonPath("L1")]: {
       organizationId: ORG, status: "completed", clientIds: ["client-a"], instructorId: "teacher-1",
       startsAt: new Date(NOW.getTime() - 5 * HOUR), ...lesson,
@@ -205,6 +207,7 @@ test("대표 화면 집계: 대표만, 강사 이름 · 건수 · 평균만 -- �
   const db = seed();
   await submitLessonRating(db, { ...input(), scores: SCORES }, deps);
   db.docs.set(lessonPath("L3"), { organizationId: ORG, status: "completed", clientIds: ["client-a"], instructorId: "teacher-1", startsAt: new Date(NOW.getTime() - 2 * HOUR) });
+  db.docs.set(lessonPath("L3") + "/participants/client-a", { attendanceStatus: "attended" });
   await submitLessonRating(db, { ...input({ lessonId: "L3" }), scores: { body: 5, care: 4, again: 4 } }, deps);
 
   const stats = await lessonRatingStats(db, { callerUid: "owner-uid", organizationId: ORG }, { membershipId, isActiveOwner });
@@ -234,4 +237,14 @@ test("스위치 저장: scheduleSync 문서의 memberRating 칸에만 -- 일정 
   assert.deepEqual((await readRuntimeConfig(db, ["memberRating"])).memberRating.userIds, ["teacher-1"]);
   /* 이름 · 전화번호 모양은 받지 않는다 (scheduleSync 와 같은 검사). */
   await assert.rejects(writeRuntimeConfig(db, { document: "memberRating", value: { mode: "listed", userIds: ["01012345678"] }, actorId: "owner-uid" }), /schedule_sync_user_invalid/);
+});
+
+test("종료 10분 전에는 평가를 받지 않고 출석을 확인한다", async () => {
+  const db = seed({ lesson: { endsAt: new Date(NOW.getTime() - 9 * 60 * 1000) } });
+  assert.equal((await lessonRatingStatus(db, input(), deps)).reason, "lesson_not_started");
+  db.docs.get(lessonPath("L1")).endsAt = new Date(NOW.getTime() - 10 * 60 * 1000);
+  assert.equal((await lessonRatingStatus(db, input(), deps)).enabled, true);
+  db.docs.get(lessonPath("L1") + "/participants/client-a").attendanceStatus = "noshow";
+  assert.equal((await lessonRatingStatus(db, input(), deps)).reason, "lesson_not_attended");
+  assert.equal(await reasonOf(submitLessonRating(db, { ...input(), scores: SCORES }, deps)), "lesson_not_attended");
 });

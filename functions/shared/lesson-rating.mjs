@@ -141,6 +141,7 @@ export function decideLessonRating(input) {
   const lesson = input?.lesson || null;
   const clientId = text(input?.clientId);
   const startsAt = toDate(lesson?.startsAt);
+  const endsAt = toDate(lesson?.endsAt);
   const instructorId = text(lesson?.instructorId);
   const out = (ok, reason) => ({ ok, reason, instructorId, startsAt });
   if (!lesson) return out(false, RATING_REASON.NOT_FOUND);
@@ -153,6 +154,7 @@ export function decideLessonRating(input) {
   }
   if (status === "noshow") return out(false, RATING_REASON.NOT_ATTENDED);
   if (!startsAt || startsAt.getTime() > now.getTime()) return out(false, RATING_REASON.NOT_STARTED);
+  if (endsAt && endsAt.getTime() + 10 * 60 * 1000 > now.getTime()) return out(false, RATING_REASON.NOT_STARTED);
   if (now.getTime() - startsAt.getTime() > RATING_WINDOW_DAYS * MS_DAY) return out(false, RATING_REASON.EXPIRED);
   return out(true, "");
 }

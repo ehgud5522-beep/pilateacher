@@ -123,7 +123,7 @@ test("오래 멈췄다 깨어나면 15분까지만 거슬러 간다 · 처음이
 
 test("30시간 · 30분 칸 — 이미 시작한 수업은 아무것도 받지 않는다", () => {
   const window = { from: NOW - 5 * MIN, to: NOW };
-  assert.deepEqual(dueKinds(NOW + 30 * HOUR - MIN, window), [PUSH_KIND.LESSON_30H]);
+  assert.deepEqual(dueKinds(NOW + 30 * HOUR - MIN, window), []);
   assert.deepEqual(dueKinds(NOW + 30 * MIN - MIN, window), [PUSH_KIND.LESSON_30M]);
   assert.deepEqual(dueKinds(NOW + 2 * HOUR, window), []);
   assert.deepEqual(dueKinds(NOW - MIN, window), []);
@@ -151,8 +151,7 @@ test("30시간 전 문구", async () => {
   const firestore = world({ lessons: { L1: lesson({ startsAt: new Date(NOW + 30 * HOUR - MIN) }) } });
   const messaging = fakeMessaging();
   await run(firestore, messaging);
-  assert.equal(messaging.sent[0].notification.title, "수업 30시간 전");
-  assert.equal(messaging.sent[0].notification.body, "내일 수업이 예정되어 있습니다. 변경이 필요하면 취소 마감 전까지 확인해 주세요.");
+  assert.equal(messaging.sent.length, 0, "취소 마감 알림은 보내지 않는다");
 });
 
 test("한 번만 — 같은 칸을 다시 돌아도, 기록이 이미 있어도 두 번 보내지 않는다", async () => {
@@ -211,7 +210,7 @@ test("회원이 끈 알림은 보내지 않는다 (종류별)", async () => {
   const on30h = world({ lessons: { L1: lesson({ startsAt: new Date(NOW + 30 * HOUR - MIN) }) }, prefs: { lesson30m: false } });
   const messaging2 = fakeMessaging();
   await run(on30h, messaging2);
-  assert.equal(messaging2.sent.length, 1, "30시간 전은 켜져 있다");
+  assert.equal(messaging2.sent.length, 0, "30시간 알림은 폐지됐다");
 });
 
 test("스위치가 꺼져 있으면 아무에게도 보내지 않고, 칸만 앞으로 민다", async () => {
@@ -256,7 +255,7 @@ test("설정 통로 — 회원 계정만, 토큰 등록 · 해제, 설정 저장
   await assert.rejects(handleMemberPushSettings(firestore, { callerUid: "staff-1", action: "get" }), /member_link_missing/);
 
   const first = await handleMemberPushSettings(firestore, { callerUid: "member-1", action: "get" });
-  assert.deepEqual(first.prefs, { lesson30h: true, lesson30m: true });
+  assert.deepEqual(first.prefs, { lessonRating: true, lesson30m: true });
 
   const registered = await handleMemberPushSettings(firestore, { callerUid: "member-1", action: "register", token: "tok-a", platform: "android" });
   assert.equal(registered.devices, 1);
@@ -264,10 +263,57 @@ test("설정 통로 — 회원 계정만, 토큰 등록 · 해제, 설정 저장
   assert.ok(stored.tokens[tokenKey("tok-a")], "칸 이름은 토큰 해시");
   assert.equal(Object.keys(stored.tokens).some((key) => key.includes("tok-a")), false);
 
-  const saved = await handleMemberPushSettings(firestore, { callerUid: "member-1", action: "save", prefs: { lesson30h: false } });
-  assert.deepEqual(saved.prefs, { lesson30h: false, lesson30m: true });
+  const saved = await handleMemberPushSettings(firestore, { callerUid: "member-1", action: "save", prefs: { lessonRating: false } });
+  assert.deepEqual(saved.prefs, { lessonRating: false, lesson30m: true });
 
   await assert.rejects(handleMemberPushSettings(firestore, { callerUid: "member-1", action: "save", prefs: { lesson30h: "no" } }), /push_prefs_invalid/);
   await assert.rejects(handleMemberPushSettings(firestore, { callerUid: "member-1", action: "register", token: "x", platform: "web" }), /push_platform_invalid/);
   await assert.rejects(handleMemberPushSettings(firestore, { callerUid: "member-1", action: "nope" }), /push_action_invalid/);
+});
+
+test("평가 알림: 종료 10분 뒤 출석 회원에게만, 정확한 수업으로, 중복 없음", async () => {
+  const db = world({ lessons: { L1: lesson({ status: "completed", startsAt: new Date(NOW - 62 * MIN), endsAt: new Date(NOW - 12 * MIN), clientIds: ["c1", "c2"], instructorId: "t1" }) } });
+  db.store.set("runtimeConfig/scheduleSync", { memberRating: { mode: "all" } });
+  db.store.set("organizations/org/lessons/L1/participants/c1", { attendanceStatus: "attended" });
+  db.store.set("organizations/org/lessons/L1/participants/c2", { attendanceStatus: "noshow" });
+  const messaging = fakeMessaging();
+  assert.equal((await run(db, messaging)).sent, 1);
+  assert.deepEqual(messaging.sent[0].tokens, ["tok-1"]);
+  assert.deepEqual(messaging.sent[0].data, { kind: "lessonRating", open: "rating", organizationId: "org", clientId: "c1", lessonId: "L1" });
+  db.store.set("notificationState/memberPush", { sweptUntil: new Date(NOW - 5 * MIN) });
+  assert.equal((await run(db, messaging)).duplicate, 1);
+  assert.equal(messaging.sent.length, 1);
+});
+
+test("평가 알림: 너무 이른 수업·설정 끔·이미 평가·취소·출석 미확인은 제외", async () => {
+  for (const mode of ["early", "pref", "rated", "cancelled", "booked", "off", "moved", "memberCancelled"]) {
+    const db = world({ lessons: { L1: lesson({ status: mode === "cancelled" ? "cancelled" : "completed", startsAt: new Date(NOW - 62 * MIN), endsAt: new Date(NOW - (mode === "early" ? 9 : 12) * MIN), instructorId: "t1", ...(mode === "memberCancelled" ? { memberCancellations: { c1: { at: new Date(NOW) } } } : {}) }) }, prefs: mode === "pref" ? { lessonRating: false } : null });
+    db.store.set("runtimeConfig/scheduleSync", { memberRating: { mode: mode === "off" ? "off" : "all" } });
+    db.store.set("organizations/org/lessons/L1/participants/c1", { attendanceStatus: mode === "booked" ? "booked" : "attended" });
+    if (mode === "rated") db.store.set("organizations/org/lessonRatings/L1_c1", { scores: {} });
+    if (mode === "moved") {
+      const collection = db.collection.bind(db);
+      db.collection = (name) => {
+        if (name === "memberPush") db.store.get("organizations/org/lessons/L1").endsAt = new Date(NOW + 20 * MIN);
+        return collection(name);
+      };
+    }
+    const messaging = fakeMessaging();
+    await run(db, messaging);
+    assert.equal(messaging.sent.length, 0, mode);
+  }
+});
+
+test("옛 앱의 30시간 설정 요청은 받아도 다시 켜지지 않는다", async () => {
+  const db = world(); db.store.set("memberLinks/member-1", {});
+  const result = await handleMemberPushSettings(db, { callerUid: "member-1", action: "save", prefs: { lesson30h: true } });
+  assert.equal(result.prefs.lesson30h, undefined);
+  assert.equal(result.prefs.lessonRating, true);
+});
+
+test("옛 앱에서 두 알림을 모두 꺼도 새 평가 알림이 켜지지 않는다", async () => {
+  const db = world(); db.store.set("memberLinks/member-1", {});
+  const result = await handleMemberPushSettings(db, { callerUid: "member-1", action: "save", prefs: { lesson30h: false, lesson30m: false } });
+  assert.deepEqual(result.prefs, { lessonRating: false, lesson30m: false });
+  assert.equal(PUSH_COPY.lesson30h, undefined);
 });

@@ -81,9 +81,10 @@ async function lessonRatingStatus(firestore, input, deps = {}) {
   const now = (deps.now || (() => new Date()))();
   const context = await readMemberContext(firestore, input);
   const ratingId = policy.ratingDocId(context.lessonId, context.clientId);
-  const [lessonSnapshot, ratingSnapshot] = await Promise.all([
+  const [lessonSnapshot, ratingSnapshot, participantSnapshot] = await Promise.all([
     context.org.collection("lessons").doc(context.lessonId).get(),
     context.org.collection("lessonRatings").doc(ratingId).get(),
+    context.org.collection("lessons").doc(context.lessonId).collection("participants").doc(context.clientId).get(),
   ]);
   const decided = policy.decideLessonRating({
     now, clientId: context.clientId, scheduleSyncDoc: context.scheduleSyncDoc,
@@ -92,6 +93,7 @@ async function lessonRatingStatus(firestore, input, deps = {}) {
   });
   if (decided.reason === policy.RATING_REASON.ALREADY) return { enabled: true, rated: true, reason: decided.reason };
   if (decided.reason === policy.RATING_REASON.NOT_OWN) throw refusal("not_own_lesson");
+  if (decided.ok && participantSnapshot.data()?.attendanceStatus !== "attended") return { enabled: false, rated: false, reason: policy.RATING_REASON.NOT_ATTENDED, windowDays: policy.RATING_WINDOW_DAYS };
   return { enabled: decided.ok, rated: false, reason: decided.reason, windowDays: policy.RATING_WINDOW_DAYS };
 }
 
@@ -112,12 +114,14 @@ async function submitLessonRating(firestore, input, deps = {}) {
     const now = nowFn();
     const ratingSnapshot = await transaction.get(ratingRef);
     const lessonSnapshot = await transaction.get(lessonRef);
+    const participantSnapshot = await transaction.get(lessonRef.collection("participants").doc(context.clientId));
     const lesson = lessonSnapshot.exists ? lessonSnapshot.data() || {} : null;
     const decided = policy.decideLessonRating({
       now, lesson, clientId: context.clientId, scheduleSyncDoc: context.scheduleSyncDoc, existing: ratingSnapshot.exists,
     });
     if (decided.reason === policy.RATING_REASON.ALREADY) return { outcome: "already_rated", ratingId: ratingRef.id };
     if (!decided.ok) throw refusal(decided.reason);
+    if (participantSnapshot.data()?.attendanceStatus !== "attended") throw refusal(policy.RATING_REASON.NOT_ATTENDED);
 
     /* 담당 강사는 수업 문서에서 읽는다 -- 회원이 보낸 값을 믿지 않는다. */
     const statsRef = context.org.collection("lessonRatingStats").doc(decided.instructorId);

@@ -520,3 +520,38 @@ body {
 .ratecard .starnum.picked { color: var(--ink); font-weight: 800; }
 .ratecard .ratescale { margin-top: 6px; }
 .ratecard .blocked { margin-top: 10px; font-size: var(--t-caption); color: var(--sub); word-break: keep-all; line-height: 1.6; }
+
+/* 회원이 지금 필요한 정보부터. 색은 작은 강조에만 사용한다. */
+.next-class { display: block; width: 100%; text-align: left; padding: 24px; color: var(--ink); font: inherit; border: 1px solid var(--line); background: linear-gradient(135deg,var(--card),var(--card-tone)); cursor: pointer; }
+.next-class > span { display: block; }
+.next-class .next-eyebrow { display: flex; justify-content: space-between; font-size: 13px; font-weight: 700; color: var(--rose); margin-bottom: 20px; }
+.next-date { color: var(--sub); font-size: 14px; font-weight: 600; }
+.next-time { font-size: 44px; letter-spacing: -.04em; font-weight: 700; line-height: 1.25; margin: 4px 0 14px; }
+.next-name { font-size: 16px; font-weight: 700; }
+.next-meta { font-size: 13px; line-height: 1.6; color: var(--sub); margin-top: 4px; }
+.membership-summary .chipline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.aggregate-label { font-size: 12px; color: var(--sub); }
+.membership-disclosure { margin-top: 18px; border-top: 1px solid var(--line); }
+.membership-disclosure > summary { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; list-style: none; color: var(--sub); font-size: 13px; font-weight: 600; }
+.membership-disclosure > summary::-webkit-details-marker { display: none; }
+.membership-disclosure[open] > summary { color: var(--ink); }
+.membership-disclosure[open] > summary span { transform: rotate(45deg); }
+.membership-disclosure .pass { background: var(--card-tone); border-radius: 12px; box-shadow: none; }
+.feedback-preview { padding: 20px; }
+.feedback-preview .sechead { margin-bottom: 12px; padding: 0; }
+.feedback-message { font-size: 15px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; }
+.feedback-author { font-size: 12px; line-height: 1.5; margin-top: 14px; color: var(--sub); }
+.lesson-state { display: inline-block; color: var(--sub); font-size: 12px; font-weight: 500; margin-top: 5px; }
+.lesson.planned .lesson-state { color: var(--rose); }
+.record-time { font-size: 13px; font-weight: 700; color: var(--ink); margin: 3px 0; }
+.record-day { margin-top: 26px; }
+.record-day-title { font-size: 16px; font-weight: 700; margin-bottom: 16px; }
+.record-day-title span { font-size: 12px; font-weight: 500; color: var(--sub); margin-left: 4px; }
+.record-day .timeline { margin-top: 0; }
+.rating-context { margin: 6px 0 10px; font-size: 12px; line-height: 1.6; color: var(--sub); }
+.tags i, .who, .until, .pass .meta { font-size: 13px; }
+.dow span { color: var(--sub); font-size: 12px; }
+:root { --sub: #71676B; --faint: #82777C; --shadow: 0 2px 14px rgba(47,24,35,.035); }
+@media (prefers-color-scheme: dark) { :root { --sub: #B9ADB3; --faint: #A1959B; --shadow: 0 2px 14px rgba(0,0,0,.18); } }
+@media (prefers-reduced-motion: no-preference) { .membership-disclosure > summary span { transition: transform 160ms ease; } }
+.feedback-message { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }

@@ -6,12 +6,12 @@
  * 두 가지다. 문구는 대표가 정한 그대로이고 **회원 이름은 어디에도 싣지 않는다** --
  * 잠금 화면에 그대로 뜬다.
  *
- *   수업 30시간 전  "내일 수업이 예정되어 있습니다. 변경이 필요하면 취소 마감 전까지 확인해 주세요."
+ *   수업 종료 10분 뒤: 실제 출석한 회원에게 평가 요청 한 번. 30시간 알림은 폐지.
  *   수업 30분 전    "잠시 후 수업이 시작됩니다. 수업 준비를 부탁드립니다."
  *
  * ── 언제 보내는가 ──
- * 5분마다 돈다. 지난번에 훑은 곳(sweptUntil)부터 지금까지를 한 칸으로 보고,
- * 수업 시작이 그 칸 + 30분 / + 30시간 안에 드는 것만 고른다. 칸이 이어 붙어서
+ * 1분마다 돈다. 지난번에 훑은 곳(sweptUntil)부터 지금까지를 한 칸으로 보고,
+ * 수업 시작이 그 칸 + 30분, 또는 수업 종료가 그 칸 - 10분 안에 드는 것만 고른다. 칸이 이어 붙어서
  * 겹침도 빈틈도 없다. 함수가 한동안 못 돌았으면 최대 15분까지만 거슬러 간다 --
  * 오래 멈췄다 깨어나 지난 알림을 한꺼번에 쏟지 않게.
  *
@@ -19,7 +19,7 @@
  * 훑은 칸 안쪽으로 옮긴 수업. 기본 기능의 한계이고 PR 에 적었다.
  *
  * ── 보내기 직전에 다시 본다 ──
- * 수업 문서를 다시 읽어 취소 · 삭제 · 확정 · 회원 빠짐이면 보내지 않는다. 시각이
+ * 수업 문서를 다시 읽는다. 평가 알림은 출석·미평가·평가 기능 스위치까지 확인한다. 시각이
  * 바뀌었으면 새 시각으로 다시 판정한다 (칸 밖이면 이번에는 안 보내고, 새 시각이
  * 다음 칸에 들어올 때 보낸다).
  *
@@ -41,17 +41,17 @@
 const crypto = require("node:crypto");
 
 const MINUTE = 60 * 1000;
-const HOUR = 60 * MINUTE;
 
-const PUSH_KIND = Object.freeze({ LESSON_30H: "lesson30h", LESSON_30M: "lesson30m" });
+const PUSH_KIND = Object.freeze({ LESSON_RATING: "lessonRating", LESSON_30M: "lesson30m" });
 
 /** 종류마다 문구와 "시작 몇 분 전" . 문구는 대표 확정(2026-11-07) 그대로다. */
 const PUSH_COPY = Object.freeze({
-  [PUSH_KIND.LESSON_30H]: Object.freeze({
-    title: "수업 30시간 전",
-    body: "내일 수업이 예정되어 있습니다. 변경이 필요하면 취소 마감 전까지 확인해 주세요.",
-    label: "취소 마감 안내",
-    lead: 30 * HOUR,
+  [PUSH_KIND.LESSON_RATING]: Object.freeze({
+    title: "오늘 수업은 어떠셨나요?",
+    body: "10초만 들려주세요. 더 좋은 수업을 위한 피드백을 기다려요.",
+    label: "수업 후 평가",
+    field: "endsAt",
+    lead: -10 * MINUTE,
   }),
   [PUSH_KIND.LESSON_30M]: Object.freeze({
     title: "수업 30분 전",
@@ -107,16 +107,19 @@ function sweepWindow({ now, sweptUntil = null }) {
  *
  * @param {number} startsAt @param {{ from: number, to: number }} window
  */
-function dueKinds(startsAt, window) {
-  if (!Number.isFinite(startsAt) || startsAt <= window.to) return [];
+function dueKinds(startsAt, window, endsAt = NaN) {
   return Object.entries(PUSH_COPY)
-    .filter(([, copy]) => startsAt > window.from + copy.lead && startsAt <= window.to + copy.lead)
+    .filter(([, copy]) => {
+      const at = copy.field === "endsAt" ? endsAt : startsAt;
+      return Number.isFinite(at) && at > window.from + copy.lead && at <= window.to + copy.lead;
+    })
     .map(([kind]) => kind);
 }
 
 /** 보낼 수 있는 수업인가. */
-function sendableLesson(lesson) {
-  return Boolean(lesson) && text(lesson.status) === "scheduled" && !lesson.deletedAt
+function sendableLesson(lesson, kind) {
+  const statuses = kind === PUSH_KIND.LESSON_RATING ? ["scheduled", "completed"] : ["scheduled"];
+  return Boolean(lesson) && statuses.includes(text(lesson.status)) && !lesson.deletedAt
     && Array.isArray(lesson.clientIds) && lesson.clientIds.length > 0;
 }
 
@@ -129,7 +132,7 @@ const tokenKey = (token) => crypto.createHash("sha256").update(text(token)).dige
 function prefsOf(doc) {
   const prefs = doc?.prefs && typeof doc.prefs === "object" ? doc.prefs : {};
   return {
-    [PUSH_KIND.LESSON_30H]: prefs[PUSH_KIND.LESSON_30H] !== false,
+    [PUSH_KIND.LESSON_RATING]: typeof prefs[PUSH_KIND.LESSON_RATING] === "boolean" ? prefs[PUSH_KIND.LESSON_RATING] : !(prefs.lesson30h === false && prefs.lesson30m === false),
     [PUSH_KIND.LESSON_30M]: prefs[PUSH_KIND.LESSON_30M] !== false,
   };
 }
@@ -142,12 +145,12 @@ function tokensOf(doc) {
 }
 
 /** FCM 에 보낼 한 통. 이름 없음 -- 데이터는 수업 id 와 종류뿐이다. */
-function messageFor({ kind, organizationId, lessonId, tokens }) {
+function messageFor({ kind, organizationId, lessonId, clientId, tokens }) {
   const copy = PUSH_COPY[kind];
   return {
     tokens,
     notification: { title: copy.title, body: copy.body },
-    data: { kind, organizationId: text(organizationId), lessonId: text(lessonId), open: "home" },
+    data: { kind, organizationId: text(organizationId), lessonId: text(lessonId), open: kind === PUSH_KIND.LESSON_RATING ? "rating" : "home", ...(kind === PUSH_KIND.LESSON_RATING ? { clientId: text(clientId) } : {}) },
     android: { priority: "high", notification: { channelId: ANDROID_CHANNEL } },
     apns: { payload: { aps: { sound: "default" } } },
   };
@@ -185,20 +188,20 @@ async function runMemberPush(firestore, messaging, options = {}) {
   for (const organization of organizations.docs) {
     const organizationId = organization.id;
     const lessons = organization.ref.collection("lessons");
-    /* 두 칸을 따로 읽는다. 하나로 읽으면 30분 칸과 30시간 칸 사이 하루치를 다 읽는다. */
+    /* 시작/종료 시각을 각각 조회한다. 단일 필드 인덱스만 사용한다. */
     const found = new Map();
     for (const copy of Object.values(PUSH_COPY)) {
       const page = await lessons
-        .where("startsAt", ">", new Date(window.from + copy.lead))
-        .where("startsAt", "<=", new Date(window.to + copy.lead))
+        .where(copy.field || "startsAt", ">", new Date(window.from + copy.lead))
+        .where(copy.field || "startsAt", "<=", new Date(window.to + copy.lead))
         .get();
       tally.reads += page.size;
       for (const doc of page.docs) found.set(doc.id, doc.data());
     }
     for (const [lessonId, lesson] of found) {
-      if (!sendableLesson(lesson)) continue;
       tally.lessons += 1;
-      for (const kind of dueKinds(toMillis(lesson.startsAt), window)) {
+      for (const kind of dueKinds(toMillis(lesson.startsAt), window, toMillis(lesson.endsAt))) {
+        if (!sendableLesson(lesson, kind)) continue;
         for (const clientId of lesson.clientIds.map(text).filter(Boolean)) {
           tally.planned += 1;
           const outcome = await sendOne(firestore, messaging, {
@@ -237,9 +240,23 @@ async function sendOne(firestore, messaging, input) {
   const fresh = await org.collection("lessons").doc(lessonId).get();
   reads += 1;
   const lesson = fresh.exists ? fresh.data() : null;
-  if (!sendableLesson(lesson) || !lesson.clientIds.map(text).includes(clientId)
-    || !dueKinds(toMillis(lesson.startsAt), window).includes(kind)) {
+  if (!sendableLesson(lesson, kind) || !lesson.clientIds.map(text).includes(clientId)
+    || !dueKinds(toMillis(lesson.startsAt), window, toMillis(lesson.endsAt)).includes(kind)) {
     return { result: "skipped", reads };
+  }
+
+  if (kind === PUSH_KIND.LESSON_RATING) {
+    const policy = await import("../shared/lesson-rating.mjs");
+    const [participant, rating, sync] = await Promise.all([
+      org.collection("lessons").doc(lessonId).collection("participants").doc(clientId).get(),
+      org.collection("lessonRatings").doc(policy.ratingDocId(lessonId, clientId)).get(),
+      firestore.collection("runtimeConfig").doc("scheduleSync").get(),
+    ]);
+    reads += 3;
+    if (participant.data()?.attendanceStatus !== "attended" || !policy.decideLessonRating({
+      now: new Date(window.to), lesson, clientId, existing: rating.exists,
+      scheduleSyncDoc: sync.exists ? sync.data() : {},
+    }).ok) return { result: "skipped", reads };
   }
 
   const ref = firestore.collection("notificationSends").doc(sendKey(lessonId, clientId, kind));
@@ -257,7 +274,7 @@ async function sendOne(firestore, messaging, input) {
   let response;
   try {
     response = await messaging.sendEachForMulticast(messageFor({
-      kind, organizationId, lessonId, tokens: tokens.map((item) => item.token),
+      kind, organizationId, lessonId, clientId, tokens: tokens.map((item) => item.token),
     }));
   } catch (error) {
     const errorCode = text(error?.code) || "unknown";
@@ -338,6 +355,9 @@ async function handleMemberPushSettings(firestore, input) {
         prefs[kind] = raw[kind];
       }
     }
+    // 옛 앱에서 알림을 모두 끄는 선택도 보존한다. 30시간 발송 자체는 항상 중단된다.
+    if ("lesson30h" in raw && typeof raw.lesson30h !== "boolean") throw settingsError("invalid-argument", "push_prefs_invalid");
+    if (typeof raw.lesson30h === "boolean") prefs.lesson30h = raw.lesson30h;
     if (!Object.keys(prefs).length) throw settingsError("invalid-argument", "push_prefs_invalid");
     await ref.set({ prefs, updatedAt: at }, { merge: true });
   } else if (action !== "get") {

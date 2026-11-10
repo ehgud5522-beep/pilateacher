@@ -270,6 +270,7 @@ function LessonCard({ row, location, onOpen, highlighted = false }) {
           {text(row.instructorName) ? <i>{text(row.instructorName)} 강사</i> : null}
           {text(row.locationName || location) ? <i>{text(row.locationName || location)}</i> : null}
         </span>
+        <span className="lesson-state">{row.planned ? "예정" : "완료"}</span>
       </span>
       {onOpen ? <span className="chev" aria-hidden="true">›</span> : null}
     </button>
@@ -277,15 +278,18 @@ function LessonCard({ row, location, onOpen, highlighted = false }) {
 }
 
 /** 수업기록 한 줄. 날짜 · 강사, 그리고 강사가 남긴 한마디가 있을 때만 말풍선. */
-function RecordItem({ row }) {
+function RecordItem({ row, showDate = true, showNote = true }) {
   const type = text(row.type);
+  const at = toDate(row.occurredAt);
+  const time = at && (at.getHours() || at.getMinutes()) ? timeLabel(at) : "";
   return (
     <li>
       <span className="dot" />
       <div className="body">
-        <p className="when num">
+        {showDate ? <p className="when num">
           {dayLabel(row.occurredAt)}<em>({weekdayLabel(row.occurredAt)})</em>
-        </p>
+        </p> : null}
+        {time ? <p className="record-time num">{time}</p> : null}
         <p className="who">
           {type === "deduct" ? lessonName(row) : HISTORY_LABEL[type] || type}
           {text(row.instructorName) ? ` · ${text(row.instructorName)} 강사` : ""}
@@ -293,7 +297,7 @@ function RecordItem({ row }) {
         {/* 강사가 회원에게 남긴 한마디. 수업기록 원문이 아니라 회원을 향해 따로
             적은 문장이고, 없으면 줄 자체가 없다 -- "메시지 없음" 을 그리면 빈
             줄이 기록처럼 쌓인다. */}
-        {text(row.memberNote) ? <p className="note">{text(row.memberNote)}</p> : null}
+        {showNote && text(row.memberNote) ? <p className="note">{text(row.memberNote)}</p> : null}
       </div>
     </li>
   );
@@ -362,13 +366,46 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, on
         : summary.remaining <= 3 ? "곧 마지막 회차예요." : "";
 
   const recent = history.filter((row) => text(row?.type) === ATTENDED_TYPE).slice(0, 2);
+  const upcoming = (Array.isArray(view?.schedule) ? view.schedule : [])
+    .filter((row) => toDate(row.startsAt)?.getTime() >= now.getTime())
+    .sort((a, b) => toDate(a.startsAt) - toDate(b.startsAt))[0];
+  const feedback = history.find((row) => text(row?.memberNote) && text(row.type) === ATTENDED_TYPE);
+  const usablePasses = (view?.passes || []).filter((pass) => isUsable(pass, now));
 
   return (
     <div className="stack">
       <header className="greet">
-        <p className="hello">{text(view?.name)}님 <span aria-hidden="true">👋</span></p>
+        <p className="hello">{text(view?.name)}님</p>
         {view?.locationName ? <p className="place">{view.locationName}</p> : null}
       </header>
+
+      {upcoming ? <button type="button" className="next-class card" onClick={onOpenLesson && text(upcoming.lessonId) ? () => onOpenLesson(upcoming) : () => setPicked(toDate(upcoming.startsAt))}>
+        <span className="next-eyebrow">다음 수업 <span aria-hidden="true">↗</span></span>
+        <span className="next-date">{sameDay(toDate(upcoming.startsAt), now) ? "오늘" : dayLabel(upcoming.startsAt)} · {weekdayLabel(upcoming.startsAt)}요일</span>
+        <span className="next-time num">{timeLabel(upcoming.startsAt)}</span>
+        <span className="next-name">{lessonName(upcoming)}</span>
+        <span className="next-meta">{[text(upcoming.instructorName) && `${text(upcoming.instructorName)} 강사`, text(upcoming.locationName || view?.locationName)].filter(Boolean).join(" · ")}</span>
+      </button> : null}
+
+      <Card className="left membership-summary">
+        <div className="lefthead">
+          <p className="cap">내 회원권</p>
+          {summary.expiresAt ? <p className="until num">{dateLabel(summary.expiresAt)}까지</p> : null}
+        </div>
+        {summary.front ? <p className="name">{passTitle(summary.front)}{summary.others ? <span className="muted"> 외 {summary.others}장</span> : null}</p> : null}
+        <p className="chipline"><span className="chip on num">{remainingChip(view?.passes, now)}</span>{summary.others ? <span className="aggregate-label">사용 중인 회원권 합계</span> : null}</p>
+        {notice ? <p className="muted mt" style={{ fontSize: TYPE.caption }}>{notice}</p> : null}
+        {usablePasses.length ? <details className="membership-disclosure">
+          <summary>회원권별 잔여·기간 보기 <span aria-hidden="true">＋</span></summary>
+          <div className="stack">{usablePasses.map((pass) => <PassCard key={text(pass.passId)} pass={pass} />)}</div>
+        </details> : null}
+      </Card>
+
+      {feedback ? <section className="feedback-preview card">
+        <div className="sechead"><p>선생님 피드백</p>{onOpenRecords ? <button type="button" onClick={onOpenRecords}>전체보기 ›</button> : null}</div>
+        <p className="feedback-message">{text(feedback.memberNote)}</p>
+        <p className="feedback-author">{dayLabel(feedback.occurredAt)}{text(feedback.instructorName) ? ` · ${text(feedback.instructorName)} 강사` : ""}</p>
+      </section> : null}
 
       <Card className="cal">
         <div className="calhead">
@@ -425,20 +462,6 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, on
         )}
       </section>
 
-      <Card className="left">
-        <div className="lefthead">
-          <p className="cap">내 회원권</p>
-          {summary.expiresAt ? <p className="until num">{dateLabel(summary.expiresAt)}까지</p> : null}
-        </div>
-        {summary.front ? (
-          <p className="name">
-            {passTitle(summary.front)}{summary.others ? <span className="muted"> 외 {summary.others}장</span> : null}
-          </p>
-        ) : null}
-        <p className="chipline"><span className="chip on num">{remainingChip(view?.passes, now)}</span></p>
-        {notice ? <p className="muted mt" style={{ fontSize: TYPE.caption }}>{notice}</p> : null}
-      </Card>
-
       <section>
         <div className="sechead">
           <p>최근 수업 기록</p>
@@ -446,7 +469,7 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, on
         </div>
         {recent.length ? (
           <ol className="timeline">
-            {recent.map((row, index) => <RecordItem key={`${text(row.occurredAt)}-${index}`} row={row} />)}
+            {recent.map((row, index) => <RecordItem key={`${text(row.occurredAt)}-${index}`} row={row} showNote={row !== feedback} showDate={index === 0 || !sameDay(toDate(row.occurredAt), toDate(recent[index - 1].occurredAt))} />)}
           </ol>
         ) : (
           <Card className="quietcard">
@@ -463,6 +486,13 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, on
 export function Records({ view }) {
   const rows = Array.isArray(view?.history) ? view.history : [];
   const used = count(view?.journey?.usedTotal);
+  const groups = new Map();
+  for (const row of rows) {
+    const at = toDate(row.occurredAt);
+    const key = at ? `${at.getFullYear()}-${at.getMonth()}-${at.getDate()}` : "unknown";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
 
   if (rows.length === 0) {
     return (
@@ -482,9 +512,10 @@ export function Records({ view }) {
       {/* 앱에 옮기기 전의 수업도 회원이 한 수업이다. 날짜가 없어 줄로는 그리지
           못하므로 숫자로만 남긴다. */}
       {used ? <p className="count num">지금까지 <b>{used}번</b> 함께했어요</p> : null}
-      <ol className="timeline">
-        {rows.map((row, index) => <RecordItem key={`${text(row.occurredAt)}-${index}`} row={row} />)}
-      </ol>
+      {[...groups].map(([key, entries]) => <section className="record-day" key={key}>
+        <h2 className="record-day-title num">{dayLabel(entries[0].occurredAt)} <span>{weekdayLabel(entries[0].occurredAt)}요일</span></h2>
+        <ol className="timeline">{entries.map((row, index) => <RecordItem key={`${text(row.occurredAt)}-${index}`} row={row} showDate={false} />)}</ol>
+      </section>)}
       {used > rows.length ? (
         <p className="more num">{used - rows.length}번의 수업이 더 있어요</p>
       ) : null}

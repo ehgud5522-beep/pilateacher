@@ -55,7 +55,7 @@ export function LessonRatingCard({ lesson, place, api, onSeen, initialPhase = "l
       if (result?.enabled && !result?.rated) { setPhase("ready"); return; }
       setPhase("hidden");
       /* 꺼짐은 적지 않는다 -- 나중에 켜면 기간 안의 수업은 다시 물어야 한다. */
-      if (result?.rated || (result?.reason && result.reason !== "feature_off")) onSeen?.(lessonId);
+      if (result?.rated || (result?.reason && !["feature_off", "lesson_not_started", "lesson_not_attended"].includes(result.reason))) onSeen?.(lessonId);
     } catch (error) {
       const view = ratingFailure(error);
       recordDiagnostic({
@@ -133,6 +133,7 @@ export function LessonRatingCard({ lesson, place, api, onSeen, initialPhase = "l
       {RATING_ITEMS.map((item, index) => (
         <fieldset key={item.id} className="rateitem">
           <legend className="rateq">{`${"①②③④⑤⑥⑦⑧⑨"[index] || `${index + 1}.`} ${item.question}`}</legend>
+          {item.id === "body" ? <p className="rating-context">몸 컨디션을 알려주세요. 수업 만족도와 나누어 참고해요.</p> : null}
           <div className="stars" role="radiogroup" aria-label={item.question}>
             {STARS.map((value) => (
               <button key={value} type="button" role="radio" aria-checked={scores[item.id] === value}

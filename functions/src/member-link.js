@@ -201,6 +201,7 @@ function createMemberLinkService(dependencies) {
     listOrganizationIds,
     findClientsByPhone,
     readClient,
+    readLink,
     readMembership,
     writeLink,
     removeLink,
@@ -273,6 +274,24 @@ function createMemberLinkService(dependencies) {
   async function linkForCaller(request) {
     const userId = text(request?.auth?.uid);
     if (!userId) throw new MemberLinkError("unauthenticated", { stage: STAGES.AUTHORIZE });
+
+    // Recovery uses only the authenticated user's existing, server-owned links.
+    // It never re-matches a phone or overwrites an owner's manual selection.
+    if (request?.data?.repairOnly === true) {
+      const existing = await readLink(userId);
+      if (!existing || !LINKED_STATUSES.includes(existing.status)) {
+        throw new MemberLinkError("invalid_request", { stage: STAGES.AUTHORIZE });
+      }
+      const links = [];
+      for (const link of existing.links || []) {
+        const client = await readClient(link.organizationId, link.clientId);
+        if (!client || text(client.userId) !== userId) {
+          throw new MemberLinkError("already_linked", { stage: STAGES.READ_CLIENT });
+        }
+        links.push({ organizationId: link.organizationId, clientId: link.clientId });
+      }
+      return { status: existing.status, links, views: await ensureViews(userId, links, now()) };
+    }
 
     /* 클라이언트가 보낸 번호는 보지 않는다. 토큰의 번호만이 인증된 값이다. */
     const toRosterPhone = phoneFromToken || await loadPhoneFromToken();

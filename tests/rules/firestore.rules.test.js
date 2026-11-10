@@ -5762,7 +5762,8 @@ describe("phone sync gate and settlement duplicate guard — the app code throug
   });
 
   test("확정 직전 중복 방지: PC 에서 확정된 같은 수업이 있으면 폰의 다른 수업은 확정하지 않는다", async () => {
-    const DAY = "2026-10-30";
+    const yesterday = new Date(Date.now() - 86400000);
+    const DAY = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
     let pass = null;
     await testEnv.withSecurityRulesDisabled(async (context) => {
       const snapshot = await getDoc(doc(context.firestore(), "organizations", ORG_A, "passes", PASS_A));
@@ -6231,5 +6232,32 @@ describe("lesson ratings stay hidden from the app", () => {
       await assertFails(updateDoc(stats(db), { count: 99 }), `${userId} 집계 고치기`);
       await assertFails(setDoc(doc(db, "organizations", ORG_A, "lessonRatingStats", "someone"), { count: 1 }), `${userId} 집계 만들기`);
     }
+  });
+});
+
+describe("홀딩 수강권 사용 차단", () => {
+  const ref = (db) => doc(db, "organizations", ORG_A, "passes", PASS_A);
+  const markHold = async (from, until) => testEnv.withSecurityRulesDisabled(async (context) => {
+    await updateDoc(ref(context.firestore()), { holdFrom: Timestamp.fromMillis(from), holdUntil: Timestamp.fromMillis(until) });
+  });
+  test("대표와 강사 모두 홀딩 중 회차를 줄이거나 홀딩을 직접 해제할 수 없다", async () => {
+    await markHold(Date.now() - 86400000, Date.now() + 86400000);
+    for (const userId of [users.owner, users.manager, users.instructor]) {
+      await assertFails(updateDoc(ref(dbFor(userId)), { remainingCount: increment(-1) }));
+      await assertFails(updateDoc(ref(dbFor(userId)), { holdUntil: Timestamp.fromMillis(Date.now() - 1) }));
+    }
+  });
+  test("홀딩 중 차감 원장만 따로 쓰는 우회도 거절된다", async () => {
+    await markHold(Date.now() - 86400000, Date.now() + 86400000);
+    await assertFails(setDoc(doc(dbFor(users.owner), "organizations", ORG_A, "passes", PASS_A, "ledger", "held-deduct"), ledgerFixture(ORG_A, PASS_A, { createdBy: users.owner, lessonId: "lesson-seed" })));
+  });
+  test("홀딩 종료 후 정상 차감은 허용하고 홀딩 기간 수업의 소급 차감은 막는다", async () => {
+    await markHold(Date.now() - 86400000, Date.now() - 3600000);
+    const db = dbFor(users.owner);
+    await assertFails(setDoc(doc(db, "organizations", ORG_A, "passes", PASS_A, "ledger", "past-held"), ledgerFixture(ORG_A, PASS_A, { createdBy: users.owner, lessonId: "lesson-seed", occurredAt: hoursAgo(2) })));
+    const batch = writeBatch(db);
+    batch.update(ref(db), { remainingCount: increment(-1) });
+    batch.set(doc(db, "organizations", ORG_A, "passes", PASS_A, "ledger", "resumed"), ledgerFixture(ORG_A, PASS_A, { createdBy: users.owner, lessonId: "lesson-seed", occurredAt: hoursAgo(0.5) }));
+    await assertSucceeds(batch.commit());
   });
 });

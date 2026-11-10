@@ -118,3 +118,8 @@ test("보관 · 되살림: 회원권이 남았으면 쓰지 않고, 방향이 �
     (error) => error.code === "not_archived",
   );
 });
+
+test("홀딩 중인 회원권은 잔여와 담당 관계를 유지하므로 회원을 보관할 수 없다", () => {
+  const held = pass({ holdFrom: new Date(NOW.getTime() - 86400000), holdUntil: new Date(NOW.getTime() + 86400000) });
+  assert.equal(archiveBlock({ id: "c1" }, [held], NOW), CLIENT_EDIT_ERROR.ACTIVE_PASS);
+});

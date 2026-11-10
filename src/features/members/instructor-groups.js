@@ -1,8 +1,9 @@
+// 홀딩은 일시 사용 중지다. 보유 회차와 담당 강사 관계는 유지한다.
 /**
  * 회원 관리의 강사 묶음 — 지점 → 강사 → 회원 (2026-11-04 대표).
  *
  * ── 무엇으로 묶는가 ──
- * **활성 회원권의 담당 강사.** 활성은 isDeductablePass 그대로다 -- 차감 선택
+ * **활성 회원권의 담당 강사.** 활성은 hasActivePassBalance 그대로다 -- 차감 선택
  * (lesson-settlement.js)과 회원 명부의 잔여(roster-bridge.js)가 쓰는 판정이다.
  * 사용 중 · 잔여 1 이상 · 만료 전. 화면이 따로 세면 같은 회원이 한쪽에서는
  * 활성이고 다른 쪽에서는 아니게 된다.
@@ -18,7 +19,7 @@
  * 읽기만 한다. 아무것도 쓰지 않는다.
  */
 
-import { isDeductablePass } from "../../data/repositories/pass-repository.js";
+import { hasActivePassBalance } from "../../data/repositories/pass-repository.js";
 import { passClientIds } from "../../data/schema/pass-clients.js";
 
 export const INSTRUCTOR_GROUP = Object.freeze({
@@ -40,7 +41,7 @@ export function activeAssignments(passes, now = new Date()) {
   /** @type {Map<string, { ids: Set<string>, unassigned: boolean }>} */
   const byClient = new Map();
   for (const pass of Array.isArray(passes) ? passes : []) {
-    if (!pass || !isDeductablePass(pass, now)) continue;
+    if (!pass || !hasActivePassBalance(pass, now)) continue;
     const instructorId = text(pass.instructorId);
     for (const clientId of passClientIds(pass)) {
       if (!byClient.has(clientId)) byClient.set(clientId, { ids: new Set(), unassigned: false });

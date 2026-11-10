@@ -43,7 +43,7 @@ import {
   fbConfirmInstructorNames,
   fbGrantMemberCancel, fbLessonRatingStats, fbManageNotice, fbUpdateRuntimeConfig,
   fbHandoverPass,
-  fbSessionUpPass,
+  fbSessionUpPass, fbManagePassHold,
   fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone,
@@ -216,7 +216,7 @@ import {
   DEDUCTION_CODE_LABEL, NOT_STARTED_NOTICE, lessonHasStarted,
   canSettleLesson, carePayCategory, clearSettlementFromLesson, closesSettlement, isSettledLesson,
   needsSettlement, deductsFor, settleBlockReason,
-  nextByPurchaseRound, pickCarePass, pickSoloPass, pickSharedDuetPass,
+  nextByPurchaseRound, pickCarePass, pickSoloPass, pickSharedDuetPass, planPassSelection,
   planLessonSettlement, recordSettlementAttempt, settledDeductionsOf, settlementOutcome,
   settlementSkipsOf,
 } from "./features/schedule/lesson-settlement.js";
@@ -448,6 +448,7 @@ import {
   instructorMonthReport, previousMonthOf,
 } from "./features/members/instructor-month.js";
 import { EXPIRY_REASON_LABELS } from "./data/schema/instructor-scope.js";
+import { isPassHeld } from "../functions/shared/pass-hold.mjs";
 import { passBelongsTo, passClientIds } from "./data/schema/pass-clients.js";
 import {
   checkLessonNotificationPermission, listenForLessonNotificationActions, requestLessonNotificationPermission, syncLessonNotifications,
@@ -19625,6 +19626,7 @@ function passAdminFailure(error) {
     ...SESSION_UP_ERROR_LABEL,
     ...TRANSFER_BLOCK_LABEL,
     pass_not_found: "이 회원권을 찾지 못했습니다. 화면을 새로 고쳐 주세요.",
+    pass_on_hold: "홀딩 중인 회원권은 양도할 수 없습니다. 먼저 홀딩을 해제해 주세요.",
     transfer_target_not_found: "받는 회원을 센터 명부에서 찾지 못했습니다.",
     transfer_instructor_required: "담당 강사가 없는 회원권은 넘길 수 없습니다.",
     transfer_expires_invalid: "이 회원권의 만료일을 읽을 수 없습니다. 만료일을 먼저 맞춰 주세요.",
@@ -19652,6 +19654,7 @@ function PassEditSheet({
   initialMode = "date",
 }) {
   const adjust = kind === "adjust";
+  const held = isPassHeld(pass);
   const [delta, setDelta] = useState(initialDelta);
   const [mode, setMode] = useState(initialMode);
   const [days, setDays] = useState(initialDays);
@@ -19673,6 +19676,7 @@ function PassEditSheet({
     if (mode === "hold") {
       nextExpiry = Number.isInteger(heldDays) && heldDays > 0 && heldDays <= HOLD_MAX_DAYS
         ? new Date((currentExpiry?.getTime() || 0) + heldDays * 86400000) : null;
+      if (held) nextExpiry = new Date(currentExpiry.getTime() - (toDate(pass.holdUntil).getTime() - Date.now()));
     } else if (date) {
       const parsed = new Date(`${date}T23:59:59`);
       nextExpiry = Number.isFinite(parsed.getTime()) ? parsed : null;
@@ -19693,7 +19697,7 @@ function PassEditSheet({
       <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
         {adjust
           ? "실제 잔여와 장부가 어긋났을 때 맞춥니다. 수업이 아니므로 급여에 잡히지 않고, 회원의 수업 이력에도 뜨지 않습니다."
-          : "연장과 단축, 홀딩이 모두 이 화면입니다. 회차는 움직이지 않고, 회원 앱에는 새 날짜가 반영됩니다."}
+          : "홀딩 기간에는 예약·차감이 중지되고 잔여 횟수는 그대로 보관됩니다. 만료일은 연장되며 회원 앱에도 반영됩니다. 기존 예약은 자동 취소되지 않고, 듀엣 공유권은 두 분 모두 중지됩니다."}
       </p>
 
       {adjust ? (
@@ -19724,7 +19728,7 @@ function PassEditSheet({
       ) : (
         <>
           <div className="mt-3 flex gap-1.5">
-            {[["date", "날짜 지정"], ["hold", "홀딩"]].map(([value, label]) => (
+            {[["date", "날짜 지정"], ["hold", held ? "홀딩 해제" : "홀딩"]].map(([value, label]) => (
               <button key={value} type="button" onClick={() => setMode(value)}
                 className="px-3 font-bold" style={{
                   height: 30, borderRadius: 999, fontSize: TYPE.caption,
@@ -19733,12 +19737,12 @@ function PassEditSheet({
                 }}>{label}</button>
             ))}
           </div>
-          {mode === "hold" ? (
+          {mode === "hold" && held ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>홀딩을 지금 해제합니다. 남은 홀딩 기간만큼 만료일 연장을 되돌리고 바로 이용할 수 있어요.</p> : mode === "hold" ? (
             <div className="mt-2 flex items-center gap-2">
               <input inputMode="numeric" value={days} placeholder="30"
                 onChange={(event) => setDays(event.target.value)} className={inputCls}
                 style={{ maxWidth: 110 }} />
-              <p style={{ fontSize: TYPE.caption, color: SUB }}>일만큼 뒤로 밉니다</p>
+              <p style={{ fontSize: TYPE.caption, color: SUB }}>일 동안 이용을 중지합니다 (지금부터)</p>
             </div>
           ) : (
             <input type="date" value={date} onChange={(event) => setDate(event.target.value)}
@@ -19775,6 +19779,7 @@ function PassEditSheet({
           onClick={() => onConfirm?.({
             kind, delta: deltaNumber, reason: reason.trim(),
             days: mode === "hold" ? heldDays : null,
+            action: mode === "hold" ? (held ? "release" : "hold") : undefined,
             expiresAt: nextExpiry,
           })}
           className="flex-1 font-bold" style={{
@@ -20137,6 +20142,7 @@ function ClientPassRow({
   onHandover, canOverrideSessionUp = false,
 }) {
   const usable = isDeductablePass(pass, now);
+  const held = isPassHeld(pass, now);
   /* 세션업 기간. 지났으면 FC매니저의 버튼은 **감추지 않고 잠근다** -- 없어진
      버튼은 "이 회원권은 세션업이 안 되는 종류" 로 읽히고, 그러면 대표를 부를
      생각을 못 한다. 잠긴 버튼 옆에 이유를 둔다. */
@@ -20147,7 +20153,7 @@ function ClientPassRow({
   const partner = partnerClientId(pass, clientId);
   const expired = isExpiredPass(pass, now);
   return (
-    <div style={{ padding: "11px 0", borderTop: `1px solid ${LINE}`, opacity: usable ? 1 : 0.55 }}>
+    <div style={{ padding: "11px 0", borderTop: `1px solid ${LINE}`, opacity: usable || held ? 1 : 0.55 }}>
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
           {labelOf(PAY_CATEGORY_LABELS, pass.category)}
@@ -20157,7 +20163,7 @@ function ClientPassRow({
         </span>
       </div>
       <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-        {dayLabel(pass.createdAt)} 발급
+        {held ? `홀딩 중 · ${dayTimeLabel(pass.holdUntil)} 이용 재개 · ` : ""}{dayLabel(pass.createdAt)} 발급
         {" · "}{pass.totalSessions}회{Number(pass.serviceSessions) > 0 ? ` + 서비스 ${pass.serviceSessions}회` : ""}
         {" · "}{wonToManwonLabel(pass.contractPrice)}
         {" · "}{pass.purchaseRound}차
@@ -20238,7 +20244,7 @@ function ClientPassRow({
             className="shrink-0 px-2.5 font-bold" style={{
               height: 28, borderRadius: 999, fontSize: TYPE.caption,
               backgroundColor: CANVAS, color: BRAND_D,
-            }}>만료일</button>
+            }}>만료일 · 홀딩</button>
         ) : null}
         {/* 왜 잠겼는가. 코드 없는 "할 수 없습니다" 를 남기지 않는 것과 같은
             이유로, 누를 수 없는 버튼 옆에는 이유가 선다. */}
@@ -20599,7 +20605,7 @@ function ClientDetail({
     }
   };
 
-  const runPassEdit = async ({ kind, delta, reason, days, expiresAt }) => {
+  const runPassEdit = async ({ kind, delta, reason, days, expiresAt, action }) => {
     if (!passEdit || busy) return;
     setBusy(true);
     setPassEditError("");
@@ -20609,13 +20615,11 @@ function ClientDetail({
           delta, reason, createdBy: currentUserId, actorRole: organization?.role || "",
         }, { store: passStore });
         onToast?.({ ok: true, msg: `잔여를 ${result.remainingCount}회로 맞췄습니다.` });
-      } else if (days) {
-        /* 홀딩은 만료일 변경 위에 얹는 것뿐이다. 사유에 "홀딩 30일" 이
-           붙는다 -- 별도 상태를 두지 않는 대신 그것이 자취다. */
+      } else if (action === "hold" || action === "release") {
         const result = await holdPass(organizationId, passEdit.pass, {
-          days, reason, createdBy: currentUserId,
-        }, { store: passStore });
-        onToast?.({ ok: true, msg: `${days}일 홀딩했습니다. 만료 ${dayLabel(result.expiresAt)}.` });
+          days, reason, action, createdBy: currentUserId,
+        }, { manage: fbManagePassHold });
+        onToast?.({ ok: true, msg: action === "release" ? "홀딩을 해제했습니다. 바로 이용할 수 있어요." : `${days}일 홀딩했습니다. ${dayTimeLabel(result.holdUntil)}부터 다시 이용할 수 있어요.` });
       } else {
         const result = await changePassExpiry(organizationId, passEdit.pass, {
           expiresAt, reason, createdBy: currentUserId,
@@ -32519,6 +32523,15 @@ export default function App() {
     if (prev && !canEditLessonInfo(prev)) {
       setToast({ ok: false, msg: settledLockNotice({ canUnsettle: organizationRoster && isOwnerLevelRole(organizationContext.role), elsewhere: isSettledElsewhere(prev) }) });
       return false;
+    }
+    if (organizationRoster && !item.personal && item.status !== "cancel") {
+      const at = settlementTime(item);
+      const plan = planPassSelection({ lesson: item, members: rosterMembers, passes: rosterPasses,
+        requireAttendance: false, now: at || new Date() });
+      if (plan.skips.some((row) => row.reason === "pass_on_hold")) {
+        setToast({ ok: false, msg: "해당 수업일에 홀딩 중인 수강권입니다. 홀딩 해제 또는 이용 재개일 이후로 예약해 주세요." });
+        return false;
+      }
     }
     let members = db.members;
     if (prev) {

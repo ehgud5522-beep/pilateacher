@@ -449,6 +449,7 @@ import {
 } from "./features/members/instructor-month.js";
 import { EXPIRY_REASON_LABELS } from "./data/schema/instructor-scope.js";
 import { isPassHeld } from "../functions/shared/pass-hold.mjs";
+import { BranchMemberOverview } from "./features/members/BranchMemberOverview.jsx";
 import { passBelongsTo, passClientIds } from "./data/schema/pass-clients.js";
 import {
   checkLessonNotificationPermission, listenForLessonNotificationActions, requestLessonNotificationPermission, syncLessonNotifications,
@@ -21058,7 +21059,7 @@ function ClientDirectory({
   onRetryOrganization, onToast, onOpenClient, onChanged, initialState = null,
   /* 회원권 담당을 바꾸면 앱이 이 숫자를 올린다 -- 그때 다시 읽어 강사 묶음이 바로
      새 담당을 따른다. 안 그러면 방금 넘긴 회원이 옛 강사 칩에 남는다. */
-  refreshKey = 0,
+  refreshKey = 0, overview = false,
   now = defaultClock,
 }) {
   const [clients, setClients] = useState(initialState?.clients || []);
@@ -21067,6 +21068,7 @@ function ClientDirectory({
      null 은 아직 안 읽음 -- 그동안은 묶지 않고 목록을 전처럼 그린다. */
   const [passes, setPasses] = useState(Array.isArray(initialState?.passes) ? initialState.passes : null);
   const [instructors, setInstructors] = useState(initialState?.instructors || []);
+  const [instructorError, setInstructorError] = useState(initialState?.instructorError || "");
   const [passError, setPassError] = useState(initialState?.passError || "");
   const [instructorFilter, setInstructorFilter] = useState(initialState?.instructorFilter || INSTRUCTOR_GROUP.ALL);
   const [noActiveOpen, setNoActiveOpen] = useState(Boolean(initialState?.noActiveOpen));
@@ -21100,7 +21102,7 @@ function ClientDirectory({
         listClients(organizationId, { store: clientStore }),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
         toleratingReadFailure(listPasses(organizationId, { store: passStore })),
-        toleratingReadFailure(listInstructors(organizationId, { store: instructorStore })),
+        toleratingReadFailure(overview ? listMemberships(organizationId, { store: instructorStore }) : listInstructors(organizationId, { store: instructorStore })),
       ]);
       setClients(foundClients);
       setLocations(locationResult.items);
@@ -21108,12 +21110,13 @@ function ClientDirectory({
       setPasses(passResult.items);
       setPassError(passResult.failed ? passResult.errorCode || "unknown" : "");
       setInstructors(instructorResult.items);
+      setInstructorError(instructorResult.failed ? instructorResult.errorCode || "unknown" : "");
     } catch (error) {
       setLoadError(`회원을 불러오지 못했어요 (코드 ${error?.code || "unknown"})`);
     } finally {
       setLoading(false);
     }
-  }, [organizationId, clientStore, locationStore, passStore, instructorStore]);
+  }, [organizationId, clientStore, locationStore, passStore, instructorStore, overview]);
 
   useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload, refreshKey]);
 
@@ -21263,6 +21266,11 @@ function ClientDirectory({
         style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>다시 시도</button>
     </section>
   );
+
+  if (overview) return <BranchMemberOverview organization={organization} clients={clients} passes={passes}
+    instructors={instructors} locations={locations} loading={loading}
+    error={loadError || passError || locationError || instructorError} now={now()}
+    onRefresh={reload} onOpenClient={(client) => onOpenClient?.({ ...client, locationName: locationNames.get(client.locationId) || "" })} />;
 
   if (mode === "add") return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
@@ -26665,6 +26673,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
+    "branch-overview": "지점 회원 현황",
     "instructor-admin": "강사 관리",
     handover: "퇴사 인계",
     "pass-issue": "회원권 발급",
@@ -26697,6 +26706,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     { label: "회원 · 회원권", items: [
       ...(showClients ? [{ key: "pass-issue", title: "회원권 발급", description: "회원에게 회원권 발급", Icon: Ticket }] : []),
       ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
+      ...(showClients ? [{ key: "branch-overview", title: "지점 회원 현황", description: "강사별 이름 · 연락처 · 잔여 한눈에", Icon: Users }] : []),
       /* 발급 내역도 대표만 본다. 급여와 같은 조건이다 -- 센터 전체의 매출은
          한 사람의 것이 아니고, FC매니저에게는 자기 실적만 보이는 화면이 따로
          필요하다 (아직 없다). */
@@ -27256,8 +27266,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
           <ExpiryOrderReview organization={organization} passStore={passStore} clientStore={clientStore}
             onOpenClient={onOpenClient} onRetryOrganization={onRetryOrganization} />
         )}
-        {view === "clients" && showClients && (
-          <ClientDirectory organization={organization} currentUserId={account?.id || ""}
+        {(view === "clients" || view === "branch-overview") && showClients && (
+          <ClientDirectory key={view} overview={view === "branch-overview"} organization={organization} currentUserId={account?.id || ""}
             clientStore={clientStore} locationStore={locationStore} onOpenClient={onOpenClient}
             passStore={passStore} instructorStore={instructorStore} refreshKey={dataRevision}
             onRetryOrganization={onRetryOrganization} onToast={onToast} onChanged={onRosterChanged} />
@@ -27943,10 +27953,10 @@ export function createAppScreenSmokeCases() {
       })} />
   ));
   const settingsTab = (organization, extra = {}) => providerWith(organization, <ReferenceSettingsTab db={db} photos={photos} account={{ id: "smoke-account", role: "owner" }} savedAt={null} demoMode={false} onChangeSettings={noop} onChangePhoto={noop} onLogout={noop} onDeleteAccount={noop} onToast={noop} themePref="light" onChangeTheme={noop} onImport={noop} onOpenSchedule={noop} onOpenRecords={noop} onOpenOnboarding={noop} backupStatus={{}} onEnablePhotoBackup={noop} onRetryBackup={noop} productStore={productStore} clientStore={clientStore} locationStore={locationStore} instructorStore={instructorStore} instructorRateStore={instructorRateStore} passStore={passStore} onRetryOrganization={noop} {...extra} />);
-  const clientDirectory = (organization, initialState) => providerWith(organization, (
+  const clientDirectory = (organization, initialState, extra = {}) => providerWith(organization, (
     <ClientDirectory organization={readyOrganizationContext(organization)} currentUserId="smoke-account"
       clientStore={clientStore} locationStore={locationStore} initialState={initialState}
-      now={smokeDirectoryClock} onRetryOrganization={noop} onToast={noop} />
+      now={smokeDirectoryClock} onRetryOrganization={noop} onToast={noop} {...extra} />
   ));
   /* 강사 묶음 픽스처. 박셋은 활성 회원권 둘(강사 A · B), 최넷은 담당 빈 회원권,
      김하나(반송)는 A, 김하나(센텀)는 B, 이두리는 끝난 회원권만 있다. */
@@ -29121,6 +29131,9 @@ export function createAppScreenSmokeCases() {
        그 범위 안에서만 센다. 시계를 고정한다 -- 만료 판정이 "지금" 에 달려 있다. */
     { name: "회원 관리 · 강사 칩 · 대표", element: clientDirectory(smokeOwner, smokeDirectoryGroups) },
     { name: "회원 관리 · 강사 칩 · 총괄매니저", element: clientDirectory({ ...smokeOwner, role: "area_manager", locationId: "centum" }, smokeDirectoryGroups) },
+    { name: "지점 회원 현황 · FC매니저", element: clientDirectory({ ...smokeOwner, role: "manager", locationId: "bansong", locationIds: ["bansong"] }, smokeDirectoryGroups, { overview: true }) },
+    { name: "지점 회원 현황 · 조회 실패", element: clientDirectory(smokeOwner, { ...smokeDirectoryGroups, passError: "permission-denied" }, { overview: true }) },
+    { name: "지점 회원 현황 · 관리 지점 없음", element: clientDirectory({ ...smokeOwner, role: "manager", locationId: "", locationIds: [] }, smokeDirectoryGroups, { overview: true }) },
     { name: "회원 관리 · 강사 칩 · FC매니저", element: clientDirectory({ ...smokeOwner, role: "manager", locationId: "bansong", locationIds: ["bansong"] }, smokeDirectoryGroups) },
     { name: "회원 관리 · 강사 칩 · 한 강사", element: clientDirectory(smokeOwner, { ...smokeDirectoryGroups, instructorFilter: "smoke-inst-a" }) },
     { name: "회원 관리 · 강사 칩 · 담당 미지정", element: clientDirectory(smokeOwner, { ...smokeDirectoryGroups, instructorFilter: "__unassigned__" }) },

@@ -19670,7 +19670,7 @@ function PassEditSheet({
   const increaseBlocked = adjust && !canIncrease && Number.isInteger(deltaNumber) && deltaNumber > 0;
 
   const currentExpiry = pass?.expiresAt ? toDate(pass.expiresAt) : null;
-  const heldDays = Number.parseInt(String(days).trim(), 10);
+  const heldDays = Number(String(days).trim());
   let nextExpiry = null;
   if (!adjust) {
     if (mode === "hold") {

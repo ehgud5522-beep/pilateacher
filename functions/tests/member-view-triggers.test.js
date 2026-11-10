@@ -193,3 +193,31 @@ test("ensureMemberView: 주인이 다른 투영은 '있다' 로 보지 않는다
     "다시 만들기(트랜잭션)까지 간다",
   );
 });
+
+test("legacy product labels containing slashes do not become document paths", async () => {
+  const documents = baseDocuments();
+  documents[`${ORG}/passes/pass-1`].productId = "1:1 PT 100s/27s가족양도";
+  const db = fakeFirestore(documents);
+  const original = db.collection;
+  db.collection = (name) => {
+    const orgs = original(name);
+    const doc = orgs.doc;
+    orgs.doc = (id) => {
+      const ref = doc(id);
+      const collection = ref.collection;
+      ref.collection = (name) => {
+        const child = collection(name);
+        if (name === "products") {
+          const childDoc = child.doc;
+          child.doc = (id) => { assert.ok(!id.includes("/"), "product labels cannot be paths"); return childDoc(id); };
+        }
+        return child;
+      };
+      return ref;
+    };
+    return orgs;
+  };
+  const input = await collectMemberViewInput(db, "center-a", "client-a");
+  assert.equal(input.passes[0].remainingCount, 8);
+  assert.deepEqual(input.productSessionTypes, {});
+});

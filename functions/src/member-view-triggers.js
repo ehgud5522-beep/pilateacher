@@ -228,7 +228,11 @@ async function collectMemberViewInput(db, organizationId, clientId, options = {}
      상품 **이름은 읽지 않는다.** 회원에게 상품명을 보내지 않기로 했다
      (2026-10-30) -- 읽지 않으면 실수로 실어 보낼 일도 없다. 없는 문서는
      이관분이고, 그때는 member-view.js 가 회원권의 급여카테고리로 가른다. */
-  const productIds = [...new Set(passes.map((pass) => text(pass.productId)).filter(Boolean))];
+  // Imported passes may contain a legacy product label rather than a document ID.
+  // A slash must never turn that label into a Firestore path. Missing products use
+  // the existing salary-category fallback in buildMemberView.
+  const productIds = [...new Set(passes.map((pass) => text(pass.productId))
+    .filter((id) => id && !id.includes("/") && id !== "." && id !== ".." && Buffer.byteLength(id, "utf8") <= 1500))];
   const productSnapshots = await Promise.all(
     productIds.map((id) => org.collection("products").doc(id).get()),
   );

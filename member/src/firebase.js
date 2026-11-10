@@ -146,9 +146,9 @@ export const watchAuth = (handler) => onAuthStateChanged(auth, handler);
  * 번호를 실어 보내지 않는다 -- 서버는 `request.auth.token.phone_number` 만
  * 믿고, 보낸 번호는 읽지도 않는다.
  */
-export async function linkMemberAccount() {
+export async function linkMemberAccount({ repairOnly = false } = {}) {
   const call = httpsCallable(functions, "linkMemberAccount");
-  const response = await call({});
+  const response = await call(repairOnly ? { repairOnly: true } : {});
   return response?.data || null;
 }
 

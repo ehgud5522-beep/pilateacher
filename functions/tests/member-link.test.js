@@ -389,3 +389,21 @@ test("대표가 손으로 이어도 투영을 확인한다", async () => {
   assert.deepEqual(asked, ["client-1"]);
   assert.deepEqual(result.views, [{ outcome: "written" }]);
 });
+
+test("repair-only uses the caller's existing links, never phone matching or link writes", async () => {
+  const ensured=[];
+  const svc=createMemberLinkService({
+    readLink: async(uid)=>{assert.equal(uid,MEMBER);return {status:'linked',links:[{organizationId:ORG,clientId:'client-1'}]};},
+    readClient: async()=>({userId:MEMBER}),
+    ensureMemberView: async(input)=>{ensured.push(input);return 'written';},
+    findClientsByPhone:()=>assert.fail('must not re-match a manually linked member'),
+    writeLink:()=>assert.fail('must not rewrite links'),
+  });
+  const result=await svc.linkForCaller({auth:{uid:MEMBER},data:{repairOnly:true,userId:'attacker',clientId:'other'}});
+  assert.equal(result.views[0].outcome,'written');assert.equal(ensured[0].userId,MEMBER);assert.equal(ensured[0].clientId,'client-1');
+});
+test("repair-only rejects unauthenticated callers and stale links owned by another user", async () => {
+  const svc=createMemberLinkService({readLink:async()=>({status:'linked',links:[{organizationId:ORG,clientId:'client-1'}]}),readClient:async()=>({userId:'someone-else'}),ensureMemberView:()=>assert.fail()});
+  await assert.rejects(()=>svc.linkForCaller({data:{repairOnly:true}}));
+  await assert.rejects(()=>svc.linkForCaller({auth:{uid:MEMBER},data:{repairOnly:true}}));
+});

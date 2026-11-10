@@ -419,6 +419,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 관리 · 소속 확인 실패",
     "회원 관리 · 강사 칩 · 대표",
     "회원 관리 · 강사 칩 · 총괄매니저",
+    "지점 회원 현황 · FC매니저",
+    "지점 회원 현황 · 조회 실패",
+    "지점 회원 현황 · 관리 지점 없음",
     "회원 관리 · 강사 칩 · FC매니저",
     "회원 관리 · 강사 칩 · 한 강사",
     "회원 관리 · 강사 칩 · 담당 미지정",
@@ -3563,4 +3566,15 @@ test("owner message: one line at the top of the schedule tab, the owner writes i
   const failed = markup("이사님 전달사항 · 저장 실패");
   assert.match(failed, /data-owner-message-error/);
   assert.match(failed, /코드 notice_owner_message_owner_only/, "실패는 원본 코드와 함께");
+});
+
+test("branch overview hides stale balances on query failure and refuses a manager without a branch", async () => {
+  const markup = await screenMarkup();
+  assert.match(markup("지점 회원 현황 · FC매니저"), /강사별 회원 한눈에/);
+  const failed = markup("지점 회원 현황 · 조회 실패");
+  assert.match(failed, /permission-denied/);
+  assert.doesNotMatch(failed, /class="bo-row"/);
+  const missing = markup("지점 회원 현황 · 관리 지점 없음");
+  assert.match(missing, /관리 지점이 지정되지 않았습니다/);
+  assert.doesNotMatch(missing, /class="bo-row"/);
 });

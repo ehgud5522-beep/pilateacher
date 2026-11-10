@@ -79,7 +79,7 @@ test("배선 — 확정 진입점(시트 · 출석 화면 · 큐)이 모두 지�
   const settle = source.slice(source.indexOf("const settleLesson = async (lessonId) => {"));
   assert.match(settle.slice(0, 900), /unmarkedSettleMessage\(lesson,/);
   assert.match(settle.slice(0, 900), /errorCode: "duet_unmarked"/);
-  assert.match(source, /data-all-attended onClick=\{\(\) => onStatusAll\?\.\(draft\.id, "done"\)\}/);
+  assert.match(source, /if \(isDuet && o\.k === "done"\) onStatusAll\?\.\(draft\.id, "done"\)/);
   assert.match(source, /blockedReason=\{duetUnmarked\}/);
   const status = source.slice(source.indexOf("const setStatus = (id, status, memberId) => {"));
   assert.match(status.slice(0, 400), /status === "done" && lessonTypeKeyOf\(s0\) === "duet"\) return setStatusAll\(id, status\)/);

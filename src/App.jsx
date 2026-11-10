@@ -4691,7 +4691,7 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
                   <p className="mb-1.5 text-xs font-extrabold" style={{ color: INK }}>출석 · 차감</p>
                   <div className="grid grid-cols-3 gap-2">
                     {[{ k: "done", l: "출석" }, { k: "noshow", l: "노쇼" }, { k: "cancel", l: "취소" }].map((o) => (
-                      <button key={o.k} disabled={settledLesson} onClick={() => {
+                      <button key={o.k} data-all-attended={isDuet && o.k === "done" ? true : undefined} disabled={settledLesson} onClick={() => {
                         if (isDuet && o.k === "done") onStatusAll?.(draft.id, "done");
                         else onStatus?.(draft.id, o.k, activeMemberId);
                       }} className="h-9 rounded-lg text-xs font-bold disabled:opacity-40"
@@ -4852,7 +4852,7 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
               </>
             )}
 
-            {!settledLesson && attendeesOf(draft).length > 1 && (
+            {!settledLesson && !isDuet && attendeesOf(draft).length > 1 && (
               <div className="grid grid-cols-3 gap-1">
                 {[{ k: "done", l: "전체 출석" }, { k: "noshow", l: "전체 노쇼" }, { k: "cancel", l: "전체 취소" }].map((o) => (
                   <button key={o.k} onClick={() => onStatusAll?.(draft.id, o.k)} className="h-9 rounded-lg text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>{o.l}</button>
@@ -4900,10 +4900,6 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
                     </div>
                   ))}
                 </div>
-                <button type="button" data-all-attended onClick={() => onStatusAll?.(draft.id, "done")}
-                  className="mt-2 h-11 w-full rounded-lg text-sm font-extrabold text-white" style={{ backgroundColor: GOOD }}>
-                  둘 다 출석
-                </button>
               </div>
             ) : null}
 

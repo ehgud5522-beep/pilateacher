@@ -18,7 +18,17 @@ export const ADJUST_INCREASE_NOTICE = "증가는 대표·총괄매니저만 가�
  * @param {{ direction?: string, role?: string }} [context] 조정이면 방향과 역할
  */
 export function passEditFailure(error, context = {}) {
-  const code = String(error?.code || "unknown");
+  const code = String(error?.details?.code || error?.code || "unknown").replace(/^functions\//, "");
+  const holdMessages = {
+    hold_already_active: "이미 홀딩 중입니다. 중복 연장하지 않았어요.",
+    hold_not_active: "이미 이용 가능한 회원권입니다. 새로고침해 주세요.",
+    hold_pass_unusable: "잔여 회차가 있는 활성 회원권만 홀딩할 수 있어요.",
+    hold_reason_required: "홀딩 또는 해제 사유를 입력해 주세요.",
+    hold_days_invalid: "홀딩 기간은 1일부터 365일까지 입력해 주세요.",
+    hold_permission_denied: "대표·총괄매니저·FC매니저만 홀딩을 변경할 수 있어요.",
+    hold_pass_not_found: "회원권을 찾지 못했습니다. 새로고침해 주세요.",
+  };
+  if (holdMessages[code]) return `${holdMessages[code]} (코드 ${code})`;
   if (code === "below_zero") {
     return `잔여는 0회 미만이 될 수 없어요. 지금 ${Number(error?.remaining) || 0}회 남아 있습니다.`;
   }

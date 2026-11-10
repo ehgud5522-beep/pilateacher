@@ -44,7 +44,7 @@
  */
 const PASS_FIELDS = Object.freeze([
   "passId", "lessonType", "totalSessions", "serviceSessions",
-  "remainingCount", "expiresAt", "status", "isDuet", "partnerName",
+  "remainingCount", "expiresAt", "status", "isDuet", "partnerName", "holdFrom", "holdUntil",
 ]);
 
 /** 회원 화면이 이름을 짓는 수업 유형. 급여카테고리 문자열을 그대로 내보내지 않는다. */
@@ -200,6 +200,7 @@ function clientIdsOf(pass) {
  */
 function isUsablePass(pass, now) {
   if (text(pass?.status) !== PASS_STATUS_ACTIVE) return false;
+  if (toDate(pass.holdFrom)?.getTime() <= now.getTime() && now.getTime() < toDate(pass.holdUntil)?.getTime()) return false;
   if (count(pass?.remainingCount) <= 0) return false;
   const expiresAt = toDate(pass?.expiresAt);
   return !expiresAt || expiresAt.getTime() >= now.getTime();
@@ -262,6 +263,7 @@ function buildMemberView(input) {
       remainingCount: count(pass.remainingCount),
       expiresAt: toDate(pass.expiresAt),
       status: text(pass.status),
+      holdFrom: toDate(pass.holdFrom), holdUntil: toDate(pass.holdUntil),
       isDuet: others.length > 0,
       /* 듀엣 상대의 이름은 언제나 보여준다 (확정 2번). 이름을 모르면 빈
          문자열이고, 화면은 "함께 쓰는 분" 으로 적는다 -- uid 나 clientId 를

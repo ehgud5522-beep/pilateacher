@@ -35,6 +35,7 @@
  * 회원 화면에 빈 칸이 생기거나 누군가 그 칸을 채우러 투영을 연다.
  */
 
+import { isPassHeld } from "../../../functions/shared/pass-hold.mjs";
 import { PAY_CATEGORY_LABELS } from "../../data/schema/display-names.js";
 import { expiryOrderWarning, expiryOutOfOrder } from "./purchase-round.js";
 
@@ -191,6 +192,7 @@ export function remainingSplit(pass) {
 export function isUsablePass(pass, now = new Date()) {
   const status = text(pass?.status);
   if (status && status !== "active") return false;
+  if (isPassHeld(pass, now)) return false;
   if (count(pass?.remainingCount) <= 0) return false;
   const expiresAt = toDate(pass?.expiresAt);
   return !expiresAt || expiresAt.getTime() >= now.getTime();
@@ -198,6 +200,7 @@ export function isUsablePass(pass, now = new Date()) {
 
 /** 왜 끝났는가. "다 썼다" 와 "기간이 지났다" 는 재등록 상담이 다르다. */
 export function endedReason(pass, now = new Date()) {
+  if (isPassHeld(pass, now)) return `홀딩 중 · ${isoDay(pass.holdUntil)} 이용 재개`;
   const status = text(pass?.status);
   if (status && status !== "active") return status === "cancelled" ? "취소됨" : "종료됨";
   if (count(pass?.remainingCount) <= 0) return "모두 사용";

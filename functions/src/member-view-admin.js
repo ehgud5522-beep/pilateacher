@@ -91,6 +91,7 @@ function usableRemainingTotal(passes, now) {
   return (Array.isArray(passes) ? passes : [])
     .filter((pass) => {
       if (text(pass?.status) !== "active") return false;
+      if (toDate(pass.holdFrom)?.getTime() <= now.getTime() && now.getTime() < toDate(pass.holdUntil)?.getTime()) return false;
       const expiresAt = toDate(pass?.expiresAt);
       return !expiresAt || expiresAt.getTime() >= now.getTime();
     })

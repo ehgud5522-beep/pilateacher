@@ -210,6 +210,12 @@ service cloud.firestore {
        **pass-repository.js 의 isFreshlyIssuedPass 와 같은 조건이다.** 한쪽만
        고치면 화면은 되는데 규칙이 막고, 쓰는 사람에게는 "눌렀는데 아무 일도
        안 일어남" 으로 도착한다. */
+    function passHeldAt(pass, at) {
+      return "holdFrom" in pass && "holdUntil" in pass
+        && pass.holdFrom is timestamp && pass.holdUntil is timestamp
+        && pass.holdFrom <= at && at < pass.holdUntil;
+    }
+
     function freshlyIssuedPass(pass) {
       return pass.remainingCount is int
         && pass.totalSessions is int
@@ -1174,7 +1180,11 @@ service cloud.firestore {
              듀엣이 깨지는 경우는 이 문을 여는 것이 아니라 회원권을 취소하고
              다시 발급하는 것으로 처리한다 -- 대표만 할 수 있고 이력이 남는다.
              나중에 제대로 넣을 때 여기에 문을 하나 더 내면 된다. */
-          && immutable(["clientId", "clientIds"])
+          && immutable(["clientId", "clientIds", "holdFrom", "holdUntil"])
+          && (!passHeldAt(resource.data, request.time)
+            || !request.resource.data.diff(resource.data).affectedKeys().hasAny(["remainingCount"])
+            || request.resource.data.remainingCount >= resource.data.remainingCount
+            || request.resource.data.status == "cancelled")
           && (
             hasRole(organizationId, ownerLevel())
             // 담당 교체. 넘겨받았다는 사실이 함께 남아야 급여 판정이 그것을 볼
@@ -1273,6 +1283,10 @@ service cloud.firestore {
         match /ledger/{entryId} {
           allow read: if isCentreStaff(organizationId);
           allow create: if request.resource.data.organizationId == organizationId
+            && (request.resource.data.type != "deduct" || (
+              !passHeldAt(get(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(passId)).data, request.time)
+              && !passHeldAt(get(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(passId)).data, request.resource.data.occurredAt)
+            ))
             && request.resource.data.passId == passId
             && request.resource.data.keys().hasOnly([
               "organizationId", "passId", "clientId", "locationId", "type", "delta",

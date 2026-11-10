@@ -1,3 +1,4 @@
+// 홀딩은 일시 사용 중지다. 보유 회차와 담당 강사 관계는 유지한다.
 /**
  * 회원 이름 수정 · 보관 (2026-11-04 대표).
  *
@@ -11,14 +12,14 @@
  * 되살리면 전과 같다. 판정과 문구만 여기 둔다 -- 쓰기는 client-repository.js.
  *
  * ── 보관할 수 있는 회원 ──
- * 쓸 수 있는 회원권(isDeductablePass -- 차감 선택과 같은 판정)이 한 장도 없는
+ * 쓸 수 있는 회원권(hasActivePassBalance -- 차감 선택과 같은 판정)이 한 장도 없는
  * 회원만. 듀엣 회원권은 짝의 것이기도 하다 -- 짝이 쓰는 회원권에 이 회원이
  * 들어 있으면 보관하지 않는다(passBelongsTo 가 clientIds 를 본다). 보관한 회원이
  * 수업 등록 · 발급에서 사라지는데, 그 회원권이 아직 차감될 수 있으면 짝의
  * 수업이 끊긴다.
  */
 
-import { isDeductablePass } from "../../data/repositories/pass-repository.js";
+import { hasActivePassBalance } from "../../data/repositories/pass-repository.js";
 import { passBelongsTo } from "../../data/schema/pass-clients.js";
 
 /** 이름 길이 상한. 규칙은 비어 있지 않은지만 본다 -- 화면이 더 좁힌다. */
@@ -71,7 +72,7 @@ export function archiveBlock(client, passes, now = new Date()) {
   if (isArchivedClient(client)) return CLIENT_EDIT_ERROR.ALREADY_ARCHIVED;
   const clientId = text(client?.id);
   const usable = (Array.isArray(passes) ? passes : [])
-    .some((pass) => passBelongsTo(pass, clientId) && isDeductablePass(pass, now));
+    .some((pass) => passBelongsTo(pass, clientId) && hasActivePassBalance(pass, now));
   return usable ? CLIENT_EDIT_ERROR.ACTIVE_PASS : null;
 }
 

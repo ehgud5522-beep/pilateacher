@@ -220,6 +220,7 @@ async function runHandover(firestore, input) {
   const snapshot = await source.get();
   if (!snapshot.exists) throw new Error(ADMIN_ERROR.NOT_FOUND);
   const pass = { id: passId, ...(snapshot.data() || {}) };
+  if ((await import("../shared/pass-hold.mjs")).isPassHeld(pass, at)) throw new Error("pass_on_hold");
 
   /* 받는 회원이 이 센터에 있는가. 앱이 명부에서 골라 보내지만 id 는 그냥
      문자열이라, 없는 회원에게 넘기면 회차가 아무도 못 보는 자리로 간다. */
@@ -295,7 +296,7 @@ async function runHandover(firestore, input) {
   const batch = firestore.batch();
   /* 읽어서 빼지 않는다. 서버가 더한다 -- 같은 회원권에 차감과 양도가 겹쳐도
      한쪽이 다른 쪽을 덮어쓰지 않는다. */
-  batch.update(source, { remainingCount: FieldValue.increment(-sessions) });
+  batch.update(source, { remainingCount: FieldValue.increment(-sessions) }, ...(snapshot.updateTime ? [{ lastUpdateTime: snapshot.updateTime }] : []));
   batch.set(source.collection("ledger").doc(handoverEntryId), {
     organizationId,
     passId,

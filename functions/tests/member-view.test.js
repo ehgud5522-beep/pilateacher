@@ -575,3 +575,13 @@ test("예정 수업을 못 읽었으면 schedule 은 null — '없음' 이 아�
   assert.equal(scheduleView(null).schedule, null);
   assert.deepEqual(scheduleView([]).schedule, []);
 });
+
+test("held passes retain balance and dates but are excluded from usable total", () => {
+  const from = new Date(NOW.getTime() - 86400000);
+  const until = new Date(NOW.getTime() + 86400000);
+  const view = build({ passes: [pass({ holdFrom: from, holdUntil: until })] });
+  assert.equal(view.remainingTotal, 0);
+  assert.equal(view.passes[0].remainingCount, 8);
+  assert.deepEqual(view.passes[0].holdUntil, until);
+  assert.equal(build({ passes: [pass({ holdFrom: from, holdUntil: until })], now: until }).remainingTotal, 8);
+});

@@ -1078,6 +1078,24 @@ const assertPassAdmin = async (organizationId, callerUid) => {
   return String(data?.role || "").trim();
 };
 
+exports.managePassHold = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3", timeoutSeconds: 60, invoker: "public",
+}, async (request) => {
+  const actorId = String(request?.auth?.uid || "");
+  if (!actorId) throw new HttpsError("unauthenticated", "hold_permission_denied");
+  try {
+    return await require("./pass-hold").runPassHold(firestore, {
+      organizationId: String(request?.data?.organizationId || ""),
+      passId: String(request?.data?.passId || ""), actorId,
+      action: request?.data?.action, days: request?.data?.days, reason: request?.data?.reason,
+    });
+  } catch (error) {
+    const reason = String(error?.message || "hold_failed");
+    logger.error("pass_hold_failed", { feature: "pass_hold", stage: "commit", errorCode: String(error?.code || reason) });
+    throw new HttpsError(reason === "hold_permission_denied" ? "permission-denied" : "failed-precondition", reason, { code: reason });
+  }
+});
+
 exports.sessionUpPass = onCall({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",
   timeoutSeconds: 60,

@@ -92,3 +92,9 @@ test("담당을 바꾼 직후 다시 읽으면 새 강사 밑으로 옮겨 간�
   assert.deepEqual(instructorChips([{ id: "c1" }], before, INSTRUCTORS).chips.map((chip) => chip.id), ["u-a"]);
   assert.deepEqual(instructorChips([{ id: "c1" }], after, INSTRUCTORS).chips.map((chip) => chip.id), ["u-b"]);
 });
+
+test("홀딩은 담당 강사 묶음에서 회원을 빼지 않는다", () => {
+  const held = pass({ holdFrom: new Date(NOW.getTime() - 86400000), holdUntil: new Date(NOW.getTime() + 86400000) });
+  assert.equal(activeAssignments([held], NOW).has("c1"), true);
+  assert.equal(isDeductablePass(held, NOW), false);
+});

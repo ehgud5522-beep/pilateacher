@@ -21,6 +21,7 @@ import {
 import { diagnosticsText } from "./diagnostics.js";
 /* 회원권 카드의 숫자는 강사 앱과 한 곳에서 나온다. 같은 회원권이 두 화면에서
    다른 숫자가 되는 것을 막는 것이 이 import 의 목적이다. */
+import { isPassHeld } from "../../functions/shared/pass-hold.mjs";
 import { isUsablePass, remainingSplit } from "../../src/features/membership/pass-cards.js";
 /* 수강권 이름은 상품명이 아니라 수업 유형과 횟수로 짓는다 (pass-label.js). */
 import { lessonName, passTitle, serviceLabel } from "./pass-label.js";
@@ -359,9 +360,11 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, on
   const ended = text(view?.clientStatus) === "ended";
   /* 임박은 말하되 재등록은 권하지 않는다. 사실만 놓으면 회원이 스스로 센터에
      묻는다 -- 앱이 파는 자리가 되면 열어 보는 이유가 달라진다. */
+  const heldPasses = (view?.passes || []).filter((pass) => isPassHeld(pass, now));
   const notice = ended
     ? "이용이 종료된 회원권이에요. 지난 기록은 그대로 보실 수 있어요."
-    : summary.remaining === 0 ? "남은 횟수가 없어요. 센터에 문의해 주세요."
+    : summary.remaining === 0 && heldPasses.length ? "홀딩 기간에는 이용이 잠시 중지돼요. 남은 횟수는 그대로 보관됩니다."
+      : summary.remaining === 0 ? "남은 횟수가 없어요. 센터에 문의해 주세요."
       : left !== null && left <= 14 ? `만료까지 ${left}일 남았어요.`
         : summary.remaining <= 3 ? "곧 마지막 회차예요." : "";
 
@@ -393,11 +396,12 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, on
           {summary.expiresAt ? <p className="until num">{dateLabel(summary.expiresAt)}까지</p> : null}
         </div>
         {summary.front ? <p className="name">{passTitle(summary.front)}{summary.others ? <span className="muted"> 외 {summary.others}장</span> : null}</p> : null}
-        <p className="chipline"><span className="chip on num">{remainingChip(view?.passes, now)}</span>{summary.others ? <span className="aggregate-label">사용 중인 회원권 합계</span> : null}</p>
+        <p className="chipline"><span className="chip on num">{!usablePasses.length && heldPasses.length ? "홀딩 중" : remainingChip(view?.passes, now)}</span>{summary.others ? <span className="aggregate-label">사용 중인 회원권 합계</span> : null}</p>
         {notice ? <p className="muted mt" style={{ fontSize: TYPE.caption }}>{notice}</p> : null}
+        {heldPasses.map((pass) => <PassCard key={`hold-${text(pass.passId)}`} pass={pass} now={now} />)}
         {usablePasses.length ? <details className="membership-disclosure">
           <summary>회원권별 잔여·기간 보기 <span aria-hidden="true">＋</span></summary>
-          <div className="stack">{usablePasses.map((pass) => <PassCard key={text(pass.passId)} pass={pass} />)}</div>
+          <div className="stack">{usablePasses.map((pass) => <PassCard key={text(pass.passId)} pass={pass} now={now} />)}</div>
         </details> : null}
       </Card>
 
@@ -534,7 +538,8 @@ export function Records({ view }) {
 export function MyPage({ view, now = new Date(), onSignOut, onDeleteAccount, push = null }) {
   const passes = Array.isArray(view?.passes) ? view.passes : [];
   const using = passes.filter((pass) => isUsable(pass, now));
-  const past = passes.filter((pass) => !isUsable(pass, now));
+  const held = passes.filter((pass) => isPassHeld(pass, now));
+  const past = passes.filter((pass) => !isUsable(pass, now) && !isPassHeld(pass, now));
 
   return (
     <div className="stack">
@@ -549,12 +554,12 @@ export function MyPage({ view, now = new Date(), onSignOut, onDeleteAccount, pus
           <p style={{ fontSize: TYPE.body }}>지금 쓸 수 있는 회원권이 없어요.</p>
           <p className="muted mt" style={{ fontSize: TYPE.caption }}>센터에 문의해 주세요.</p>
         </Card>
-      ) : [["사용 중", using, false], ["지난 회원권", past, true]].map(([label, group, dim]) => (
+      ) : [["사용 중", using, false], ["홀딩 중", held, false], ["지난 회원권", past, true]].map(([label, group, dim]) => (
         group.length ? (
           <div key={label}>
             <p className="group">{label}</p>
             <div className="stack">
-              {group.map((pass) => <PassCard key={text(pass.passId)} pass={pass} dim={dim} />)}
+              {group.map((pass) => <PassCard key={text(pass.passId)} pass={pass} dim={dim} now={now} />)}
             </div>
           </div>
         ) : null
@@ -632,7 +637,7 @@ export function PushSettings({ push }) {
   );
 }
 
-function PassCard({ pass, dim }) {
+function PassCard({ pass, dim, now = new Date() }) {
   return (
     <Card tone={dim ? "quietcard" : ""} className="pass">
       <div className="rowcard">
@@ -642,6 +647,7 @@ function PassCard({ pass, dim }) {
         )}
       </div>
       {/* 서비스는 산 횟수에 더하지 않고 따로 적는다. 0회면 줄이 없다. */}
+      {isPassHeld(pass, now) ? <p className="meta" role="status"><b>홀딩 중 · 이용 일시 중지</b><br />{dateLabel(pass.holdUntil)} {timeLabel(pass.holdUntil)}부터 이용 재개 · 잔여 횟수는 보관돼요</p> : null}
       {serviceLabel(pass) ? <p className="meta">{serviceLabel(pass)}</p> : null}
       <p className="meta">
         {count(pass.remainingCount) > 0

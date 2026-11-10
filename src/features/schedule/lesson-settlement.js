@@ -20,6 +20,8 @@ import {
 } from "../../data/schema/constants.js";
 import { isDuetPass, passBelongsTo } from "../../data/schema/pass-clients.js";
 import { isDeductablePass, remainingCountOf } from "../../data/repositories/pass-repository.js";
+import { isPassHeld } from "../../../functions/shared/pass-hold.mjs";
+import { settlementTime } from "./settlement-duplicate.js";
 import { lessonTypeKeyOf } from "./lesson-types.js";
 
 /* 2:1 상품. 혼자 온 수업이 여기서 빠지면 짝의 몫이 사라지므로, 짝이 적히지
@@ -36,6 +38,7 @@ export const SETTLEMENT_SKIP = Object.freeze({
   NO_CLIENT: "no_client",
   /** 회원권이 한 장도 없다. 발급이 필요하다. */
   NO_PASS: "no_pass",
+  ON_HOLD: "pass_on_hold",
   /** 회원권은 있지만 쓸 수 있는 것이 없다 -- 잔여 0이거나 만료. */
   SPENT: "spent",
   /* 1:1 수업인데 1:1 회원권이 없다. 듀엣 회원권이 남아 있어도 쓰지 않는다 --
@@ -112,6 +115,7 @@ export const closesSettlement = (outcome) => outcome !== SETTLEMENT_OUTCOME.FAIL
 
 /** 건너뛴 이유를 화면 문구로. 고칠 방법이 서로 다르므로 뭉개지 않는다. */
 export const SETTLEMENT_SKIP_LABEL = Object.freeze({
+  pass_on_hold: "홀딩 중인 수강권은 예약·차감할 수 없습니다. 이용 재개일 이후에 이용해 주세요.",
   ["no_client"]: "센터 명부에 없는 회원입니다. 대표에게 등록을 요청해 주세요.",
   ["no_pass"]: "회원권이 없습니다. 발급 후 출석 체크에서 차감해 주세요.",
   ["spent"]: "쓸 수 있는 회원권이 없습니다 (잔여 0 또는 만료).",
@@ -141,6 +145,7 @@ export const NOT_STARTED_NOTICE = "아직 시작하지 않은 수업입니다. �
  * 대표는 날짜가 미래인지 너무 오래됐는지 알 수 없다.
  */
 export const DEDUCTION_CODE_LABEL = Object.freeze({
+  pass_on_hold: "홀딩 중인 수강권은 차감할 수 없습니다. 홀딩 상태를 확인해 주세요.",
   ["occurred_at_future"]: "아직 시작하지 않은 수업입니다. 수업이 시작한 뒤에 확정해 주세요.",
   ["occurred_at_too_old"]: "7일이 지난 수업은 이 화면에서 차감할 수 없습니다. 대표에게 문의해 주세요.",
   ["occurred_at_invalid"]: "수업 시각을 읽지 못했습니다. 일정의 날짜와 시간을 확인해 주세요.",
@@ -547,6 +552,17 @@ export function settleBlockReason(lesson) {
  *   아무도 누르지 않은 수업에서도 서야 한다.
  */
 export function planPassSelection(input = {}) {
+  const passes = Array.isArray(input.passes) ? input.passes : [];
+  const at = settlementTime(input.lesson);
+  const held = (pass) => isPassHeld(pass, input.now || new Date()) || (at && isPassHeld(pass, at));
+  if (!passes.some(held)) return planPassSelectionRaw(input);
+  const actual = planPassSelectionRaw({ ...input, passes: passes.filter((pass) => !held(pass)) });
+  const unlocked = planPassSelectionRaw({ ...input, passes: passes.map((pass) => ({ ...pass, holdFrom: null, holdUntil: null })) });
+  const rescued = new Set(unlocked.deductions.flatMap((row) => row.memberIds || [row.memberId]));
+  return { ...actual, skips: actual.skips.map((row) => rescued.has(row.memberId) ? { ...row, reason: SETTLEMENT_SKIP.ON_HOLD } : row) };
+}
+
+function planPassSelectionRaw(input = {}) {
   const lesson = input.lesson;
   const members = Array.isArray(input.members) ? input.members : [];
   const passes = Array.isArray(input.passes) ? input.passes : [];

@@ -12,7 +12,6 @@ import assert from "node:assert/strict";
 
 import {
   HOLD_MAX_DAYS,
-  HOLD_REASON_PREFIX,
   PassAdjustError,
   PassExpiryError,
   adjustPass,
@@ -204,17 +203,13 @@ test("만료일 변경도 사유가 필수다", async () => {
 
 /* ── 홀딩 ────────────────────────────────────────────────────────────── */
 
-test("홀딩은 만료일을 그만큼 뒤로 민다", async () => {
-  const { result, writes } = await withStore(holdPass, { days: 30, createdBy: "owner-1" });
-  const expected = new Date(EXPIRES.getTime() + 30 * 86400000);
-  assert.equal(result.expiresAt.getTime(), expected.getTime());
-  assert.equal(writes[0].data.type, "expiry", "홀딩은 별도 종류가 아니다");
-  assert.match(writes[0].data.reason, new RegExp(`^${HOLD_REASON_PREFIX} 30일`));
-});
-
-test("홀딩 사유에 설명을 덧붙일 수 있다", async () => {
-  const { writes } = await withStore(holdPass, { days: 14, reason: "출산", createdBy: "owner-1" });
-  assert.equal(writes[0].data.reason, "홀딩 14일 · 출산");
+test("홀딩은 서버 통로로 요청하며 직접 만료일만 쓰지 않는다", async () => {
+  let payload;
+  const result = await holdPass(ORG, pass(), { days: 30, reason: "여행", createdBy: "owner-1" }, {
+    manage: async (value) => { payload = value; return { expiresAt: EXPIRES.toISOString(), holdUntil: EXPIRES.toISOString() }; },
+  });
+  assert.deepEqual(payload, { organizationId: ORG, passId: "pass-1", action: "hold", days: 30, reason: "여행" });
+  assert.ok(result.expiresAt instanceof Date);
 });
 
 test("홀딩 기간은 하루 이상 1년 이하다", () => {
@@ -226,13 +221,4 @@ test("홀딩 기간은 하루 이상 1년 이하다", () => {
   assert.throws(() => heldExpiry(EXPIRES, 0), /Invalid days/);
   assert.throws(() => heldExpiry(EXPIRES, -5), /Invalid days/);
   assert.equal(heldExpiry(null, 30), null, "만료일이 없으면 밀 자리가 없다");
-});
-
-test("만료가 지난 회원권을 연장하면 다시 쓸 수 있다", async () => {
-  /* status 를 expired 로 쓰는 코드는 어디에도 없다 -- 만료는 날짜로만
-     판정한다. 그래서 날짜만 밀면 저절로 운영중으로 돌아온다. */
-  const expired = pass({ expiresAt: new Date(2026, 0, 31) });
-  const { result, writes } = await withStore(holdPass, { days: 90, createdBy: "owner-1" }, expired);
-  assert.ok(result.expiresAt.getTime() > new Date(2026, 0, 31).getTime());
-  assert.ok(!("status" in writes[1].data), "상태는 건드리지 않는다");
 });

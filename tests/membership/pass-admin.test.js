@@ -460,3 +460,11 @@ test("the price the caller sends is ignored", async () => {
   assert.equal(created.contractPrice, 324999);
   assert.notEqual(created.contractPrice, 1);
 });
+
+test("held pass cannot be transferred through the server", async () => {
+  const now = new Date(2026, 10, 10);
+  const source = basePass({ holdFrom: new Date(now.getTime() - 86400000), holdUntil: new Date(now.getTime() + 86400000) });
+  const store = fakeFirestore({ [`${ORG}/passes/pass-1`]: source, [`${ORG}/clients/client-b`]: { name: "박두리" } });
+  await assert.rejects(runHandover(store, { fieldValue, organizationId: "center-a", passId: "pass-1", toClientId: "client-b", sessions: 5, actorId: "u-owner", now: () => now }), /pass_on_hold/);
+  assert.equal(store.writes.length, 0);
+});

@@ -847,6 +847,7 @@ export const fbSwapInstructorAccount = callableAsOwner("swapInstructorAccount");
    덮지 못하고, 되돌리려면 한 사람씩 강사 관리에서 다시 저장해야 한다. */
 export const fbConfirmInstructorNames = callableAsOwner("confirmInstructorNames");
 
+export const fbManagePassHold = callableAsOwner("managePassHold");
 export const fbSessionUpPass = callableAsOwner("sessionUpPass");
 export const fbHandoverPass = callableAsOwner("handoverPass");
 

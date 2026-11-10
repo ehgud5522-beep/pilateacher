@@ -2346,7 +2346,7 @@ test("the manager sees session up, expiry and the remaining adjustment", async (
   const markupOf = await issueScreens(t);
   const manager = markupOf("센터 회원 상세 · 매니저");
   assert.match(manager, />세션업</);
-  assert.match(manager, />만료일</);
+  assert.match(manager, />만료일 · 홀딩</);
   assert.match(manager, />잔여 조정</);
 });
 
@@ -2365,7 +2365,7 @@ test("the instructor sees none of the pass buttons", async (t) => {
   const instructor = markupOf("센터 회원 상세");
   assert.doesNotMatch(instructor, />세션업</);
   assert.doesNotMatch(instructor, />잔여 조정</);
-  assert.doesNotMatch(instructor, />만료일</);
+  assert.doesNotMatch(instructor, />만료일 · 홀딩</);
 });
 
 test("the session up sheet shows before and after before the button", async (t) => {
@@ -3377,9 +3377,9 @@ test("회원권 수정 화면은 바뀔 값을 미리 보여주고 강사에게�
   const expiry = markupOf("센터 회원 상세 · 만료일 변경");
   assert.match(expiry, /만료일 변경/);
   assert.match(expiry, /홀딩/);
-  assert.match(expiry, /회차는 움직이지 않고/);
+  assert.match(expiry, /잔여 횟수는 그대로 보관됩니다/);
   /* 회원 앱에 반영된다는 사실을 말한다. 모르면 따로 연락해야 하는 줄 안다. */
-  assert.match(expiry, /회원 앱에는 새 날짜가 반영됩니다/);
+  assert.match(expiry, /회원 앱에도 반영됩니다/);
 
   /* 강사 화면에는 버튼이 아예 없다. 규칙도 막지만, 눌러도 거부되는 버튼을
      두지 않는다. */

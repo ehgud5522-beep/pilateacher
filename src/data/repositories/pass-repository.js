@@ -37,6 +37,7 @@ import {
 import {
   netContractPriceFor, netContractPriceOf, resolveDeductionUnitPrice, spendsServiceSession,
 } from "../schema/deduction-pricing.js";
+import { isPassHeld } from "../../../functions/shared/pass-hold.mjs";
 import { paths } from "../schema/paths.js";
 import {
   normalizePassClientIds, passBelongsTo, passClientIds, pricingPriorSessions,
@@ -626,10 +627,12 @@ export function isExpiredPass(pass, now = new Date()) {
 }
 
 /** 차감할 수 있는 회원권인가. 화면이 목록에서 거르는 데 쓴다. @param {any} pass @param {Date} [now] */
+export function hasActivePassBalance(pass, now = new Date()) {
+  return pass?.status === PASS_STATUS.ACTIVE && remainingCountOf(pass) > 0 && !isExpiredPass(pass, now);
+}
+
 export function isDeductablePass(pass, now = new Date()) {
-  return pass?.status === PASS_STATUS.ACTIVE
-    && remainingCountOf(pass) > 0
-    && !isExpiredPass(pass, now);
+  return hasActivePassBalance(pass, now) && !isPassHeld(pass, now);
 }
 
 /**
@@ -667,6 +670,7 @@ export async function deductPass(organizationId, pass, input, options = {}) {
      진짜 시계를 보고 있었다 -- 한 번의 차감 안에서 두 개의 "지금" 이 쓰인
      셈이고, 그래서 시계를 옮긴 테스트가 무너졌다. 운영에서는 둘이 같은 값이라
      동작이 바뀌지 않는다. */
+  if (isPassHeld(pass, now()) || isPassHeld(pass, input?.occurredAt)) throw Object.assign(new Error("pass_on_hold"), { code: "pass_on_hold" });
   if (!isDeductablePass(pass, now())) throw new Error("Missing remainingCount");
 
   const category = requiredText(pass?.category, "category");
@@ -1762,23 +1766,11 @@ export function heldExpiry(expiresAt, days) {
   return new Date(at.getTime() + held * DAY_MS);
 }
 
-/**
- * 홀딩. **만료일 변경 위에 얹는 것뿐이다.**
- *
- * 따로 상태를 두지 않는다. `holdUntil` 같은 칸을 만들면 규칙·투영·판정 세
- * 군데가 같이 늘고, 그 셋이 어긋나면 회원 화면과 대표 화면이 다른 말을 한다.
- * 홀딩이었다는 사실은 사유에 남고, 원장은 지워지지 않는다.
- *
- * @param {string} organizationId
- * @param {any} pass
- * @param {{ days: number, reason?: string, createdBy: string }} input
- * @param {object} [options]
- */
+/** Hold writes are authorized and serialized by the server, never an expiry-only write. */
 export async function holdPass(organizationId, pass, input, options = {}) {
-  const days = requiredInt(input?.days, "days", { min: 1 });
-  const expiresAt = heldExpiry(pass?.expiresAt, days);
-  if (!expiresAt) throw new PassExpiryError("no_previous_expiry", {});
-  const note = String(input?.reason ?? "").trim();
-  const reason = `${HOLD_REASON_PREFIX} ${days}일${note ? ` · ${note}` : ""}`.slice(0, LEDGER_REASON_MAX);
-  return changePassExpiry(organizationId, pass, { expiresAt, reason, createdBy: input?.createdBy }, options);
+  const manage = options.manage;
+  if (typeof manage !== "function") throw Object.assign(new Error("hold_service_required"), { code: "hold_service_required" });
+  const result = await manage({ organizationId, passId: pass?.id || pass?.passId,
+    action: input?.action || "hold", days: input?.days, reason: input?.reason });
+  return { ...result, expiresAt: new Date(result.expiresAt), holdUntil: new Date(result.holdUntil) };
 }

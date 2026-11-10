@@ -185,7 +185,7 @@ test("duet attendance uses one bulk action from either member, while no-show rem
     const buttons = () => [...container.querySelectorAll("button")];
     assert.equal(buttons().some((button) => button.textContent.trim() === "출석"), false);
     const attendance = buttons().filter((button) => button.textContent.trim() === "둘 다 출석");
-    assert.ok(attendance.length >= 2);
+    assert.equal(attendance.length, 1, "듀엣 동시 출석 버튼은 하나만 표시한다");
     for (const button of attendance) await act(async () => button.click());
     assert.equal(calls.length, attendance.length);
     assert.ok(calls.every(([kind, , status]) => kind === "all" && status === "done"));
@@ -942,7 +942,8 @@ test("the schedule settles the lesson, and says what that will cost before it do
   assert.match(before, /확정하면 회원권이 차감되고, 되돌리려면 대표 확인이 필요합니다/);
   // 확정 전에는 출석 · 노쇼 · 취소를 자유롭게 바꿀 수 있다.
   assert.doesNotMatch(before, /disabled=""[^<]*>출석</, "확정 전에는 잠기지 않는다");
-  assert.match(before, /전체 출석/, "여러 명은 전원을 정한 뒤 한 번에 확정한다");
+  assert.match(before, /둘 다 출석/, "듀엣은 한 버튼으로 두 명 모두 출석 처리한다");
+  assert.doesNotMatch(before, /전체 출석|전체 노쇼|전체 취소/, "듀엣의 중복 일괄 버튼은 표시하지 않는다");
 
   /* 확정 후에는 버튼이 잠긴다. 상태를 바꿔도 이미 나간 차감은 따라오지 않고,
      둘이 어긋나면 어느 것이 맞는지 알 수 없다. */

@@ -17,9 +17,9 @@ import {
   reauthenticateWithCredential, reauthenticateWithPopup, revokeAccessToken,
   sendPasswordResetEmail, updateProfile,
 } from "firebase/auth";
-import { getFirestore, collection, deleteDoc, doc, getDoc, getDocs, setDoc, serverTimestamp } from "firebase/firestore";
+import { getFirestore, deleteDoc, doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
-import { getStorage, ref as storageRef, uploadBytes, getBlob } from "firebase/storage";
+import { getStorage, ref as storageRef, uploadBytes, uploadBytesResumable, getMetadata, getBlob } from "firebase/storage";
 import { withAuthTimeout } from "../features/auth/apple-sign-in.js";
 import { signInWithCredentialSafe } from "../features/auth/credential-sign-in.js";
 import { AUTH_FEATURES, AUTH_STAGES } from "../features/auth/auth-diagnostics.js";
@@ -629,22 +629,39 @@ export async function fbWritePilotMetricAttempt(details = {}) {
 
 export async function fbListPhotoBackups(uid) {
   if (!fs || !uid || auth?.currentUser?.uid !== uid) return [];
-  const snapshot = await withAuthTimeout(
-    () => getDocs(collection(fs, "users", uid, "photoBackups")),
+  const response = await withAuthTimeout(
+    () => httpsCallable(functions, "listAuthorizedPhotos")({}),
     { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "photo_manifest_read" },
   );
-  return snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }));
+  return response.data || [];
+}
+export async function fbMovePhotoGroup(input) {
+  if (!auth?.currentUser) throw new Error("로그인이 필요합니다.");
+  return (await httpsCallable(functions, "movePhotoGroup", { timeout: 300000 })(input)).data;
 }
 
-export async function fbUploadPhotoBackup(uid, item, optimized = null) {
+export async function fbUploadPhotoBackup(uid, item, optimized = null, original = null) {
   if (!fs || !storage) throw Object.assign(new Error("Cloud photo backup is unavailable."), { code: "backup/unavailable" });
   const { safeUid, safePhotoId } = assertOwnPhotoPath(uid, item?.photoId);
+  if ((item.references || []).length > 20) throw new Error("사진 참조가 너무 많습니다. 참조를 자르지 않고 작업을 중단했습니다.");
   const imagePath = `users/${safeUid}/photos/${safePhotoId}/image.jpg`;
   const thumbnailPath = `users/${safeUid}/photos/${safePhotoId}/thumb.jpg`;
+  const originalPath = `users/${safeUid}/photos/${safePhotoId}/original.bin`;
+  const scope = (await httpsCallable(functions, "preparePhotoAccess")({ photoId: safePhotoId, organizationId: item.organizationId, clientId: item.clientId })).data;
+  let originalInfo = { originalPath: item.originalPath, originalSha256: item.originalSha256, originalMimeType: item.originalMimeType, originalBytes: item.originalBytes };
+  if (!item.originalPath) {
+    if (!original || original.size >= 50 * 1024 * 1024) throw new Error("50MB 미만 원본 파일이 필요합니다. 기기 원본은 유지됩니다.");
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", await original.arrayBuffer())), (b) => b.toString(16).padStart(2, "0")).join("");
+    let remote = null;
+    try { remote = await getMetadata(storageRef(storage, originalPath)); } catch (error) { if (!["storage/object-not-found", "storage/unauthorized"].includes(error.code)) throw error; }
+    if (remote && (remote.customMetadata?.sha256 !== hash || Number(remote.size) !== original.size)) throw new Error("원본 무결성 충돌: 기존 파일을 덮어쓰지 않았습니다.");
+    if (!remote) await uploadBytesResumable(storageRef(storage, originalPath), original, { contentType: "application/octet-stream", cacheControl: "private,no-store,max-age=0", customMetadata: { ...scope, sha256: hash } });
+    originalInfo = { originalPath, originalSha256: hash, originalMimeType: original.type || "image/jpeg", originalBytes: original.size };
+  }
   let imageBytes = Math.max(0, Number(item?.imageBytes) || 0);
   let thumbnailBytes = Math.max(0, Number(item?.thumbnailBytes) || 0);
   if (optimized?.image?.blob && optimized?.thumbnail?.blob) {
-    const metadata = { contentType: "image/jpeg", cacheControl: "private,max-age=3600", customMetadata: { photoId: safePhotoId } };
+    const metadata = { contentType: "image/jpeg", cacheControl: "private,no-store,max-age=0", customMetadata: { photoId: safePhotoId, ...scope } };
     const [imageResult, thumbnailResult] = await Promise.all([
       uploadBytes(storageRef(storage, imagePath), optimized.image.blob, metadata),
       uploadBytes(storageRef(storage, thumbnailPath), optimized.thumbnail.blob, metadata),
@@ -656,6 +673,8 @@ export async function fbUploadPhotoBackup(uid, item, optimized = null) {
   }
   const payload = {
     schemaVersion: 1,
+    ...scope,
+    ...originalInfo,
     photoId: safePhotoId,
     memberId: String(item?.memberId || "").slice(0, 160),
     assessmentId: String(item?.assessmentId || "").slice(0, 160),
@@ -670,7 +689,7 @@ export async function fbUploadPhotoBackup(uid, item, optimized = null) {
     thumbnailBytes,
     status: "active",
     record: firestoreSafe(item?.record || {}),
-    references: firestoreSafe(Array.isArray(item?.references) ? item.references.slice(0, 20) : []),
+    references: firestoreSafe(Array.isArray(item?.references) ? item.references : []),
     uploadedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     deletedAt: null,
@@ -680,18 +699,26 @@ export async function fbUploadPhotoBackup(uid, item, optimized = null) {
     () => setDoc(doc(fs, "users", safeUid, "photoBackups", safePhotoId), payload, { merge: false }),
     { timeoutMs: 30000, provider: "firebase", stage: "photo_backup_write" },
   );
+  await httpsCallable(functions, "preparePhotoAccess")({ photoId: safePhotoId, ...scope });
   return { ...payload, uploadedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 }
 
 export async function fbDownloadPhotoBackup(uid, item, thumbnail = false) {
   if (!storage) throw Object.assign(new Error("Cloud photo backup is unavailable."), { code: "backup/unavailable" });
   assertOwnPhotoPath(uid, item?.photoId);
-  const path = thumbnail ? item?.thumbnailPath : item?.storagePath;
+  await httpsCallable(functions, "preparePhotoAccess")({ photoId: item.photoId, organizationId: item.organizationId, clientId: item.clientId });
+  const path = thumbnail ? item?.thumbnailPath : item?.originalPath || item?.storagePath;
   if (!path) throw Object.assign(new Error("Cloud photo path is missing."), { code: "backup/photo-missing" });
-  return withAuthTimeout(
+  const blob = await withAuthTimeout(
     () => getBlob(storageRef(storage, path)),
     { timeoutMs: 30000, provider: "firebase", stage: thumbnail ? "photo_thumbnail_download" : "photo_download" },
   );
+  if (!thumbnail && item.originalPath) {
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer())), (b) => b.toString(16).padStart(2, "0")).join("");
+    if (hash !== item.originalSha256) throw new Error("원본 무결성 검증 실패");
+    return new Blob([blob], { type: item.originalMimeType || "image/jpeg" });
+  }
+  return blob;
 }
 
 export async function fbSoftDeletePhotoBackup(uid, photoId) {

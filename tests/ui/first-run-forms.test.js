@@ -89,7 +89,7 @@ test("the type is still a word everywhere there is room for one", async () => {
 test("opening from the member detail lands on the purpose step", async () => {
   const source = await appSource();
   assert.match(source, /initialMode === "new" \? "purpose"/, "no intermediate screen");
-  // The 변화 기록 tab keeps its own entry.
+  // The 비포애프터 tab keeps its own entry.
   assert.match(source, /: "home"\);/);
   assert.match(source, /onAssess\?\.\(\{ mode: "new" \}\)/);
 });
@@ -132,5 +132,5 @@ test("nothing captured yet reads as neutral, not complete", async () => {
   assert.match(workspace, /color: lastCompleted \? GOOD : INK2/);
   assert.match(workspace, /"아직 촬영한 기록이 없습니다"/);
   // A completed save keeps its green.
-  assert.match(workspace, /"최근 변화 기록 저장 완료"/);
+  assert.match(workspace, /"최근 비포애프터 저장 완료"/);
 });

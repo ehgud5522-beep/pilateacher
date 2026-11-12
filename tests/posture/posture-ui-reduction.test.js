@@ -87,7 +87,7 @@ test("change comparison keeps photos primary and reports neutral values without 
   assert.doesNotMatch(viewer, /metric\.summary/);
   assert.doesNotMatch(workspace, /After AI 관찰/);
   assert.match(workspace, /공통 촬영 방향이 없습니다/);
-  assert.match(source, /label: "변화 기록"/);
+  assert.match(source, /label: "비포애프터"/);
   assert.match(workspace, />변화 비교<\/button>/);
 });
 
@@ -123,5 +123,5 @@ test("saved history rows resolve their display mode before rendering and retain 
   const history = workspace.slice(historyStart, historyEnd);
   assert.ok(historyStart >= 0 && historyEnd > historyStart);
   assert.ok(history.indexOf('const setIsManualResult = ["draw", "manual"].includes(set.method)') < history.indexOf("const historySummary ="));
-  assert.match(source, /surface === "변화 기록" \? \{ message:/);
+  assert.match(source, /surface === "비포애프터" \? \{ message:/);
 });

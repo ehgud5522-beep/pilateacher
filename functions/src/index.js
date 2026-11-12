@@ -4,9 +4,24 @@ const { initializeApp, getApps } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { FieldValue, getFirestore } = require("firebase-admin/firestore");
 const { getStorage } = require("firebase-admin/storage");
+const { preparePhotoAccess, listAuthorizedPhotos, movePhotoGroup } = require("./photo-access");
 const { logger } = require("firebase-functions/logger");
 const { defineSecret } = require("firebase-functions/params");
 const { HttpsError, onCall, onRequest } = require("firebase-functions/v2/https");
+exports.preparePhotoAccess = onCall({ region: "asia-northeast3", timeoutSeconds: 60 }, async (request) => {
+  if (!request.auth?.uid) throw new HttpsError("unauthenticated", "Sign in required");
+  try { return await preparePhotoAccess(getFirestore(), getStorage().bucket(), request.auth.uid, request.data); }
+  catch (error) { throw new HttpsError("permission-denied", error.message); }
+});
+exports.listAuthorizedPhotos = onCall({ region: "asia-northeast3", timeoutSeconds: 60 }, async (request) => {
+  if (!request.auth?.uid) throw new HttpsError("unauthenticated", "Sign in required");
+  return listAuthorizedPhotos(getFirestore(), request.auth.uid);
+});
+exports.movePhotoGroup = onCall({ region: "asia-northeast3", timeoutSeconds: 300 }, async (request) => {
+  if (!request.auth?.uid) throw new HttpsError("unauthenticated", "Sign in required");
+  try { return await movePhotoGroup(getFirestore(), getStorage().bucket(), request.auth.uid, request.data); }
+  catch (error) { throw new HttpsError("failed-precondition", error.message); }
+});
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onDocumentWritten } = require("firebase-functions/v2/firestore");
 const {

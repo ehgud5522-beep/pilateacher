@@ -255,7 +255,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 상세 · 여정",
     "체형분석 목록",
     "체형분석 상세 빈 이력",
-    "변화 기록 상세 저장 이력",
+    "비포애프터 상세 저장 이력",
     "더보기 탭",
     "더보기 탭 · 강사",
     "더보기 탭 · 개인 모드",
@@ -1003,7 +1003,7 @@ test("ErrorBoundary hides diagnostics in production and records a privacy-safe d
   assert.match(guard, /showInternalDetails && <button[\s\S]*오류 복사/);
   assert.match(guard, /deviceLog\("ui_render_failed"/);
   assert.match(source, /"recentCard", "surface"/);
-  assert.match(guard, /surface === "변화 기록" \? \{ message:/);
+  assert.match(guard, /surface === "비포애프터" \? \{ message:/);
   assert.doesNotMatch(guard, /deviceLog\([^)]*msg/);
 });
 
@@ -2724,6 +2724,11 @@ test("the pay sheet keeps its month off the close button", async (t) => {
      좁은 폭에서 겹치지 않게, 스크롤해도 남게(sticky). */
   const markupOf = await issueScreens(t);
   const sheet = markupOf("이달 예상 급여");
+  const payrollDOM = new JSDOM(sheet).window.document;
+  const overlay = payrollDOM.querySelector("[data-overlay]");
+  assert.ok(overlay.classList.contains("overflow-hidden"));
+  assert.ok(overlay.firstElementChild.classList.contains("h-full"));
+  assert.ok(overlay.querySelector("[data-my-pay] .overflow-y-auto"));
   const header = sheet.match(/<header[\s\S]*?<\/header>/);
   assert.ok(header, "위 줄이 따로 있다");
   assert.match(header[0], /sticky top-0/);

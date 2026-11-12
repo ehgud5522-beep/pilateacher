@@ -45,7 +45,7 @@ import {
   fbLoadAppUpdateConfig,
   fbSwapInstructorAccount,
   fbConfirmInstructorNames,
-  fbGrantMemberCancel, fbLessonRatingStats, fbManageNotice, fbUpdateRuntimeConfig,
+  fbGrantMemberCancel, fbLessonRatingStats, fbManageGroupPayroll, fbManageNotice, fbUpdateRuntimeConfig,
   fbHandoverPass,
   fbSessionUpPass, fbManagePassHold,
   fbResetMigratedData,
@@ -75,6 +75,7 @@ import {
 import {
   careChoices, careMinutesOfGrade, careOnlyClient, settlementSkipMessage,
 } from "./features/schedule/care-options.js";
+import GroupPayrollAdmin from "./features/schedule/GroupPayrollAdmin.jsx";
 import { useNarrowViewport } from "./features/ui/viewport.js";
 import { upcomingPayPreview, upcomingPayRows } from "./features/schedule/upcoming-pay.js";
 import {
@@ -235,7 +236,7 @@ import {
 import {
   loadInstructorMonthlyPay, loadOrganizationLedger, loadOrganizationMonthlyPayroll,
   monthRange, onlyNewInstructorRate, payrollClientCsv, summarizeInstructorPay, summarizeOrganizationPay,
-  currentMonth, toDate,
+  currentMonth, toDate, GROUP_EMPTY_ROOM_RATE, groupPayrollAmount,
 } from "./data/repositories/payroll-repository.js";
 import {
   AUDIT_ACTION, STALE_PASS_DAYS, listAuditLogs, recordMigrationUpload, reviewAudit,
@@ -22464,19 +22465,11 @@ function CenterMigration({
    아니라 확정본 단가표의 순서로 서고(payroll-repository.js), 집계를 CSV 로
    내려받을 수 있다. 손으로 옮겨 적는 것은 그 자체가 오류원이다.
 
-   ── 자동 계산은 수업료까지다 ──
-   인센티브도, 노쇼도, 그룹 수업도 이 숫자에 없다. 대표가 이것을 최종 급여로
-   읽으면 매달 정산이 어긋나므로, 빠진 항목을 화면이 이름으로 나열한다. 합계
-   옆의 한 줄짜리 문구로는 읽히지 않는다.
-
-   ── 매니저는 아직 못 본다 ──
-   지점을 가진 매니저에게 자기 지점만 열어 주는 것이 자연스러워 보이지만, 지금
-   membership 에는 지점이 없다. 화면에서만 걸러 두면 규칙은 여전히 센터 전체를
-   열어 주므로 그것은 경계가 아니라 모양이다. 진짜로 막으려면 membership 에
-   지점을 넣고 규칙과 인덱스를 함께 손봐야 한다. 그때까지는 대표 전용이다. */
+   회원권 원장의 수업료에 지점별 그룹 급여를 더한다. FC매니저는 담당 지점의
+   그룹 횟수를 입력하고, 센터 전체 집계는 대표 권한에서 조회한다. */
 
 const PAYROLL_EXCLUDED = [
-  "개인매출 인센", "OT 인센", "간부 인센", "바우처 조정", "노쇼", "그룹 수업", "FC 수업료",
+  "개인매출 인센", "OT 인센", "간부 인센", "바우처 조정", "노쇼", "FC 수업료",
 ];
 
 /** 한 달 앞뒤로 움직인다. 문자열로 더하면 12월에서 13월이 나온다. */
@@ -22577,7 +22570,7 @@ function PayrollClientRow({ row, clientName, passName, open, onToggle }) {
 function PayrollInstructorRow({
   row, name, badge, open, onToggle,
   nameOfClient = (id) => id, nameOfPass = (passId, category) => category || passId,
-  onDownload, initialView = PAYROLL_VIEW.PRICE, initialOpenClient = "",
+  onDownload, nameOfLocation = (id) => id, initialView = PAYROLL_VIEW.PRICE, initialOpenClient = "",
 }) {
   const [view, setView] = useState(initialView);
   const [openClient, setOpenClient] = useState(initialOpenClient);
@@ -22641,6 +22634,14 @@ function PayrollInstructorRow({
                 onToggle={() => setOpenClient(openClient === item.key ? "" : item.key)} />
             ))
           )}
+
+          {(row.groupRows || []).map((group) => (
+            <p key={JSON.stringify([group.locationId, group.instructorId])} className="mt-2 text-xs" style={{ color: INK2 }}>
+              그룹 · {nameOfLocation(group.locationId)} · 풀방 {group.fullCount}회 × {won(group.fullRate)}원
+              {" · "}빈방 {group.emptyCount}회 × {won(GROUP_EMPTY_ROOM_RATE)}원
+              {" = "}{won(groupPayrollAmount(group))}원
+            </p>
+          ))}
 
           {/* ── 설명은 접어 둔다 ────────────────────────────────────────
               카테고리만 보면 "이벤트페이 10회 25만원" 이고, 그 상품의 기준
@@ -23267,8 +23268,10 @@ function PayrollSummary({
   const locked = organization?.status === "unknown";
   const thisMonth = `${now().getFullYear()}-${String(now().getMonth() + 1).padStart(2, "0")}`;
 
+  const requestVersion = useRef(0);
   const reload = useCallback(async () => {
     if (!organizationId) return;
+    const version = ++requestVersion.current;
     setLoading(true);
     setLoadError("");
     try {
@@ -23281,7 +23284,7 @@ function PayrollSummary({
       /* 심사용 회원을 빼려면 명부가 필요하다 -- 원장 항목에는 그 표시가
          없다. 이 화면이 예전에는 명부를 읽지 않았고, 읽기 한 번이 느는 대신
          가짜 회차가 강사 급여에 섞이지 않는다. */
-      const [payrollClients, instructorResult, locationResult, passResult] = await Promise.all([
+      const [payrollClients, instructorResult, locationResult, passResult, groupPayroll] = await Promise.all([
         toleratingReadFailure(listClients(organizationId, { store: clientStore })),
         toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
@@ -23289,6 +23292,7 @@ function PayrollSummary({
            보기의 "회원권" 칸이 카테고리 이름으로만 선다 -- 같은 회원이 같은
            종류를 두 장 들고 있으면 두 줄이 구별되지 않는다. */
         toleratingReadFailure(listPasses(organizationId, { store: passStore })),
+        fbManageGroupPayroll({ organizationId, month, action: "list" }),
       ]);
       /* 집계보다 명부를 먼저 읽는다. 계정을 바꾼 강사를 한 사람으로 합치려면
          previousUids 가 있어야 하고, 그것은 소속 문서에만 있다 -- 나중에
@@ -23299,7 +23303,9 @@ function PayrollSummary({
       const found = await loadOrganizationMonthlyPayroll(organizationId, {
         month, store: payrollStore, excludedClientIds: reviewDemoClientIds(payrollClients.items),
         canonicalInstructorId: canonicalInstructorIdFrom(instructorResult.items),
+        groupRows: groupPayroll.rows,
       });
+      if (version !== requestVersion.current) return;
       setSummary(found);
       setInstructors(instructorResult.items);
       setLocations(locationResult.items);
@@ -23310,14 +23316,19 @@ function PayrollSummary({
         || payrollClients.errorCode || passResult.errorCode || "",
       );
     } catch (error) {
+      if (version !== requestVersion.current) return;
       setLoadError(error?.code || "unknown");
       setSummary(null);
     } finally {
-      setLoading(false);
+      if (version === requestVersion.current) setLoading(false);
     }
   }, [organizationId, month, payrollStore, instructorStore, locationStore, clientStore, passStore]);
 
-  useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+  useEffect(() => {
+    if (!locked) reload();
+    else setLoading(false);
+    return () => { requestVersion.current += 1; };
+  }, [locked, reload]);
 
   const nameOfInstructor = useCallback((id) => {
     const found = instructors.find((item) => item.userId === id);
@@ -23417,7 +23428,7 @@ function PayrollSummary({
       {/* 합계보다 먼저 둔다. 숫자를 본 뒤에 읽는 단서는 이미 늦다. */}
       <section style={{ ...sectionStyle, backgroundColor: WARN_S, borderColor: WARN }}>
         <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>
-          수업료만 자동 계산됩니다. 아래는 별도 정산입니다.
+          회원권 수업료와 저장한 그룹 수업료를 합산합니다. 아래 항목은 별도 정산입니다.
         </p>
         <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: INK2 }}>
           {PAYROLL_EXCLUDED.join(" · ")}
@@ -23466,7 +23477,7 @@ function PayrollSummary({
 
           {summary.byInstructor.length === 0 ? (
             <section style={sectionStyle}>
-              <p style={{ fontSize: TYPE.caption, color: SUB }}>이 달에 차감된 수업이 없습니다.</p>
+              <p style={{ fontSize: TYPE.caption, color: SUB }}>이 달에 정산할 수업이 없습니다.</p>
             </section>
           ) : null}
 
@@ -23488,12 +23499,12 @@ function PayrollSummary({
                   <PayrollInstructorRow key={row.instructorId} row={row}
                     name={nameOfInstructor(row.instructorId)}
                     badge={badgeOfInstructor(row.instructorId)}
-                    nameOfClient={nameOfClient} nameOfPass={nameOfPass}
+                    nameOfClient={nameOfClient} nameOfPass={nameOfPass} nameOfLocation={nameOfLocation}
                     open={open === `${location.locationId}/${row.instructorId}`}
                     initialView={initialState?.view || PAYROLL_VIEW.PRICE}
                     initialOpenClient={initialState?.openClient || ""}
                     onDownload={() => download(
-                      { instructorId: row.instructorId }, nameOfInstructor(row.instructorId),
+                      { instructorId: row.instructorId, locationId: location.locationId }, nameOfInstructor(row.instructorId),
                     )}
                     onToggle={() => toggle(`${location.locationId}/${row.instructorId}`)} />
                 ))}
@@ -23524,7 +23535,7 @@ function PayrollSummary({
                   <PayrollInstructorRow key={row.instructorId} row={row}
                     name={nameOfInstructor(row.instructorId)}
                     badge={badgeOfInstructor(row.instructorId)}
-                    nameOfClient={nameOfClient} nameOfPass={nameOfPass}
+                    nameOfClient={nameOfClient} nameOfPass={nameOfPass} nameOfLocation={nameOfLocation}
                     open={open === `all/${row.instructorId}`}
                     initialView={initialState?.view || PAYROLL_VIEW.PRICE}
                     initialOpenClient={initialState?.openClient || ""}
@@ -23567,7 +23578,7 @@ function PayrollSummary({
               <Download size={14} />센터 전체 CSV
             </button>
             <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-              한 줄이 수업 한 회입니다 (강사 · 회원 · 회원권 · 날짜 · 단가 · 금액).
+              회원권 수업은 회차별, 그룹 수업은 지점과 풀방·빈방 유형별로 표시합니다.
               {" "}소계는 엑셀의 피벗으로 만드세요 -- 반대 방향은 할 수 없습니다.
               {" "}강사별·지점별은 각 묶음 안의 버튼으로 받습니다.
             </p>
@@ -26684,6 +26695,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     "pass-issue": "회원권 발급",
     migration: "엑셀 이관",
     payroll: "급여 집계",
+    "group-payroll": "그룹 급여 정산",
     issues: "발급 내역",
     "member-app": "회원 앱",
     audit: "감사 로그",
@@ -26727,7 +26739,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       ...(showInstructorAdmin ? [{ key: "handover", title: "퇴사 인계", description: "그만두는 강사의 회원권을 한 번에 넘긴다", Icon: UserPlus }] : []),
       /* "월말 정산"만으로는 위의 월간 리포트와 구별되지 않는다. 무엇을 세는지가
          둘의 차이다 -- 이쪽은 회원권 원장, 그쪽은 기기에 저장된 일정이다. */
-      ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 원장 기준 월말 정산", Icon: ArrowUpRight }] : []),
+      ...(showClients ? [{ key: "group-payroll", title: "그룹 급여 정산", description: "지점별 강사 풀방 · 빈방 횟수 입력", Icon: ClipboardList }] : []),
+      ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 그룹 급여 포함", Icon: ArrowUpRight }] : []),
       /* 담당 강사. 강사가 보는 회원의 범위가 여기서 정해진다 -- 점검이 아니라
          강사를 다루는 일이라 이 묶음이다. */
       ...(showAudit ? [{ key: "instructor-scope", title: "담당 강사", description: "강사별 담당 회원 · 재계산", Icon: Users }] : []),
@@ -27280,6 +27293,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
         {view === "products" && showProducts && (
           <ProductCatalog organization={organization} currentUserId={account?.id || ""} store={productStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
+        )}
+        {view === "group-payroll" && showClients && (
+          <GroupPayrollAdmin key={organization.organizationId} organization={organization}
+            locationStore={locationStore} instructorStore={instructorStore} />
         )}
         {view === "payroll" && showPayroll && (
           <PayrollSummary organization={organization}

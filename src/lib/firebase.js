@@ -852,6 +852,8 @@ export const fbUpdateRuntimeConfig = callableAsOwner("updateRuntimeConfig");
    담당 강사만 -- 서버가 소속 · 회원 문서로 다시 가른다. functions/src/member-cancel.js. */
 export const fbGrantMemberCancel = callableAsOwner("grantMemberCancel");
 
+export const fbManageGroupPayroll = callableAsOwner("manageGroupPayroll");
+
 /* 수업 후 별점 평가 -- 대표 화면의 강사별 누적 응답 수 · 항목별 평균 (2026-11-09). 대표만.
    개별 응답은 서버도 돌려주지 않는다. functions/src/lesson-rating.js. */
 export const fbLessonRatingStats = callableAsOwner("lessonRatingStats");

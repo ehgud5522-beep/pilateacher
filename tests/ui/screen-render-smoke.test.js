@@ -639,8 +639,8 @@ test("the payroll summary is the owner's, and says out loud what it did not coun
 
   /* 대표가 이 숫자를 최종 급여로 읽으면 매달 정산이 어긋난다. 빠진 항목을
      이름으로 적는다 -- "일부 항목 제외" 같은 문구로는 읽히지 않는다. */
-  assert.match(summary, /수업료만 자동 계산됩니다\. 아래는 별도 정산입니다\./);
-  for (const missing of ["개인매출 인센", "OT 인센", "간부 인센", "바우처 조정", "노쇼", "그룹 수업", "FC 수업료"]) {
+  assert.match(summary, /회원권 수업료와 저장한 그룹 수업료를 합산합니다\. 아래 항목은 별도 정산입니다\./);
+  for (const missing of ["개인매출 인센", "OT 인센", "간부 인센", "바우처 조정", "노쇼", "FC 수업료"]) {
     assert.match(summary, new RegExp(missing), missing);
   }
   // 숫자를 본 뒤에 읽는 단서는 이미 늦다. 안내가 합계보다 앞에 있어야 한다.
@@ -746,7 +746,7 @@ test("the payroll summary is the owner's, and says out loud what it did not coun
 
   /* 0원짜리 정산과 "읽지 못했다"가 같은 화면이면 대표는 그 달에 수업이 없었다고
      읽는다. */
-  assert.match(markupOf("급여 집계 · 빈 달"), /이 달에 차감된 수업이 없습니다/);
+  assert.match(markupOf("급여 집계 · 빈 달"), /이 달에 정산할 수업이 없습니다/);
   const failed = markupOf("급여 집계 · 조회 실패");
   assert.match(failed, /급여를 불러오지 못했습니다 \(코드 permission-denied\)/);
   assert.match(failed, /0원이 아니라 읽지 못한 것입니다/);
@@ -1268,11 +1268,13 @@ test("the centre group stands only where there is something in it", async () => 
   const manager = markupOf("더보기 탭 · 매니저");
   assert.ok(manager.includes("회원 · 회원권"), "FC매니저도 발급과 회원 관리를 한다");
   assert.ok(manager.includes("상품"));
-  // 강사·급여와 점검은 그 역할에 하나도 없으므로 머리글째 사라진다.
-  assert.equal(manager.includes("강사 · 급여"), false);
+  assert.match(manager, /강사 · 급여/);
+  assert.match(manager, /그룹 급여 정산/);
+  assert.doesNotMatch(manager, /급여 집계/);
   for (const name of ["더보기 탭 · 강사", "더보기 탭 · 개인 모드", "더보기 탭 · 소속 확인 실패"]) {
     const markup = markupOf(name);
     assert.equal(markup.includes("회원 · 회원권"), false, name);
+    assert.doesNotMatch(markup, /그룹 급여 정산/, name);
     assert.match(markup, /내 설정/, `${name} — 내 설정은 모두에게`);
     assert.match(markup, /화면 설정/, name);
   }
@@ -1314,13 +1316,14 @@ test("the monthly report and the payroll roll-up do not read alike", async () =>
   const owner = markupOf("더보기 탭");
   assert.match(owner, /이번 달 내 수업 활동/);
   assert.match(owner, /수업 수 · 출석 · 챙길 회원/);
-  assert.match(owner, /강사별 수업료 · 원장 기준 월말 정산/);
+  assert.match(owner, /강사별 수업료 · 그룹 급여 포함/);
+  assert.match(owner, /그룹 급여 정산/);
   assert.doesNotMatch(owner, /이달 수업 · 성과 · 예상 급여/);
 
   // 미소속 개인 강사에게는 급여 집계가 없다. 헷갈릴 짝이 없으니 문구도 그대로다.
   const personal = markupOf("더보기 탭 · 개인 모드");
   assert.match(personal, /이달 수업 · 성과 · 예상 급여/);
-  assert.doesNotMatch(personal, /급여 집계/);
+  assert.doesNotMatch(personal, /급여 집계|그룹 급여 정산/);
 });
 
 /* 회원권 발급. 누른 뒤에 고칠 수 있는 것이 거의 없는 화면이라, 무엇이 저장될지가

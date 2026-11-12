@@ -48,6 +48,7 @@ const {
 const { isPassAdmin, runHandover, runSessionUp } = require("./pass-admin");
 const { handleRuntimeConfigRequest } = require("./runtime-config-admin");
 const { handleMemberPushSettings, runMemberPush } = require("./member-push");
+const { manageGroupPayroll } = require("./group-payroll");
 const { handleNoticeRequest } = require("./notice-admin");
 const { grantMemberCancel, memberCancelLesson, memberCancelStatus } = require("./member-cancel");
 const { lessonRatingStats, lessonRatingStatus, submitLessonRating } = require("./lesson-rating");
@@ -1040,6 +1041,20 @@ exports.memberLessonRating = onCall(MEMBER_LINK_OPTIONS, async (request) => {
       errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
     });
     throw new HttpsError("unavailable", "lesson_rating_failed", { reason: "lesson_rating_failed" });
+  }
+});
+
+exports.manageGroupPayroll = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 30,
+  invoker: "public",
+}, async (request) => {
+  try {
+    return await manageGroupPayroll(firestore, request.auth?.uid, request.data, () => FieldValue.serverTimestamp());
+  } catch (error) {
+    if (error?.httpsCode) throw new HttpsError(error.httpsCode, error.message, { reason: error.message });
+    logger.error("group_payroll_failed", { code: error?.code || "unknown" });
+    throw new HttpsError("unavailable", "group_payroll_failed");
   }
 });
 

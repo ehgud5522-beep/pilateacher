@@ -37,7 +37,7 @@ import {
 import {
   netContractPriceFor, netContractPriceOf, resolveDeductionUnitPrice, spendsServiceSession,
 } from "../schema/deduction-pricing.js";
-import { isPassHeld } from "../../../functions/shared/pass-hold.mjs";
+import { holdBlocksLesson, isPassHeld } from "../../../functions/shared/pass-hold.mjs";
 import { paths } from "../schema/paths.js";
 import {
   normalizePassClientIds, passBelongsTo, passClientIds, pricingPriorSessions,
@@ -672,8 +672,10 @@ export async function deductPass(organizationId, pass, input, options = {}) {
      진짜 시계를 보고 있었다 -- 한 번의 차감 안에서 두 개의 "지금" 이 쓰인
      셈이고, 그래서 시계를 옮긴 테스트가 무너졌다. 운영에서는 둘이 같은 값이라
      동작이 바뀌지 않는다. */
-  if (isPassHeld(pass, now()) || isPassHeld(pass, input?.occurredAt)) throw Object.assign(new Error("pass_on_hold"), { code: "pass_on_hold" });
-  if (!isDeductablePass(pass, now())) throw new Error("Missing remainingCount");
+  /* 홀딩은 수업 시각으로 본다 (holdBlocksLesson). 홀딩 전에 한 수업은 지금
+     홀딩 중이어도 차감한다 -- 규칙도 원장 occurredAt 으로 같은 선을 긋는다. */
+  if (holdBlocksLesson(pass, input?.occurredAt, now())) throw Object.assign(new Error("pass_on_hold"), { code: "pass_on_hold" });
+  if (!hasActivePassBalance(pass, now())) throw new Error("Missing remainingCount");
 
   const category = requiredText(pass?.category, "category");
   /* 개명 전에 발급된 회원권은 이 값을 unitPrice 라는 이름으로 들고 있다. 이름만

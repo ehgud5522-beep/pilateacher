@@ -1204,10 +1204,20 @@ service cloud.firestore {
           && immutable(["clientId", "clientIds", "holdFrom", "holdUntil"])
           && (request.resource.data.instructorId == resource.data.instructorId
             || getAfter(/databases/$(database)/documents/organizations/$(organizationId)/clients/$(resource.data.clientId)).data.get("photoAccessRevoked", {}).get(resource.data.instructorId, false) == true)
+          /* 홀딩 중에 회차를 줄이는 것은 한 회차 차감 모양 하나만 연다
+             (2026-11-14 대표). 홀딩을 걸기 전에 한 수업의 차감이다 -- 막으면
+             홀딩이 풀릴 때 7일 차감 기한이 지나 영영 확정할 수 없다.
+             그 수업이 홀딩 전이었는지는 회원권 문서가 모른다. 같은 배치의
+             원장 deduct 항목의 occurredAt 으로 아래 ledger 문이 본다. 감소
+             조정(adjust)은 그쪽에서 지금 시각으로 계속 막는다. */
           && (!passHeldAt(resource.data, request.time)
             || !request.resource.data.diff(resource.data).affectedKeys().hasAny(["remainingCount"])
             || request.resource.data.remainingCount >= resource.data.remainingCount
-            || request.resource.data.status == "cancelled")
+            || request.resource.data.status == "cancelled"
+            || (
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(["remainingCount", "serviceUsed"])
+              && request.resource.data.remainingCount == resource.data.remainingCount - 1
+            ))
           && (
             hasRole(organizationId, ownerLevel())
             // 담당 교체. 넘겨받았다는 사실이 함께 남아야 급여 판정이 그것을 볼
@@ -1306,10 +1316,16 @@ service cloud.firestore {
         match /ledger/{entryId} {
           allow read: if isCentreStaff(organizationId);
           allow create: if request.resource.data.organizationId == organizationId
-            && (request.resource.data.type != "deduct" || (
-              !passHeldAt(get(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(passId)).data, request.time)
-              && !passHeldAt(get(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(passId)).data, request.resource.data.occurredAt)
-            ))
+            /* 홀딩. 차감은 **수업 시각**(occurredAt)으로 본다 -- 홀딩을 걸기 전에
+               한 수업은 지금 홀딩 중이어도 차감한다 (2026-11-14 대표,
+               functions/shared/pass-hold.mjs holdBlocksLesson 과 같은 선).
+               회차를 줄이는 조정은 수업이 없으므로 지금 시각으로 막는다. */
+            && (
+              request.resource.data.type == "deduct"
+                ? !passHeldAt(get(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(passId)).data, request.resource.data.occurredAt)
+                : (request.resource.data.type != "adjust" || request.resource.data.delta >= 0
+                  || !passHeldAt(get(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(passId)).data, request.time))
+            )
             && request.resource.data.passId == passId
             && request.resource.data.keys().hasOnly([
               "organizationId", "passId", "clientId", "locationId", "type", "delta",

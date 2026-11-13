@@ -6279,12 +6279,45 @@ describe("홀딩 수강권 사용 차단", () => {
   const markHold = async (from, until) => testEnv.withSecurityRulesDisabled(async (context) => {
     await updateDoc(ref(context.firestore()), { holdFrom: Timestamp.fromMillis(from), holdUntil: Timestamp.fromMillis(until) });
   });
-  test("대표와 강사 모두 홀딩 중 회차를 줄이거나 홀딩을 직접 해제할 수 없다", async () => {
+  const ledgerRef = (db, id) => doc(db, "organizations", ORG_A, "passes", PASS_A, "ledger", id);
+  const deductBatch = (userId, id, occurredAt) => {
+    const db = dbFor(userId);
+    const batch = writeBatch(db);
+    batch.update(ref(db), { remainingCount: increment(-1) });
+    batch.set(ledgerRef(db, id), ledgerFixture(ORG_A, PASS_A, { createdBy: userId, lessonId: "lesson-seed", occurredAt }));
+    return batch.commit();
+  };
+  test("대표와 강사 모두 홀딩 기간 수업을 차감하거나, 두 회차 이상 줄이거나, 홀딩을 직접 해제할 수 없다", async () => {
     await markHold(Date.now() - 86400000, Date.now() + 86400000);
     for (const userId of [users.owner, users.manager, users.instructor]) {
-      await assertFails(updateDoc(ref(dbFor(userId)), { remainingCount: increment(-1) }));
+      await assertFails(deductBatch(userId, `in-hold-${userId}`, hoursAgo(2)), `${userId} 홀딩 기간 수업 차감`);
+      await assertFails(updateDoc(ref(dbFor(userId)), { remainingCount: increment(-2) }), `${userId} 두 회차`);
       await assertFails(updateDoc(ref(dbFor(userId)), { holdUntil: Timestamp.fromMillis(Date.now() - 1) }));
     }
+  });
+  test("홀딩을 걸기 전에 한 수업은 지금 홀딩 중이어도 차감한다 (2026-11-14)", async () => {
+    /* 수업 3시간 전, 홀딩 1시간 전부터. 막으면 홀딩이 풀릴 때 7일 기한이 지나
+       이 수업은 영영 확정할 수 없다. */
+    await markHold(Date.now() - 3600000, Date.now() + 14 * 86400000);
+    await assertSucceeds(deductBatch(users.owner, "before-hold", hoursAgo(3)));
+  });
+  test("홀딩 중 회차를 줄이는 조정은 계속 막는다 — 수업이 없어 홀딩 전이라 할 근거가 없다", async () => {
+    await markHold(Date.now() - 86400000, Date.now() + 86400000);
+    const adjustBatch = (id) => {
+      const db = dbFor(users.manager);
+      const batch = writeBatch(db);
+      batch.update(ref(db), { remainingCount: increment(-1) });
+      batch.set(ledgerRef(db, id), {
+        organizationId: ORG_A, passId: PASS_A, clientId: "client-member", locationId: "location-a",
+        type: "adjust", delta: -1, reason: "실제 잔여와 맞춤",
+        occurredAt: hoursAgo(1), createdAt: serverTimestamp(), createdBy: users.manager,
+      });
+      return batch.commit();
+    };
+    await assertFails(adjustBatch("held-adjust"));
+    // 대조: 홀딩이 끝나면 같은 조정이 통과한다 -- 위 거절이 홀딩 때문임을 고정한다.
+    await markHold(Date.now() - 2 * 86400000, Date.now() - 86400000);
+    await assertSucceeds(adjustBatch("after-hold-adjust"));
   });
   test("홀딩 중 차감 원장만 따로 쓰는 우회도 거절된다", async () => {
     await markHold(Date.now() - 86400000, Date.now() + 86400000);

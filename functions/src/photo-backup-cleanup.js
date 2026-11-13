@@ -1,6 +1,6 @@
 "use strict";
 
-const SAFE_PATH = /^users\/([A-Za-z0-9_-]{1,160})\/photos\/([A-Za-z0-9._:-]{1,160})\/(image|thumb)\.jpg$/;
+const SAFE_PATH = /^users\/([A-Za-z0-9_-]{1,160})\/photos\/([A-Za-z0-9._:-]{1,160})\/(?:image\.jpg|thumb\.jpg|original\.bin)$/;
 
 function asDate(value) {
   if (value instanceof Date) return value;
@@ -25,8 +25,8 @@ function createPhotoBackupCleanupService({ firestore, bucket, now = () => new Da
       for (const entry of expired) {
         const data = entry.data() || {};
         const uid = String(data.storagePath || "").match(SAFE_PATH)?.[1] || "";
-        const paths = [data.storagePath, data.thumbnailPath].filter((path) => ownedPhotoPath(path, uid, entry.id));
-        if (paths.length !== 2) continue;
+        const paths = [data.storagePath, data.thumbnailPath, ...(data.originalPath ? [data.originalPath] : [])].filter((path) => ownedPhotoPath(path, uid, entry.id));
+        if (paths.length !== (data.originalPath ? 3 : 2)) continue;
         await Promise.all(paths.map((path) => bucket.file(path).delete({ ignoreNotFound: true })));
         await entry.ref.delete();
         purged += 1;

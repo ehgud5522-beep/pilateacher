@@ -368,8 +368,8 @@ test("CASE 2: one draft opens the resume choice without creating an ID", async (
   assert.ok(guard.indexOf("if (resumableAssessment)") < guard.indexOf("startNew();"));
   assert.match(guard, /setDraftGuard\(\{ step: "choice", assessment: resumableAssessment \}\);[\s\S]*return;/);
   assert.doesNotMatch(guard.slice(0, guard.indexOf("startNew();")), /newAssessmentId/);
-  assert.match(workspace, /진행 중인 변화 기록이 있습니다/);
-  assert.match(workspace, /이전에 저장하던 변화 기록을 이어서 진행할 수 있습니다\./);
+  assert.match(workspace, /진행 중인 비포애프터가 있습니다/);
+  assert.match(workspace, /이전에 저장하던 비포애프터를 이어서 진행할 수 있습니다\./);
   assert.match(workspace, />이어하기</);
   assert.match(workspace, />새로 시작</);
 });
@@ -414,7 +414,7 @@ test("CASE 4: cancelling start-over preserves the draft and creates no ID", asyn
   assert.deepEqual(original, before);
 
   const { workspace } = await assessmentWorkspaceSource();
-  const confirmStart = workspace.indexOf("진행 중인 변화 기록을 삭제하고 새로 시작할까요?");
+  const confirmStart = workspace.indexOf("진행 중인 비포애프터를 삭제하고 새로 시작할까요?");
   const confirmEnd = workspace.indexOf("{roleSheet", confirmStart);
   const confirmUi = workspace.slice(confirmStart, confirmEnd);
   assert.match(confirmUi, /onClick=\{\(\) => setDraftGuard\(null\)\}[\s\S]*>취소<\/button>/);
@@ -568,7 +568,7 @@ test("all active new-analysis entry points use the common guard", async () => {
   assert.match(source, /onAssess\?\.\(\{ mode: "new" \}\)/);
   assert.match(source, /resumableAssessment && <button[\s\S]*mode: "resume", assessmentId: resumableAssessment\.id/);
   assert.match(workspace, /const closeDraftGuard = \(\) => \{[\s\S]*assessmentAction\.current !== "discard"/);
-  assert.match(workspace, /ScheduleBottomSheet title="진행 중인 변화 기록을 삭제하고 새로 시작할까요\?"[^>]*onClose=\{closeDraftGuard\}[^>]*dismissible=\{draftGuard\.step !== "discarding"\}/);
+  assert.match(workspace, /ScheduleBottomSheet title="진행 중인 비포애프터를 삭제하고 새로 시작할까요\?"[^>]*onClose=\{closeDraftGuard\}[^>]*dismissible=\{draftGuard\.step !== "discarding"\}/);
   assert.match(source, /window\.addEventListener\("popstate", \(event\) => \{\s*if \(backSwallow <= 0\) return;\s*backSwallow -= 1;\s*swallowedBackEvents\.add\(event\);\s*\}, true\);/);
   assert.match(source, /function useBackClose\(open, close, locked = false\)[\s\S]*const restoreEntry = \(\) => \{[\s\S]*if \(mine\) return;[\s\S]*window\.history\.pushState\(\{ ptk: token \}/);
   assert.match(source, /if \(backStack\[backStack\.length - 1\] !== entry\) return;[\s\S]*if \(swallowedBackEvents\.has\(event\)\) \{ restoreEntry\(\); return; \}[\s\S]*if \(lockedRef\.current\) \{\s*restoreEntry\(\);[\s\S]*Date\.now\(\) - bornAt < 400\) \{ restoreEntry\(\); return; \}/);

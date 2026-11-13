@@ -30,7 +30,7 @@ export async function optimizePhotoBackup(blob, options = {}) {
        JPEG 일 때만이다 -- HEIC·PNG 를 그냥 올리면 image/jpeg 라고 적어 둔
        메타데이터와 실제 내용이 어긋난다. 썸네일은 항상 새로 만든다. */
     const withinLimit = Math.max(bitmap.width, bitmap.height) <= maxEdge;
-    const image = withinLimit && blob.type === "image/jpeg"
+    const image = withinLimit && blob.type === "image/jpeg" && !options.stripMetadata
       ? { blob, width: bitmap.width, height: bitmap.height }
       : await render(maxEdge, options.quality ?? PHOTO_BACKUP_QUALITY);
     const thumbnail = await render(options.thumbMaxEdge || PHOTO_THUMB_MAX_EDGE, options.thumbQuality ?? PHOTO_THUMB_QUALITY);

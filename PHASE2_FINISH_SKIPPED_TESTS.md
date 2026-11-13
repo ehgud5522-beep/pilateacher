@@ -8,3 +8,150 @@
 
 별도로 Firebase 규칙 테스트의 운영 파일 감사 1개도 제외됐다. 운영 감사 자료를 새 작업 폴더에 복사하지 않았으며 운영 사진 테스트를 수행하지 않았다. 합성 데이터 Storage 전송 검사는 실행했다.
 
+- 로컬에 파일이 있으면 그것도 회원 앱 것이어야 한다 (0.1746ms) # 로컬 파일이 없다 (CI 에서는 정상 — Codemagic 이 주입한다)
+- 로컬 키 설정이 있으면 강사 앱 키 파일을 가리키지 않는다 (0.1603ms) # 로컬 키 설정이 없다 (CI 에서는 정상)
+- the base is the front when the front is there (1.552ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- without a front the back is the base, not the nearer side (0.1615ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- with neither front nor back the left side is the base (0.145ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a right side on its own is still a base (0.1457ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a photo without usable landmarks is not a base candidate (0.9909ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a body too small in the frame is not a base candidate either (0.1106ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- when no direction can anchor, nothing is aligned and nothing throws (0.1092ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- an empty assessment answers instead of failing (0.1166ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- every direction is reported, in the order they are shot (0.1368ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a direction never shot is told apart from one that failed to anchor (0.2105ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the base sits where it already is (0.1301ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- an aligned direction lands the body where the base has it (0.1491ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a scale that would distort the photo is refused, and only for that direction (0.0803ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the refusal boundary is the one the comparison view already uses (0.1456ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the alignment is worked out, never stored on the record (0.0951ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a direction shows the numbers measured on its own photo (0.0703ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a direction with no readings shows none, and that is not an error (0.1381ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a direction that was never shot yields nothing rather than borrowing (0.0648ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- each marker sits on the landmark it was measured from (0.082ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the marker does not move when the reading moves (0.057ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a side photo carries the side readings (0.0617ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the knee reading keeps its number but is given no place on the body (0.0811ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a reading whose landmark is unknown is reported without a place (0.0685ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- with no earlier record there is no earlier reading to show (0.0756ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the earlier reading and the change follow the comparison view's rule (0.0885ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the earlier reading is taken from the same direction (0.0633ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a marker row states no verdict (0.0535ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the row carries the date the reading was taken (0.0608ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the clean copy is read off the pose, not off the capture record (2.2076ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a capture record that does carry the copy is still accepted (0.2127ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- without a clean copy anywhere there is no photo to show (0.1645ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the finger reaches the directions that were shot, in shooting order (0.1591ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a direction that was never shot is not on the path (0.1899ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a direction whose photo cannot be shown is not on the path either (0.1497ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a photo that turned out to be unreadable drops off the path (0.1026ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- an assessment with nothing to show has nowhere to drag (0.1299ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a drag moves one direction, to the neighbour (0.1187ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the ends are ends, not a loop (0.2755ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a missing direction is stepped over, not stopped at (0.1486ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- two missing directions in a row are stepped over together (0.1056ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a direction reachable only by button still knows its neighbours (0.1063ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a step of nowhere is nowhere (0.0756ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the old side key is the left side on both ends of a step (0.0641ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a nudge is not a decision (0.0707ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a push across half the frame counts, either way (0.0608ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a narrow frame still asks for a real push (0.0617ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the follow and the commit are measured with one ruler (0.0589ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- an unmeasurable frame falls back to the floor rather than to zero (0.0613ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a distance that is not a number never commits (0.0597ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the screen is exactly as far along as the finger is (0.0685ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- pushing past the end of the drag does not push past the end of the turn (0.0607ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a distance that is not a number moves nothing (0.0594ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- at the ends the finger is felt but never obeyed (0.0607ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a body at rest is where it was, at the size it was (0.0635ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the body leaves towards the side it was pushed (0.059ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- it is furthest out and narrowest in the middle of the turn (0.0738ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a finished turn stands straight again, as the next direction (0.1213ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the two faces swap where the body is narrowest, so only one is ever seen (0.0682ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the body is never bent, only moved and narrowed (0.0701ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a progress that is not a number leaves the body alone (0.0783ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a head reading leaves its dot on the ear and sends the label aside (0.0626ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the side view head reading is moved for the same reason (0.093ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the label leaves towards the nearer edge, so it never crosses the face (0.0794ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a reading taken anywhere else is not moved at all (0.0896ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the gap is a share of the photo, not a fixed number of pixels (0.1232ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- without a photograph to measure there is nowhere to send it (0.0527ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the moved label is still pushed inside the frame afterwards (0.0455ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a tilt that rounds to zero is kept, but not drawn on the body (0.0436ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- half a degree still rounds to a tilt, and is drawn (0.0501ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a knee is still kept off the photo, for its own reason (0.0811ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- every reading falls into one list or the other, and none is lost (0.0561ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- nothing at all is nothing to draw (0.0976ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the marker follows the same scale and shift the photo was given (0.0626ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- an unaligned direction leaves the marker where the photo is (0.101ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a point that is not a point has nowhere to go (0.0542ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a label with room to spare is not moved at all (0.0423ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a label at the edge slides just inside, and no further (0.0556ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a label past the edge is brought back, not left outside (0.0455ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a label bigger than the box is left where it is (0.0543ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- without a measurable box nothing is moved (0.0562ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a photo narrower than its frame is centred with bands above and below (0.0602ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a photo wider than its frame is centred with bands left and right (0.0676ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a photo of the frame's own shape fills it with no band at all (0.081ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the whole photo is always inside the frame (0.0822ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- without a measurement there is no rectangle to guess at (0.0687ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- all four directions are offered, in the order they are shot (3082.8501ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a direction that was not shot cannot be opened, and says why (5.0456ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- with every direction shot there is nothing to invite and no closed button (0.2081ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a single direction still opens rather than refusing (0.3729ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a record with no analysed photo says so instead of loading forever (0.1536ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a direction that was shot is never told to go and shoot it (0.147ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the screen says where the numbers came from (0.2423ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- one word is used for a direction, on the buttons and in the sentence (0.1531ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- nothing on screen offers a scan, a model, or an analysis in three dimensions (0.1837ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- no body is invented between the photographs (0.1407ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the person is separated on the device, and only the mask is kept (0.1664ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the photo shown is the analysed one, never the untouched original (0.11ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the screen sends a head label aside before it clamps it to the frame (0.111ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the dot and the pill are joined whenever they come apart (0.0689ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- one rule decides what is drawn on the body and what is only listed (0.0668ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a reading with no place on the body is listed beside the photo, not on it (0.1544ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the markers are held back until a direction has finished arriving (0.1064ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the two bodies never share the screen at full strength (0.0752ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a device asked to reduce motion gets the direction at once (0.0662ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- only the direction in view is hung on the screen (0.0623ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the alignment is worked out once per record, not once per frame (0.1392ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a sideways push turns the body, a vertical one scrolls the page (0.0868ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the drag is wired to the frame, and lets go of it again (0.0735ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the buttons stay the way in; the drag is the extra one (0.0729ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- without a photo the readings are listed but never pinned (0.1111ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the bottom row is kept clear of the system bar (0.1771ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the markers sit in the photo's own rectangle, not the frame's (0.0926ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a reading at the edge of the photo keeps its point and moves only its label (0.4236ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the label is placed by the frame edge, never by the size of the number (0.0661ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the record's own verdict about hand-placed joints is repeated here (0.0554ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a record the AI did read says nothing about hand-placed joints (0.0543ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the notice sits with the other honest line, not as a warning (0.0546ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the markers come off the body while it is being dragged (0.0522ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the photo is moved and narrowed, never bent (0.0656ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the body swings out and comes back, rather than fading in place (0.0547ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- where the finger is is where the screen is (0.0529ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the position dots move with the body, not after it (0.0587ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a device asked to reduce motion is not dragged along in real time (0.2024ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the entrance runs once, and only once (0.0976ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- touching anything ends the entrance instead of waiting it out (0.3257ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the whole entrance fits inside a second (0.1201ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the markers appear in the order they are listed, not by size (0.0631ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- reduced motion gets the finished screen with no entrance at all (0.0564ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a record with no photo does not hold the readings behind an entrance (0.0636ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the timers are dropped when the screen closes (0.0522ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a direction that could not be aligned is not dressed up as a failure (0.3134ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the result screen has one door into the body view, in one place (5.0524ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the door is there whether or not there is a change to show (0.0915ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the door stays shut for a record with no photograph to show (0.199ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- only the direction on screen is separated (0.0732ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- what the segmenter finishes is not thrown away (0.0715ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- leaving the screen is the one thing that stops the cutout (0.2798ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a mask already made is read, not made again (1.1899ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a mask that had to be made is kept for next time (1.3762ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the original stays on screen until the cutout is ready (0.0888ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- a failure anywhere leaves the photograph as it was (0.0661ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the diagnostics say how far the cutout got (0.0708ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the alignment and the markers are untouched by the cutout or the drag (0.0605ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the markers ride with the photo instead of being placed again (0.057ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED
+- the model is let go when the screen closes (0.1026ms) # 360° 바디뷰 비활성화 (2026-09) -- posture-model.js 의 BODY_VIEW_ENABLED

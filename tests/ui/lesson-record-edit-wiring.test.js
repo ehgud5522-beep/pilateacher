@@ -25,10 +25,11 @@ test("(1) 음성 확정은 그 수업의 음성 기록만 집어 고친다", asy
 test("(2) 다시 열면 직접 입력 기록을 불러와 같은 기록을 고친다 — 일정 시트 · 확인할 수업", async () => {
   const app = await source();
   assert.match(app, /const editingNote = manualNoteFor\(activeMember\?\.notes, draft\?\.id\);/);
-  assert.match(app, /if \(recordMode !== "write"\) setRecordBody\(editingNote\?\.body \|\| ""\)/);
-  assert.match(app, /draft\.id, recordBody\.trim\(\), null, editingNote \? \{ existingNoteId: editingNote\.id \} : null\)/);
+  assert.match(app, /useManualLessonNoteDraft\(draftAccountId, activeMemberId, draft\.id, editingNote\)/);
+  assert.match(app, /openManualDraft\(localStorage, \{ accountId, memberId, lessonId \}, note\)/);
+  assert.match(app, /draft\.id, recordBody\.trim\(\), null, \{ \.\.\.\(editingNote \? \{ existingNoteId: editingNote\.id \} : \{\}\), expectedManualNote: manualDraft\.base \}\)/);
   assert.match(app, /const queueEditingNote = manualNoteFor\(/);
-  assert.match(app, /task\.s\.id, recordBody\.trim\(\), null, queueEditingNote \? \{ existingNoteId: queueEditingNote\.id \} : null\)/);
+  assert.match(app, /task\.s\.id, recordBody\.trim\(\), null, \{ \.\.\.\(queueEditingNote \? \{ existingNoteId: queueEditingNote\.id \} : \{\}\), expectedManualNote: manualDraft\.base \}\)/);
 });
 
 test("로그인이 풀렸거나 기록이 비어 있으면 저장 실패로 처리한다", async () => {

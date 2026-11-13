@@ -76,6 +76,7 @@ test("saving a lesson journal keeps the feedback draft and settlement in the sam
   const globals = {
     window,
     document: window.document,
+    localStorage: window.localStorage,
     requestAnimationFrame: window.requestAnimationFrame.bind(window),
     cancelAnimationFrame: window.cancelAnimationFrame.bind(window),
     matchMedia: (query) => ({ matches: query.includes("no-preference") ? !reducedMotion : reducedMotion }),
@@ -103,6 +104,7 @@ test("saving a lesson journal keeps the feedback draft and settlement in the sam
     const calls = [];
     let saveSucceeds = false;
     const screen = cloneElement(element, {}, cloneElement(organization, {}, cloneElement(form, {
+      draftAccountId: "smoke-account",
       onClose: () => calls.push("closed"),
       onSaveNote: async (_memberId, _type, _lessonId, body) => {
         calls.push(body);
@@ -118,7 +120,14 @@ test("saving a lesson journal keeps the feedback draft and settlement in the sam
       textarea.dispatchEvent(new window.Event("input", { bubbles: true }));
     });
     const find = (selector) => container.querySelector(selector);
+    const draftKeys = () => Object.keys(window.localStorage).filter((key) => key.startsWith("pilateacher:manual-lesson-note:"));
     await act(async () => root.render(screen));
+    await click(find("[data-direct-record]"));
+    await type(find("[data-lesson-record-entry] textarea"), "강사 수업일지");
+    assert.equal(draftKeys().length, 1);
+    await act(async () => root.render(null));
+    await act(async () => root.render(screen));
+    assert.match(find("[data-direct-record]").textContent, /이어서 쓰기/);
     const sheet = find('[role="dialog"]');
     assert.ok(sheet);
     await click(find("[data-member-note-yes]"));
@@ -126,10 +135,11 @@ test("saving a lesson journal keeps the feedback draft and settlement in the sam
     await type(feedback, "회원에게 보낼 피드백");
     await click(find("[data-direct-record]"));
     const journal = find("[data-lesson-record-entry] textarea");
-    await type(journal, "강사 수업일지");
+    assert.equal(journal.value, "강사 수업일지");
     await click(find("[data-lesson-record-entry] button"));
     assert.equal(journal.value, "강사 수업일지");
     assert.equal(find("[data-lesson-record-entry] textarea"), journal);
+    assert.equal(draftKeys().length, 1);
 
     saveSucceeds = true;
     reducedMotion = false;
@@ -138,6 +148,7 @@ test("saving a lesson journal keeps the feedback draft and settlement in the sam
     assert.equal(find('[role="dialog"]'), sheet);
     await act(async () => new Promise((resolve) => setTimeout(resolve, 200)));
     assert.equal(find("[data-lesson-record-entry]"), null);
+    assert.equal(draftKeys().length, 0);
     assert.equal(find('[role="dialog"]'), sheet);
     assert.equal(find("[data-member-note] textarea"), feedback);
     assert.equal(feedback.value, "회원에게 보낼 피드백");
@@ -3590,5 +3601,5 @@ test("branch overview hides stale balances on query failure and refuses a manage
 
 test("schedule colors are reachable directly from the instructor schedule tab", async (t) => {
   const markupOf = await issueScreens(t);
-  assert.match(markupOf("일정 탭 · 이사님 전달사항"), /일정 색상/);
+  assert.equal((markupOf("일정 탭 · 이사님 전달사항").match(/일정 색상/g)||[]).length, 1, "병합 후에도 일정 색상 버튼은 하나만 표시한다");
 });

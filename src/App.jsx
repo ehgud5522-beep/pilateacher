@@ -1,3 +1,4 @@
+import { openManualDraft, noteVersion } from "./features/lesson-record/manual-draft.js";
 import { readAccountDb, writeAccountDb } from "./features/schedule/account-db-storage.js";
 import { fbPrivatePhotoSharing } from "./lib/firebase.js";
 /* Storage shim — Bolt 환경의 window.storage 가 없으면 localStorage 로 대체 */
@@ -3571,7 +3572,7 @@ function ScheduleColorSettings({ scheduleColors, onChange }) {
   );
 }
 
-function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null, ownerMessage = "", memberCancelOn = false, inbox = null,
+function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null, ownerMessage = "", memberCancelOn = false, inbox = null,
   /* 큐 정리용 서버 상태 읽기 (2026-11-07, lesson-queue.js). 센터 소속일 때만 넘어온다. */
   readQueueLessonStates = null }) {
   const initialDisplay = useMemo(() => {
@@ -3954,7 +3955,6 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
 
       <OwnerMessageBar message={ownerMessage} />
       <DailySentenceBanner />
-
       {onSettings && <div className="flex shrink-0 justify-end px-2" style={{ backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
         <button type="button" ref={colorSettingsTriggerRef} onClick={() => setColorSettingsOpen(true)}
           className="flex min-h-9 items-center gap-1.5 rounded-lg px-2 text-xs font-bold" style={{ color: PRIMARY }}>
@@ -4013,7 +4013,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
         </button>
       </div>}
 
-      {editing && <ScheduleForm memberCancelAcked={isMemberCancelAcked(liveEditing)} onAckMemberCancel={() => ackMemberCancel(liveEditing)} draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
+      {editing && <ScheduleForm memberCancelAcked={isMemberCancelAcked(liveEditing)} draftAccountId={draftAccountId} onAckMemberCancel={() => ackMemberCancel(liveEditing)} draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
         onSubmit={(v, opened) => { onSave(v, opened); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
         onStatus={onStatus} onStatusAll={onStatusAll} onCareGrade={onCareGrade} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
         organizationMode={organizationMode} rateOf={rateOf} careOptionsOf={careOptionsOf} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} onReadMemberNote={onReadMemberNote} onSaveMemberNote={onSaveMemberNote} onToast={onToast} canUnsettle={canUnsettle}
@@ -4024,7 +4024,7 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
           onPick={pickInboxItem} />
       )}
       {queueOpen && (
-        <ScheduleQueueSheet queue={organizedQueue} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
+        <ScheduleQueueSheet queue={organizedQueue} draftAccountId={draftAccountId} members={db.members} returnFocusRef={queueTriggerRef} onClose={() => setQueueOpen(false)}
           onSnooze={(key, on) => markQueueGroup("snoozed", key, on)}
           onDismissAll={dismissAllQueue} onRestoreDismissed={restoreQueue}
           onNoComment={onNoComment} onSaveNote={onSaveNote}
@@ -4417,7 +4417,25 @@ function confirmedLessonNoteArgs(note, reviewedDraft = null) {
   };
 }
 
-function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
+function useManualLessonNoteDraft(accountId, memberId, lessonId, note) {
+  const [, refresh] = useState(0);
+  const controller = useMemo(() => {
+    try { return openManualDraft(localStorage, { accountId, memberId, lessonId }, note); }
+    catch { return openManualDraft({ length: 0, getItem: () => null, setItem: () => { throw Error("unavailable"); } }, { accountId, memberId, lessonId }, note); }
+  }, [accountId, memberId, lessonId]);
+  useEffect(() => { const listener = () => refresh(n => n + 1); window.addEventListener("storage", listener); return () => window.removeEventListener("storage", listener); }, []);
+  const state = controller.state(note);
+  return { ...state, change: body => { controller.change(body, note); refresh(n => n + 1); },
+    resolve: () => { controller.change(state.body, note, { resolve: true }); refresh(n => n + 1); },
+    clear: () => { controller.clear(); refresh(n => n + 1); } };
+}
+function LessonNoteDraftStatus({ draft }) {
+  return <div className="text-xs" style={{ color: draft.conflict || (draft.hasDraft && !draft.saved) ? WARN : SUB }}>
+    <p>{draft.saved ? "이 기기에 임시 저장됨" : draft.hasDraft ? "임시 저장 공간을 사용할 수 없어요. 저장 버튼으로 기록을 저장해 주세요." : "입력하는 동안 이 기기에 자동으로 임시 저장돼요."}</p>
+    {draft.conflict && <><p>다른 창의 초안 또는 저장된 기록이 변경됐어요. 내용을 확인한 뒤 계속해 주세요.</p>{draft.alternatives.map((text,i)=><pre key={i} style={{whiteSpace:'pre-wrap'}}>{text}</pre>)}<button type="button" onClick={draft.resolve}>현재 초안으로 계속</button></>}
+  </div>;
+}
+function ScheduleForm({ draftAccountId, memberCancelAcked = false, onAckMemberCancel, draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
   const rosterRefresh = useContext(RosterRefreshContext);
   /* 확정된 수업은 출석을 바꿀 수 없다. 상태를 바꿔도 이미 나간 차감은 따라오지
      않고, 둘이 어긋나면 어느 것이 맞는지 알 수 없다. */
@@ -4454,7 +4472,6 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
   const [activeMemberId, setActiveMemberId] = useState(currentIds[0] || "");
   const [recordMode, setRecordMode] = useState(null);
   const [recordFallback, setRecordFallback] = useState("");
-  const [recordBody, setRecordBody] = useState("");
   const [recordSaving, setRecordSaving] = useState(false);
   const { closing: recordClosing, close: closeRecordEntry } = useMotionClose(() => setRecordMode(null), recordMode === "write");
   const recordBusy = recordSaving || recordClosing;
@@ -4498,6 +4515,8 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
   /* 이 수업에 이미 손으로 쓴 기록. 있으면 직접입력이 그 글을 불러와 같은 기록을 고친다
      (2026-11-07). 전에는 늘 빈 칸에서 시작해 저장할 때마다 기록이 하나씩 늘었다. */
   const editingNote = manualNoteFor(activeMember?.notes, draft?.id);
+  const manualDraft = useManualLessonNoteDraft(draftAccountId, activeMemberId, draft.id, editingNote);
+  const recordBody = manualDraft.body;
   const activeAttendee = attendeesOf(draft).find((a) => a.memberId === activeMemberId) || null;
   /* 이 회원이 어떤 디오사 회원권을 가졌는가. 칩을 열고 닫는 것도, 디오사만
      끊은 회원을 PT 로 넣으려 할 때 길을 알려주는 것도 이 하나에서 나온다. */
@@ -4742,7 +4761,7 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
                 const active = a.memberId === activeMemberId;
                 return (
                   <div key={a.memberId} className="min-w-0 rounded-xl p-3 text-left" style={{ backgroundColor: active ? TINT : CANVAS, border: `1px solid ${active ? "#D9D7EE" : LINE}` }}>
-                    <button type="button" disabled={recordBusy} onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); setRecordBody(""); }} className="w-full min-w-0 text-left">
+                    <button type="button" disabled={recordBusy} onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); }} className="w-full min-w-0 text-left">
                       <span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: active ? PRIMARY : INK }}>{m?.name || "삭제된 회원"}</span><span className="shrink-0 rounded-full px-2 py-0.5 text-caption font-extrabold" data-member-cancel-badge={isMemberCancelledAttendee(a) ? "" : undefined} style={isMemberCancelledAttendee(a) ? { backgroundColor: WARN_S, color: WARN } : { backgroundColor: stOf(a.status).bg, color: stOf(a.status).color }}>{isMemberCancelledAttendee(a) ? MEMBER_CANCEL_VIEW_COPY.BADGE : stOf(a.status).label}</span></span>
                       <span className="mt-0.5 block text-xs" style={{ color: SUB }}>잔여 {left(m)}회{m?.contractEnd ? ` · ${m.contractEnd.slice(5).replace("-", ".")}까지` : ""}</span>
                       {/* 확정하면 얼마가 되는지. 눌러 본 뒤에 아는 것과 누르기 전에
@@ -4891,8 +4910,8 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
                 {!aiRecordingAvailable(aiRecording) && <p className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>AI 정리 잠시 점검 중 · 직접 입력으로 기록할 수 있어요.</p>}
                 <div className="grid grid-cols-2 gap-2">
                   {aiRecordingAvailable(aiRecording) && <button disabled={recordBusy} onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "voice" ? null : "voice"); }} className="flex h-12 items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, color: recordMode === "voice" ? "#fff" : PRIMARY, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}` }}><Smartphone size={15} /> 기록하기</button>}
-                  <button data-direct-record disabled={recordBusy} onClick={() => { setRecordFallback(""); if (recordMode !== "write") setRecordBody(editingNote?.body || ""); if (recordMode === "write") closeRecordEntry(); else setRecordMode("write"); }} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> {editingNote ? "기록 수정" : "직접입력"}</button>
-                  <button disabled={recordBusy || Boolean(editingNote) || Boolean(recordMode)} onClick={async () => {
+                  <button data-direct-record disabled={recordBusy} onClick={() => { setRecordFallback(""); if (recordMode === "write") closeRecordEntry(); else setRecordMode("write"); }} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> {manualDraft.hasDraft && recordMode !== "write" ? "이어서 쓰기" : editingNote ? "기록 수정" : "직접입력"}</button>
+                  <button disabled={recordBusy || manualDraft.hasDraft || Boolean(editingNote) || Boolean(recordMode)} onClick={async () => {
                     setRecordSaving(true);
                     try {
                       await onNoComment?.(activeMemberId, draft.type, draft.id);
@@ -4915,12 +4934,16 @@ function ScheduleForm({ memberCancelAcked = false, onAckMemberCancel, draft, mem
                           onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)}
                           onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
                         {recordMode === "write" && <>
-                          <textarea rows={4} value={recordBody} readOnly={recordSaving} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
-                          <button disabled={recordSaving || !recordBody.trim()} onClick={async () => {
+                          <textarea rows={4} value={recordBody} readOnly={recordSaving} onChange={(e) => manualDraft.change(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
+                          <LessonNoteDraftStatus draft={manualDraft} />
+                          <button disabled={recordSaving || manualDraft.conflict || !recordBody.trim()} onClick={async () => {
                             setRecordSaving(true);
                             try {
-                              const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null, editingNote ? { existingNoteId: editingNote.id } : null);
-                              if (stored === true) closeRecordEntry();
+                              const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null, { ...(editingNote ? { existingNoteId: editingNote.id } : {}), expectedManualNote: manualDraft.base });
+                              if (stored === true) {
+                                manualDraft.clear();
+                                closeRecordEntry();
+                              }
                             } finally {
                               setRecordSaving(false);
                             }
@@ -5174,7 +5197,7 @@ export function TeacherInboxSheet({ items, error, members, onClose, onPick }) {
   );
 }
 
-export function ScheduleQueueSheet({ queue, members, returnFocusRef, onClose, onNoComment, onSaveNote, onOpenLesson, onSnooze, onDismissAll, onRestoreDismissed, initialTab = "", initialGroupKey = "", initialArchivedOpen = false, initialConfirmClear = false }) {
+export function ScheduleQueueSheet({ draftAccountId, queue, members, returnFocusRef, onClose, onNoComment, onSaveNote, onOpenLesson, onSnooze, onDismissAll, onRestoreDismissed, initialTab = "", initialGroupKey = "", initialArchivedOpen = false, initialConfirmClear = false }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const tabs = queue?.tabs || { [QUEUE_TAB.TODAY]: [], [QUEUE_TAB.OVERDUE]: [], [QUEUE_TAB.ARCHIVED]: [] };
   const firstTab = QUEUE_TABS.find((key) => tabs[key]?.length) || QUEUE_TAB.TODAY;
@@ -5193,11 +5216,12 @@ export function ScheduleQueueSheet({ queue, members, returnFocusRef, onClose, on
     (members || []).find((item) => item?.id === task?.a?.memberId)?.notes, task?.s?.id,
   );
   const [recordMode, setRecordMode] = useState(null);
-  const [recordBody, setRecordBody] = useState("");
+  const manualDraft = useManualLessonNoteDraft(draftAccountId, task?.a?.memberId, task?.s?.id, queueEditingNote);
+  const recordBody = manualDraft.body;
+  const [recordSaving, setRecordSaving] = useState(false);
   const recordSectionRef = useRef(null);
   useEffect(() => {
     setRecordMode(null);
-    setRecordBody("");
   }, [task?.key]);
   useEffect(() => {
     if (!recordMode) return undefined;
@@ -5329,16 +5353,28 @@ export function ScheduleQueueSheet({ queue, members, returnFocusRef, onClose, on
               <p className="mb-2 text-xs" style={{ color: SUB }}>저장하면 다음 업무로 자동 이동합니다</p>
               {!aiRecordingAvailable(aiRecording) && <p className="mb-2 rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>AI 정리 잠시 점검 중 · 직접 입력으로 기록할 수 있어요.</p>}
               <div className="grid grid-cols-2 gap-2">
-                {aiRecordingAvailable(aiRecording) && <button onClick={() => setRecordMode(recordMode === "voice" ? null : "voice")} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}`, color: recordMode === "voice" ? "#fff" : PRIMARY }}><Smartphone size={15} /> 말하기</button>}
-                <button onClick={() => { if (recordMode !== "write") setRecordBody(queueEditingNote?.body || ""); setRecordMode(recordMode === "write" ? null : "write"); }} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, border: `1px solid ${LINE}`, color: recordMode === "write" ? PRIMARY : INK }}><Pencil size={14} /> {queueEditingNote ? "기록 수정" : "직접 입력"}</button>
-                <button onClick={() => onNoComment?.(task.a.memberId, task.s.type, task.s.id)} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>노코멘트</button>
+                {aiRecordingAvailable(aiRecording) && <button disabled={recordSaving} onClick={() => setRecordMode(recordMode === "voice" ? null : "voice")} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}`, color: recordMode === "voice" ? "#fff" : PRIMARY }}><Smartphone size={15} /> 말하기</button>}
+                <button disabled={recordSaving} onClick={() => setRecordMode(recordMode === "write" ? null : "write")} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, border: `1px solid ${LINE}`, color: recordMode === "write" ? PRIMARY : INK }}><Pencil size={14} /> {manualDraft.hasDraft && recordMode !== "write" ? "이어서 쓰기" : queueEditingNote ? "기록 수정" : "직접 입력"}</button>
+                <button disabled={recordSaving || manualDraft.hasDraft} onClick={() => onNoComment?.(task.a.memberId, task.s.type, task.s.id)} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>노코멘트</button>
                 <button onClick={onClose} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB, border: `1px solid ${LINE}` }}>나중에</button>
               </div>
               {recordMode && (
                 <div ref={recordSectionRef} data-lesson-record-entry className="mt-3 space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
                   <DeviceOnlyNote />
                   {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(task.a.memberId, task.s.id)} memberId={task.a.memberId} memberName={memberName} duetPartner={duetPartnerOf(task?.m)} lessonId={task.s.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={() => setRecordMode("write")} onDraftChange={(text, meta, options) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, { confirmed: true, upsert: true })} />}
-                  {recordMode === "write" && <><textarea rows={4} value={recordBody} onChange={(e) => setRecordBody(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><button disabled={!recordBody.trim()} onClick={() => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, recordBody.trim(), null, queueEditingNote ? { existingNoteId: queueEditingNote.id } : null)} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>저장 · 다음</button></>}
+                  {recordMode === "write" && <><textarea rows={4} value={recordBody} readOnly={recordSaving} onChange={(e) => manualDraft.change(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><LessonNoteDraftStatus draft={manualDraft} />
+                    <button disabled={recordSaving || manualDraft.conflict || !recordBody.trim()} onClick={async () => {
+                      setRecordSaving(true);
+                      try {
+                        const stored = await onSaveNote?.(task.a.memberId, task.s.type, task.s.id, recordBody.trim(), null, { ...(queueEditingNote ? { existingNoteId: queueEditingNote.id } : {}), expectedManualNote: manualDraft.base });
+                        if (stored === true) {
+                          manualDraft.clear();
+                          setRecordMode(null);
+                        }
+                      } finally {
+                        setRecordSaving(false);
+                      }
+                    }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>저장 · 다음</button></>}
                 </div>
               )}
             </div>
@@ -27264,7 +27300,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
             <div className="space-y-3"><Field label="센터명"><input value={db.settings.center} onChange={(e) => onChangeSettings({ ...db.settings, center: e.target.value })} className={inputCls} /></Field><Field label="기본 담당자"><input value={db.settings.staff} onChange={(e) => onChangeSettings({ ...db.settings, staff: e.target.value })} className={inputCls} /></Field><Field label="그룹 1회당 원"><input inputMode="numeric" value={db.settings.groupRate ?? DEF_GROUP_RATE} onChange={(e) => onChangeSettings({ ...db.settings, groupRate: num(e.target.value.replace(/\D/g, "")) })} className={inputCls} /></Field></div>
           </section>
         )}
-        {view === "schedule-colors" && <ScheduleColorSettings scheduleColors={scheduleColors} onChange={(next) => onChangeSettings({ ...db.settings, scheduleColors: next })} />}
+        {view === "schedule-colors" && <ScheduleColorSettings scheduleColors={scheduleColors}
+          onChange={(next) => onChangeSettings({ ...db.settings, scheduleColors: next })} />}
         {view === "theme" && (
           <section style={sectionStyle}>
             <div className="mb-3"><h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>화면 테마</h2><p style={{ marginTop: 3, fontSize: TYPE.caption, color: SUB }}>기기 설정을 따르거나 원하는 화면을 고릅니다.</p></div>
@@ -32127,7 +32164,7 @@ export default function App() {
         if (accountRef.current?.id !== account.id) return;
         const blobId = newBlobId();
         await blobPut(blobId, blob);
-        working = patchPhotoById(working, item.photoId, { blobId, src: await urlFor(blobId) });
+        working = patchPhotoById(working, item.photoId, { blobId, src: await urlFor(blobId), originalSource: item.originalPath ? "server-original" : "server-preview" });
         changed = true;
       } catch (error) {
         deviceLog("cloud_photo_download_failed", { stage: "lazy_restore", code: error?.code || "unknown" });
@@ -32418,6 +32455,10 @@ export default function App() {
       status: "active",
     };
     if (!known) currentDb = { ...currentDb, members: [...currentDb.members, target] };
+    if (noteOptions?.expectedManualNote !== undefined && noteVersion(manualNoteFor(target.notes, sid)) !== noteOptions.expectedManualNote) {
+      setToast({ ok: false, msg: "저장된 기록이 변경됐어요. 초안을 보존했으니 최신 기록을 확인해 주세요." });
+      return false;
+    }
     const linkedLesson = sid ? currentDb.schedule.find((lesson) => lesson?.id === sid) : null;
     const lessonLinkedToMember = !sid || linkedLesson?.memberId === id || linkedLesson?.memberIds?.includes?.(id) || linkedLesson?.attendees?.some?.((item) => item?.memberId === id);
     const reconcileStatus = lessonLinkedToMember ? (sid ? "linked" : "member_only") : "link_review_required";
@@ -34136,7 +34177,7 @@ export default function App() {
         ) : null}
         <div key={tab} className="app-motion-content relative min-h-0 flex-1 overflow-hidden">
           <Guard>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} draftAccountId={account?.id} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} viewerLocationIds={organizationContext.locationIds || []} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterInMemberTab} centreAccount={centreAccount} onOpenCentreRegistration={canOpenCentreRegistration ? openCentreRegistration : undefined} unlinkedLocal={centreAccount && roster ? roster.unlinkedLocal || [] : []} onUploadUnlinked={canOpenCentreRegistration ? uploadUnlinkedMember : undefined} onLinkUnlinked={linkUnlinkedMember} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">

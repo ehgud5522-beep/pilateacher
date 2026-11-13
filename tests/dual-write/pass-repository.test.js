@@ -636,7 +636,7 @@ test("the pass and the entry land in one batch", async () => {
   const store = fakeStore({ totals: { [totalDocPath("instructor-a", "client-a")]: { sessions: 30 } } });
   await transferPassInstructor(ORG, "pass-a", transferInput(), { store, newId: () => "t1" });
   assert.equal(store.calls.commit.length, 1);
-  assert.equal(store.calls.commit[0].length, 2);
+  assert.equal(store.calls.commit[0].length, 3, "담당 변경과 사진 접근 회수는 같은 배치다");
 });
 
 test("a count we could not read does not block the handover", async () => {

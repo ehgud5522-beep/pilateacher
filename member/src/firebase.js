@@ -244,3 +244,11 @@ export async function signOutMember({ quiet = false } = {}) {
     if (!quiet) throw error;
   }
 }
+
+export async function memberPhotoSharing(input) {
+  const uid = auth.currentUser?.uid;
+  if (!uid) throw new Error("share/sign-in-required");
+  const response = await httpsCallable(functions, "beforeAfterSharing")({ ...input, schemaVersion: 2 });
+  if (auth.currentUser?.uid !== uid) throw new Error("share/sign-in-required");
+  return response.data;
+}

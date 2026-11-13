@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isPassHeld, planPassHold } from "../../functions/shared/pass-hold.mjs";
+import { holdBlocksLesson, isPassHeld, planPassHold } from "../../functions/shared/pass-hold.mjs";
 import { isUsablePass } from "../../src/features/membership/pass-cards.js";
 import { deductPass, isDeductablePass } from "../../src/data/repositories/pass-repository.js";
 import { planPassSelection } from "../../src/features/schedule/lesson-settlement.js";
@@ -55,6 +55,36 @@ test("duet shared hold blocks both participants", () => {
   });
   assert.equal(result.deductions.length, 0);
   assert.ok(result.skips.every((row) => row.reason === "pass_on_hold"));
+});
+
+/* 2026-11-14 대표: 홀딩을 걸기 전에 한 수업은 지금 홀딩 중이어도 차감한다.
+   지금 시각으로 막으면 홀딩이 풀릴 때 7일 차감 기한이 지나 영영 확정할 수 없다. */
+test("a lesson taught before the hold started still settles while the hold is active", () => {
+  const settleAt = new Date(now.getTime() + 2 * 86400000);
+  const before = { ...lesson, date: "2026-11-09", start: "10:00", end: "10:50" };
+  const result = planPassSelection({ ...input, lesson: before, now: settleAt });
+  assert.equal(result.skips.length, 0);
+  assert.equal(result.deductions[0].pass.id, "p");
+  assert.equal(holdBlocksLesson(held, new Date("2026-11-09T10:00:00"), settleAt), false);
+  assert.equal(holdBlocksLesson(held, new Date(now.getTime() + 3600000), settleAt), true);
+  // 수업 시각을 모르면 지금으로 본다 -- 예전처럼 막는다.
+  assert.equal(holdBlocksLesson(held, null, settleAt), true);
+  assert.equal(holdBlocksLesson(held, "not-a-date", settleAt), true);
+});
+
+test("a lesson inside the hold window stays blocked while the hold is active", () => {
+  const settleAt = new Date(now.getTime() + 2 * 86400000);
+  const inside = { ...lesson, date: "2026-11-11", start: "10:00", end: "10:50" };
+  assert.equal(planPassSelection({ ...input, lesson: inside, now: settleAt }).skips[0].reason, "pass_on_hold");
+});
+
+test("direct deduction of a pre-hold lesson is not stopped by the hold", async () => {
+  const settleAt = new Date(now.getTime() + 2 * 86400000);
+  // 홀딩 검사를 지나 다음 검사까지 간다 -- 여기서 멈추는 이유가 pass_on_hold 가 아니어야 한다.
+  await assert.rejects(deductPass("org", held, { instructorId: "teacher", createdBy: "teacher",
+    occurredAt: new Date(now.getTime() - 86400000) }, {
+    now: () => settleAt, store: { commit: () => assert.fail("must not reach commit") },
+  }), (error) => { assert.notEqual(error.code, "pass_on_hold"); assert.doesNotMatch(error.message, /pass_on_hold/); return true; });
 });
 
 test("direct deduction of a held pass writes nothing", async () => {

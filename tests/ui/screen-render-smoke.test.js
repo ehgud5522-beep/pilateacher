@@ -76,6 +76,7 @@ test("saving a lesson journal keeps the feedback draft and settlement in the sam
   const globals = {
     window,
     document: window.document,
+    localStorage: window.localStorage,
     requestAnimationFrame: window.requestAnimationFrame.bind(window),
     cancelAnimationFrame: window.cancelAnimationFrame.bind(window),
     matchMedia: (query) => ({ matches: query.includes("no-preference") ? !reducedMotion : reducedMotion }),
@@ -103,6 +104,7 @@ test("saving a lesson journal keeps the feedback draft and settlement in the sam
     const calls = [];
     let saveSucceeds = false;
     const screen = cloneElement(element, {}, cloneElement(organization, {}, cloneElement(form, {
+      draftAccountId: "smoke-account",
       onClose: () => calls.push("closed"),
       onSaveNote: async (_memberId, _type, _lessonId, body) => {
         calls.push(body);
@@ -118,7 +120,14 @@ test("saving a lesson journal keeps the feedback draft and settlement in the sam
       textarea.dispatchEvent(new window.Event("input", { bubbles: true }));
     });
     const find = (selector) => container.querySelector(selector);
+    const draftKeys = () => Object.keys(window.localStorage).filter((key) => key.startsWith("pilateacher:manual-lesson-note:"));
     await act(async () => root.render(screen));
+    await click(find("[data-direct-record]"));
+    await type(find("[data-lesson-record-entry] textarea"), "강사 수업일지");
+    assert.equal(draftKeys().length, 1);
+    await act(async () => root.render(null));
+    await act(async () => root.render(screen));
+    assert.match(find("[data-direct-record]").textContent, /이어서 쓰기/);
     const sheet = find('[role="dialog"]');
     assert.ok(sheet);
     await click(find("[data-member-note-yes]"));
@@ -126,10 +135,11 @@ test("saving a lesson journal keeps the feedback draft and settlement in the sam
     await type(feedback, "회원에게 보낼 피드백");
     await click(find("[data-direct-record]"));
     const journal = find("[data-lesson-record-entry] textarea");
-    await type(journal, "강사 수업일지");
+    assert.equal(journal.value, "강사 수업일지");
     await click(find("[data-lesson-record-entry] button"));
     assert.equal(journal.value, "강사 수업일지");
     assert.equal(find("[data-lesson-record-entry] textarea"), journal);
+    assert.equal(draftKeys().length, 1);
 
     saveSucceeds = true;
     reducedMotion = false;
@@ -138,6 +148,7 @@ test("saving a lesson journal keeps the feedback draft and settlement in the sam
     assert.equal(find('[role="dialog"]'), sheet);
     await act(async () => new Promise((resolve) => setTimeout(resolve, 200)));
     assert.equal(find("[data-lesson-record-entry]"), null);
+    assert.equal(draftKeys().length, 0);
     assert.equal(find('[role="dialog"]'), sheet);
     assert.equal(find("[data-member-note] textarea"), feedback);
     assert.equal(feedback.value, "회원에게 보낼 피드백");
@@ -255,7 +266,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 상세 · 여정",
     "체형분석 목록",
     "체형분석 상세 빈 이력",
-    "변화 기록 상세 저장 이력",
+    "비포애프터 상세 저장 이력",
     "더보기 탭",
     "더보기 탭 · 강사",
     "더보기 탭 · 개인 모드",
@@ -639,8 +650,8 @@ test("the payroll summary is the owner's, and says out loud what it did not coun
 
   /* 대표가 이 숫자를 최종 급여로 읽으면 매달 정산이 어긋난다. 빠진 항목을
      이름으로 적는다 -- "일부 항목 제외" 같은 문구로는 읽히지 않는다. */
-  assert.match(summary, /수업료만 자동 계산됩니다\. 아래는 별도 정산입니다\./);
-  for (const missing of ["개인매출 인센", "OT 인센", "간부 인센", "바우처 조정", "노쇼", "그룹 수업", "FC 수업료"]) {
+  assert.match(summary, /회원권 수업료와 저장한 그룹 수업료를 합산합니다\. 아래 항목은 별도 정산입니다\./);
+  for (const missing of ["개인매출 인센", "OT 인센", "간부 인센", "바우처 조정", "노쇼", "FC 수업료"]) {
     assert.match(summary, new RegExp(missing), missing);
   }
   // 숫자를 본 뒤에 읽는 단서는 이미 늦다. 안내가 합계보다 앞에 있어야 한다.
@@ -746,7 +757,7 @@ test("the payroll summary is the owner's, and says out loud what it did not coun
 
   /* 0원짜리 정산과 "읽지 못했다"가 같은 화면이면 대표는 그 달에 수업이 없었다고
      읽는다. */
-  assert.match(markupOf("급여 집계 · 빈 달"), /이 달에 차감된 수업이 없습니다/);
+  assert.match(markupOf("급여 집계 · 빈 달"), /이 달에 정산할 수업이 없습니다/);
   const failed = markupOf("급여 집계 · 조회 실패");
   assert.match(failed, /급여를 불러오지 못했습니다 \(코드 permission-denied\)/);
   assert.match(failed, /0원이 아니라 읽지 못한 것입니다/);
@@ -1004,7 +1015,7 @@ test("ErrorBoundary hides diagnostics in production and records a privacy-safe d
   assert.match(guard, /showInternalDetails && <button[\s\S]*오류 복사/);
   assert.match(guard, /deviceLog\("ui_render_failed"/);
   assert.match(source, /"recentCard", "surface"/);
-  assert.match(guard, /surface === "변화 기록" \? \{ message:/);
+  assert.match(guard, /surface === "비포애프터" \? \{ message:/);
   assert.doesNotMatch(guard, /deviceLog\([^)]*msg/);
 });
 
@@ -1269,11 +1280,13 @@ test("the centre group stands only where there is something in it", async () => 
   const manager = markupOf("더보기 탭 · 매니저");
   assert.ok(manager.includes("회원 · 회원권"), "FC매니저도 발급과 회원 관리를 한다");
   assert.ok(manager.includes("상품"));
-  // 강사·급여와 점검은 그 역할에 하나도 없으므로 머리글째 사라진다.
-  assert.equal(manager.includes("강사 · 급여"), false);
+  assert.match(manager, /강사 · 급여/);
+  assert.match(manager, /그룹 급여 정산/);
+  assert.doesNotMatch(manager, /급여 집계/);
   for (const name of ["더보기 탭 · 강사", "더보기 탭 · 개인 모드", "더보기 탭 · 소속 확인 실패"]) {
     const markup = markupOf(name);
     assert.equal(markup.includes("회원 · 회원권"), false, name);
+    assert.doesNotMatch(markup, /그룹 급여 정산/, name);
     assert.match(markup, /내 설정/, `${name} — 내 설정은 모두에게`);
     assert.match(markup, /화면 설정/, name);
   }
@@ -1315,13 +1328,14 @@ test("the monthly report and the payroll roll-up do not read alike", async () =>
   const owner = markupOf("더보기 탭");
   assert.match(owner, /이번 달 내 수업 활동/);
   assert.match(owner, /수업 수 · 출석 · 챙길 회원/);
-  assert.match(owner, /강사별 수업료 · 원장 기준 월말 정산/);
+  assert.match(owner, /강사별 수업료 · 그룹 급여 포함/);
+  assert.match(owner, /그룹 급여 정산/);
   assert.doesNotMatch(owner, /이달 수업 · 성과 · 예상 급여/);
 
   // 미소속 개인 강사에게는 급여 집계가 없다. 헷갈릴 짝이 없으니 문구도 그대로다.
   const personal = markupOf("더보기 탭 · 개인 모드");
   assert.match(personal, /이달 수업 · 성과 · 예상 급여/);
-  assert.doesNotMatch(personal, /급여 집계/);
+  assert.doesNotMatch(personal, /급여 집계|그룹 급여 정산/);
 });
 
 /* 회원권 발급. 누른 뒤에 고칠 수 있는 것이 거의 없는 화면이라, 무엇이 저장될지가
@@ -2725,6 +2739,11 @@ test("the pay sheet keeps its month off the close button", async (t) => {
      좁은 폭에서 겹치지 않게, 스크롤해도 남게(sticky). */
   const markupOf = await issueScreens(t);
   const sheet = markupOf("이달 예상 급여");
+  const payrollDOM = new JSDOM(sheet).window.document;
+  const overlay = payrollDOM.querySelector("[data-overlay]");
+  assert.ok(overlay.classList.contains("overflow-hidden"));
+  assert.ok(overlay.firstElementChild.classList.contains("h-full"));
+  assert.ok(overlay.querySelector("[data-my-pay] .overflow-y-auto"));
   const header = sheet.match(/<header[\s\S]*?<\/header>/);
   assert.ok(header, "위 줄이 따로 있다");
   assert.match(header[0], /sticky top-0/);
@@ -3578,4 +3597,10 @@ test("branch overview hides stale balances on query failure and refuses a manage
   const missing = markup("지점 회원 현황 · 관리 지점 없음");
   assert.match(missing, /관리 지점이 지정되지 않았습니다/);
   assert.doesNotMatch(missing, /class="bo-row"/);
+});
+
+
+test("schedule colors are reachable directly from the instructor schedule tab", async (t) => {
+  const markupOf = await issueScreens(t);
+  assert.equal((markupOf("일정 탭 · 이사님 전달사항").match(/일정 색상/g)||[]).length, 1, "병합 후에도 일정 색상 버튼은 하나만 표시한다");
 });

@@ -42,6 +42,9 @@ test("기기 데이터는 계정별 키에 있다 — B 는 A 의 db · 사진 �
   assert.match(source, /const dbKey = \(id\) => `pilateacher_db_\$\{id\}`/);
   assert.match(source, /const phKey = \(id\) => `pilateacher_photos_\$\{id\}`/);
   const load = between(source, "const loadAccount = async (acc) => {", "const needsReviewBootstrap");
-  assert.match(load, /window\.storage\.get\(dbKey\(acc\.id\)\)/);
+  assert.match(load, /readAccountDb\(window\.storage, dbKey\(acc\.id\)\)/);
+  const adapter = await readFile(new URL('../../src/features/schedule/account-db-storage.js', import.meta.url), 'utf8');
+  assert.match(adapter, /storage\.get\(key\)/, '호출자가 지정한 계정 키를 그대로 읽는다');
+  assert.match(source, /writeAccountDb\(window\.storage, dbKey\(account\.id\), next\)/);
   assert.match(load, /window\.storage\.get\(phKey\(acc\.id\)\)/);
 });

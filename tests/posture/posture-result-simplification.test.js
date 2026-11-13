@@ -41,7 +41,7 @@ test("automatic detection reaches the result state without opening correction fi
 
 test("the result photo is full-width content before status cards", async () => {
   const { analyzer } = await activeSources();
-  assert.ok(analyzer.indexOf('aria-label="변화 기록 결과 사진"') < analyzer.indexOf('aria-label="핵심 상태"'));
+  assert.ok(analyzer.indexOf('aria-label="비포애프터 결과 사진"') < analyzer.indexOf('aria-label="핵심 상태"'));
   assert.match(analyzer, /res \? "-mx-3"/);
 });
 

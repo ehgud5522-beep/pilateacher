@@ -1,3 +1,71 @@
+## 2026-11-14 07:30~07:40 — 배포 기록: 공유 함수 · 강사 웹 · 회원 웹 (대표 지시 "함수배포하고 웹도배포해줘")
+
+- 기준 main `2905af4` (#183 · #182 포함). 배포 전 확인: 운영 Firestore · Storage 규칙 = main 파일(공유 차단 블록 포함, 규칙 배포
+  필요 없음), 규칙 422 · 앱 3628 · 서버 352 통과 / 0 실패
+- **Functions** (`--config firebase.ai-gateway.json`, asia-northeast3): `beforeAfterSharing` · `notifyBeforeAfterShare` ·
+  `eraseDeletedMemberShares` 새로 만듦, `deleteMemberAccount` 갱신(공유 기록 정리). 다른 함수는 건드리지 않음.
+  비로그인 호출 `beforeAfterSharing` → 401 `share/sign-in-required` 확인
+- **강사 웹** — `deploy-main` 로컬 main 을 origin/main 으로 fast-forward 만 한 뒤 `npm run deploy:web`. 운영 파일 28개 전부 로컬
+  dist 와 SHA-256 일치, 진입 번들 `assets/index-CMFdw_Z3.js` 에 `2905af4`. #183 의 일지 임시저장 · 원본 백업이 이것으로 나갔다
+- **회원 웹** — `gh workflow run deploy-member.yml --ref main` (run 43520810678, success). 진입 번들 `assets/index-CCw6ZBaD.js` 에 `2905af4`
+- **공유는 여전히 꺼짐** — `runtimeConfig/beforeAfterSharing` 은 만들지도 바꾸지도 않았다. 켜는 것은 원본 2건 복원 · 실기기 확인 뒤
+  테스트 계정부터 (코덱스 계획 5단계)
+- 확인 못 한 것: 실제 로그인 사용자로 공유 함수 호출, 알림 발송, 실기기
+
+## 2026-11-14 — Codex Phase 2 백업·일지 통합 (배포 안 함)
+
+- 새 작업 위치 `.codex-worktrees/phase2-finish`, 브랜치 `codex/phase2-finish`. 기존 before-after-phase1 작업 폴더와 미커밋 권한 작업은 그대로 보존했다.
+- main `ff7140c`까지 통합. #181의 공유 구현을 유지하고 05dffbe의 일지 초안 이력을 merge로 보존했다. 백업 해시/실제 바이트 검증과 초안 동시 편집·복구 처리를 추가했다.
+- Claude 담당 홀딩·사진 접근 권한 코드/보안 규칙은 main과 동일하다. 서버/웹 배포·기능 활성화·실기기 테스트를 실행하지 않았다.
+- 원본 2건은 사용자가 휴대전화에서 직접 복원 예정으로, 복원 완료가 아니다. 공유 기본 OFF/AI 공유 비활성 유지.
+- 상세 변경 파일·테스트 결과·제외 사유·남은 작업: `PHASE2_FINISH_REPORT.md`, `PHASE2_FINISH_SKIPPED_TESTS.md`.
+
+## 2026-11-14 — 배포 기록: #180 병합 · Firestore 규칙 (대표 지시)
+
+- **병합** — #180 → main `ff7140c` (`[skip ci]`, 대표 지시 범위가 병합 · 규칙이라 회원 웹 자동 배포를 건너뜀. 회원 웹에 빠진 것은
+  쓰이지 않는 `holdBlocksLesson` 함수 하나뿐). #181 은 그 전에 `58ebb2a` 로 병합됨
+- **규칙** 07:12 KST — main `ff7140c` 의 `firestore.foundation.rules` 를 그대로 (`npx firebase deploy --only firestore:rules --project
+  pilateacher --config firebase.foundation.json`). 새 ruleset `0a44e170-e175-49f9-b3af-b0183742dabc`. 게시본을 CLI 로 다시 읽어 main
+  파일과 바이트 일치 확인. 배포 직전 규칙 테스트 421 통과 / 0 실패(같은 트리)
+  - 직전 게시본과 다른 것은 홀딩 두 블록뿐(사진 권한 회수 · 규칙 2차는 그대로 유지)
+  - 롤백: 콘솔 규칙 기록에서 `bf5fbed0-204d-4de6-8fa6-dea0290364a3`(11-13 07:41, 코덱스 319aa80) 복원
+  - Storage 규칙은 바꾸지 않아 배포하지 않음
+- **강사 웹** ~07:20 KST (대표 지시) — main `ff7140c`, `.codex-worktrees/deploy-main` 의 로컬 main 을 origin/main 으로
+  fast-forward 만 한 뒤 `npm run deploy:web`. 배포 전 테스트 3620 통과 / 0 실패. 운영 파일 28개 전부 로컬 dist 와 SHA-256 일치,
+  진입 번들 `assets/index-C2WjucpN.js` 안에 `ff7140c` · "이 날짜는 홀딩 기간입니다" 확인. 롤백은 콘솔 Hosting 기록의 직전 버전
+- **아직 안 한 것: 강사 앱(스토어) · 회원 웹.** 설치형 앱은 다음 빌드에 들어간다. 회원 웹은 쓰이지 않는 함수 하나 차이라 생략
+- 배포 시점에 코덱스가 `codex/phase2-finish`(이 main 위)에서 작업 중이었고 그 규칙 파일은 main 과 같았다 -- 덮어쓴 것 없음
+
+## 2026-11-14 — 홀딩 전에 한 수업은 홀딩 중에도 차감 (`fix/hold-pre-lesson-deduct`, #180 병합 · 규칙 배포 완료)
+
+- 대표 지시. #175 의 홀딩은 **지금** 홀딩 중이면 수업 날짜와 상관없이 차감을 막았다. 어제 수업을 확정 안 한 채 오늘 14일 홀딩을
+  걸면, 홀딩 동안은 홀딩이라 막히고 풀리면 7일 차감 기한이 지나 화면에서 영영 확정할 수 없었다.
+- 기준을 **수업 시각** 하나로: `functions/shared/pass-hold.mjs` 의 `holdBlocksLesson(pass, lessonAt, now)`. 수업 시각을 못 읽으면 지금으로 본다.
+  확정 선택(`planPassSelection`) · `deductPass` · 직접 차감 화면(고른 날짜로 판정, 홀딩 기간이면 "이 날짜는 홀딩 기간입니다" 문구)이 같은 함수를 쓴다.
+- **규칙 변경**: 원장 deduct 는 occurredAt 만 본다(request.time 검사 삭제). 회원권 문서는 홀딩 중에도 정확히 한 회차(remainingCount -1,
+  serviceUsed 만) 감소를 받는다 -- 그 수업이 홀딩 전인지는 같은 배치의 원장 항목이 가른다. 감소 조정(adjust, delta < 0)은 원장 쪽에서
+  지금 시각으로 계속 막는다. **놓은 것 하나**: 원장 없이 회원권만 -1 하는 쓰기는 홀딩 중에도 통과한다(홀딩 아닌 회원권은 원래 그렇다,
+  앱은 언제나 원장과 한 배치로 쓴다). 규칙 테스트 406/406.
+- 배포: 규칙 → 강사 웹 · 앱. 규칙만 먼저 나가도 옛 앱은 홀딩 중 차감을 화면에서 먼저 막으므로 동작이 같다. 웹만 먼저 나가면 홀딩 전
+  수업 차감이 운영 규칙에 막혀 "저장되지 않았습니다" 로 끝난다 -- **규칙 먼저**.
+  **운영 규칙 = 코덱스 `319aa80` 의 `firestore.foundation.rules` 그대로** (2026-11-14 콘솔에서 읽어 SHA-256 일치 확인, 게시
+  11-13 07:41 KST). 직전 게시본은 11-10(홀딩 규칙 포함). 11-13 게시로 더해진 것: 사진 권한 회수(`canAccessPhoto` ·
+  `photoAccessRevoked`, 담당 교체 시 사진 권한 표시 요구) + **규칙 2차 전부**(수업 쓰기 `revision` 필수, "완료" 는 같은 배치 원장 차감
+  또는 1.1.43 갈래로만). 규칙 2차는 대표 지시 없이 나갔다. 운영 웹 코드는 revision 을 싣고 저장소 규칙 테스트도 2차를 포함해 통과하므로
+  지금 앱은 동작하는 것으로 보이나, 번호 없이 쓰는 옛 웹 탭 · 옛 앱의 일정 쓰기와 옛 앱의 담당 인계는 거절된다(실기기 미확인).
+  되돌리려면 11-10 본 복원이 **아니라**(사진 권한 회수가 사라진다) 319aa80 에서 2차 부분만 뺀 새 파일을 내야 한다.
+  **대표 결정(2026-11-14): 규칙 2차는 그대로 둔다.** 이제 운영본 = main 계열 파일이므로 "운영본에 블록만 얹기" 는 끝났다 --
+  다음 규칙 배포는 #181 병합 뒤의 main 파일로 한다. 일정 저장 · 담당 인계 거절 제보가 오면 이 2차를 먼저 의심한다.
+  #181 은 main `58ebb2a` 로 병합됐고(11-14), 이 브랜치를 그 위로 맞췄다. 이제 이 브랜치의 규칙 파일 = 운영본 + 홀딩 두 블록뿐이라
+  **병합 뒤 main 파일을 그대로 배포하면 된다.**
+- 코덱스 `integrate/phase2-server-data-stability`(로컬 main 에도 있음)가 같은 회원권 update 문의 바로 위 줄(담당 교체 시 사진 권한)을
+  고쳤다. 합칠 때 그 줄과 이 변경이 붙어 있어 충돌 표시가 날 수 있다 -- 둘 다 남기면 된다.
+
+## 2026-11-11 — 보니따 스토어 버전 1.1.3
+
+- Apple 로그 90186/90062에서 1.1.2가 이미 승인돼 같은 버전의 새 제출이 거부됨을 확인했다. 보니따 package.json·Android versionName·iOS MARKETING_VERSION을 1.1.3으로 맞췄다. Codemagic의 빌드 번호 부여는 유지한다. 필라티쳐 버전은 변경하지 않는다.
+- 기준은 main의 자동 복구·인증 대기 초 표시가 포함된 42fa126. 이 변경 자체로 스토어 업로드는 실행하지 않는다.
+
 ## 2026-11-11 — 듀엣 출석 버튼 중복 정리
 
 - 듀엣 수업 관리의 분홍색 전체 출석·전체 노쇼·전체 취소 행과 회원별 출석 아래 중복 버튼을 제거했다. 위쪽 둘 다 출석 하나로 두 회원을 함께 처리한다. 회원별 상태 표시와 개별 노쇼·취소, 확정·차감 로직은 유지한다. 일반 그룹의 전체 처리 버튼은 그대로다.

@@ -92,6 +92,7 @@ export function normalizePrefs(prefs) {
 
 /** 알림을 눌렀을 때 열 탭. 수업 하나를 따로 여는 화면이 아직 없어 홈(달력)이다. */
 export function tapTarget(_notification) {
+  if (_notification?.data?.kind === "beforeAfter") return "beforeAfter";
   return "home";
 }
 
@@ -165,4 +166,10 @@ export async function forgetPushDevice({ plugin, unregister, record = () => {} }
     record({ stage: "unregister", errorDomain: "capacitor_plugin", errorCode: text(error?.code) || "unknown", message: error?.message });
     return false;
   }
+}
+
+// Opaque route only; no account identity or photograph is trusted from a push payload.
+export function sharedPhotoTarget(notification) {
+  const data = notification?.data;
+  return data?.kind === 'beforeAfter' && /^[a-f0-9]{64}$/.test(String(data.shareId || '')) ? data.shareId : null;
 }

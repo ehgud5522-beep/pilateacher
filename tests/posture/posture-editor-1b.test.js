@@ -94,7 +94,7 @@ test("save failure keeps editor state and manual results omit AI-only cards", as
   assert.match(saveHandler, /catch \(error\)/);
 
   assert.match(workspace, /const selectedIsManualResult = \["draw", "manual"\]/);
-  assert.match(workspace, /selectedIsManualResult \? "사진 기록" : "변화 기록"/);
+  assert.match(workspace, /selectedIsManualResult \? "사진 기록" : "비포애프터"/);
   assert.match(workspace, /!selectedIsManualResult && selected\?\.status === "completed"/);
   assert.doesNotMatch(workspace, /openReportForSet|결과 리포트 카드|<ResultCardMaker/);
   assert.match(workspace, />변화 비교<\/button>/);

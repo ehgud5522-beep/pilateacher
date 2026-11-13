@@ -1,3 +1,5 @@
+import MemberBeforeAfter from "./before-after.jsx";
+import { memberPhotoSharing } from "./firebase.js";
 /**
  * 회원 앱. 문서 하나를 그리는 일이다.
  *
@@ -22,7 +24,7 @@ import {
 } from "./firebase.js";
 import {
   DEFAULT_PREFS, PUSH_PERMISSION, PUSH_SUPPORT, forgetPushDevice, normalizePrefs, permissionGuide,
-  platformOf, pushPlugin, registerDevice, tapTarget, ratingTarget,
+  platformOf, pushPlugin, registerDevice, tapTarget, ratingTarget, sharedPhotoTarget,
 } from "./push.js";
 import { wantsAccountDeletion } from "./delete-account.js";
 import { LINK_RESULT, linkResultScreen, needsLinkCall } from "./link-result.js";
@@ -63,6 +65,17 @@ const DEV = Boolean(import.meta.env?.DEV);
 export default function App() {
   const [user, setUser] = useState(null);
   const [authReady, setAuthReady] = useState(false);
+  const [pendingPhotoShare, setPendingPhotoShare] = useState(null);
+  const previousUid = useRef(null);
+  useEffect(() => {
+    const plugin = pushPlugin(); let handle = null, active = true;
+    if (!plugin?.addListener) return;
+    Promise.resolve(plugin.addListener('notificationActionPerformed', (event) => {
+      const id = sharedPhotoTarget(event?.notification);
+      if (active && id) setPendingPhotoShare({ id, at: Date.now() });
+    })).then((result) => { if (active) handle = result; else result?.remove?.(); }).catch(() => {});
+    return () => { active = false; handle?.remove?.(); };
+  }, []);
   const [authSlow, setAuthSlow] = useState(false);
 
   useEffect(() => {
@@ -81,6 +94,8 @@ export default function App() {
 
     const stop = watchAuth((found) => {
       clearTimeout(timer);
+      if (previousUid.current && !found) setPendingPhotoShare(null);
+      previousUid.current = found?.uid || null;
       setUser(found);
       setAuthReady(true);
       setAuthSlow(false);
@@ -114,7 +129,7 @@ export default function App() {
      삭제 버튼이 있는 마이페이지를 먼저 연다 (플레이스토어 계정 삭제 URL). */
   const deletion = wantsAccountDeletion(window.location.pathname);
   if (!user || stale) return <SignIn signedIn={Boolean(user)} deletion={deletion} />;
-  return <Member userId={user.uid} initialTab={deletion ? "mypage" : "home"} />;
+  return <Member key={user.uid} userId={user.uid} pendingPhotoShare={pendingPhotoShare} initialTab={deletion ? "mypage" : "home"} />;
 }
 
 /**
@@ -346,10 +361,13 @@ function deviceBox() {
 
 /* ── 회원 화면 ───────────────────────────────────────────────────────── */
 
-function Member({ userId, initialTab = "home" }) {
+function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
   const loadingRef = useRef(false);
   const [state, setState] = useState({ stage: "loading" });
   const [tab, setTab] = useState(initialTab);
+  const [sharingEnabled, setSharingEnabled] = useState(false), [requestedShare, setRequestedShare] = useState(null);
+  useEffect(() => { let active = true; setSharingEnabled(false); setRequestedShare(null); memberPhotoSharing({ action: 'capability', role: 'member' }).then((r) => { if (active) setSharingEnabled(r.enabled); }).catch(() => {}); return () => { active = false; }; }, [userId]);
+  useEffect(() => { if (pendingPhotoShare?.id) { setRequestedShare(pendingPhotoShare.id); setTab('beforeAfter'); } }, [pendingPhotoShare]);
   const [place, setPlace] = useState(0);
   const [slow, setSlow] = useState(false);
   /* 수업 알림 (2026-11-07). 앱에서만 -- 웹은 "앱에서만" 안내로 끝난다. */
@@ -491,6 +509,7 @@ function Member({ userId, initialTab = "home" }) {
     if (!plugin?.addListener) return undefined;
     let handle = null;
     Promise.resolve(plugin.addListener("notificationActionPerformed", (event) => {
+      if (sharedPhotoTarget(event?.notification)) setRequestedShare(sharedPhotoTarget(event.notification));
       setTab(tapTarget(event?.notification));
       const target = ratingTarget(event?.notification);
       setRequestedRating(target ? { ...target, openedAt: Date.now() } : null);
@@ -600,6 +619,8 @@ function Member({ userId, initialTab = "home" }) {
   /* 연결은 됐는데 투영이 아직 없다 -- 트리거가 도는 몇 초다. "조회 실패" 로
      말하면 정상 상태를 고장으로 말하는 것이 된다. */
   else if (!current.view) body = <Preparing onRetry={load} />;
+  else if (tab === "beforeAfter" && sharingEnabled) body = <MemberBeforeAfter key={current.link.organizationId + current.link.clientId} scope={current.link} requestedShare={requestedShare} />;
+  else if (tab === "beforeAfter") body = <p>비포애프터 공유를 사용할 수 없습니다. 최신 앱과 회원 연결 상태를 확인해 주세요.</p>;
   else if (tab === "records") body = <Records view={current.view} />;
   else if (tab === "mypage") {
     /* 오프라인 사본을 보는 중에는 계정 삭제를 내지 않는다. 누르면 실패할
@@ -634,7 +655,7 @@ function Member({ userId, initialTab = "home" }) {
   /* 회원 데이터가 없으면 어느 탭이든 "준비 중" 이라 마이페이지의 로그아웃도
      없다. 그때만 머리줄에 둔다. */
   return (
-    <Shell footer={<Tabs tab={tab} onPick={setTab} />} onSignOut={current?.view ? undefined : signOutNow}>
+    <Shell footer={<Tabs tab={tab} onPick={setTab} sharingEnabled={sharingEnabled} />} onSignOut={current?.view ? undefined : signOutNow}>
       {/* 오래된 숫자라는 사실이 숫자 위에 있어야 한다. 아래에 두면 잔여를
           보고 화면을 닫은 사람은 읽지 않는다. */}
       {state.offlineAt ? (
@@ -668,11 +689,12 @@ function Member({ userId, initialTab = "home" }) {
   );
 }
 
-function Tabs({ tab, onPick }) {
+function Tabs({ tab, onPick, sharingEnabled = false }) {
+  const items = sharingEnabled ? [...TABS, { key: 'beforeAfter', label: '비포애프터', path: 'M3 3h18v18H3z M3 16l6-6 5 5 3-3 4 4' }] : TABS;
   return (
-    <nav className="tabs" aria-label="주요 메뉴" style={{ "--member-tab-index": Math.max(0, TABS.findIndex((item) => item.key === tab)) }}>
+    <nav className="tabs" aria-label="주요 메뉴" style={{ gridTemplateColumns: `repeat(${items.length}, 1fr)`, "--member-tab-count": items.length, "--member-tab-index": Math.max(0, items.findIndex((item) => item.key === tab)) }}>
       <span className="tab-indicator" aria-hidden="true" />
-      {TABS.map((item) => (
+      {items.map((item) => (
         <button key={item.key} type="button"
           className={`tab app-motion-tab${tab === item.key ? " on" : ""}`}
           aria-current={tab === item.key ? "page" : undefined}

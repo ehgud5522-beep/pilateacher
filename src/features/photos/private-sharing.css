@@ -1,0 +1,12 @@
+.private-share-view { min-width:0; overflow-wrap:anywhere; }
+.private-share-view figure { margin:12px 0; }
+.private-share-view canvas { display:block; border-radius:12px; background:#15151b; }
+.private-share-view button,.private-member-sharing button { border:1px solid var(--line,#eadde3); border-radius:10px; background:var(--card,#fff); color:var(--ink,#241c20); padding:9px 12px; cursor:pointer; font:inherit; }
+.private-share-view button[aria-pressed=true],.private-member-sharing .share-confirm { background:var(--rose,#f0137f); color:white; border-color:transparent; }
+.private-share-view label,.private-member-sharing label { display:block; margin:12px 0; line-height:1.6; }
+.private-share-view input[type=range] { width:100%; accent-color:var(--rose,#f0137f); }
+.private-member-sharing input[type=checkbox] { accent-color:var(--rose,#f0137f); margin-right:8px; }
+.private-member-sharing button:disabled { opacity:.5; cursor:default; }
+.private-member-sharing .share-record { width:100%; text-align:left; }
+.private-share-teacher textarea { display:block; width:100%; min-height:90px; border:1px solid var(--line,#eadde3); border-radius:10px; padding:10px; color:inherit; background:transparent; }
+.private-share-teacher small { overflow-wrap:anywhere; }

@@ -1,3 +1,4 @@
+import { assertPhotoPaths, ensureOriginalBackup } from "../features/backup/original-backup.js";
 /* ===================================================================
    필라티쳐 — Firebase 연결
    config 는 pilateacher 프로젝트 값입니다.
@@ -17,9 +18,9 @@ import {
   reauthenticateWithCredential, reauthenticateWithPopup, revokeAccessToken,
   sendPasswordResetEmail, updateProfile,
 } from "firebase/auth";
-import { getFirestore, collection, deleteDoc, doc, getDoc, getDocs, setDoc, serverTimestamp } from "firebase/firestore";
+import { getFirestore, deleteDoc, doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
-import { getStorage, ref as storageRef, uploadBytes, getBlob } from "firebase/storage";
+import { getStorage, ref as storageRef, uploadBytes, uploadBytesResumable, getMetadata, getBlob } from "firebase/storage";
 import { withAuthTimeout } from "../features/auth/apple-sign-in.js";
 import { signInWithCredentialSafe } from "../features/auth/credential-sign-in.js";
 import { AUTH_FEATURES, AUTH_STAGES } from "../features/auth/auth-diagnostics.js";
@@ -629,22 +630,35 @@ export async function fbWritePilotMetricAttempt(details = {}) {
 
 export async function fbListPhotoBackups(uid) {
   if (!fs || !uid || auth?.currentUser?.uid !== uid) return [];
-  const snapshot = await withAuthTimeout(
-    () => getDocs(collection(fs, "users", uid, "photoBackups")),
+  const response = await withAuthTimeout(
+    () => httpsCallable(functions, "listAuthorizedPhotos")({}),
     { timeoutMs: FIRESTORE_READ_TIMEOUT_MS, provider: "firebase", stage: "photo_manifest_read" },
   );
-  return snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }));
+  return response.data || [];
+}
+export async function fbMovePhotoGroup(input) {
+  if (!auth?.currentUser) throw new Error("로그인이 필요합니다.");
+  return (await httpsCallable(functions, "movePhotoGroup", { timeout: 300000 })(input)).data;
 }
 
-export async function fbUploadPhotoBackup(uid, item, optimized = null) {
+export async function fbUploadPhotoBackup(uid, item, optimized = null, original = null) {
   if (!fs || !storage) throw Object.assign(new Error("Cloud photo backup is unavailable."), { code: "backup/unavailable" });
   const { safeUid, safePhotoId } = assertOwnPhotoPath(uid, item?.photoId);
+  if ((item.references || []).length > 20) throw new Error("사진 참조가 너무 많습니다. 참조를 자르지 않고 작업을 중단했습니다.");
+  assertPhotoPaths(safeUid, safePhotoId, item);
   const imagePath = `users/${safeUid}/photos/${safePhotoId}/image.jpg`;
   const thumbnailPath = `users/${safeUid}/photos/${safePhotoId}/thumb.jpg`;
+  const originalPath = `users/${safeUid}/photos/${safePhotoId}/original.bin`;
+  const scope = (await httpsCallable(functions, "preparePhotoAccess")({ photoId: safePhotoId, organizationId: item.organizationId, clientId: item.clientId })).data;
+  const originalRef = storageRef(storage, originalPath);
+  const originalInfo = await ensureOriginalBackup({ item, original, scope, path: originalPath,
+    getMetadata: () => getMetadata(originalRef),
+    upload: (blob, metadata) => uploadBytesResumable(originalRef, blob, metadata),
+    download: () => getBlob(originalRef) });
   let imageBytes = Math.max(0, Number(item?.imageBytes) || 0);
   let thumbnailBytes = Math.max(0, Number(item?.thumbnailBytes) || 0);
   if (optimized?.image?.blob && optimized?.thumbnail?.blob) {
-    const metadata = { contentType: "image/jpeg", cacheControl: "private,max-age=3600", customMetadata: { photoId: safePhotoId } };
+    const metadata = { contentType: "image/jpeg", cacheControl: "private,no-store,max-age=0", customMetadata: { photoId: safePhotoId, ...scope } };
     const [imageResult, thumbnailResult] = await Promise.all([
       uploadBytes(storageRef(storage, imagePath), optimized.image.blob, metadata),
       uploadBytes(storageRef(storage, thumbnailPath), optimized.thumbnail.blob, metadata),
@@ -656,6 +670,8 @@ export async function fbUploadPhotoBackup(uid, item, optimized = null) {
   }
   const payload = {
     schemaVersion: 1,
+    ...scope,
+    ...originalInfo,
     photoId: safePhotoId,
     memberId: String(item?.memberId || "").slice(0, 160),
     assessmentId: String(item?.assessmentId || "").slice(0, 160),
@@ -670,7 +686,7 @@ export async function fbUploadPhotoBackup(uid, item, optimized = null) {
     thumbnailBytes,
     status: "active",
     record: firestoreSafe(item?.record || {}),
-    references: firestoreSafe(Array.isArray(item?.references) ? item.references.slice(0, 20) : []),
+    references: firestoreSafe(Array.isArray(item?.references) ? item.references : []),
     uploadedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     deletedAt: null,
@@ -680,18 +696,27 @@ export async function fbUploadPhotoBackup(uid, item, optimized = null) {
     () => setDoc(doc(fs, "users", safeUid, "photoBackups", safePhotoId), payload, { merge: false }),
     { timeoutMs: 30000, provider: "firebase", stage: "photo_backup_write" },
   );
+  await httpsCallable(functions, "preparePhotoAccess")({ photoId: safePhotoId, ...scope });
   return { ...payload, uploadedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 }
 
 export async function fbDownloadPhotoBackup(uid, item, thumbnail = false) {
   if (!storage) throw Object.assign(new Error("Cloud photo backup is unavailable."), { code: "backup/unavailable" });
   assertOwnPhotoPath(uid, item?.photoId);
-  const path = thumbnail ? item?.thumbnailPath : item?.storagePath;
+  assertPhotoPaths(uid, item.photoId, item);
+  await httpsCallable(functions, "preparePhotoAccess")({ photoId: item.photoId, organizationId: item.organizationId, clientId: item.clientId });
+  const path = thumbnail ? item?.thumbnailPath : item?.originalPath || item?.storagePath;
   if (!path) throw Object.assign(new Error("Cloud photo path is missing."), { code: "backup/photo-missing" });
-  return withAuthTimeout(
+  const blob = await withAuthTimeout(
     () => getBlob(storageRef(storage, path)),
     { timeoutMs: 30000, provider: "firebase", stage: thumbnail ? "photo_thumbnail_download" : "photo_download" },
   );
+  if (!thumbnail && item.originalPath) {
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer())), (b) => b.toString(16).padStart(2, "0")).join("");
+    if (hash !== item.originalSha256) throw new Error("원본 무결성 검증 실패");
+    return new Blob([blob], { type: item.originalMimeType || "image/jpeg" });
+  }
+  return blob;
 }
 
 export async function fbSoftDeletePhotoBackup(uid, photoId) {
@@ -824,6 +849,8 @@ export const fbUpdateRuntimeConfig = callableAsOwner("updateRuntimeConfig");
 /* 회원 앱 수업 취소 횟수 추가 부여 (2026-11-07, 5차 1단계). 대표 · 총괄매니저, 그 밖에는
    담당 강사만 -- 서버가 소속 · 회원 문서로 다시 가른다. functions/src/member-cancel.js. */
 export const fbGrantMemberCancel = callableAsOwner("grantMemberCancel");
+
+export const fbManageGroupPayroll = callableAsOwner("manageGroupPayroll");
 
 /* 수업 후 별점 평가 -- 대표 화면의 강사별 누적 응답 수 · 항목별 평균 (2026-11-09). 대표만.
    개별 응답은 서버도 돌려주지 않는다. functions/src/lesson-rating.js. */
@@ -1035,4 +1062,12 @@ export async function fbLoadAIRecordingStatus() {
   } catch (_error) {
     return null;
   }
+}
+
+export async function fbPrivatePhotoSharing(input) {
+  const uid = auth?.currentUser?.uid;
+  if (!uid) throw new Error("share/sign-in-required");
+  const response = await httpsCallable(functions, "beforeAfterSharing")({ ...input, schemaVersion: 2 });
+  if (auth?.currentUser?.uid !== uid) throw new Error("share/sign-in-required");
+  return response.data;
 }

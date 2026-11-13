@@ -12,6 +12,19 @@ export function isPassHeld(pass, at = new Date()) {
   return holdTime(pass?.holdFrom) <= time && time < holdTime(pass?.holdUntil);
 }
 
+/**
+ * 그 수업이 홀딩 기간 안에 있었는가. 차감을 막는 기준은 **수업 시각**이다.
+ *
+ * 지금 홀딩 중이어도 홀딩을 걸기 전에 한 수업은 차감한다 (2026-11-14 대표).
+ * 지금 시각으로 막으면 그 수업은 홀딩 동안 확정할 수 없고, 홀딩이 풀리면
+ * 7일 차감 기한이 지나 화면에서는 영영 확정할 수 없다.
+ * 규칙(firestore.foundation.rules 의 ledger deduct)도 occurredAt 으로 같은 선을 긋는다.
+ * 수업 시각을 읽지 못하면 지금으로 본다.
+ */
+export function holdBlocksLesson(pass, lessonAt, now = new Date()) {
+  return isPassHeld(pass, Number.isFinite(holdTime(lessonAt)) ? lessonAt : now);
+}
+
 const fail = (code) => { throw Object.assign(new Error(code), { code }); };
 
 export function planPassHold(pass, input, now = new Date()) {

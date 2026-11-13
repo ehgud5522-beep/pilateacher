@@ -1,11 +1,11 @@
 /**
  * 강사의 이달 수업료 집계.
  *
- * ── 급여의 근거는 원장뿐이다 ──
+ * ── 회원권 수업료의 근거는 원장이다 ──
  * 항목마다 박혀 있는 unitPrice 를 그대로 더한다. pay-rates.js 의 표도,
  * memberships 의 현재 풀방금액도 여기서 읽지 않는다. 단가가 오른 뒤에 지난달을
  * 다시 열면 그때 숫자가 바뀌어야 하는데, 원장은 append-only 라 그 사실을
- * 되돌릴 방법이 없다. 표를 참조하는 순간 이미 정산이 끝난 달이 움직인다.
+ * 되돌릴 방법이 없다. 그룹 수업은 센터 집계에서 월별로 저장한 횟수와 단가를 더한다.
  *
  * ── 보정은 그 달에서 빠진다 ──
  * 잘못 차감한 건은 지울 수 없고, 되돌리는 항목(type "correction", delta +1)이
@@ -150,6 +150,10 @@ export const PAYROLL_ENTRY_TYPES = Object.freeze([
  * 쓰면 되돌린 회차가 한 번 더 지급된다 -- 같은 식으로 두 종류를 다루려면 부호를
  * 살려야 한다.
  */
+export const GROUP_EMPTY_ROOM_RATE = 25000;
+export const groupPayrollAmount = ({ fullCount, fullRate, emptyCount }) =>
+  fullCount * fullRate + emptyCount * GROUP_EMPTY_ROOM_RATE;
+
 const amountOf = (entry) => -(Number(entry?.delta) || 0) * (Number(entry?.unitPrice) || 0);
 const sessionsOf = (entry) => -(Number(entry?.delta) || 0);
 
@@ -389,10 +393,11 @@ const byClientThenPrice = (left, right) => (
       : right.unitPrice - left.unitPrice
 );
 
-const sealBucket = (bucket, field) => ({
-  [field]: bucket[field],
+const sealBucket = (bucket) => ({
+  instructorId: bucket.instructorId,
   sessions: bucket.sessions,
   total: bucket.total,
+  ...(bucket.groupRows?.length ? { groupRows: bucket.groupRows } : {}),
   byCategory: [...bucket.categories.values()].sort(bySpecOrder),
   byRule: [...bucket.rules.values()].sort(byRuleOrder),
   // 비싼 단가가 앞이다. 정산할 때 큰 금액부터 확인한다.
@@ -467,7 +472,7 @@ export function onlyNewInstructorRate(summary) {
 
 /**
  * @param {Array<any>} entries
- * @param {{ canonicalInstructorId?: (id: unknown) => string }} [options]
+ * @param {{ canonicalInstructorId?: (id: unknown) => string, groupRows?: Array<any> }} [options]
  *   canonicalInstructorId 계정을 바꾼 강사의 옛 uid 를 지금 uid 로 바꾼다
  *     (functions/shared/instructor-swap.mjs). 없으면 그대로 센다.
  */
@@ -502,19 +507,40 @@ export function summarizeOrganizationPay(entries, options = {}) {
     addToBucket(location.instructors.get(instructorId), entry);
   }
 
+  for (const row of options.groupRows || []) {
+    const instructorId = canonical(row.instructorId);
+    const { locationId } = row;
+    const amount = groupPayrollAmount(row);
+    const count = row.fullCount + row.emptyCount;
+    if (!count) continue;
+    total += amount;
+    sessions += count;
+    if (!instructors.has(instructorId)) instructors.set(instructorId, emptyBucket(instructorId, "instructorId"));
+    if (!locations.has(locationId)) locations.set(locationId, { locationId, sessions: 0, total: 0, instructors: new Map() });
+    const location = locations.get(locationId);
+    location.sessions += count;
+    location.total += amount;
+    if (!location.instructors.has(instructorId)) location.instructors.set(instructorId, emptyBucket(instructorId, "instructorId"));
+    for (const bucket of [instructors.get(instructorId), location.instructors.get(instructorId)]) {
+      bucket.sessions += count;
+      bucket.total += amount;
+      (bucket.groupRows ??= []).push(row);
+    }
+  }
+
   // 많이 번 사람이 앞이다. 정산할 때 큰 금액부터 확인한다.
   const byTotalDesc = (left, right) => right.total - left.total;
   return {
     total,
     sessions,
     corrections: summarizeCorrections(rows),
-    byInstructor: [...instructors.values()].map((bucket) => sealBucket(bucket, "instructorId")).sort(byTotalDesc),
+    byInstructor: [...instructors.values()].map(sealBucket).sort(byTotalDesc),
     byLocation: [...locations.values()].map((location) => ({
       locationId: location.locationId,
       sessions: location.sessions,
       total: location.total,
       byInstructor: [...location.instructors.values()]
-        .map((bucket) => sealBucket(bucket, "instructorId"))
+        .map(sealBucket)
         .sort(byTotalDesc),
     })).sort(byTotalDesc),
   };
@@ -528,12 +554,13 @@ export function summarizeOrganizationPay(entries, options = {}) {
  *   month?: string, store?: OrganizationPayrollStore,
  *   excludedClientIds?: Set<string> | null,
  *   canonicalInstructorId?: ((id: unknown) => string) | null,
+ *   groupRows?: Array<any>,
  * }} [options]
  */
 export async function loadOrganizationMonthlyPayroll(organizationId, options = {}) {
   const {
     month, store = createFirestorePayrollStore(), excludedClientIds = null,
-    canonicalInstructorId = null,
+    canonicalInstructorId = null, groupRows = [],
   } = options;
   const organization = requiredText(organizationId, "organizationId");
   const { start, end } = monthRange(month);
@@ -557,7 +584,7 @@ export async function loadOrganizationMonthlyPayroll(organizationId, options = {
      없는 수업의 돈이 잡힌다 -- 원장에는 그 표시가 없으므로 명부에서 모아 온
      id 로 거른다 (features/members/review-demo.js). */
   const real = withoutReviewDemo(inMonth, excludedClientIds);
-  return { month: String(month), start, end, ...summarizeOrganizationPay(real, { canonicalInstructorId }) };
+  return { month: String(month), start, end, ...summarizeOrganizationPay(real, { canonicalInstructorId, groupRows }) };
 }
 
 /**
@@ -601,18 +628,10 @@ const csvMoment = (value) => {
 const instructorsInScope = (summary, scope = {}) => {
   const instructorId = String(scope.instructorId || "");
   const locationId = String(scope.locationId || "");
-  if (instructorId) {
-    return (summary?.byInstructor || []).filter(
-      (row) => String(row.instructorId || "") === instructorId,
-    );
-  }
-  if (locationId) {
-    const location = (summary?.byLocation || []).find(
-      (row) => String(row.locationId || "") === locationId,
-    );
-    return location?.byInstructor || [];
-  }
-  return summary?.byInstructor || [];
+  const rows = locationId
+    ? summary?.byLocation?.find((row) => String(row.locationId || "") === locationId)?.byInstructor || []
+    : summary?.byInstructor || [];
+  return instructorId ? rows.filter((row) => String(row.instructorId || "") === instructorId) : rows;
 };
 
 /**
@@ -621,6 +640,8 @@ const instructorsInScope = (summary, scope = {}) => {
  * 전에는 한 줄이 (지점 · 강사 · 카테고리) 하나였다. 그 모양으로는 "이 회원이
  * 몇 회를 얼마에" 를 셀 수 없는데, 대표가 정산에서 맞추는 것이 바로 그것이다.
  * 회차 단위로 내보내면 소계는 엑셀이 만든다 -- 반대 방향은 불가능하다.
+ *
+ * 그룹 수업은 실제 날짜와 회원을 입력하지 않으므로 월·지점·강사·유형별 횟수를 한 줄로 내보낸다.
  *
  * 소계 줄을 섞지 않는다. 엑셀에서 정렬 한 번에 무너지고, 대표는 그것을
  * 알아채지 못한 채 대조한다.
@@ -645,6 +666,18 @@ export function payrollClientCsv(summary, names = {}, scope = {}) {
   const nameOfPass = names.nameOfPass || ((passId, category) => category || passId);
   const lines = [["월", "지점", "강사", "회원", "회원권", "날짜", "횟수", "단가", "금액"].join(",")];
   for (const instructor of instructorsInScope(summary, scope)) {
+    for (const row of instructor.groupRows || []) {
+      for (const [label, count, rate] of [
+        ["그룹 풀방", row.fullCount, row.fullRate],
+        ["그룹 빈방", row.emptyCount, GROUP_EMPTY_ROOM_RATE],
+      ]) {
+        if (!count) continue;
+        lines.push([
+          summary?.month || "", nameOfLocation(row.locationId), nameOfInstructor(instructor.instructorId),
+          "", label, "", count, rate, count * rate,
+        ].map(csvCell).join(","));
+      }
+    }
     for (const row of instructor.byClient || []) {
       for (const lesson of row.lessons || []) {
         /* 지점은 **그 회차의 것**이다. 한 강사가 두 지점에서 수업하면 줄마다

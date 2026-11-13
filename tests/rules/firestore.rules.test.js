@@ -384,25 +384,57 @@ describe("authentication and organization isolation", () => {
 
   test("photo backup metadata is owner-only and path constrained", async () => {
     const payload = {
-      schemaVersion: 1, photoId: "photo-1", memberId: "member-1", assessmentId: "assessment-1",
+      organizationId: ORG_A, clientId: "client-member", schemaVersion: 1, photoId: "photo-1", memberId: "member-1", assessmentId: "assessment-1",
       bucketKey: "front", view: "front", date: "2026-08-24", width: 1800, height: 1200,
-      storagePath: `users/${users.member}/photos/photo-1/image.jpg`,
-      thumbnailPath: `users/${users.member}/photos/photo-1/thumb.jpg`,
+      storagePath: `users/${users.owner}/photos/photo-1/image.jpg`,
+      thumbnailPath: `users/${users.owner}/photos/photo-1/thumb.jpg`,
       imageBytes: 1200, thumbnailBytes: 120, status: "active", record: {}, references: [],
     };
-    await assertSucceeds(setDoc(doc(dbFor(users.member), "users", users.member, "photoBackups", "photo-1"), payload));
-    await assertFails(getDoc(doc(dbFor(users.outsider), "users", users.member, "photoBackups", "photo-1")));
-    await assertFails(setDoc(doc(dbFor(users.member), "users", users.member, "photoBackups", "photo-2"), { ...payload, photoId: "photo-2" }));
+    await assertSucceeds(setDoc(doc(dbFor(users.owner), "users", users.owner, "photoBackups", "photo-1"), payload));
+    await assertFails(getDoc(doc(dbFor(users.outsider), "users", users.owner, "photoBackups", "photo-1")));
+    await assertFails(setDoc(doc(dbFor(users.owner), "users", users.owner, "photoBackups", "photo-2"), { ...payload, photoId: "photo-2" }));
   });
 
   test("photo binaries allow only owner JPEG writes and deny client deletes", async () => {
-    const path = `users/${users.member}/photos/photo-1/image.jpg`;
-    const ownerRef = ref(storageFor(users.member), path);
-    await assertSucceeds(uploadBytes(ownerRef, new Uint8Array([1, 2, 3]), { contentType: "image/jpeg" }));
+    const path = `users/${users.owner}/photos/photo-1/image.jpg`;
+    const ownerRef = ref(storageFor(users.owner), path);
+    await assertSucceeds(uploadBytes(ownerRef, new Uint8Array([1, 2, 3]), { contentType: "image/jpeg", cacheControl: "private,no-store,max-age=0", customMetadata: { organizationId: ORG_A, clientId: "client-member" } }));
     await assertSucceeds(getMetadata(ownerRef));
     await assertFails(getMetadata(ref(storageFor(users.outsider), path)));
-    await assertFails(uploadBytes(ref(storageFor(users.member), `users/${users.member}/photos/photo-2/image.jpg`), new Uint8Array([1]), { contentType: "image/png" }));
+    await assertFails(uploadBytes(ref(storageFor(users.owner), `users/${users.owner}/photos/photo-2/image.jpg`), new Uint8Array([1]), { contentType: "image/png" }));
     await assertFails(deleteObject(ownerRef));
+  });
+
+  test("photo access is revoked for the SAME session on handover and termination; original is immutable", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "clients", "client-member"), { instructorIds: [users.instructor] }, { merge: true });
+    });
+    const session = testEnv.authenticatedContext(users.instructor);
+    const image = ref(session.storage(), `users/${users.instructor}/photos/revocation/image.jpg`);
+    const original = ref(session.storage(), `users/${users.instructor}/photos/revocation/original.bin`);
+    const metadata = { contentType: "image/jpeg", cacheControl: "private,no-store,max-age=0", customMetadata: { organizationId: ORG_A, clientId: "client-member" } };
+    await assertSucceeds(uploadBytes(image, new Uint8Array([1, 2]), metadata));
+    await assertSucceeds(uploadBytes(original, new Uint8Array([9, 8, 7]), { ...metadata, contentType: "application/octet-stream" }));
+    await assertSucceeds(getBytes(original));
+    await assertFails(uploadBytes(original, new Uint8Array([0]), { ...metadata, contentType: "application/octet-stream" }));
+    const record = doc(session.firestore(), "users", users.instructor, "photoBackups", "revocation");
+    const payload = { photoId: "revocation", memberId: "client-member", organizationId: ORG_A, clientId: "client-member", status: "active", storagePath: image.fullPath, thumbnailPath: `users/${users.instructor}/photos/revocation/thumb.jpg`, originalPath: original.fullPath, imageBytes: 2, thumbnailBytes: 0, references: [] };
+    await assertSucceeds(setDoc(record, payload));
+    await assertSucceeds(getDoc(record));
+    await assertFails(uploadBytes(ref(session.storage(), `users/${users.instructor}/photos/forged/image.jpg`), new Uint8Array([1]), { ...metadata, customMetadata: { organizationId: ORG_A, clientId: "client-other" } }));
+    await assertFails(uploadBytes(image, new Uint8Array([1]), { ...metadata, customMetadata: {} }));
+    // Derived instructorIds may still be stale: the atomic revocation marker closes that window.
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "clients", "client-member"), { photoAccessRevoked: { [users.instructor]: true } }, { merge: true });
+    });
+    await assertFails(getBytes(image)); await assertFails(getBytes(original)); await assertFails(getDoc(record));
+    await assertFails(setDoc(record, payload));
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "clients", "client-member"), { photoAccessRevoked: { [users.instructor]: false } }, { merge: true });
+      await setDoc(doc(context.firestore(), "memberships", `${ORG_A}_${users.instructor}`), { status: "inactive" }, { merge: true });
+    });
+    await assertFails(getBytes(image)); await assertFails(getDoc(record));
+    await assertFails(getMetadata(ref(storageFor(null), image.fullPath)));
   });
 
   test("remote diagnostics are owner-only, append-only, and bounded", async () => {
@@ -1160,6 +1192,7 @@ describe("every way the owner writes a pass today", () => {
       fromInstructorId: users.instructor, toInstructorId: "instructor-b",
     });
     batch.update(passAt(db, PASS_A), { instructorId: "instructor-b", handedOver: true });
+    batch.update(doc(db, "organizations", ORG_A, "clients", "client-member"), { [`photoAccessRevoked.${users.instructor}`]: true, "photoAccessRevoked.instructor-b": false });
     await assertSucceeds(batch.commit());
   });
 
@@ -2714,9 +2747,11 @@ describe("issuing a pass and moving its instructor", () => {
     /* 담당 교체는 handedOver 를 함께 올려야 한다 -- 둘 중 하나만 바뀌면 새 강사가
        인수인계 단가가 아니라 기준 단가를 받는다. */
     await assertFails(updateDoc(passDoc(users.manager, PASS_A), { instructorId: users.staff }));
-    await assertSucceeds(updateDoc(passDoc(users.manager, PASS_A), {
-      instructorId: users.staff, handedOver: true,
-    }));
+    const managerDb = dbFor(users.manager);
+    const change = writeBatch(managerDb);
+    change.update(doc(managerDb, "organizations", ORG_A, "passes", PASS_A), { instructorId: users.staff, handedOver: true });
+    change.update(doc(managerDb, "organizations", ORG_A, "clients", "client-member"), { [`photoAccessRevoked.${users.instructor}`]: true });
+    await assertSucceeds(change.commit());
     // 계약 금액까지 손대는 것은 대표의 일이다.
     await assertFails(updateDoc(passDoc(users.manager, PASS_A), { contractPrice: 1 }));
     await assertFails(updateDoc(passDoc(users.manager, PASS_A), { instructorId: users.staff, handedOver: true, contractPrice: 1 }));
@@ -5944,10 +5979,14 @@ describe("FC매니저의 담당 강사는 맡은 지점 안에서만", () => {
     doc(dbFor(userId), "organizations", ORG_A, "passes", passId),
     passFixture(ORG_A, passId, { instructorId }),
   );
-  const handOver = (userId, instructorId) => updateDoc(
-    doc(dbFor(userId), "organizations", ORG_A, "passes", PASS_A),
-    { instructorId, handedOver: true },
-  );
+  const handOver = async (userId, instructorId) => {
+    const db = dbFor(userId), passRef = doc(db, "organizations", ORG_A, "passes", PASS_A);
+    const prior = (await getDoc(passRef)).data();
+    const batch = writeBatch(db);
+    batch.update(passRef, { instructorId, handedOver: true });
+    batch.update(doc(db, "organizations", ORG_A, "clients", "client-member"), { [`photoAccessRevoked.${prior.instructorId}`]: true, [`photoAccessRevoked.${instructorId}`]: false });
+    return batch.commit();
+  };
 
   beforeEach(async () => { await seedScope({ locationId: LOC_MINE, locationIds: [LOC_MINE] }); });
 
@@ -6240,12 +6279,45 @@ describe("홀딩 수강권 사용 차단", () => {
   const markHold = async (from, until) => testEnv.withSecurityRulesDisabled(async (context) => {
     await updateDoc(ref(context.firestore()), { holdFrom: Timestamp.fromMillis(from), holdUntil: Timestamp.fromMillis(until) });
   });
-  test("대표와 강사 모두 홀딩 중 회차를 줄이거나 홀딩을 직접 해제할 수 없다", async () => {
+  const ledgerRef = (db, id) => doc(db, "organizations", ORG_A, "passes", PASS_A, "ledger", id);
+  const deductBatch = (userId, id, occurredAt) => {
+    const db = dbFor(userId);
+    const batch = writeBatch(db);
+    batch.update(ref(db), { remainingCount: increment(-1) });
+    batch.set(ledgerRef(db, id), ledgerFixture(ORG_A, PASS_A, { createdBy: userId, lessonId: "lesson-seed", occurredAt }));
+    return batch.commit();
+  };
+  test("대표와 강사 모두 홀딩 기간 수업을 차감하거나, 두 회차 이상 줄이거나, 홀딩을 직접 해제할 수 없다", async () => {
     await markHold(Date.now() - 86400000, Date.now() + 86400000);
     for (const userId of [users.owner, users.manager, users.instructor]) {
-      await assertFails(updateDoc(ref(dbFor(userId)), { remainingCount: increment(-1) }));
+      await assertFails(deductBatch(userId, `in-hold-${userId}`, hoursAgo(2)), `${userId} 홀딩 기간 수업 차감`);
+      await assertFails(updateDoc(ref(dbFor(userId)), { remainingCount: increment(-2) }), `${userId} 두 회차`);
       await assertFails(updateDoc(ref(dbFor(userId)), { holdUntil: Timestamp.fromMillis(Date.now() - 1) }));
     }
+  });
+  test("홀딩을 걸기 전에 한 수업은 지금 홀딩 중이어도 차감한다 (2026-11-14)", async () => {
+    /* 수업 3시간 전, 홀딩 1시간 전부터. 막으면 홀딩이 풀릴 때 7일 기한이 지나
+       이 수업은 영영 확정할 수 없다. */
+    await markHold(Date.now() - 3600000, Date.now() + 14 * 86400000);
+    await assertSucceeds(deductBatch(users.owner, "before-hold", hoursAgo(3)));
+  });
+  test("홀딩 중 회차를 줄이는 조정은 계속 막는다 — 수업이 없어 홀딩 전이라 할 근거가 없다", async () => {
+    await markHold(Date.now() - 86400000, Date.now() + 86400000);
+    const adjustBatch = (id) => {
+      const db = dbFor(users.manager);
+      const batch = writeBatch(db);
+      batch.update(ref(db), { remainingCount: increment(-1) });
+      batch.set(ledgerRef(db, id), {
+        organizationId: ORG_A, passId: PASS_A, clientId: "client-member", locationId: "location-a",
+        type: "adjust", delta: -1, reason: "실제 잔여와 맞춤",
+        occurredAt: hoursAgo(1), createdAt: serverTimestamp(), createdBy: users.manager,
+      });
+      return batch.commit();
+    };
+    await assertFails(adjustBatch("held-adjust"));
+    // 대조: 홀딩이 끝나면 같은 조정이 통과한다 -- 위 거절이 홀딩 때문임을 고정한다.
+    await markHold(Date.now() - 2 * 86400000, Date.now() - 86400000);
+    await assertSucceeds(adjustBatch("after-hold-adjust"));
   });
   test("홀딩 중 차감 원장만 따로 쓰는 우회도 거절된다", async () => {
     await markHold(Date.now() - 86400000, Date.now() + 86400000);

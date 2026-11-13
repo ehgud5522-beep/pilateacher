@@ -1,7 +1,7 @@
 import { PHOTO_BLOB_ID_FIELDS } from "../../data/photo-blob-fields.js";
 
 export const CLOUD_BACKUP_VERSION = 2;
-export const CLOUD_PHOTO_CONSENT_VERSION = "2026-08-24";
+export const CLOUD_PHOTO_CONSENT_VERSION = "2026-11-12-original-v1";
 export const PHOTO_RETENTION_DAYS = 30;
 export const PHOTO_QUEUE_PREFIX = "pilateacher_cloud_photo_queue_v1_";
 
@@ -71,7 +71,8 @@ function stripRuntimePhotoFields(record) {
 export function buildPhotoGraph(photoMap) {
   return Object.fromEntries(Object.entries(photoMap || {}).map(([memberId, buckets]) => [safeId(memberId), {
     sets: Array.isArray(buckets?.sets) ? stripBinaryDeep(buckets.sets) : [],
-  }]).filter((entry) => entry[0] && /** @type {{ sets: any[] }} */ (entry[1]).sets.length));
+    ...((buckets?.poses || []).some((p) => p.photoDeleted) ? { analysesWithoutPhotos: stripBinaryDeep(buckets.poses.filter((p) => p.photoDeleted)) } : {}),
+  }]).filter((entry) => entry[0] && (/** @type {{ sets: any[], analysesWithoutPhotos?: any[] }} */ (entry[1]).sets.length || /** @type {{ analysesWithoutPhotos?: any[] }} */ (entry[1]).analysesWithoutPhotos?.length)));
 }
 
 export function mergePhotoGraph(photoMap, photoGraph) {
@@ -79,6 +80,11 @@ export function mergePhotoGraph(photoMap, photoGraph) {
   Object.entries(photoGraph || {}).forEach(([memberId, graph]) => {
     if (!memberId || !Array.isArray(graph?.sets)) return;
     result[memberId] = { ...(result[memberId] || {}), sets: stripBinaryDeep(graph.sets) };
+    if (Array.isArray(graph.analysesWithoutPhotos)) {
+      const preserved = stripBinaryDeep(graph.analysesWithoutPhotos);
+      const ids = new Set(preserved.map((p) => p.id));
+      result[memberId].poses = [...(result[memberId].poses || []).filter((p) => !ids.has(p.id)), ...preserved];
+    }
   });
   return result;
 }
@@ -89,7 +95,7 @@ export function buildPhotoManifest(photoMap) {
     Object.entries(buckets || {}).forEach(([bucketKey, records]) => {
       if (!Array.isArray(records) || bucketKey === "sets") return;
       records.forEach((record) => {
-        if (!record || typeof record !== "object") return;
+        if (!record || typeof record !== "object" || record.photoDeleted) return;
         const photoId = safeId(record.photoId || record.id || record.blobId);
         if (!photoId) return;
         const reference = {
@@ -113,6 +119,7 @@ export function buildPhotoManifest(photoMap) {
           blobId: String(record.blobId || ""),
           storagePath: String(record.cloud?.storagePath || record.storagePath || ""),
           thumbnailPath: String(record.cloud?.thumbnailPath || record.thumbnailPath || ""),
+          ...Object.fromEntries(["organizationId", "clientId", "originalPath", "originalSha256", "originalMimeType", "originalBytes"].map((key) => [key, record.cloud?.[key] || record[key] || ""])),
           imageBytes: Math.max(0, Number(record.cloud?.imageBytes || record.imageBytes) || 0),
           thumbnailBytes: Math.max(0, Number(record.cloud?.thumbnailBytes || record.thumbnailBytes) || 0),
           status: record.deletedAt ? "deleted" : "active",
@@ -153,6 +160,7 @@ export function restorePhotoMetadata(manifest) {
       view: reference.view || reference.record?.view || reference.bucketKey,
       date: reference.date || reference.record?.date || "",
       cloud: {
+        ...Object.fromEntries(["organizationId", "clientId", "originalPath", "originalSha256", "originalMimeType", "originalBytes"].map((key) => [key, item[key] || ""])),
         storagePath: item.storagePath || "",
         thumbnailPath: item.thumbnailPath || "",
         imageBytes: Math.max(0, Number(item.imageBytes) || 0),
@@ -201,15 +209,16 @@ export function createPhotoQueue(storage, uid) {
     (items || []).forEach((item) => {
       if (!item?.photoId) return;
       const action = item.action === "delete" ? "delete" : "upload";
-      byId.set(`${action}:${item.photoId}`, { ...item, action, queuedAt: item.queuedAt || new Date().toISOString() });
+      const previous = byId.get(`${action}:${item.photoId}`);
+      byId.set(`${action}:${item.photoId}`, { ...item, action, revision: (previous?.revision || 0) + 1, queuedAt: item.queuedAt || new Date().toISOString() });
       if (action === "delete") byId.delete(`upload:${item.photoId}`);
     });
     const output = [...byId.values()];
     write(output);
     return output;
   };
-  const remove = (photoId, action = "upload") => {
-    const output = read().filter((item) => !(item.photoId === photoId && (item.action || "upload") === action));
+  const remove = (photoId, action = "upload", revision = undefined) => {
+    const output = read().filter((item) => !(item.photoId === photoId && (item.action || "upload") === action && (revision === undefined || item.revision === revision)));
     write(output);
     return output;
   };
@@ -222,7 +231,7 @@ export async function drainPhotoQueue(queue, handler) {
   for (const task of queue?.read?.() || []) {
     try {
       await handler(task);
-      queue.remove(task.photoId, task.action || "upload");
+      queue.remove(task.photoId, task.action || "upload", task.revision);
       processed += 1;
     } catch (error) {
       failed += 1;

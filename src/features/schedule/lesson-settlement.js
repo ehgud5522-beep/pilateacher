@@ -20,7 +20,7 @@ import {
 } from "../../data/schema/constants.js";
 import { isDuetPass, passBelongsTo } from "../../data/schema/pass-clients.js";
 import { isDeductablePass, remainingCountOf } from "../../data/repositories/pass-repository.js";
-import { isPassHeld } from "../../../functions/shared/pass-hold.mjs";
+import { holdBlocksLesson, isPassHeld } from "../../../functions/shared/pass-hold.mjs";
 import { settlementTime } from "./settlement-duplicate.js";
 import { lessonTypeKeyOf } from "./lesson-types.js";
 
@@ -554,10 +554,15 @@ export function settleBlockReason(lesson) {
 export function planPassSelection(input = {}) {
   const passes = Array.isArray(input.passes) ? input.passes : [];
   const at = settlementTime(input.lesson);
-  const held = (pass) => isPassHeld(pass, input.now || new Date()) || (at && isPassHeld(pass, at));
-  if (!passes.some(held)) return planPassSelectionRaw(input);
-  const actual = planPassSelectionRaw({ ...input, passes: passes.filter((pass) => !held(pass)) });
-  const unlocked = planPassSelectionRaw({ ...input, passes: passes.map((pass) => ({ ...pass, holdFrom: null, holdUntil: null })) });
+  const now = input.now instanceof Date ? input.now : new Date();
+  /* 수업 시각으로 본다 (holdBlocksLesson). 홀딩 전에 한 수업은 지금 홀딩 중이어도
+     차감한다. 홀딩 판정은 여기서 끝내고, 아래 선택에는 홀딩 칸을 지운 회원권을
+     넘긴다 -- 그쪽의 isDeductablePass 는 "지금" 으로 홀딩을 보기 때문이다. */
+  const held = (pass) => holdBlocksLesson(pass, at, now);
+  const unheld = (pass) => ({ ...pass, holdFrom: null, holdUntil: null });
+  if (!passes.some((pass) => held(pass) || isPassHeld(pass, now))) return planPassSelectionRaw(input);
+  const actual = planPassSelectionRaw({ ...input, passes: passes.filter((pass) => !held(pass)).map(unheld) });
+  const unlocked = planPassSelectionRaw({ ...input, passes: passes.map(unheld) });
   const rescued = new Set(unlocked.deductions.flatMap((row) => row.memberIds || [row.memberId]));
   return { ...actual, skips: actual.skips.map((row) => rescued.has(row.memberId) ? { ...row, reason: SETTLEMENT_SKIP.ON_HOLD } : row) };
 }

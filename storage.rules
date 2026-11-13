@@ -2,15 +2,27 @@ rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
+    // Two current server reads, never claims cached in the user's old login token.
+    function assigned(scope) {
+      let membership = firestore.get(/databases/(default)/documents/memberships/$(scope.organizationId + "_" + request.auth.uid)).data;
+      let client = firestore.get(/databases/(default)/documents/organizations/$(scope.organizationId)/clients/$(scope.clientId)).data;
+      return scope.get("moving", "false") != "true" && membership.status == "active"
+        && membership.role in ["owner", "area_manager", "manager", "instructor", "staff"]
+        && client.get("photoAccessRevoked", {}).get(request.auth.uid, false) != true
+        && (membership.role in ["owner", "area_manager"] || request.auth.uid in client.get("instructorIds", []));
+    }
     match /users/{userId}/photos/{photoId}/{fileName} {
-      allow read: if request.auth != null && request.auth.uid == userId;
+      allow read: if request.auth != null && request.auth.uid == userId && assigned(resource.metadata);
       allow create, update: if request.auth != null
         && request.auth.uid == userId
+        && assigned(request.resource.metadata)
+        && (resource == null || assigned(resource.metadata))
+        && (resource == null || (request.resource.metadata.organizationId == resource.metadata.organizationId
+          && request.resource.metadata.clientId == resource.metadata.clientId))
         && photoId.size() > 0
         && photoId.size() <= 160
-        && fileName in ["image.jpg", "thumb.jpg"]
-        && request.resource.size < 10 * 1024 * 1024
-        && request.resource.contentType == "image/jpeg";
+        && ((fileName in ["image.jpg", "thumb.jpg"] && request.resource.size < 10 * 1024 * 1024 && request.resource.contentType == "image/jpeg")
+          || (fileName == "original.bin" && resource == null && request.resource.size < 50 * 1024 * 1024 && request.resource.contentType == "application/octet-stream"));
       allow delete: if false;
     }
 

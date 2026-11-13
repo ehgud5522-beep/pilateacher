@@ -3,11 +3,17 @@ import { ALBUM_VIEWS, DEFAULT_EDIT, albumPhotos, chronologicalPair, exifDate, ph
 import { albumDraft } from './album-drafts.js';
 import { drawContained, renderAlbumPhoto } from './album-render.js';
 import './album.css';
+import { ArrowLeft, ChevronRight, ImagePlus, Images, Search, X } from 'lucide-react';
 import { usePhotoGestures } from './photo-gestures.js';
 
 const label = (view) => ALBUM_VIEWS.find(([key]) => key === view)?.[1] || '기타';
 const today = () => new Date().toLocaleDateString('sv-SE');
 const Button = ({ children, ...props }) => <button type="button" {...props}>{children}</button>;
+function ImportPreview({ item }) {
+  const [src, setSrc] = useState('');
+  useEffect(() => { const url = URL.createObjectURL(item.file); setSrc(url); return () => URL.revokeObjectURL(url); }, [item.file]);
+  return src ? <img className="ba-import-preview" src={src} alt="등록할 사진 미리보기" /> : null;
+}
 function Photo({ photo, edits, onTransform, className = '' }) {
   const gestures = usePhotoGestures(edits || photo.albumEdit || DEFAULT_EDIT, onTransform);
   const ref = useRef(null);
@@ -33,7 +39,7 @@ function Compare({ photos, initialPhotos, onClose, onExport }) {
   const [split, setSplit] = useState(50);
   const [target, setTarget] = useState(0);
   const [align, setAlign] = useState([{ zoom: 1, x: 0, y: 0 }, { zoom: 1, x: 0, y: 0 }]);
-  const [guides, setGuides] = useState(true);
+  const [guides, setGuides] = useState(false);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
   const ref = useRef(null);
@@ -43,40 +49,60 @@ function Compare({ photos, initialPhotos, onClose, onExport }) {
     setReady(false);
     Promise.all(pair.map((p) => renderAlbumPhoto(p.src, p.albumEdit))).then((images) => {
       if (!active || !ref.current) return;
-      const c = ref.current; c.width = 1200; c.height = 1000;
+      const c = ref.current; c.width = 1200; c.height = 1400;
       const ctx = c.getContext('2d'); ctx.fillStyle = '#15151b'; ctx.fillRect(0, 0, c.width, c.height);
-      if (mode === 'side') images.forEach((img, i) => drawContained(ctx, img, i * 600, 50, 600, 900, align[i]));
+      if (mode === 'side') images.forEach((img, i) => drawContained(ctx, img, i * 600, 50, 600, 1300, align[i]));
       else {
-        drawContained(ctx, images[0], 0, 50, 1200, 900, align[0]);
-        ctx.save(); ctx.beginPath(); ctx.rect(split * 12, 50, 1200 - split * 12, 900); ctx.clip();
-        drawContained(ctx, images[1], 0, 50, 1200, 900, align[1]); ctx.restore();
+        drawContained(ctx, images[0], 0, 50, 1200, 1300, align[0]);
+        ctx.save(); ctx.beginPath(); ctx.rect(split * 12, 50, 1200 - split * 12, 1300); ctx.clip();
+        drawContained(ctx, images[1], 0, 50, 1200, 1300, align[1]); ctx.restore();
       }
-      ctx.fillStyle = '#fff'; ctx.font = '24px sans-serif';
+      ctx.fillStyle = '#fff'; ctx.font = '38px sans-serif';
       ctx.fillText(`BEFORE · ${pair[0].date}`, 20, 34); ctx.fillText(`AFTER · ${pair[1].date}`, 620, 34);
-      if (guides) { ctx.strokeStyle = '#ff3f8e'; ctx.lineWidth = 2; ctx.setLineDash([10, 10]); [275, 500, 725].forEach((y) => { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(1200, y); ctx.stroke(); }); }
+      if (guides) { ctx.strokeStyle = '#ff3f8e'; ctx.lineWidth = 2; ctx.setLineDash([10, 10]); [375, 700, 1025].forEach((y) => { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(1200, y); ctx.stroke(); }); }
       setReady(true); setError('');
     }).catch(() => { if (active) setError('사진을 불러오지 못했습니다. 원본을 복원한 후 다시 시도하세요.'); });
     return () => { active = false; };
   }, [pair, mode, split, align, guides]);
-  return <section className="ba-panel"><div className="ba-toolbar"><h2>비포애프터 비교</h2><Button onClick={onClose}>앨범으로</Button></div>
-    <div className="ba-toolbar">{pair.map((p, i) => <label key={i}>{i ? 'AFTER' : 'BEFORE'}<select value={photoKey(p)} onChange={(e) => { const chosen = photos.find((x) => photoKey(x) === e.target.value); setPair((old) => old.map((x, index) => index === i ? chosen : x)); }}>{photos.map((x, index) => <option disabled={photoKey(pair[1 - i]) === photoKey(x)} key={photoKey(x)} value={photoKey(x)}>{x.date} · {label(x.view)} · {index + 1}</option>)}</select></label>)}<Button onClick={() => { setPair(([a, b]) => [b, a]); setAlign(([a, b]) => [b, a]); }}>위치 교체</Button></div>
+  return <section className="ba-compare-page"><div className="ba-toolbar"><Button aria-label="앨범으로" onClick={onClose}><ArrowLeft size={22} /></Button><h2>비포애프터 비교</h2><Button onClick={() => { setPair(([a,b]) => [b,a]); setAlign(([a,b]) => [b,a]); }}>위치 교체</Button></div>
+
     {pair[0].view !== pair[1].view && <p role="status">{label(pair[0].view)}과 {label(pair[1].view)} 사진은 정확한 체형 비교가 어려울 수 있습니다.</p>}
-    <div className="ba-toolbar"><Button aria-pressed={mode === 'side'} onClick={() => setMode('side')}>나란히</Button><Button aria-pressed={mode === 'overlay'} onClick={() => setMode('overlay')}>겹쳐 보기</Button><label><input type="checkbox" checked={guides} onChange={(e) => setGuides(e.target.checked)} /> 기준선</label></div>
+    <div className="ba-photo-labels"><strong>BEFORE</strong><strong>AFTER</strong></div>
     <canvas {...gestures} style={{ touchAction: 'none' }} ref={ref} className="ba-comparison" role="img" aria-label="비포애프터 비교 이미지" />
     {mode === 'overlay' && <Range title="겹침 슬라이더" value={split} min={0} max={100} onChange={setSplit} />}
-    <label>정렬할 사진<select value={target} onChange={(e) => setTarget(Number(e.target.value))}><option value={0}>BEFORE</option><option value={1}>AFTER</option></select></label>
+    <div className="ba-photo-dates"><span>{pair[0].date}</span><span>{pair[1].date}</span></div><details><summary>확대 · 정렬</summary><label>정렬할 사진<select value={target} onChange={(e) => setTarget(Number(e.target.value))}><option value={0}>BEFORE</option><option value={1}>AFTER</option></select></label>
     {[['zoom', '확대 / 축소', 0.5, 3, 0.05], ['x', '좌우 위치', -50, 50, 1], ['y', '상하 위치', -50, 50, 1]].map(([key, title, min, max, step]) => <Range key={key} title={title} value={align[target][key]} min={min} max={max} step={step} onChange={(v) => setAlign((old) => old.map((a, i) => i === target ? { ...a, [key]: v } : a))} />)}
-    {error && <p role="alert">{error}</p>}<Button disabled={!ready} onClick={() => onExport(ref.current)}>비교 이미지 저장</Button>
+    </details><details><summary>비교 사진 변경</summary>    <div className="ba-toolbar">{pair.map((p, i) => <label key={i}>{i ? 'AFTER' : 'BEFORE'}<select value={photoKey(p)} onChange={(e) => { const chosen = photos.find((x) => photoKey(x) === e.target.value); setPair((old) => old.map((x, index) => index === i ? chosen : x)); }}>{photos.map((x, index) => <option disabled={photoKey(pair[1 - i]) === photoKey(x)} key={photoKey(x)} value={photoKey(x)}>{x.date} · {label(x.view)} · {index + 1}</option>)}</select></label>)}</div></details>    <div className="ba-toolbar"><Button aria-pressed={mode === 'side'} onClick={() => setMode('side')}>나란히</Button><Button aria-pressed={mode === 'overlay'} onClick={() => setMode('overlay')}>슬라이더</Button><label><input type="checkbox" checked={guides} onChange={(e) => setGuides(e.target.checked)} /> 기준선</label></div>
+    {error && <p role="alert">{error}</p>}<Button className="ba-primary ba-export" disabled={!ready} onClick={() => onExport(ref.current)}>비교 이미지 저장</Button>
   </section>;
 }
-export default function BeforeAfterAlbum({ accountId, members, photos, selectedId, onSelect, onImport, onPatch, onDelete, hub, onExport, backupStatus, onRetry, onEnableBackup, onAnalyze }) {
+export default function BeforeAfterAlbum({ accountId, members, photos, selectedId, onSelect, onImport, onPatch, onDelete, hub, onExport, backupStatus, onRetry, onAnalyze }) {
   const [query, setQuery] = useState(''); const [filter, setFilter] = useState('all');
   const [view, setView] = useState('all'); const [oldest, setOldest] = useState(false);
   const [selected, setSelected] = useState([]); const [comparing, setComparing] = useState(false);
+  const [preview, setPreview] = useState(null); const [tool, setTool] = useState('crop');
   const [ai, setAi] = useState(false); const [editing, setEditing] = useState(null);
   const [edit, setEdit] = useState({ ...DEFAULT_EDIT }); const [date, setDate] = useState(''); const [direction, setDirection] = useState('custom'); const [owner, setOwner] = useState('');
   const [draft, setDraft] = useState(null); const [busy, setBusy] = useState(false); const [message, setMessage] = useState('');
   const picker = useRef(null); const writes = useRef(Promise.resolve());
+  const dialog = useRef(null);
+  useEffect(() => {
+    if (!editing && !preview) return;
+    const previous = document.activeElement;
+    const node = dialog.current;
+    if (!node) return;
+    const focusable = () => [...node.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),summary')].filter((el) => el.getClientRects().length);
+    focusable()[0]?.focus();
+    const keydown = (event) => {
+      if (event.key === 'Escape' && !busy) { setEditing(null); setPreview(null); }
+      if (event.key !== 'Tab') return;
+      const items = focusable(), first = items[0], last = items.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    node.addEventListener('keydown', keydown);
+    return () => { node.removeEventListener('keydown', keydown); if (previous?.isConnected) previous.focus(); };
+  }, [editing, preview, busy]);
   const member = members.find((m) => m.id === selectedId);
   const all = albumPhotos(photos[selectedId]);
   const persist = (value) => {
@@ -85,7 +111,7 @@ export default function BeforeAfterAlbum({ accountId, members, photos, selectedI
     return writes.current;
   };
   useEffect(() => { let active = true; albumDraft(accountId, 'get').then((value) => { if (active && value) { setDraft(value); setMessage('기기에 보관한 작업을 복구했습니다.'); } }).catch(() => setMessage('임시 저장소를 열지 못했습니다. 저장 공간을 확인하세요.')); return () => { active = false; }; }, [accountId]);
-  useEffect(() => { setSelected([]); setComparing(false); setAi(false); setEditing(null); }, [selectedId]);
+  useEffect(() => { setSelected([]); setPreview(null); setComparing(false); setAi(false); setEditing(null); }, [selectedId]);
   const run = async (fn) => { setBusy(true); setMessage('저장 중'); try { await fn(); } catch (error) { setMessage(error.message || '저장 실패 · 임시 작업을 유지했습니다.'); } finally { setBusy(false); } };
   const importFiles = (files) => run(async () => {
     const items = [];
@@ -106,21 +132,31 @@ export default function BeforeAfterAlbum({ accountId, members, photos, selectedI
   const displayed = all.filter((p) => view === 'all' || p.view === view).sort((a, b) => oldest ? a.date.localeCompare(b.date) : b.date.localeCompare(a.date));
   return <div className="ba-root">
     <input ref={picker} hidden type="file" accept="image/*" multiple onChange={(e) => { const files = [...e.target.files]; e.target.value = ''; if (files.length) importFiles(files); }} />
-    <header className="ba-toolbar"><div><h1>{member ? `${member.name} · 비포애프터` : '비포애프터'}</h1><p>{member ? `최근 ${all[0]?.date || '촬영 없음'} · 총 ${all.length}장` : '회원의 변화를 사진으로 기록하고 비교하세요.'}</p></div>{member && <Button onClick={() => onSelect(null)}>목록</Button>}<Button disabled={busy || !!draft} onClick={() => picker.current.click()}>사진 추가</Button></header>
-    {message && <p role="status" className="ba-notice">{message}</p>}
-    <div className="ba-toolbar ba-sync"><span>{backupStatus?.state === 'error' ? '동기화 실패 · 기기 사진 유지' : backupStatus?.state === 'backing_up' ? '서버 저장 중 · 기기에 임시 저장됨' : backupStatus?.photoEnabled && backupStatus?.state === 'safe' && !backupStatus?.pendingPhotos ? '서버 저장 완료' : '기기에 임시 저장됨'}</span>{backupStatus?.photoEnabled ? <Button onClick={onRetry}>동기화 재시도</Button> : <Button onClick={onEnableBackup}>사진 백업 설정</Button>}</div>
+    {!comparing && <header className="ba-header">{member && <Button className="ba-icon" aria-label="회원 목록으로" onClick={() => onSelect(null)}><ArrowLeft size={22} /></Button>}<div>{member && <span className="ba-eyebrow">비포애프터</span>}<h1>{member ? member.name : '비포애프터'}</h1><p>{member ? `최근 촬영 ${all[0]?.date || '없음'} · ${all.length}장` : '회원의 변화를 사진으로 기록하세요.'}</p></div><Button className="ba-icon ba-primary" aria-label="사진 추가" disabled={busy || !!draft} onClick={() => picker.current.click()}><ImagePlus size={22} /></Button></header>}
+    {message && !comparing && <p role="status" className="ba-notice">{message}</p>}
+    {backupStatus?.state === 'error' && <div className="ba-sync" role="status">백업 실패 · 기기 사진은 유지됩니다.<Button onClick={onRetry}>재시도</Button></div>}
     {draft?.kind === 'import' && <section className="ba-panel"><h2>사진 {draft.items.length}장 등록</h2><input aria-label="등록할 회원 검색" placeholder="회원 이름 검색" value={query} onChange={(e) => setQuery(e.target.value)} /><select aria-label="등록할 회원" value={draft.memberId} disabled={busy} onChange={(e) => persist({ ...draft, memberId: e.target.value }).catch(() => setMessage('임시 저장 실패'))}><option value="">회원을 선택하세요</option>{members.filter((m) => m.id === draft.memberId || m.name?.includes(query)).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
-      {draft.items.map((item, i) => <div className="ba-toolbar" key={`${item.hash}_${i}`}><span>사진 {i + 1}{item.dateSource === 'fallback' ? ' · 촬영일 확인 필요' : ''}</span><input aria-label={`사진 ${i + 1} 촬영 날짜`} type="date" value={item.date} disabled={busy} onChange={(e) => persist({ ...draft, items: draft.items.map((x, n) => n === i ? { ...x, date: e.target.value } : x) }).catch(() => setMessage('임시 저장 실패'))} /><select aria-label={`사진 ${i + 1} 방향`} value={item.view} disabled={busy} onChange={(e) => persist({ ...draft, items: draft.items.map((x, n) => n === i ? { ...x, view: e.target.value } : x) }).catch(() => setMessage('임시 저장 실패'))}>{ALBUM_VIEWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></div>)}
-      <Button disabled={busy || !draft.memberId || draft.items.some((x) => !x.date)} onClick={() => run(async () => { await writes.current; await onImport(draft); const id = draft.memberId; await persist(null); onSelect(id); setMessage('사진 저장 완료 · AI 분석은 선택 사항입니다.'); })}>사진 저장</Button><Button disabled={busy} onClick={() => { if (window.confirm('등록하지 않은 임시 사진을 버릴까요?')) persist(null).catch(() => setMessage('임시 사진 삭제 실패')); }}>등록 취소</Button></section>}
+      {draft.items.map((item, i) => <div className="ba-toolbar ba-import-row" key={`${item.hash}_${i}`}><ImportPreview item={item} /><span>사진 {i + 1}{item.dateSource === 'fallback' ? ' · 촬영일 확인 필요' : ''}</span><input aria-label={`사진 ${i + 1} 촬영 날짜`} type="date" value={item.date} disabled={busy} onChange={(e) => persist({ ...draft, items: draft.items.map((x, n) => n === i ? { ...x, date: e.target.value } : x) }).catch(() => setMessage('임시 저장 실패'))} /><select aria-label={`사진 ${i + 1} 방향`} value={item.view} disabled={busy} onChange={(e) => persist({ ...draft, items: draft.items.map((x, n) => n === i ? { ...x, view: e.target.value } : x) }).catch(() => setMessage('임시 저장 실패'))}>{ALBUM_VIEWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></div>)}
+      <Button disabled={busy || !draft.memberId || draft.items.some((x) => !x.date)} onClick={() => run(async () => { await writes.current; await onImport(draft); const id = draft.memberId; await persist(null); onSelect(id); setMessage('사진 저장 완료 · AI 분석은 선택 사항입니다.'); })} className="ba-primary">사진 저장</Button><Button disabled={busy} onClick={() => { if (window.confirm('등록하지 않은 임시 사진을 버릴까요?')) persist(null).catch(() => setMessage('임시 사진 삭제 실패')); }}>등록 취소</Button></section>}
     {draft?.kind === 'edit' && !editing && <Button onClick={() => { const m = members.find((x) => x.id === draft.memberId); const p = albumPhotos(photos[draft.memberId]).find((x) => x.id === draft.photo.id && x.bucket === draft.photo.bucket); if (!m || !p) { setMessage('초안의 회원 또는 사진에 접근할 수 없습니다.'); return; } if (selectedId !== m.id) { onSelect(m.id); return; } openEditor(p); setEdit(draft.edit); setDate(draft.date); setDirection(draft.direction); setOwner(draft.owner); }}>저장되지 않은 편집 이어하기</Button>}
-    {!member ? <><input aria-label="회원 이름 검색" placeholder="회원 이름 검색" value={query} onChange={(e) => setQuery(e.target.value)} /><div className="ba-toolbar">{[['all', '전체 회원'], ['photos', '사진 있음'], ['compare', '비교 가능']].map(([k, l]) => <Button key={k} aria-pressed={filter === k} onClick={() => setFilter(k)}>{l}</Button>)}</div><div>{members.filter((m) => m.name?.includes(query)).map((m) => ({ m, items: albumPhotos(photos[m.id]) })).filter(({ items }) => filter === 'all' || items.length >= (filter === 'compare' ? 2 : 1)).map(({ m, items }) => <Button className="ba-member" key={m.id} onClick={() => onSelect(m.id)}>{items[0]?.src && <Photo photo={items[0]} />}<span><strong>{m.name}</strong><small>{items[0]?.date || '촬영 없음'} · {items.length}장 {items.length >= 2 ? '· 비교 가능' : ''}</small></span><span>{items.length ? '앨범 ›' : '사진 추가'}</span></Button>)}</div></> : <>
-      <div className="ba-toolbar"><Button onClick={() => { setAi(false); setComparing(false); }}>사진 앨범</Button><Button disabled={selected.length !== 2} onClick={() => { setAi(false); setComparing(true); }}>선택한 2장 비교</Button><Button onClick={() => { setAi(true); setComparing(false); }}>AI 분석 · 기존 기록</Button>{selected.length === 1 && <Button onClick={() => run(async () => { await onAnalyze(member.id, all.find((p) => photoKey(p) === selected[0])); setAi(true); setMessage('선택한 사진으로 분석을 준비했습니다. 구도와 자세에 따라 정확도가 달라집니다.'); })}>선택 사진 AI 분석</Button>}</div>
-      {ai ? <><p>AI는 선택 기능입니다. 촬영 자세와 구도가 다르면 결과가 부정확할 수 있습니다.</p>{hub(member.id, null)}</> : comparing ? <Compare photos={all} initialPhotos={all.filter((p) => selected.includes(photoKey(p)))} onClose={() => setComparing(false)} onExport={onExport} /> : <><div className="ba-toolbar"><select aria-label="촬영 방향 필터" value={view} onChange={(e) => setView(e.target.value)}><option value="all">모든 방향</option>{ALBUM_VIEWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select><select aria-label="사진 정렬" value={String(oldest)} onChange={(e) => setOldest(e.target.value === 'true')}><option value="false">최신 순</option><option value="true">오래된 순</option></select><span>{selected.length}/2 선택</span></div>
-        {!all.length && <p>사진 한 장부터 시작하세요. 갤러리에서 여러 장을 함께 가져올 수 있습니다.</p>}
-        {[...new Set(displayed.map((p) => p.date))].map((day) => <section key={day}><h2>{day || '날짜 미확인'}</h2><div className="ba-grid">{displayed.filter((p) => p.date === day).map((p) => <article key={photoKey(p)}><label><input type="checkbox" aria-label={`${p.date} ${label(p.view)} 비교 선택`} checked={selected.includes(photoKey(p))} disabled={!selected.includes(photoKey(p)) && selected.length >= 2} onChange={(e) => setSelected((old) => e.target.checked ? [...old, photoKey(p)] : old.filter((x) => x !== photoKey(p)))} />{label(p.view)}</label><Button className="ba-thumb" onClick={() => { if (!draft) openEditor(p); else setMessage('기존 임시 작업을 먼저 완료하세요.'); }}><Photo photo={p} /></Button><Button disabled={!!draft || busy} onClick={() => openEditor(p)}>편집</Button></article>)}</div></section>)}</>}
-      {editing && <section className="ba-editor ba-panel"><div className="ba-toolbar"><h2>사진 편집</h2><Button disabled={busy} onClick={() => setEditing(null)}>닫기</Button></div><Photo photo={editing} edits={edit} onTransform={(next) => { setEdit(next); persist(editorValue({ edit: next })).catch(() => setMessage("편집 임시 저장 실패")); }} className="ba-edit-preview" /><label>촬영 날짜<input type="date" value={date} onChange={(e) => { setDate(e.target.value); persist(editorValue({ date: e.target.value })).catch(() => setMessage('편집 임시 저장 실패')); }} /></label><label>방향<select value={direction} onChange={(e) => { setDirection(e.target.value); persist(editorValue({ direction: e.target.value })).catch(() => setMessage('편집 임시 저장 실패')); }}>{ALBUM_VIEWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label><label>회원<select value={owner} onChange={(e) => { setOwner(e.target.value); persist(editorValue({ owner: e.target.value })).catch(() => setMessage('편집 임시 저장 실패')); }}>{members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
-        {[['crop', '자르기 (가장자리)', 0, 70, 1], ['rotate', '회전 / 수평', -180, 180, 1], ['zoom', '확대', 0.5, 3, 0.05], ['x', '좌우 위치', -50, 50, 1], ['y', '상하 위치', -50, 50, 1], ['brightness', '밝기', 0.3, 2, 0.05]].map(([key, title, min, max, step]) => <Range key={key} title={title} value={edit[key]} min={min} max={max} step={step} onChange={(v) => { const next = { ...edit, [key]: v }; setEdit(next); persist(editorValue({ edit: next })).catch(() => setMessage('편집 임시 저장 실패')); }} />)}
-        <div className="ba-toolbar"><Button onClick={() => { setEdit({ ...DEFAULT_EDIT }); persist(editorValue({ edit: { ...DEFAULT_EDIT } })).catch(() => setMessage('편집 임시 저장 실패')); }}>원본 복원</Button><Button disabled={busy || !date} onClick={saveEdit}>편집 저장</Button><Button disabled={busy} onClick={() => { if (window.confirm('이 사진을 삭제할까요? 연결된 분석 결과는 유지됩니다.')) run(async () => { if (await onDelete(member.id, editing) === false) throw new Error('사진 삭제 실패'); await persist(null); setEditing(null); setSelected([]); setMessage('사진을 삭제했습니다.'); }); }}>사진 삭제</Button></div>
+    {!member ? <>
+      <label className="ba-search"><Search size={18} aria-hidden="true" /><input aria-label="회원 이름 검색" placeholder="회원 이름 검색" value={query} onChange={(e) => setQuery(e.target.value)} /></label>
+      <div className="ba-chips" aria-label="회원 필터">{[['all', '전체'], ['photos', '사진 있음'], ['compare', '비교 가능']].map(([k, l]) => <Button key={k} aria-pressed={filter === k} onClick={() => setFilter(k)}>{l}</Button>)}</div>
+      <div className="ba-members">{members.filter((m) => m.name?.includes(query)).map((m) => ({ m, items: albumPhotos(photos[m.id]) })).filter(({ items }) => filter === 'all' || items.length >= (filter === 'compare' ? 2 : 1)).map(({ m, items }) => <Button className="ba-member" key={m.id} onClick={() => onSelect(m.id)}><span className="ba-avatar">{items[0]?.src ? <Photo photo={items[0]} /> : <ImagePlus size={22} />}</span><span className="ba-member-info"><strong>{m.name}</strong><small>{items[0]?.date || '아직 촬영한 사진이 없어요'}{items.length > 0 && ` · ${items.length}장`}</small></span>{items.length >= 2 && <span className="ba-badge">비교 가능</span>}<ChevronRight size={18} aria-hidden="true" /></Button>)}</div>
+      {!members.some((m) => m.name?.includes(query) && (filter === 'all' || albumPhotos(photos[m.id]).length >= (filter === 'compare' ? 2 : 1))) && <p className="ba-no-results">조건에 맞는 회원이 없습니다.</p>}
+    </> : <>
+      {ai ? <><Button onClick={() => setAi(false)}><ArrowLeft size={18} /> 앨범으로</Button><p>AI 분석은 선택 기능입니다. 자세와 구도에 따라 정확도가 달라질 수 있습니다.</p>{hub(member.id, null)}</> : comparing ? <Compare photos={all} initialPhotos={all.filter((p) => selected.includes(photoKey(p)))} onClose={() => setComparing(false)} onExport={onExport} /> : <>
+        {all.length > 0 ? <><div className="ba-toolbar ba-album-filters"><select aria-label="촬영 방향 필터" value={view} onChange={(e) => setView(e.target.value)}><option value="all">모든 방향</option>{ALBUM_VIEWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select><select aria-label="사진 정렬" value={String(oldest)} onChange={(e) => setOldest(e.target.value === 'true')}><option value="false">최신 순</option><option value="true">오래된 순</option></select><Button className="ba-text" onClick={() => setAi(true)}>분석 기록</Button></div>
+        {[...new Set(displayed.map((p) => p.date))].map((day) => <section className="ba-day" key={day}><h2>{day || '날짜 미확인'}<span>{displayed.filter((p) => p.date === day).length}장</span></h2><div className="ba-grid">{displayed.filter((p) => p.date === day).map((p) => <article key={photoKey(p)} className={selected.includes(photoKey(p)) ? 'is-selected' : ''}><Button className="ba-thumb" aria-label={`${p.date} ${label(p.view)} 사진 보기`} onClick={() => setPreview(p)}><Photo photo={p} /></Button><span className="ba-direction">{label(p.view)}</span><label className="ba-select"><input type="checkbox" aria-label={`${p.date} ${label(p.view)} 비교 선택`} checked={selected.includes(photoKey(p))} onChange={(e) => setSelected((old) => e.target.checked ? [...old, photoKey(p)] : old.filter((x) => x !== photoKey(p)))} /></label></article>)}</div></section>)}
+        {!displayed.length && <p className="ba-no-results">이 방향의 사진은 아직 없습니다.</p>}
+        </> : <div className="ba-empty"><span className="ba-empty-icon"><Images size={32} strokeWidth={1.5} /></span><h2>아직 등록된 사진이 없습니다.</h2><p>첫 사진을 추가하고<br />회원의 변화를 기록해 보세요.</p><Button className="ba-primary" disabled={busy || !!draft} onClick={() => picker.current.click()}><ImagePlus size={18} />사진 추가하기</Button>{(photos[member.id]?.poses || []).length > 0 && <Button onClick={() => setAi(true)}>기존 분석 기록</Button>}</div>}
+        {selected.length > 0 && <div className="ba-selection" aria-label="선택 사진 작업"><div><strong>{selected.length}장 선택</strong><Button aria-label="선택 해제" onClick={() => setSelected([])}><X size={18} /></Button></div>{selected.length === 1 && <><Button disabled={!!draft || busy} onClick={() => openEditor(all.find((p) => photoKey(p) === selected[0]))}>편집</Button><Button disabled={busy} onClick={() => run(async () => { await onAnalyze(member.id, all.find((p) => photoKey(p) === selected[0])); setAi(true); setMessage('선택 사진으로 분석을 준비했습니다.'); })}>AI 분석</Button><Button className="ba-danger" disabled={busy || !!draft} onClick={() => { if (window.confirm('선택한 사진을 삭제할까요? 분석 결과는 유지됩니다.')) run(async () => { if (await onDelete(member.id, all.find((p) => photoKey(p) === selected[0])) === false) throw new Error('사진 삭제 실패'); setSelected([]); setMessage('사진을 삭제했습니다.'); }); }}>삭제</Button></>}{selected.length === 2 && <Button className="ba-primary" onClick={() => setComparing(true)}>비포애프터 비교</Button>}{selected.length > 2 && <span>비교할 사진 2장을 선택해 주세요.</span>}</div>}
+      </>}
+      {preview && !editing && <section ref={dialog} className="ba-viewer ba-panel" role="dialog" aria-modal="true" aria-label="사진 상세"><div className="ba-toolbar"><h2>{preview.date} · {label(preview.view)}</h2><Button aria-label="사진 상세 닫기" onClick={() => setPreview(null)}><X size={22} /></Button></div><Photo photo={preview} className="ba-edit-preview" /><div className="ba-toolbar"><Button disabled={!!draft || busy} onClick={() => { openEditor(preview); setPreview(null); }}>편집</Button><Button className="ba-primary" onClick={() => { setSelected((old) => old.includes(photoKey(preview)) ? old : [...old, photoKey(preview)]); setPreview(null); }}>사진 선택</Button></div></section>}
+      {editing && <section ref={dialog} className="ba-editor ba-panel" role="dialog" aria-modal="true" aria-label="사진 편집"><div className="ba-toolbar"><Button disabled={busy} onClick={() => setEditing(null)}>취소</Button><h2>사진 편집</h2><Button className="ba-primary" disabled={busy || !date} onClick={saveEdit}>저장</Button></div><Photo photo={editing} edits={edit} onTransform={(next) => { setEdit(next); persist(editorValue({ edit: next })).catch(() => setMessage("편집 임시 저장 실패")); }} className="ba-edit-preview" /><details className="ba-metadata"><summary>촬영 정보 · 회원 변경</summary><label>촬영 날짜<input type="date" value={date} onChange={(e) => { setDate(e.target.value); persist(editorValue({ date: e.target.value })).catch(() => setMessage('편집 임시 저장 실패')); }} /></label><label>방향<select value={direction} onChange={(e) => { setDirection(e.target.value); persist(editorValue({ direction: e.target.value })).catch(() => setMessage('편집 임시 저장 실패')); }}>{ALBUM_VIEWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label><label>회원<select value={owner} onChange={(e) => { setOwner(e.target.value); persist(editorValue({ owner: e.target.value })).catch(() => setMessage('편집 임시 저장 실패')); }}>{members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
+        </details><div className="ba-chips ba-tools">{[['crop', '자르기'], ['rotate', '회전'], ['align', '정렬'], ['brightness', '밝기']].map(([key, title]) => <Button key={key} aria-pressed={tool === key} onClick={() => setTool(key)}>{title}</Button>)}</div>
+        {[['crop', '자르기 (가장자리)', 0, 70, 1], ['rotate', '회전 / 수평', -180, 180, 1], ['zoom', '확대', 0.5, 3, 0.05], ['x', '좌우 위치', -50, 50, 1], ['y', '상하 위치', -50, 50, 1], ['brightness', '밝기', 0.3, 2, 0.05]].filter(([key]) => key === tool || (tool === 'align' && ['zoom', 'x', 'y'].includes(key))).map(([key, title, min, max, step]) => <Range key={key} title={title} value={edit[key]} min={min} max={max} step={step} onChange={(v) => { const next = { ...edit, [key]: v }; setEdit(next); persist(editorValue({ edit: next })).catch(() => setMessage('편집 임시 저장 실패')); }} />)}
+        <div className="ba-toolbar"><Button onClick={() => { setEdit({ ...DEFAULT_EDIT }); persist(editorValue({ edit: { ...DEFAULT_EDIT } })).catch(() => setMessage('편집 임시 저장 실패')); }}>원본 복원</Button></div>
       </section>}
     </>}
   </div>;

@@ -6,7 +6,23 @@
 - 원본 2건은 사용자가 휴대전화에서 직접 복원 예정으로, 복원 완료가 아니다. 공유 기본 OFF/AI 공유 비활성 유지.
 - 상세 변경 파일·테스트 결과·제외 사유·남은 작업: `PHASE2_FINISH_REPORT.md`, `PHASE2_FINISH_SKIPPED_TESTS.md`.
 
-## 2026-11-14 — 홀딩 전에 한 수업은 홀딩 중에도 차감 (`fix/hold-pre-lesson-deduct`, 병합 · 배포 전)
+## 2026-11-14 — 배포 기록: #180 병합 · Firestore 규칙 (대표 지시)
+
+- **병합** — #180 → main `ff7140c` (`[skip ci]`, 대표 지시 범위가 병합 · 규칙이라 회원 웹 자동 배포를 건너뜀. 회원 웹에 빠진 것은
+  쓰이지 않는 `holdBlocksLesson` 함수 하나뿐). #181 은 그 전에 `58ebb2a` 로 병합됨
+- **규칙** 07:12 KST — main `ff7140c` 의 `firestore.foundation.rules` 를 그대로 (`npx firebase deploy --only firestore:rules --project
+  pilateacher --config firebase.foundation.json`). 새 ruleset `0a44e170-e175-49f9-b3af-b0183742dabc`. 게시본을 CLI 로 다시 읽어 main
+  파일과 바이트 일치 확인. 배포 직전 규칙 테스트 421 통과 / 0 실패(같은 트리)
+  - 직전 게시본과 다른 것은 홀딩 두 블록뿐(사진 권한 회수 · 규칙 2차는 그대로 유지)
+  - 롤백: 콘솔 규칙 기록에서 `bf5fbed0-204d-4de6-8fa6-dea0290364a3`(11-13 07:41, 코덱스 319aa80) 복원
+  - Storage 규칙은 바꾸지 않아 배포하지 않음
+- **강사 웹** ~07:20 KST (대표 지시) — main `ff7140c`, `.codex-worktrees/deploy-main` 의 로컬 main 을 origin/main 으로
+  fast-forward 만 한 뒤 `npm run deploy:web`. 배포 전 테스트 3620 통과 / 0 실패. 운영 파일 28개 전부 로컬 dist 와 SHA-256 일치,
+  진입 번들 `assets/index-C2WjucpN.js` 안에 `ff7140c` · "이 날짜는 홀딩 기간입니다" 확인. 롤백은 콘솔 Hosting 기록의 직전 버전
+- **아직 안 한 것: 강사 앱(스토어) · 회원 웹.** 설치형 앱은 다음 빌드에 들어간다. 회원 웹은 쓰이지 않는 함수 하나 차이라 생략
+- 배포 시점에 코덱스가 `codex/phase2-finish`(이 main 위)에서 작업 중이었고 그 규칙 파일은 main 과 같았다 -- 덮어쓴 것 없음
+
+## 2026-11-14 — 홀딩 전에 한 수업은 홀딩 중에도 차감 (`fix/hold-pre-lesson-deduct`, #180 병합 · 규칙 배포 완료)
 
 - 대표 지시. #175 의 홀딩은 **지금** 홀딩 중이면 수업 날짜와 상관없이 차감을 막았다. 어제 수업을 확정 안 한 채 오늘 14일 홀딩을
   걸면, 홀딩 동안은 홀딩이라 막히고 풀리면 7일 차감 기한이 지나 화면에서 영영 확정할 수 없었다.

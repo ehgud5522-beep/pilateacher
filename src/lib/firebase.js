@@ -1065,3 +1065,11 @@ export async function fbLoadAIRecordingStatus() {
     return null;
   }
 }
+
+export async function fbPrivatePhotoSharing(input) {
+  const uid = auth?.currentUser?.uid;
+  if (!uid) throw new Error("share/sign-in-required");
+  const response = await httpsCallable(functions, "beforeAfterSharing")({ ...input, schemaVersion: 2 });
+  if (auth?.currentUser?.uid !== uid) throw new Error("share/sign-in-required");
+  return response.data;
+}

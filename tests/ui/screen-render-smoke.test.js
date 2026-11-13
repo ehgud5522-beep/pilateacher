@@ -3586,3 +3586,9 @@ test("branch overview hides stale balances on query failure and refuses a manage
   assert.match(missing, /관리 지점이 지정되지 않았습니다/);
   assert.doesNotMatch(missing, /class="bo-row"/);
 });
+
+
+test("schedule colors are reachable directly from the instructor schedule tab", async (t) => {
+  const markupOf = await issueScreens(t);
+  assert.match(markupOf("일정 탭 · 이사님 전달사항"), /일정 색상/);
+});

@@ -1,3 +1,4 @@
+import { fbPrivatePhotoSharing } from "./lib/firebase.js";
 /* Storage shim — Bolt 환경의 window.storage 가 없으면 localStorage 로 대체 */
 if (typeof window !== "undefined" && !window.storage) {
   window.storage = {
@@ -3499,6 +3500,76 @@ function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast,
   );
 }
 
+function ScheduleColorSettings({ scheduleColors, onChange }) {
+  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
+  return (
+  <div className="space-y-2">
+    <section style={sectionStyle}>
+      <div className="mb-3">
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>수업 유형 색</h2>
+        <p style={{ marginTop: 3, fontSize: TYPE.caption, lineHeight: 1.45, color: SUB }}>일정표 카드의 옅은 배경과 왼쪽 띠에 쓰는 색입니다. 색만으로 구분하지 않도록 카드 안 약자(개 · 듀 · 그 · 상 · 휴)는 항상 함께 표시됩니다.</p>
+      </div>
+      <div className="space-y-3">
+        {LESSON_TYPES.map((type) => {
+          const tone = resolveScheduleTypeTone(type.key, scheduleColors, THEME);
+          return (
+            <div key={type.key}>
+              <div className="mb-1.5 flex items-center gap-2">
+                <span className="flex items-center justify-center" style={{ width: 36, height: 22, borderRadius: 6, backgroundColor: tone.surface, borderLeft: `3px solid ${tone.edge}` }}>
+                  <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: tone.edge }}>{type.short}</span>
+                </span>
+                <p style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{type.label}</p>
+                <p className="ml-auto" style={{ fontSize: TYPE.caption, color: SUB }}>{SCHEDULE_COLOR_PRESETS.find((preset) => preset.id === tone.presetId)?.label || ""}</p>
+              </div>
+              <div className="grid grid-cols-8 gap-1.5">
+                {SCHEDULE_COLOR_PRESETS.map((preset) => {
+                  const value = THEME === "dark" ? preset.dark : preset.light;
+                  const on = scheduleColors[type.key] === preset.id;
+                  return (
+                    <button type="button" key={preset.id} aria-label={`${type.label} ${preset.label}`} aria-pressed={on}
+                      onClick={() => onChange(setScheduleTypeColor(scheduleColors, type.key, preset.id))}
+                      className="flex items-center justify-center" style={{ height: 34, borderRadius: 8, backgroundColor: value.surface, border: `1px solid ${on ? value.edge : LINE}`, borderLeftWidth: 3, borderLeftColor: value.edge }}>
+                      {on && <Check size={12} style={{ color: value.edge }} />}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <button type="button" disabled={isDefaultScheduleColors(scheduleColors)}
+        onClick={() => onChange({ ...DEFAULT_SCHEDULE_COLORS })}
+        className="mt-4 flex h-11 w-full items-center justify-center gap-1.5 disabled:opacity-40"
+        style={{ borderRadius: 9, backgroundColor: CANVAS, border: `1px solid ${LINE}`, color: INK2, fontSize: TYPE.caption, fontWeight: 700 }}>
+        <RotateCcw size={13} /> 기본값으로 되돌리기
+      </button>
+    </section>
+    <section style={sectionStyle}>
+      <div className="mb-3"><h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>일정표 미리보기</h2><p style={{ marginTop: 3, fontSize: TYPE.caption, color: SUB }}>회원 · 그룹 이름을 먼저, 준비할 기구를 그 아래 한 줄로 읽습니다.</p></div>
+      <div className="grid grid-cols-2 gap-2">
+        {[
+          { key: "private", label: "김은숙", equip: ["reformer"] },
+          { key: "duet", label: "박서연+1", equip: ["reformer", "chair"] },
+          { key: "group", label: "그룹 8명", equip: ["cadillac", "barrel", "mat"] },
+          { key: "consult", label: "상담", equip: [] },
+          { key: "off", label: "휴무", equip: [] },
+        ].map((sample) => {
+          const tone = resolveScheduleTypeTone(sample.key, scheduleColors, THEME);
+          const short = lessonTypeDef(sample.key).short;
+          return (
+            <div key={sample.key} style={{ height: 46, borderRadius: 5, backgroundColor: tone.surface, border: `1px solid ${tone.border}`, borderLeft: `3px solid ${tone.edge}`, padding: "3px 5px" }}>
+              <p className="truncate" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}><span style={{ fontSize: TYPE.caption, fontWeight: 700, color: tone.edge }}>{short}</span> {sample.label}</p>
+              {sample.equip.length > 0 && <p className="mt-0.5 truncate" style={{ fontSize: TYPE.caption, color: tone.ink }}>{formatEquipmentSummary(sample.equip)}</p>}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  </div>
+  );
+}
+
 function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null, ownerMessage = "", memberCancelOn = false, inbox = null,
   /* 큐 정리용 서버 상태 읽기 (2026-11-07, lesson-queue.js). 센터 소속일 때만 넘어온다. */
   readQueueLessonStates = null }) {
@@ -3510,6 +3581,8 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
   /* v1의 showSunday 값은 APK에서 의도치 않게 계속 남을 수 있어 새 명시 설정만 읽는다. */
   const [showSundaySetting, setShowSundaySetting] = useState(initialDisplay.showSundaySetting === true);
   const [displaySettings, setDisplaySettings] = useState(false);
+  const [colorSettingsOpen, setColorSettingsOpen] = useState(false);
+  const colorSettingsTriggerRef = useRef(null);
   const [listOpen, setListOpen] = useState(false);
   const [briefingList, setBriefingList] = useState(null);
   const [queueOpen, setQueueOpen] = useState(false);
@@ -3881,6 +3954,13 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
       <OwnerMessageBar message={ownerMessage} />
       <DailySentenceBanner />
 
+      {onSettings && <div className="flex shrink-0 justify-end px-2" style={{ backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
+        <button type="button" ref={colorSettingsTriggerRef} onClick={() => setColorSettingsOpen(true)}
+          className="flex min-h-9 items-center gap-1.5 rounded-lg px-2 text-xs font-bold" style={{ color: PRIMARY }}>
+          <Palette size={15} /> 일정 색상
+        </button>
+      </div>}
+
       {/* ─── 메인 시간표 영역 (flex-1, 내부 스크롤) ─── */}
       <div className="min-h-0 flex-1 overflow-hidden" style={{ backgroundColor: CARD }}>
         {focusedMemberId && (
@@ -3948,6 +4028,12 @@ function ScheduleManager({ db, photos, onSave, onDelete, onStatus, onStatusAll, 
           onDismissAll={dismissAllQueue} onRestoreDismissed={restoreQueue}
           onNoComment={onNoComment} onSaveNote={onSaveNote}
           onOpenLesson={(lesson) => { setQueueOpen(false); if (lesson) { setCursor(lesson.date || todayISO()); setEditing(lesson); } }} />
+      )}
+      {colorSettingsOpen && (
+        <ScheduleBottomSheet title="일정 색상" returnFocusRef={colorSettingsTriggerRef} onClose={() => setColorSettingsOpen(false)}>
+          <ScheduleColorSettings scheduleColors={scheduleColors}
+            onChange={(next) => onSettings({ ...db.settings, scheduleColors: next })} />
+        </ScheduleBottomSheet>
       )}
       {displaySettings && (
         <Sheet title="일정 표시 설정" onClose={() => setDisplaySettings(false)}>
@@ -27169,72 +27255,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
             <div className="space-y-3"><Field label="센터명"><input value={db.settings.center} onChange={(e) => onChangeSettings({ ...db.settings, center: e.target.value })} className={inputCls} /></Field><Field label="기본 담당자"><input value={db.settings.staff} onChange={(e) => onChangeSettings({ ...db.settings, staff: e.target.value })} className={inputCls} /></Field><Field label="그룹 1회당 원"><input inputMode="numeric" value={db.settings.groupRate ?? DEF_GROUP_RATE} onChange={(e) => onChangeSettings({ ...db.settings, groupRate: num(e.target.value.replace(/\D/g, "")) })} className={inputCls} /></Field></div>
           </section>
         )}
-        {view === "schedule-colors" && (
-          <div className="space-y-2">
-            <section style={sectionStyle}>
-              <div className="mb-3">
-                <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>수업 유형 색</h2>
-                <p style={{ marginTop: 3, fontSize: TYPE.caption, lineHeight: 1.45, color: SUB }}>일정표 카드의 옅은 배경과 왼쪽 띠에 쓰는 색입니다. 색만으로 구분하지 않도록 카드 안 약자(개 · 듀 · 그 · 상 · 휴)는 항상 함께 표시됩니다.</p>
-              </div>
-              <div className="space-y-3">
-                {LESSON_TYPES.map((type) => {
-                  const tone = resolveScheduleTypeTone(type.key, scheduleColors, THEME);
-                  return (
-                    <div key={type.key}>
-                      <div className="mb-1.5 flex items-center gap-2">
-                        <span className="flex items-center justify-center" style={{ width: 36, height: 22, borderRadius: 6, backgroundColor: tone.surface, borderLeft: `3px solid ${tone.edge}` }}>
-                          <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: tone.edge }}>{type.short}</span>
-                        </span>
-                        <p style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{type.label}</p>
-                        <p className="ml-auto" style={{ fontSize: TYPE.caption, color: SUB }}>{SCHEDULE_COLOR_PRESETS.find((preset) => preset.id === tone.presetId)?.label || ""}</p>
-                      </div>
-                      <div className="grid grid-cols-8 gap-1.5">
-                        {SCHEDULE_COLOR_PRESETS.map((preset) => {
-                          const value = THEME === "dark" ? preset.dark : preset.light;
-                          const on = scheduleColors[type.key] === preset.id;
-                          return (
-                            <button type="button" key={preset.id} aria-label={`${type.label} ${preset.label}`} aria-pressed={on}
-                              onClick={() => onChangeSettings({ ...db.settings, scheduleColors: setScheduleTypeColor(scheduleColors, type.key, preset.id) })}
-                              className="flex items-center justify-center" style={{ height: 34, borderRadius: 8, backgroundColor: value.surface, border: `1px solid ${on ? value.edge : LINE}`, borderLeftWidth: 3, borderLeftColor: value.edge }}>
-                              {on && <Check size={12} style={{ color: value.edge }} />}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              <button type="button" disabled={isDefaultScheduleColors(scheduleColors)}
-                onClick={() => onChangeSettings({ ...db.settings, scheduleColors: { ...DEFAULT_SCHEDULE_COLORS } })}
-                className="mt-4 flex h-11 w-full items-center justify-center gap-1.5 disabled:opacity-40"
-                style={{ borderRadius: 9, backgroundColor: CANVAS, border: `1px solid ${LINE}`, color: INK2, fontSize: TYPE.caption, fontWeight: 700 }}>
-                <RotateCcw size={13} /> 기본값으로 되돌리기
-              </button>
-            </section>
-            <section style={sectionStyle}>
-              <div className="mb-3"><h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>일정표 미리보기</h2><p style={{ marginTop: 3, fontSize: TYPE.caption, color: SUB }}>회원 · 그룹 이름을 먼저, 준비할 기구를 그 아래 한 줄로 읽습니다.</p></div>
-              <div className="grid grid-cols-2 gap-2">
-                {[
-                  { key: "private", label: "김은숙", equip: ["reformer"] },
-                  { key: "duet", label: "박서연+1", equip: ["reformer", "chair"] },
-                  { key: "group", label: "그룹 8명", equip: ["cadillac", "barrel", "mat"] },
-                  { key: "consult", label: "상담", equip: [] },
-                  { key: "off", label: "휴무", equip: [] },
-                ].map((sample) => {
-                  const tone = resolveScheduleTypeTone(sample.key, scheduleColors, THEME);
-                  const short = lessonTypeDef(sample.key).short;
-                  return (
-                    <div key={sample.key} style={{ height: 46, borderRadius: 5, backgroundColor: tone.surface, border: `1px solid ${tone.border}`, borderLeft: `3px solid ${tone.edge}`, padding: "3px 5px" }}>
-                      <p className="truncate" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}><span style={{ fontSize: TYPE.caption, fontWeight: 700, color: tone.edge }}>{short}</span> {sample.label}</p>
-                      {sample.equip.length > 0 && <p className="mt-0.5 truncate" style={{ fontSize: TYPE.caption, color: tone.ink }}>{formatEquipmentSummary(sample.equip)}</p>}
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          </div>
-        )}
+        {view === "schedule-colors" && <ScheduleColorSettings scheduleColors={scheduleColors} onChange={(next) => onChangeSettings({ ...db.settings, scheduleColors: next })} />}
         {view === "theme" && (
           <section style={sectionStyle}>
             <div className="mb-3"><h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>화면 테마</h2><p style={{ marginTop: 3, fontSize: TYPE.caption, color: SUB }}>기기 설정을 따르거나 원하는 화면을 고릅니다.</p></div>
@@ -34127,7 +34148,7 @@ export default function App() {
                   ) : null} />
               </div>}
             </div>}
-            {tab === "analysis" && <PhotoAccessBoundary allowed={allowedPhotoMembers} key={account?.id} accountId={account?.id} members={rosterMembers} photos={photos} selectedId={analysisMemberId}
+            {tab === "analysis" && <PhotoAccessBoundary sharingApi={fbPrivatePhotoSharing} organizationId={organizationContext?.organizationId} allowed={allowedPhotoMembers} key={account?.id} accountId={account?.id} members={rosterMembers} photos={photos} selectedId={analysisMemberId}
               onImport={importAlbumPhotos} onPatch={patchAlbum} onDelete={deleteAlbum} onAnalyze={analyzeAlbumPhoto}
               backupStatus={cloudBackupStatus} onRetry={retryCloudBackup} onEnableBackup={enablePhotoBackup}
               onExport={(canvas) => exportCanvas(canvas, `비포애프터_${todayISO()}.jpg`, "비포애프터", true)}

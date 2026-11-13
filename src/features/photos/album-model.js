@@ -1,7 +1,8 @@
 import { POSTURE_STORAGE_KEYS, normalizePostureView } from '../posture/posture-model.js';
 
 export const ALBUM_VIEWS = [['front', '정면'], ['back', '후면'], ['leftSide', '좌측면'], ['rightSide', '우측면'], ['custom', '기타']];
-export const DEFAULT_EDIT = Object.freeze({ rotate: 0, brightness: 1, zoom: 1, x: 0, y: 0, crop: 0 });
+import { DEFAULT_EDIT } from './photo-edit-model.js';
+export { DEFAULT_EDIT };
 export const photoKey = (p) => `${p.bucket}:${p.id}`;
 // Read individual records, never normalize them into one photo per direction/day.
 export function albumPhotos(buckets = {}) {

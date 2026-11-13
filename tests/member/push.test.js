@@ -147,3 +147,12 @@ test("평가 알림은 소속·회원·수업을 담아야 하며 기존 알림 
   assert.equal(normalizePrefs({ lesson30h: false, lesson30m: false }).lessonRating, false);
   assert.equal(normalizePrefs({ lesson30h: false, lesson30m: false, lessonRating: true }).lessonRating, true);
 });
+
+
+test("private photo push carries only a validated opaque route and opens after authentication", async () => {
+  const { sharedPhotoTarget, tapTarget } = await import('../../member/src/push.js');
+  const shareId = 'a'.repeat(64);
+  assert.equal(sharedPhotoTarget({ data: { kind: 'beforeAfter', shareId } }), shareId);
+  assert.equal(sharedPhotoTarget({ data: { kind: 'beforeAfter', shareId: '../other' } }), null);
+  assert.equal(tapTarget({ data: { kind: 'beforeAfter' } }), 'beforeAfter');
+});

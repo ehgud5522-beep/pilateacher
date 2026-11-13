@@ -140,7 +140,11 @@ const memberLinkService = createMemberLinkService({
    갈라지면 한쪽만 고쳐진다. */
 const memberAccountService = createMemberAccountService({
   readLink: memberLinkPorts.readLink,
-  purgeMemberAccount: memberLinkPorts.purgeMemberAccount,
+  purgeMemberAccount: async (input) => {
+    const result = await memberLinkPorts.purgeMemberAccount(input);
+    await require('./before-after-notifications').eraseMemberShares(firestore, input.userId);
+    return result;
+  },
   deleteAuthUser: (userId) => getAuth().deleteUser(userId),
 });
 
@@ -1495,5 +1499,32 @@ exports.memberPushSettings = onCall(MEMBER_LINK_OPTIONS, async (request) => {
     });
     if (error?.httpsCode) throw new HttpsError(error.httpsCode, String(error.code), { code: String(error.code) });
     throw new HttpsError("unavailable", "push_settings_unavailable", { code: "push_settings_unavailable" });
+  }
+});
+
+
+// Phase 2: denied by default; no runtime flag or member data is provisioned by deployment.
+exports.beforeAfterSharing = onCall({ region: "asia-northeast3", timeoutSeconds: 120, memory: "512MiB" }, async (request) => {
+  const bearer = request.rawRequest.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
+  if (!request.auth?.uid || !bearer) throw new HttpsError("unauthenticated", "share/sign-in-required");
+  try { await getAuth().verifyIdToken(bearer, true); }
+  catch { throw new HttpsError("unauthenticated", "share/sign-in-required"); }
+  request.rawRequest.res?.setHeader("Cache-Control", "private, no-store, max-age=0");
+  try {
+    const { createSharingService } = require("./before-after-sharing");
+    return await createSharingService({ db: firestore, bucket: getStorage().bucket() }).handle(request.auth.uid, request.data);
+  } catch (error) {
+    throw new HttpsError(error.httpsCode || "unavailable", error.httpsCode ? error.message : "share/temporarily-unavailable");
+  }
+});
+exports.notifyBeforeAfterShare = onDocumentWritten({ document: "beforeAfterShares/{shareId}", region: "asia-northeast3" }, async (event) => {
+  const { notifyShare } = require("./before-after-notifications");
+  const { getMessaging } = require("firebase-admin/messaging");
+  await notifyShare({ db: firestore, bucket: getStorage().bucket(), messaging: getMessaging() }, event.params.shareId);
+});
+exports.eraseDeletedMemberShares = onDocumentWritten({ document: "memberLinks/{uid}", region: "asia-northeast3" }, async (event) => {
+  if (event.data?.before.exists && !event.data?.after.exists) {
+    const { eraseMemberShares } = require("./before-after-notifications");
+    await eraseMemberShares(firestore, event.params.uid);
   }
 });

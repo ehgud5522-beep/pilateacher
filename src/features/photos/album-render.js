@@ -1,4 +1,4 @@
-import { DEFAULT_EDIT } from './album-model.js';
+import { DEFAULT_EDIT } from './photo-edit-model.js';
 export async function renderAlbumPhoto(src, edits = {}, edge = 1400) {
   const img = new Image();
   await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = () => reject(new Error('사진을 불러오지 못했습니다.')); img.src = src; });

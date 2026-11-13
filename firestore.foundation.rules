@@ -508,6 +508,11 @@ service cloud.firestore {
 
     /* 본인 일정 · 메모 동기화 스위치 (2026-10-31). 센터 수업 스위치와 따로 켜고 끈다.
        쓰기는 대표 전용 통로(updateRuntimeConfig)뿐이다. */
+    // Private sharing is callable-only. Never expose the instructor album or consent writes.
+    match /beforeAfterShares/{document=**} { allow read, write: if false; }
+    match /memberPhotoConsents/{document=**} { allow read, write: if false; }
+    match /runtimeConfig/beforeAfterSharing { allow read, write: if false; }
+
     match /runtimeConfig/privateSync {
       allow read: if signedIn();
       allow write: if false;

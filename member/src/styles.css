@@ -394,7 +394,7 @@ body {
   position: absolute;
   left: 0;
   bottom: 5px;
-  width: calc(100% / 3);
+  width: calc(100% / var(--member-tab-count, 3));
   display: grid;
   place-items: center;
   pointer-events: none;

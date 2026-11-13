@@ -1,3 +1,17 @@
+## 2026-11-14 07:30~07:40 — 배포 기록: 공유 함수 · 강사 웹 · 회원 웹 (대표 지시 "함수배포하고 웹도배포해줘")
+
+- 기준 main `2905af4` (#183 · #182 포함). 배포 전 확인: 운영 Firestore · Storage 규칙 = main 파일(공유 차단 블록 포함, 규칙 배포
+  필요 없음), 규칙 422 · 앱 3628 · 서버 352 통과 / 0 실패
+- **Functions** (`--config firebase.ai-gateway.json`, asia-northeast3): `beforeAfterSharing` · `notifyBeforeAfterShare` ·
+  `eraseDeletedMemberShares` 새로 만듦, `deleteMemberAccount` 갱신(공유 기록 정리). 다른 함수는 건드리지 않음.
+  비로그인 호출 `beforeAfterSharing` → 401 `share/sign-in-required` 확인
+- **강사 웹** — `deploy-main` 로컬 main 을 origin/main 으로 fast-forward 만 한 뒤 `npm run deploy:web`. 운영 파일 28개 전부 로컬
+  dist 와 SHA-256 일치, 진입 번들 `assets/index-CMFdw_Z3.js` 에 `2905af4`. #183 의 일지 임시저장 · 원본 백업이 이것으로 나갔다
+- **회원 웹** — `gh workflow run deploy-member.yml --ref main` (run 43520810678, success). 진입 번들 `assets/index-CCw6ZBaD.js` 에 `2905af4`
+- **공유는 여전히 꺼짐** — `runtimeConfig/beforeAfterSharing` 은 만들지도 바꾸지도 않았다. 켜는 것은 원본 2건 복원 · 실기기 확인 뒤
+  테스트 계정부터 (코덱스 계획 5단계)
+- 확인 못 한 것: 실제 로그인 사용자로 공유 함수 호출, 알림 발송, 실기기
+
 ## 2026-11-14 — Codex Phase 2 백업·일지 통합 (배포 안 함)
 
 - 새 작업 위치 `.codex-worktrees/phase2-finish`, 브랜치 `codex/phase2-finish`. 기존 before-after-phase1 작업 폴더와 미커밋 권한 작업은 그대로 보존했다.

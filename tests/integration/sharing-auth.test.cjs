@@ -1,0 +1,47 @@
+const {test}=require('node:test');const assert=require('node:assert/strict');
+const {createRequire}=require('node:module');const req=createRequire(require('node:path').resolve('functions/package.json'));
+if(!process.env.FIREBASE_AUTH_EMULATOR_HOST||!process.env.FIRESTORE_EMULATOR_HOST||!process.env.FIREBASE_STORAGE_EMULATOR_HOST)throw Error('emulators-required');
+const projectId='demo-pilateacher';process.env.GCLOUD_PROJECT=projectId;process.env.FIREBASE_CONFIG=JSON.stringify({projectId,storageBucket:projectId+'.appspot.com'});
+const {beforeAfterSharing}=require('../../functions/src/index.js');
+const {getAuth}=req('firebase-admin/auth');const {getFirestore}=req('firebase-admin/firestore');const {getStorage}=req('firebase-admin/storage');const {getApps,deleteApp}=req('firebase-admin/app');
+const {CONSENT_VERSION}=require('../../functions/src/before-after-sharing');
+const db=getFirestore(),bucket=getStorage().bucket();
+const signup=async()=>{const r=await fetch('http://'+process.env.FIREBASE_AUTH_EMULATOR_HOST+'/identitytoolkit.googleapis.com/v1/accounts:signUp?key=fake-key',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({returnSecureToken:true})});assert.equal(r.status,200);return r.json();};
+const call=(user,action,input={})=>beforeAfterSharing.run({auth:user?{uid:user.localId}:undefined,data:{schemaVersion:2,action,...input},rawRequest:{headers:user?{authorization:'Bearer '+user.idToken}:{},res:{setHeader(){}}}});
+test('real emulator tokens exercise the exported callable handler, member isolation, consent, revocation and disabled sessions',async()=>{
+ try{
+  const teacher=await signup(),member=await signup(),other=await signup();
+  await assert.rejects(call(null,'capability'),/sign-in-required/);
+  await assert.rejects(call({...teacher,idToken:'forged'},'capability'),/sign-in-required/);
+  assert.equal((await call(teacher,'capability',{role:'teacher'})).enabled,false);
+  const scope={organizationId:'org',clientId:'client'};
+  await db.doc('runtimeConfig/beforeAfterSharing').set({mode:'test',phase1Verified:true,teacherIds:[teacher.localId],memberIds:[member.localId,other.localId]});
+  await db.doc('memberships/org_'+teacher.localId).set({status:'active',role:'instructor'});
+  await db.doc('organizations/org/clients/client').set({name:'Synthetic member',userId:member.localId,instructorIds:[teacher.localId]});
+  await db.doc('memberLinks/'+member.localId).set({status:'linked',links:[scope]});
+  await call(member,'consent',{...scope,granted:true,confirmed:true,version:CONSENT_VERSION,notifications:false});
+  const bytes=Buffer.from([255,216,255,225,0,6,1,2,3,4,255,218,0,2,255,217]);
+  const base=`users/${teacher.localId}/photos/photo/`;
+  await bucket.file(base+'image.jpg').save(bytes,{metadata:{contentType:'image/jpeg',metadata:scope}});
+  await bucket.file(base+'original.bin').save(bytes,{metadata:{contentType:'application/octet-stream',metadata:{...scope,sha256:'synthetic-digest'}}});
+  await db.doc(`users/${teacher.localId}/photoBackups/photo`).set({...scope,status:'active',originalPath:base+'original.bin',storagePath:base+'image.jpg',originalSha256:'synthetic-digest',record:{}});
+  const input={...scope,requestId:'retry-key',photoIds:['photo'],shareType:'photos',feedback:'Synthetic feedback'};
+  await assert.rejects(call(other,'prepare',input));
+  const share=await call(teacher,'prepare',input);
+  assert.equal((await call(teacher,'prepare',input)).id,share.id);
+  await assert.rejects(call(member,'media',{shareId:share.id,photoId:'photo'}));
+  await call(teacher,'activate',{shareId:share.id,confirmed:true});
+  assert.ok((await call(member,'media',{shareId:share.id,photoId:'photo'})).base64);
+  await assert.rejects(call(other,'detail',{shareId:share.id}));
+  await assert.rejects(call(member,'media',{shareId:share.id,photoId:'another-photo'}));
+  await db.doc('organizations/org/clients/client').update({instructorIds:[]});
+  await assert.rejects(call(teacher,'detail',{shareId:share.id}));
+  await db.doc('organizations/org/clients/client').update({instructorIds:[teacher.localId]});
+  await call(member,'consent',{...scope,granted:false});await assert.rejects(call(member,'detail',{shareId:share.id}));
+  await call(teacher,'revoke',{shareId:share.id});await assert.rejects(call(member,'media',{shareId:share.id,photoId:'photo'}));
+  await assert.rejects(call(teacher,'capability',{schemaVersion:1}));
+  await getAuth().updateUser(teacher.localId,{disabled:true});
+  await assert.rejects(call(teacher,'capability',{role:'teacher'}),/sign-in-required/);
+  assert.deepEqual((await bucket.file(base+'original.bin').download())[0],bytes);
+ }finally{await db.terminate();await Promise.all(getApps().map(deleteApp));}
+});

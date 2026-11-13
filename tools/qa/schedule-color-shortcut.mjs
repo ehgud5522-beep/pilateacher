@@ -7,7 +7,7 @@ await mkdir(out, { recursive: true });
 await writeFile(`${out}/entry.jsx`, `
 import '/src/index.css';import '/src/features/ui/motion.css';import React,{useState,useEffect,cloneElement}from'react';import{createRoot}from'react-dom/client';import{createAppScreenSmokeCases}from'/src/App.jsx';import{readAccountDb,writeAccountDb}from'/src/features/schedule/account-db-storage.js';
 const tree=createAppScreenSmokeCases().find(x=>x.name==='일정 탭 · 이사님 전달사항').element;const child=tree.props.children.props.children;const now=new Date();const date=[now.getFullYear(),String(now.getMonth()+1).padStart(2,'0'),String(now.getDate()).padStart(2,'0')].join('-');child.props.db.schedule.push({id:'qa-lesson',attendees:[{memberId:child.props.db.members[0].id,status:'예약'}],date,start:'10:00',dur:50,type:'개인레슨',instructor:child.props.db.settings.staff});
-function Fixture(){const[db,setDb]=useState(null);useEffect(()=>{readAccountDb(window.storage,'pilateacher_db_qa-colors').then(value=>setDb(value||child.props.db))},[]);if(!db)return null;return cloneElement(tree,{},cloneElement(tree.props.children,{},cloneElement(child,{db,onSettings:async settings=>{const next={...db,settings};await writeAccountDb(window.storage,'pilateacher_db_qa-colors',next);setDb(next)}})))}createRoot(document.getElementById('root')).render(<Fixture/>);`);
+function Fixture(){const[db,setDb]=useState(null);useEffect(()=>{readAccountDb(window.storage,'pilateacher_db_qa-colors').then(value=>setDb(value||child.props.db))},[]);if(!db)return null;return cloneElement(tree,{},cloneElement(tree.props.children,{},cloneElement(child,{db,draftAccountId:'qa-colors',onSaveNote:async(memberId,type,sid,body)=>{if(!window.qaSaveAllowed)return false;const next={...db,members:db.members.map(m=>m.id===memberId?{...m,notes:[{id:'qa-note',sid,body}]}:m)};await writeAccountDb(window.storage,'pilateacher_db_qa-colors',next);setDb(next);return true;},onSettings:async settings=>{const next={...db,settings};await writeAccountDb(window.storage,'pilateacher_db_qa-colors',next);setDb(next)}})))}createRoot(document.getElementById('root')).render(<Fixture/>);`);
 const vite = await createServer({ appType: 'custom', server: { host: '127.0.0.1', port: 4184, strictPort: true, watch: { ignored: ['**/profile-*/**'] } }, logLevel: 'error' });
 vite.middlewares.use('/schedule-color-qa', async (_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end(await vite.transformIndexHtml('/schedule-color-qa', `<html><head><meta charset="utf-8"></head><body><div id="root"></div><script type="module" src="/${out}/entry.jsx"></script></body></html>`)); });
 await vite.listen();
@@ -35,6 +35,19 @@ try {
   await page.goto('http://127.0.0.1:4184/schedule-color-qa');await painted();
   await page.getByRole('button',{name:'일정 색상',exact:true}).click();
   assert.equal(await page.getByRole('button',{name:/개인.*파랑/}).getAttribute('aria-pressed'),'true');
+  await page.getByRole('button',{name:'닫기',exact:true}).click();
+  const openRecord=async()=>{await page.getByRole('button',{name:/개인.*예시 회원/}).click();await page.getByRole('button',{name:/^(직접입력|이어서 쓰기|기록 수정)$/}).click();};
+  await openRecord();
+  await page.getByPlaceholder('수업 내용과 회원 반응을 기록하세요').fill('재시작 후 보존할 수업 초안');
+  await page.getByRole('button',{name:'저장',exact:true}).click();
+  assert.equal(await page.getByPlaceholder('수업 내용과 회원 반응을 기록하세요').inputValue(),'재시작 후 보존할 수업 초안');
+  await browser.close();browser=await launch();page=await browser.newPage();
+  await page.goto('http://127.0.0.1:4184/schedule-color-qa');await openRecord();
+  assert.equal(await page.getByPlaceholder('수업 내용과 회원 반응을 기록하세요').inputValue(),'재시작 후 보존할 수업 초안');
+  await page.evaluate(()=>{window.qaSaveAllowed=true;});await page.getByRole('button',{name:'저장',exact:true}).click();
+  await page.waitForFunction(()=>JSON.parse(localStorage.getItem('pilateacher_db_qa-colors')).members[0].notes[0]?.body==='재시작 후 보존할 수업 초안');
+  await page.waitForFunction(()=>!Object.keys(localStorage).some(k=>k.startsWith('pilateacher:manual-lesson-note:')));
+  await writeFile(`${out}/draft-result.json`,JSON.stringify({passed:true,browserRestart:true,failedSaveRetainsDraft:true,successfulSaveClearsDraft:true,nativeAndroid:'not-tested',nativeIOS:'not-tested'},null,2));
   assert.deepEqual(errors, []);
   await writeFile(`${out}/persistence-result.json`, JSON.stringify({ passed: true, productionStorageAdapter:true, localStorageSaved:true, calendarRepaint:true,pageReload:true,browserRestart:true,nativeAndroid:'not-tested',nativeIOS:'not-tested' }, null, 2));
   console.log('Schedule color saved and calendar repainted after page reload and browser restart.');

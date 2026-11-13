@@ -1,3 +1,4 @@
+import { assertPhotoPaths, ensureOriginalBackup } from "../features/backup/original-backup.js";
 /* ===================================================================
    필라티쳐 — Firebase 연결
    config 는 pilateacher 프로젝트 값입니다.
@@ -644,20 +645,16 @@ export async function fbUploadPhotoBackup(uid, item, optimized = null, original 
   if (!fs || !storage) throw Object.assign(new Error("Cloud photo backup is unavailable."), { code: "backup/unavailable" });
   const { safeUid, safePhotoId } = assertOwnPhotoPath(uid, item?.photoId);
   if ((item.references || []).length > 20) throw new Error("사진 참조가 너무 많습니다. 참조를 자르지 않고 작업을 중단했습니다.");
+  assertPhotoPaths(safeUid, safePhotoId, item);
   const imagePath = `users/${safeUid}/photos/${safePhotoId}/image.jpg`;
   const thumbnailPath = `users/${safeUid}/photos/${safePhotoId}/thumb.jpg`;
   const originalPath = `users/${safeUid}/photos/${safePhotoId}/original.bin`;
   const scope = (await httpsCallable(functions, "preparePhotoAccess")({ photoId: safePhotoId, organizationId: item.organizationId, clientId: item.clientId })).data;
-  let originalInfo = { originalPath: item.originalPath, originalSha256: item.originalSha256, originalMimeType: item.originalMimeType, originalBytes: item.originalBytes };
-  if (!item.originalPath) {
-    if (!original || original.size >= 50 * 1024 * 1024) throw new Error("50MB 미만 원본 파일이 필요합니다. 기기 원본은 유지됩니다.");
-    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", await original.arrayBuffer())), (b) => b.toString(16).padStart(2, "0")).join("");
-    let remote = null;
-    try { remote = await getMetadata(storageRef(storage, originalPath)); } catch (error) { if (!["storage/object-not-found", "storage/unauthorized"].includes(error.code)) throw error; }
-    if (remote && (remote.customMetadata?.sha256 !== hash || Number(remote.size) !== original.size)) throw new Error("원본 무결성 충돌: 기존 파일을 덮어쓰지 않았습니다.");
-    if (!remote) await uploadBytesResumable(storageRef(storage, originalPath), original, { contentType: "application/octet-stream", cacheControl: "private,no-store,max-age=0", customMetadata: { ...scope, sha256: hash } });
-    originalInfo = { originalPath, originalSha256: hash, originalMimeType: original.type || "image/jpeg", originalBytes: original.size };
-  }
+  const originalRef = storageRef(storage, originalPath);
+  const originalInfo = await ensureOriginalBackup({ item, original, scope, path: originalPath,
+    getMetadata: () => getMetadata(originalRef),
+    upload: (blob, metadata) => uploadBytesResumable(originalRef, blob, metadata),
+    download: () => getBlob(originalRef) });
   let imageBytes = Math.max(0, Number(item?.imageBytes) || 0);
   let thumbnailBytes = Math.max(0, Number(item?.thumbnailBytes) || 0);
   if (optimized?.image?.blob && optimized?.thumbnail?.blob) {
@@ -706,6 +703,7 @@ export async function fbUploadPhotoBackup(uid, item, optimized = null, original 
 export async function fbDownloadPhotoBackup(uid, item, thumbnail = false) {
   if (!storage) throw Object.assign(new Error("Cloud photo backup is unavailable."), { code: "backup/unavailable" });
   assertOwnPhotoPath(uid, item?.photoId);
+  assertPhotoPaths(uid, item.photoId, item);
   await httpsCallable(functions, "preparePhotoAccess")({ photoId: item.photoId, organizationId: item.organizationId, clientId: item.clientId });
   const path = thumbnail ? item?.thumbnailPath : item?.originalPath || item?.storagePath;
   if (!path) throw Object.assign(new Error("Cloud photo path is missing."), { code: "backup/photo-missing" });

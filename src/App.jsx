@@ -1,3 +1,4 @@
+import { readAccountDb, writeAccountDb } from "./features/schedule/account-db-storage.js";
 import { fbPrivatePhotoSharing } from "./lib/firebase.js";
 /* Storage shim — Bolt 환경의 window.storage 가 없으면 localStorage 로 대체 */
 if (typeof window !== "undefined" && !window.storage) {
@@ -30736,7 +30737,7 @@ export default function App() {
         errorName: error?.name || error?.code || "unknown",
       });
     };
-    try { const r = await window.storage.get(dbKey(acc.id)); if (r?.value) data = JSON.parse(r.value); } catch (e) {}
+    try { data = await readAccountDb(window.storage, dbKey(acc.id)); } catch (e) {}
     try {
       const r = await window.storage.get(phKey(acc.id));
       photoMetadataExists = Boolean(r?.value);
@@ -31432,7 +31433,7 @@ export default function App() {
     if (!account) return;
     try {
       const legacyWrite = async () => {
-        await window.storage.set(dbKey(account.id), JSON.stringify(next));
+        await writeAccountDb(window.storage, dbKey(account.id), next);
         writeCloudSyncMarker(account.id, { localSavedAt: Date.now() });
         setSavedAt(new Date());
         queueCloud(account.id, next);

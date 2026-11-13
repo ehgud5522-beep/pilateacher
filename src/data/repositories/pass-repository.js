@@ -512,6 +512,8 @@ export async function transferPassInstructor(organizationId, passId, input, opti
       data: { instructorId: toInstructorId, handedOver: true },
       operation: "update",
     },
+    { path: `organizations/${organization}/clients/${clientId}`, operation: "update",
+      data: { [`photoAccessRevoked.${fromInstructorId}`]: true, [`photoAccessRevoked.${toInstructorId}`]: false } },
   ]);
   /* carriedSessions 는 **늘 빈 배열이다** (2026-10-23). 부르는 쪽이 이 칸을
      읽고 있어 모양은 남긴다 -- 없애면 undefined 를 세게 된다. */

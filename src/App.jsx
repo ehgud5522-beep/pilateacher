@@ -209,7 +209,7 @@ import {
   mayAdjustRemaining,
   isFreshlyIssuedPass,
   correctDeduction, deductPass, holdPass, isCancellablePass, loadPassReconcileRows,
-  isCorrectableEntry, isCorrectedEntry, isDeductablePass, isExpiredPass, issuePass,
+  isCorrectableEntry, isCorrectedEntry, isDeductablePass, isExpiredPass, issuePass, hasActivePassBalance,
   listInstructorClientTotals, listPassLedger, listPasses, loadClientPassHistory, remainingCountOf,
   transferPassInstructor,
   transferPass,
@@ -456,7 +456,7 @@ import {
   instructorMonthReport, previousMonthOf,
 } from "./features/members/instructor-month.js";
 import { EXPIRY_REASON_LABELS } from "./data/schema/instructor-scope.js";
-import { isPassHeld } from "../functions/shared/pass-hold.mjs";
+import { holdBlocksLesson, isPassHeld } from "../functions/shared/pass-hold.mjs";
 import { BranchMemberOverview } from "./features/members/BranchMemberOverview.jsx";
 import { passBelongsTo, passClientIds } from "./data/schema/pass-clients.js";
 import {
@@ -16990,7 +16990,12 @@ function AttendanceCheck({
     () => (clientId && journeyOfClient ? journeyOfClient(clientId) : null),
     [clientId, journeyOfClient],
   );
-  const spendable = clientPasses.filter(isDeductablePass);
+  /* 홀딩은 고른 수업 날짜로 본다 (holdBlocksLesson) -- 홀딩 전에 한 수업은
+     지금 홀딩 중이어도 차감한다. 날짜를 아직 안 골랐으면 지금으로 본다. */
+  const lessonAt = new Date(`${day}T${time || "00:00"}:00`);
+  const heldForLesson = (pass) => holdBlocksLesson(pass, lessonAt);
+  const passUsable = (pass) => hasActivePassBalance(pass) && !heldForLesson(pass);
+  const spendable = clientPasses.filter(passUsable);
 
   const deduct = async (pass) => {
     setSaving(true);
@@ -17134,7 +17139,8 @@ function AttendanceCheck({
                 ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>발급된 회원권이 없습니다.</p>
                 : clientPasses.map((pass) => {
                   const remaining = remainingCountOf(pass);
-                  const usable = isDeductablePass(pass);
+                  const usable = passUsable(pass);
+                  const heldNote = hasActivePassBalance(pass) && heldForLesson(pass);
                   return (
                     <div key={pass.id} className="flex items-center gap-2"
                       style={{ padding: "11px 0", borderTop: `1px solid ${LINE}`, opacity: usable ? 1 : 0.55 }}>
@@ -17143,7 +17149,9 @@ function AttendanceCheck({
                           {labelOf(PAY_CATEGORY_LABELS, pass.category)}
                         </p>
                         <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: usable ? SUB : WARN }}>
-                          {usable ? `잔여 ${remaining}회` : remaining === 0 ? "잔여 0회 — 차감할 수 없습니다" : "사용할 수 없는 회원권입니다"}
+                          {usable ? `잔여 ${remaining}회`
+                            : heldNote ? "이 날짜는 홀딩 기간입니다 — 홀딩 전 수업만 차감할 수 있습니다"
+                            : remaining === 0 ? "잔여 0회 — 차감할 수 없습니다" : "사용할 수 없는 회원권입니다"}
                         </p>
                       </div>
                       <button type="button" disabled={!usable || saving} onClick={() => setConfirming(pass)}

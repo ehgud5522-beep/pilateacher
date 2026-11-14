@@ -598,3 +598,11 @@ body {
 /* 공용 공유 스타일(.private-member-sharing button)의 테두리를 목록 줄에서는 걷는다 -- 한 카드 안의 줄이다. */
 .ba-member .ba-share-row { border: 0; border-radius: 0; background: transparent; padding: 14px 20px; }
 .ba-member .ba-share-row + .ba-share-row { border-top: 1px solid var(--line); }
+
+/* 세션업 기간 안내 (회원권 카드 안). 마지막 기회일 때만 핑크로 강조한다. */
+.pass .session-up { margin-top: 12px; padding: 12px 14px; border-radius: 14px; background: var(--card-tone); word-break: keep-all; }
+.pass .session-up-title { font-size: var(--t-caption); font-weight: 700; color: var(--ink); }
+.pass .session-up.last .session-up-title { color: var(--rose); }
+.pass .session-up-detail { margin-top: 2px; font-size: 12px; color: var(--sub); line-height: 1.5; }
+.pass .session-up-value { margin-top: 8px; font-size: 12px; color: var(--ink); line-height: 1.55; }
+.pass .session-up-ask { margin-top: 2px; font-size: 11px; color: var(--faint); line-height: 1.5; }

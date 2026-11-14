@@ -27,6 +27,7 @@ import { isUsablePass, remainingSplit } from "../../src/features/membership/pass
 import { lessonName, passTitle, serviceLabel } from "./pass-label.js";
 import { homeSummary } from "./home-summary.js";
 import { BEFORE_AFTER_PRIVACY, daysBetweenDates } from "./before-after-copy.js";
+import { SESSION_UP_ASK, SESSION_UP_VALUE, sessionUpNotice } from "./session-up-copy.js";
 
 /**
  * 의견을 받는 곳. 링크 하나다.
@@ -649,6 +650,20 @@ export function PushSettings({ push }) {
   );
 }
 
+/* 세션업 기간 안내. 기간이 끝난 회원권에는 서지 않는다 (session-up-copy.js). */
+function SessionUpNote({ pass, now }) {
+  const notice = sessionUpNotice(pass, now);
+  if (!notice) return null;
+  return (
+    <div className={`session-up${notice.last ? " last" : ""}`} data-session-up={notice.left}>
+      <p className="session-up-title">{notice.title}</p>
+      <p className="session-up-detail num">{notice.detail}</p>
+      <p className="session-up-value">{SESSION_UP_VALUE}</p>
+      <p className="session-up-ask">{SESSION_UP_ASK}</p>
+    </div>
+  );
+}
+
 function PassCard({ pass, dim, now = new Date() }) {
   return (
     <Card tone={dim ? "quietcard" : ""} className="pass">
@@ -673,6 +688,7 @@ function PassCard({ pass, dim, now = new Date() }) {
         <p className="meta">그중 서비스 {remainingSplit(pass).service}회</p>
       ) : null}
       {pass.expiresAt ? <p className="meta num">{dateLabel(pass.expiresAt)}까지</p> : null}
+      {dim ? null : <SessionUpNote pass={pass} now={now} />}
       {/* 각자 30회로 오해하면 계약 자체가 틀어진다. 반드시 적는다. */}
       {pass.isDuet ? (
         <p className="duet">

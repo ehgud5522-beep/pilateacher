@@ -585,3 +585,26 @@ test("held passes retain balance and dates but are excluded from usable total", 
   assert.deepEqual(view.passes[0].holdUntil, until);
   assert.equal(build({ passes: [pass({ holdFrom: from, holdUntil: until })], now: until }).remainingTotal, 8);
 });
+
+test("session-up window in the member projection matches the shared module for every shape of pass", async () => {
+  const { sessionUpWindow } = require("../src/member-view");
+  const { sessionUpWindowOf } = await import("../shared/session-up.mjs");
+  const cases = [];
+  for (const totalSessions of [0, 3, 9, 10, 20, 30])
+    for (const serviceSessions of [0, 1, 2])
+      for (let remainingCount = 0; remainingCount <= totalSessions + serviceSessions; remainingCount++)
+        for (const serviceUsed of [undefined, 0, 1, 2])
+          cases.push({ totalSessions, serviceSessions, remainingCount, serviceUsed });
+  cases.push({ totalSessions: 10, serviceSessions: 0, remainingCount: 14 }); // 이관분 어긋남
+  for (const pass of cases) {
+    const shared = sessionUpWindowOf(pass);
+    assert.deepEqual(sessionUpWindow(pass), { limit: shared.limit, left: shared.left }, JSON.stringify(pass));
+  }
+});
+
+test("member projection carries the session-up window but never serviceUsed", () => {
+  const view = build({ passes: [pass({ totalSessions: 10, serviceSessions: 1, serviceUsed: 1, remainingCount: 8 })] });
+  assert.equal(view.passes[0].sessionUpLimit, 6);
+  assert.equal(view.passes[0].sessionUpLeft, 5); // 결제 회차 2회 사용, 6회차까지 → 지금 포함 5번
+  assert.ok(!("serviceUsed" in view.passes[0]));
+});

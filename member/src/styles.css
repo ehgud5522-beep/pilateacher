@@ -555,3 +555,60 @@ body {
 @media (prefers-color-scheme: dark) { :root { --sub: #B9ADB3; --faint: #A1959B; --shadow: 0 2px 14px rgba(0,0,0,.18); } }
 @media (prefers-reduced-motion: no-preference) { .membership-disclosure > summary span { transition: transform 160ms ease; } }
 .feedback-message { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
+
+/* ── 비포애프터 (2026-11-14) ─────────────────────────────────────────
+   홈 칸 · 목록 · 기록 화면. 안내 문구(.ba-privacy)는 작게 -- 대표: "글씨는 작게". */
+.ba-home-card { display: block; width: 100%; text-align: left; border: 0; font: inherit; color: inherit; cursor: pointer; }
+.ba-home-card .sechead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding: 0; }
+.ba-home-label { font-size: 13px; font-weight: 700; color: var(--sub); }
+.ba-home-more { font-size: 12px; color: var(--sub); }
+.ba-home-main { display: block; font-size: 15px; font-weight: 600; line-height: 1.5; }
+.ba-home-main b { color: var(--rose); }
+.ba-privacy { display: block; margin-top: 10px; font-size: 11px; line-height: 1.5; color: var(--sub); }
+.ba-home-privacy { margin-top: 8px; }
+
+.ba-member h1 { font-size: 20px; margin: 0; }
+.ba-member-head { display: flex; align-items: center; gap: 10px; }
+.ba-member-head > div { flex: 1; min-width: 0; }
+.ba-member-head p { margin: 2px 0 0; font-size: 13px; }
+.ba-member .ba-back { min-width: 40px; min-height: 40px; padding: 0; border: 0; background: transparent; font-size: 26px; line-height: 1; color: var(--ink); }
+.ba-member .ba-refresh, .ba-member .ba-withdraw { min-height: 36px; padding: 0 12px; border: 0; border-radius: 10px; background: var(--card-tone); color: var(--sub); font: inherit; font-size: 12px; }
+.ba-member .ba-withdraw { display: block; margin-left: auto; background: transparent; text-decoration: underline; }
+.ba-share-list { padding: 4px 0; }
+.ba-share-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 20px; border: 0; background: transparent; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.ba-share-row + .ba-share-row { border-top: 1px solid var(--line); }
+.ba-share-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.ba-share-title { font-size: 15px; font-weight: 700; }
+.ba-share-title b { color: var(--rose); }
+.ba-share-new { margin-left: 8px; padding: 2px 7px; border-radius: 6px; background: var(--card-tone); color: var(--rose); font-size: 11px; font-style: normal; font-weight: 700; vertical-align: 1px; }
+.ba-share-sub { font-size: 12px; color: var(--sub); }
+.ba-share-go { color: var(--sub); font-size: 20px; }
+/* 카드 이미지가 곧 카드다 (2026-11-15). 흰 칸 안에 또 카드를 넣으면 테두리가 두 겹이 된다.
+   선생님 · 날짜는 머리에 이미 있으니 이미지 아래에 다시 쓰지 않는다. */
+.card.ba-member-card { padding: 0; overflow: hidden; background: transparent; }
+.ba-member-card .private-share-view figure { margin: 0; }
+.ba-member-card img { display: block; width: 100%; border-radius: 0; }
+.ba-member-card figcaption { display: none; }
+.ba-member-card .private-share-view > p { margin: 0; padding: 28px 20px; text-align: center; font-size: 13px; color: var(--sub); }
+.ba-member .ba-privacy { text-align: center; }
+.ba-consent h2 { font-size: 16px; margin: 0; }
+.ba-consent p { font-size: 13px; line-height: 1.6; margin: 0; }
+.ba-check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.5; }
+.ba-check input { margin-top: 3px; accent-color: var(--rose); }
+.ba-member .share-confirm { min-height: 44px; border: 0; border-radius: 12px; background: var(--rose); color: #fff; font: inherit; font-weight: 700; }
+.ba-member .share-confirm:disabled { opacity: .45; }
+.ba-empty-share p { margin: 0; font-size: 14px; }
+.ba-empty-share p + p { margin-top: 4px; font-size: 12px; }
+.ba-error { font-size: 13px; }
+.ba-error button { margin-left: 8px; }
+/* 공용 공유 스타일(.private-member-sharing button)의 테두리를 목록 줄에서는 걷는다 -- 한 카드 안의 줄이다. */
+.ba-member .ba-share-row { border: 0; border-radius: 0; background: transparent; padding: 14px 20px; }
+.ba-member .ba-share-row + .ba-share-row { border-top: 1px solid var(--line); }
+
+/* 세션업 기간 안내 (회원권 카드 안). 마지막 기회일 때만 핑크로 강조한다. */
+.pass .session-up { margin-top: 12px; padding: 12px 14px; border-radius: 14px; background: var(--card-tone); word-break: keep-all; }
+.pass .session-up-title { font-size: var(--t-caption); font-weight: 700; color: var(--ink); }
+.pass .session-up.last .session-up-title { color: var(--rose); }
+.pass .session-up-detail { margin-top: 2px; font-size: 12px; color: var(--sub); line-height: 1.5; }
+.pass .session-up-value { margin-top: 8px; font-size: 12px; color: var(--ink); line-height: 1.55; }
+.pass .session-up-ask { margin-top: 2px; font-size: 11px; color: var(--faint); line-height: 1.5; }

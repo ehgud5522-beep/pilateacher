@@ -26,6 +26,8 @@ import { isUsablePass, remainingSplit } from "../../src/features/membership/pass
 /* 수강권 이름은 상품명이 아니라 수업 유형과 횟수로 짓는다 (pass-label.js). */
 import { lessonName, passTitle, serviceLabel } from "./pass-label.js";
 import { homeSummary } from "./home-summary.js";
+import { BEFORE_AFTER_PRIVACY, daysBetweenDates } from "./before-after-copy.js";
+import { SESSION_UP_ASK, SESSION_UP_VALUE, sessionUpNotice } from "./session-up-copy.js";
 
 /**
  * 의견을 받는 곳. 링크 하나다.
@@ -328,7 +330,7 @@ const HISTORY_LABEL = {
  * 취소 버튼은 서버가 켜져 있다고 답할 때만 그린다 (lesson-sheet.jsx). 수업 id 가 없는
  * 옛 회원 데이터(서버가 다시 만들기 전)는 누를 수 없다.
  */
-export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, onOpenLesson }) {
+export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, onOpenLesson, beforeAfter = null, onOpenBeforeAfter }) {
   const history = Array.isArray(view?.history) ? view.history : [];
   const dates = useMemo(() => attendedDates(history), [history]);
   const planned = useMemo(() => plannedDates(view?.schedule), [view?.schedule]);
@@ -410,6 +412,17 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, on
         <p className="feedback-message">{text(feedback.memberNote)}</p>
         <p className="feedback-author">{dayLabel(feedback.occurredAt)}{text(feedback.instructorName) ? ` · ${text(feedback.instructorName)} 강사` : ""}</p>
       </section> : null}
+
+      {/* 선생님이 남긴 비포애프터 (2026-11-14). 공유 기능이 켜진 계정에만 -- 꺼져 있으면 beforeAfter 가 null 이다. */}
+      {beforeAfter && onOpenBeforeAfter ? <button type="button" className="card ba-home-card" onClick={onOpenBeforeAfter}>
+        <span className="sechead"><span className="ba-home-label">선생님이 남긴 비포애프터</span><span className="ba-home-more">보기 ›</span></span>
+        <span className="ba-home-main">{beforeAfter.unread > 0
+          ? <>새 기록 <b className="num">{beforeAfter.unread}</b>개가 도착했어요</>
+          : beforeAfter.count > 0
+            ? (() => { const d = beforeAfter.latest?.shareType === 'card' ? daysBetweenDates(beforeAfter.latest.dates?.[0], beforeAfter.latest.dates?.[1]) : null; return d ? <>최근 기록 · <b className="num">{d}</b>일의 변화</> : <>받은 기록 <b className="num">{beforeAfter.count}</b>개</>; })()
+            : '선생님이 변화를 기록하면 여기에서 볼 수 있어요'}</span>
+        <span className="ba-privacy ba-home-privacy">{BEFORE_AFTER_PRIVACY}</span>
+      </button> : null}
 
       <Card className="cal">
         <div className="calhead">
@@ -637,6 +650,20 @@ export function PushSettings({ push }) {
   );
 }
 
+/* 세션업 기간 안내. 기간이 끝난 회원권에는 서지 않는다 (session-up-copy.js). */
+function SessionUpNote({ pass, now }) {
+  const notice = sessionUpNotice(pass, now);
+  if (!notice) return null;
+  return (
+    <div className={`session-up${notice.last ? " last" : ""}`} data-session-up={notice.left}>
+      <p className="session-up-title">{notice.title}</p>
+      <p className="session-up-detail num">{notice.detail}</p>
+      <p className="session-up-value">{SESSION_UP_VALUE}</p>
+      <p className="session-up-ask">{SESSION_UP_ASK}</p>
+    </div>
+  );
+}
+
 function PassCard({ pass, dim, now = new Date() }) {
   return (
     <Card tone={dim ? "quietcard" : ""} className="pass">
@@ -661,6 +688,7 @@ function PassCard({ pass, dim, now = new Date() }) {
         <p className="meta">그중 서비스 {remainingSplit(pass).service}회</p>
       ) : null}
       {pass.expiresAt ? <p className="meta num">{dateLabel(pass.expiresAt)}까지</p> : null}
+      {dim ? null : <SessionUpNote pass={pass} now={now} />}
       {/* 각자 30회로 오해하면 계약 자체가 틀어진다. 반드시 적는다. */}
       {pass.isDuet ? (
         <p className="duet">

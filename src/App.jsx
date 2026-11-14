@@ -392,10 +392,11 @@ import {
   writeCaptureTimer,
 } from "./features/posture/posture-camera.js";
 import {
-  ANNOTATION_PRESET_COLORS, HANDWRITING_SIZE_OPTIONS, annotationFont, annotationFontSize,
+  ANNOTATION_PRESET_COLORS, ANNOTATION_TEXT_HANDLE_GAP, HANDWRITING_SIZE_OPTIONS, annotationFont, annotationFontSize,
   annotationOutlineColor, annotationOutlineRadius, annotationStrokeLayers, annotationTextOutlineWidth,
-  annotationTextBounds, annotationTextLines, applyAnnotationDrag, arrowHeadPoints,
-  closestHandwritingWidth, hexToHsl, hitTestAnnotations, hslToHex, normalizeAnnotationColor,
+  annotationTextBounds, annotationTextLines, annotationTextRotation, applyAnnotationDrag, arrowHeadPoints,
+  closestHandwritingWidth, hexToHsl, hitTestAnnotation, hitTestAnnotations, hslToHex, normalizeAnnotationColor,
+  transformAnnotationText,
   readRecentAnnotationColors, rememberAnnotationColor, screenPointToImagePoint,
 } from "./features/posture/posture-annotations.js";
 import { LOCAL_PHOTO_NOTICE_MESSAGE, claimLocalPhotoNotice } from "./features/posture/photo-storage-notice.js";
@@ -5463,9 +5464,13 @@ function drawAnnotationMark(ctx, mark, width, height, options = {}) {
        as well as on a dark floor, where a shadow only worked on light ground. */
     ctx.lineJoin = "round"; ctx.miterLimit = 2;
     ctx.strokeStyle = outlineColor; ctx.lineWidth = annotationTextOutlineWidth(fontScale);
-    lines.forEach((line, index) => ctx.strokeText(line || " ", start.x, start.y + index * lineHeight));
+    /* 기울기는 기준점(글자 왼쪽 위)을 축으로 돈다 -- SVG 쪽(AnnotationSvgMark)과 같은 축. */
+    const textRot = annotationTextRotation(mark);
+    ctx.translate(start.x, start.y);
+    if (textRot) ctx.rotate((textRot * Math.PI) / 180);
+    lines.forEach((line, index) => ctx.strokeText(line || " ", 0, index * lineHeight));
     ctx.fillStyle = markColor;
-    lines.forEach((line, index) => ctx.fillText(line || " ", start.x, start.y + index * lineHeight));
+    lines.forEach((line, index) => ctx.fillText(line || " ", 0, index * lineHeight));
   } else {
     strokeOutlined(() => {
       ctx.beginPath();
@@ -5473,6 +5478,15 @@ function drawAnnotationMark(ctx, mark, width, height, options = {}) {
       else if (mark.tool === "vline") { ctx.moveTo(start.x, offsetY); ctx.lineTo(start.x, offsetY + height); }
       else mark.pts.forEach((value, index) => { const next = point(value); index ? ctx.lineTo(next.x, next.y) : ctx.moveTo(next.x, next.y); });
     });
+    /* 이름 붙은 기준선(어깨선 · 골반선 …)은 선 끝에 작은 이름표를 단다. 이름 없는 옛 선은 그대로. */
+    if ((mark.tool === "hline" || mark.tool === "vline") && mark.guide && mark.label && !options.hideLabel) {
+      const tag = guideTagBox(mark, start, width, height, fontScale, offsetX, offsetY);
+      ctx.font = `700 ${tag.fontSize}px Pretendard, sans-serif`;
+      const tagWidth = ctx.measureText(String(mark.label)).width + tag.padX * 2;
+      ctx.fillStyle = "rgba(10,10,16,0.74)"; ctx.fillRect(tag.x, tag.y, tagWidth, tag.h);
+      ctx.fillStyle = "#fff"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+      ctx.fillText(String(mark.label), tag.x + tag.padX, tag.y + tag.h / 2 + fontScale * 0.5);
+    }
     if (mark.tool === "arrow" && mark.pts.length >= 2) {
       const [left, right] = arrowHeadPoints(start, end, (7 + (Number(mark.width) || 3) * 1.4) * lineScale);
       strokeOutlined(() => {
@@ -5503,6 +5517,59 @@ function drawAnnotationMark(ctx, mark, width, height, options = {}) {
   ctx.restore();
 }
 
+/* 기준선 (2026-11-15 대표: "중복으로 선택돼서 여러 개가 의미가 없음").
+      전에는 다섯 줄 가운데 무엇을 골라도 "가로선 하나 긋기" 였고, 앞의 두 줄이 늘 고른 것처럼 칠해져 있었다.
+      이제 고르면 그 이름의 선이 그 자리에 바로 놓이고, 놓인 선만 켜진 것으로 보인다. */
+const POSTURE_GUIDES = Object.freeze([
+  { key: "shoulder", label: "어깨선", tool: "hline", at: { x: 0.5, y: 0.28 } },
+  { key: "pelvis", label: "골반선", tool: "hline", at: { x: 0.5, y: 0.54 } },
+  { key: "knee", label: "무릎선", tool: "hline", at: { x: 0.5, y: 0.73 } },
+  { key: "ankle", label: "발목선", tool: "hline", at: { x: 0.5, y: 0.88 } },
+  { key: "spine", label: "중심선", tool: "vline", at: { x: 0.5, y: 0.5 } },
+]);
+/* 기준선 이름표 자리. 캔버스와 SVG 두 곳이 같은 수를 쓴다. */
+function guideTagBox(mark, start, width, height, fontScale, offsetX = 0, offsetY = 0) {
+  const fontSize = 9.5 * fontScale, h = fontSize + 6 * fontScale, gap = 3 * fontScale;
+  if (mark.tool === "vline") return { fontSize, h, padX: 6 * fontScale, x: start.x + gap + 2 * fontScale, y: offsetY + 6 * fontScale };
+  const above = start.y - h - gap;
+  return { fontSize, h, padX: 6 * fontScale, x: offsetX + 6 * fontScale, y: above < offsetY ? start.y + gap : above };
+}
+
+/* 비포애프터 앨범의 "지난 사진에 맞춰 찍기". 자세 기록의 촬영 화면을 한 방향짜리로 그대로 쓴다 --
+   카메라 권한 · 수평 센서 · 타이머 · 실패 진단이 이미 그 안에 있다. 찍은 사진은 앨범이 받아 저장한다(onCaptured).
+   저장에 실패하면 화면은 닫히지 않고 방금 찍은 사진을 쥔 채 남는다. */
+function AlbumCaptureScreen({ member, view, ghost, onCaptured, onPickFile, onClose }) {
+  const [busy, setBusy] = useState(false);
+  const [taken, setTaken] = useState(false);
+  const session = useRef(`album_${Date.now().toString(36)}`);
+  const captureViews = useMemo(() => [{ key: view, label: postureViewLabel(view) }], [view]);
+  /* 저장이 끝나면 "다 찍었다" 로 바꿔 미리보기가 다시 켜지지 않게 한 뒤 닫는다. */
+  const capturePhotos = useMemo(() => (taken ? { [view]: { src: "" } } : {}), [taken, view]);
+  const accept = async (blob) => {
+    setBusy(true);
+    try {
+      const stored = await onCaptured(blob, view);
+      if (stored) { setTaken(true); onClose(); }
+      return stored;
+    } finally { setBusy(false); }
+  };
+  return <PostureCaptureScreen member={member} assessmentId={session.current} roleLabel="비포애프터" captureViews={captureViews} currentCapture={captureViews[0]}
+    capturePhotos={capturePhotos} draftSaved={EMPTY_OBJECT} busy={busy} ghost={ghost}
+    onSelectView={NOOP} onAcceptCapture={accept} onOpenAlbum={onPickFile} onContinue={onClose} onExit={onClose} />;
+}
+const EMPTY_OBJECT = Object.freeze({});
+const NOOP = () => {};
+const renderAlbumCapture = (props) => <AlbumCaptureScreen {...props} />;
+
+/* 비포애프터 자동 맞춤이 쓰는 자세 인식 (BeforeAfterAlbum detectPose). 자세 분석과 같은 인식기를 쓴다 --
+   기기 안에서만 돌고, 받아 오는 것은 모델 파일뿐이다. 사진은 어디로도 보내지 않는다. */
+async function detectAlbumPose(image) {
+  const landmarker = await loadLandmarker();
+  return landmarker.detect(image)?.landmarks?.[0] || null;
+}
+/* 진단에는 코드 · 단계 · 걸린 시간만 남긴다. 회원 · 사진을 가리키는 값은 넣지 않는다. */
+const logAlbumAlign = (event, details, error) => deviceLog(event, { feature: "before_after_align", stage: "auto_align", ...details, ...(error ? deviceError(error) : {}) });
+
 /* 자 손잡이의 터치 반경. 그려진 원(15px·13px)보다 넉넉해야 손가락으로 잡힌다. */
 const RULER_HANDLE_HIT = 26;
 
@@ -5515,6 +5582,10 @@ const drawAlbumMarks = (ctx, marks, w, h) => {
 
 function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDraft, onToast, fresh, initialTool = "pen" }) {
   const wrapRef = useRef(null), canvasRef = useRef(null), imgRef = useRef(null);
+  /* 자 · 손잡이는 사진 위에 따로 얹은 판에 그린다. 사진 판은 확대할 때 통째로 늘어나 흐려지는데,
+     도구까지 같이 흐려지면 각도 숫자를 읽을 수 없다. 이 판은 늘어나지 않고 늘 화면 해상도로 그린다.
+     저장 · 공유 이미지는 사진 판에서만 나오므로 도구가 찍혀 나갈 일도 없다. */
+  const toolLayerRef = useRef(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [marks, setMarks] = useState(() => (Array.isArray(photo.marks) ? photo.marks : []).map((mark) => ({ ...mark, id: mark?.id || uid() })));
   const marksRef = useRef(marks);
@@ -5524,7 +5595,6 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
   const [draft, setDraft] = useState(null);
   const [pending, setPending] = useState(null);
   const [tool, setTool] = useState(initialTool === "guide" ? "pen" : initialTool);
-  const [guideSheet, setGuideSheet] = useState(false);
   const [recentColors, setRecentColors] = useState(() => readRecentAnnotationColors(window.localStorage));
   const [color, setColor] = useState("#FFFFFF");
   const [width, setWidth] = useState(4);
@@ -5537,7 +5607,8 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
   const editRef = useRef(null);
   const memoTapRef = useRef(null);
   const rulerDrag = useRef(null);
-  /* 두 손가락으로 자를 옮기고 돌린다 */
+  /* 고른 손메모 위에 두 손가락을 올리면 사진이 아니라 손메모가 커지고 돈다 */
+  const memoPinch = useRef(null);
   const ptrs = useRef(new Map());
   /* 자가 꺼져 있으면 두 손가락은 사진 확대·이동 */
   const [zoom, setZoom] = useState(1);
@@ -5634,6 +5705,8 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       const w = el.clientWidth, h = el.clientHeight, dpr = window.devicePixelRatio || 1;
       c.width = w * dpr; c.height = h * dpr;
       c.style.width = `${w}px`; c.style.height = `${h}px`;
+      const layer = toolLayerRef.current;
+      if (layer) { layer.width = w * dpr; layer.height = h * dpr; layer.style.width = `${w}px`; layer.style.height = `${h}px`; }
       setSize({ w, h });
     };
     fit();
@@ -5649,9 +5722,12 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
     if (!ruler) return null;
     const C = { x: ruler.cx * w, y: ruler.cy * h };
     const rad = (ruler.deg * Math.PI) / 180;
-    return { C, rad, u: { x: Math.cos(rad), y: Math.sin(rad) }, n: { x: -Math.sin(rad), y: Math.cos(rad) }, L: Math.hypot(w, h) * 1.3 };
+    /* 자는 화면 기준 크기다 (2026-11-15 대표: "확대하면 자도 같이 확대가 됨").
+       사진을 키워도 자의 두께 · 손잡이 · 눈금은 그대로다. k 가 확대 배율이고, 자 자기 좌표(toLocal)와
+       길이 L 은 화면 픽셀, 중심 C 는 사진 픽셀이다. */
+    return { C, rad, u: { x: Math.cos(rad), y: Math.sin(rad) }, n: { x: -Math.sin(rad), y: Math.cos(rad) }, k: zoom, L: Math.hypot(w, h) * 1.3 * zoom };
   };
-  const toLocal = (g, P) => { const dx = P.x - g.C.x, dy = P.y - g.C.y; return { x: dx * g.u.x + dy * g.u.y, y: dx * g.n.x + dy * g.n.y }; };
+  const toLocal = (g, P) => { const dx = (P.x - g.C.x) * g.k, dy = (P.y - g.C.y) * g.k; return { x: dx * g.u.x + dy * g.u.y, y: dx * g.n.x + dy * g.n.y }; };
   /* 자를 잡는 곳은 자 위에 그려진 두 손잡이뿐이다.
 
      예전에는 두 손가락을 자가 통째로 가져가 확대가 막혔고, 한 손가락도 자 몸통
@@ -5676,7 +5752,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
     const lp = toLocal(g, { x: p.x * w, y: p.y * h });
     if (lp.y >= -1) return { ok: false, pt: p, lp };      /* 자 몸통과 그 아래 — 금지 */
     if (lp.y < -140) return { ok: true, pt: p, lp };       /* 자에서 멀면 자유롭게 */
-    return { ok: true, snap: true, lp, pt: { x: (g.C.x + lp.x * g.u.x) / w, y: (g.C.y + lp.x * g.u.y) / h } };
+    return { ok: true, snap: true, lp, pt: { x: (g.C.x + (lp.x / g.k) * g.u.x) / w, y: (g.C.y + (lp.x / g.k) * g.u.y) / h } };
   };
   const snapPt = (p) => rulerZone(p).pt;
 
@@ -5700,10 +5776,32 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
         ctx.beginPath(); ctx.arc(value.x, value.y, index ? 2.8 : 2.3, 0, Math.PI * 2); ctx.fillStyle = mark.color || color; ctx.fill();
       });
     } else if (mark.tool === "text") {
+      /* 점선 틀 + 손잡이 둘. 아래 오른쪽 = 크기, 위 가운데 = 기울기. 손잡이는 화면 기준 크기(k)라
+         사진을 확대해도 손가락으로 잡힌다. 자리 계산은 hitTestAnnotation 과 같은 수다. */
       const bounds = annotationTextBounds(mark, { width: w, height: h }, measureCanvasText, renderScale);
-      ctx.setLineDash([5, 4]); ctx.strokeStyle = "rgba(255,255,255,.92)"; ctx.lineWidth = 1.5;
-      ctx.strokeRect(bounds.left - 7, bounds.top - 6, bounds.width + 14, bounds.height + 12); ctx.setLineDash([]);
-      ctx.beginPath(); ctx.arc(bounds.left - 7, bounds.top - 6, 8, 0, Math.PI * 2); ctx.fillStyle = "rgba(18,22,32,.92)"; ctx.fill(); ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.stroke();
+      const k = 1 / zoom, padX = 7 * k, padY = 6 * k;
+      ctx.translate(bounds.left, bounds.top);
+      ctx.rotate((annotationTextRotation(mark) * Math.PI) / 180);
+      ctx.setLineDash([5 * k, 4 * k]); ctx.strokeStyle = "rgba(255,255,255,.92)"; ctx.lineWidth = 1.5 * k;
+      ctx.strokeRect(-padX, -padY, bounds.width + padX * 2, bounds.height + padY * 2); ctx.setLineDash([]);
+      const rotX = bounds.width / 2, rotY = -padY - ANNOTATION_TEXT_HANDLE_GAP * k;
+      ctx.beginPath(); ctx.moveTo(rotX, -padY); ctx.lineTo(rotX, rotY); ctx.stroke();
+      ctx.beginPath(); ctx.arc(rotX, rotY, 10 * k, 0, Math.PI * 2); ctx.fillStyle = PRIMARY; ctx.fill(); ctx.strokeStyle = "#fff"; ctx.lineWidth = 2 * k; ctx.stroke();
+      ctx.beginPath(); ctx.arc(rotX, rotY, 4.5 * k, -Math.PI * 0.85, Math.PI * 0.45); ctx.lineWidth = 1.6 * k; ctx.stroke();
+      const sizeX = bounds.width + padX, sizeY = bounds.height + padY;
+      ctx.beginPath(); ctx.arc(sizeX, sizeY, 10 * k, 0, Math.PI * 2); ctx.fillStyle = "#FFFFFF"; ctx.fill(); ctx.strokeStyle = "rgba(18,22,32,.55)"; ctx.lineWidth = 1.5 * k; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(sizeX - 4 * k, sizeY - 4 * k); ctx.lineTo(sizeX + 4 * k, sizeY + 4 * k);
+      ctx.moveTo(sizeX + 4 * k, sizeY + 0.5 * k); ctx.lineTo(sizeX + 4 * k, sizeY + 4 * k); ctx.lineTo(sizeX + 0.5 * k, sizeY + 4 * k);
+      ctx.moveTo(sizeX - 4 * k, sizeY - 0.5 * k); ctx.lineTo(sizeX - 4 * k, sizeY - 4 * k); ctx.lineTo(sizeX - 0.5 * k, sizeY - 4 * k);
+      ctx.strokeStyle = "#17171F"; ctx.lineWidth = 1.6 * k; ctx.stroke();
+    } else if (mark.tool === "hline" || mark.tool === "vline") {
+      /* 고른 기준선 한가운데 손잡이 -- "이 선을 끌 수 있다" 는 표시. 선 어디를 잡아도 움직인다. */
+      const k = 1 / zoom, vertical = mark.tool === "vline";
+      const cx = vertical ? mark.pts[0].x * w : w / 2, cy = vertical ? h / 2 : mark.pts[0].y * h;
+      ctx.beginPath(); ctx.arc(cx, cy, 12 * k, 0, Math.PI * 2); ctx.fillStyle = "#FFFFFF"; ctx.fill(); ctx.strokeStyle = "rgba(18,22,32,.55)"; ctx.lineWidth = 1.5 * k; ctx.stroke();
+      ctx.beginPath();
+      [-3, 3].forEach((d) => { if (vertical) { ctx.moveTo(cx + d * k, cy - 5 * k); ctx.lineTo(cx + d * k, cy + 5 * k); } else { ctx.moveTo(cx - 5 * k, cy + d * k); ctx.lineTo(cx + 5 * k, cy + d * k); } });
+      ctx.strokeStyle = "#17171F"; ctx.lineWidth = 1.6 * k; ctx.stroke();
     }
     ctx.restore();
   };
@@ -5713,6 +5811,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
     const rx = Math.min(150, g.L / 2 - 30);
     ctx.save();
     ctx.translate(g.C.x, g.C.y); ctx.rotate(g.rad);
+    ctx.scale(1 / g.k, 1 / g.k);
     ctx.fillStyle = "rgba(16,16,24,0.94)";
     ctx.fillRect(-g.L / 2, 0, g.L, 56);
     ctx.strokeStyle = "rgba(255,255,255,0.95)"; ctx.lineWidth = 2;
@@ -5757,10 +5856,20 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
     marks.forEach((mark) => drawAnnotationMark(ctx, mark, w, h, { lineScale: renderScale, fontScale: renderScale }));
     if (draft) drawAnnotationMark(ctx, draft, w, h, { lineScale: renderScale, fontScale: renderScale });
     if (pending && !draft) drawAnnotationMark(ctx, { tool: "point", color, width, opacity, pts: [pending] }, w, h, { lineScale: renderScale, fontScale: renderScale });
-    drawSelection(ctx, marks.find((mark) => mark.id === selectedMarkId), w, h, renderScale);
-    if (ruler && !exportingRef.current) drawRuler(ctx, w, h);
-  }, [marks, draft, pending, grid, ruler, color, width, opacity, photo, size, selectedMarkId]);
+  }, [marks, draft, pending, grid, color, width, opacity, photo, size]);
   useEffect(() => { draw(); }, [draw]);
+  /* 도구 판: 사진 판과 같은 확대 · 이동을 좌표에만 적용한다 (늘리지 않는다). */
+  const drawTools = useCallback(() => {
+    const layer = toolLayerRef.current; if (!layer) return;
+    const ctx = layer.getContext("2d"), dpr = window.devicePixelRatio || 1;
+    const w = layer.width / dpr, h = layer.height / dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    ctx.translate(w / 2 + pan.x, h / 2 + pan.y); ctx.scale(zoom, zoom); ctx.translate(-w / 2, -h / 2);
+    drawSelection(ctx, marks.find((mark) => mark.id === selectedMarkId), w, h, w / 300);
+    if (ruler) drawRuler(ctx, w, h);
+  }, [marks, ruler, color, size, selectedMarkId, zoom, pan]);
+  useEffect(() => { drawTools(); }, [drawTools]);
 
   const pos = (e) => screenPointToImagePoint(e, imageFrame(), { zoom, panX: pan.x, panY: pan.y });
   const baseViewport = () => {
@@ -5780,6 +5889,17 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       memoTapRef.current = null;
       if (editRef.current) { replaceMarks(editRef.current.before); editRef.current = null; }
       setDraft(null);
+      /* 고른 손메모 위에서 벌리면 손메모가 커지고 돈다. 그 밖에서는 지금까지처럼 사진 확대. */
+      const chosen = marksRef.current.find((mark) => mark.id === selectedMarkId && mark.tool === "text");
+      if (chosen) {
+        const frame = imageFrame();
+        const middle = pos({ clientX: (a.x + b.x) / 2, clientY: (a.y + b.y) / 2 });
+        if (hitTestAnnotation(chosen, middle, interactionViewport(), { includeHandles: false, measureText: measureCanvasText, fontScale: (frame.width / 300) * zoom, textPadding: 36 })) {
+          rulerDrag.current = null;
+          memoPinch.current = { markId: chosen.id, original: chosen, before: marksRef.current, d0: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)), a0: Math.atan2(b.y - a.y, b.x - a.x) };
+          return;
+        }
+      }
       rulerDrag.current = null;
       pinch.current = {
         d0: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
@@ -5802,6 +5922,20 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       }
       return;
     }
+    if (tool === "guide") {
+      /* 기준선 모드에서는 그리지 않는다 -- 놓인 선을 잡아 끄는 것만 한다. */
+      const grabbed = hitTestAnnotations(marks, raw, viewport, { tools: ["hline", "vline"], includeHandles: false, bodyTolerance: 26 });
+      setSelectedMarkId(grabbed ? grabbed.markId : null);
+      if (grabbed) {
+        editRef.current = {
+          pointerId: e.pointerId, markId: grabbed.markId, kind: "move-guide", origin: raw,
+          originalPoints: (grabbed.mark.pts || []).map((point) => ({ ...point })),
+          originalMark: { ...grabbed.mark, pts: (grabbed.mark.pts || []).map((point) => ({ ...point })) },
+          grabOffset: null, before: marksRef.current,
+        };
+      }
+      return;
+    }
     if (ruler) {
       const rct = imageFrame();
       const g = rulerGeom(rct.width, rct.height);
@@ -5814,9 +5948,11 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
          한 번도 드러나지 않았을 뿐이다. */
       if (!rulerZone(raw).ok) return;
     }
-    const editable = hitTestAnnotations(marks, raw, viewport, { tools: ["arrow", "text"], measureText: measureCanvasText, fontScale: hitFontScale, handleRadius: 22, bodyTolerance: 14 });
+    const editable = hitTestAnnotations(marks, raw, viewport, { tools: ["arrow", "text"], selectedId: selectedMarkId, measureText: measureCanvasText, fontScale: hitFontScale, handleRadius: 22, bodyTolerance: 14 });
     if (editable) {
-      const kind = editable.mark.tool === "text" ? "move-text" : editable.part === "start" ? "arrow-start" : editable.part === "end" ? "arrow-end" : "move-arrow";
+      const kind = editable.mark.tool === "text"
+        ? (editable.part === "resize" ? "resize-text" : editable.part === "rotate" ? "rotate-text" : "move-text")
+        : editable.part === "start" ? "arrow-start" : editable.part === "end" ? "arrow-end" : "move-arrow";
       const anchor = editable.mark.pts?.[0] || raw;
       setSelectedMarkId(editable.markId);
       setColor(normalizeAnnotationColor(editable.mark.color, color));
@@ -5858,6 +5994,17 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       && Math.hypot(e.clientX - memoTapRef.current.startX, e.clientY - memoTapRef.current.startY) > 10) {
       memoTapRef.current.moved = true;
     }
+    if (memoPinch.current && ptrs.current.size >= 2) {
+      const [a, b] = [...ptrs.current.values()];
+      const g = memoPinch.current, frame = imageFrame();
+      const turned = ((Math.atan2(b.y - a.y, b.x - a.x) - g.a0) * 180) / Math.PI;
+      const next = transformAnnotationText(g.original, {
+        scale: (Number(g.original.scale) > 0 ? Number(g.original.scale) : 1) * (Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)) / g.d0),
+        rot: annotationTextRotation(g.original) + turned,
+      }, { width: frame.width, height: frame.height }, measureCanvasText, frame.width / 300);
+      replaceMarks(marksRef.current.map((mark) => mark.id === g.markId ? next : mark));
+      return;
+    }
     if (pinch.current && ptrs.current.size >= 2) {
       const el = canvasRef.current; if (!el) return;
       const [a, b] = [...ptrs.current.values()];
@@ -5897,6 +6044,17 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
   };
   const up = (e) => {
     if (e && e.pointerId != null) ptrs.current.delete(e.pointerId);
+    if (memoPinch.current) {
+      if (ptrs.current.size < 2) {
+        const g = memoPinch.current; memoPinch.current = null;
+        if (e?.type === "pointercancel") replaceMarks(g.before);
+        else if (JSON.stringify(marksRef.current) !== JSON.stringify(g.before)) {
+          setUndoStack((history) => [...history, g.before].slice(-40));
+          setRedoStack([]);
+        }
+      }
+      return;
+    }
     if (memoTapRef.current?.pointerId === e?.pointerId) {
       const memoTap = memoTapRef.current;
       memoTapRef.current = null;
@@ -5932,17 +6090,31 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
     if (d.tool === "arrow") setSelectedMarkId(d.id);
   };
   const pickTool = (k) => { setTool(k); setPending(null); setDraft(null); };
+  /* 고른 이름의 기준선을 그 자리에 바로 놓는다. 이미 있으면 걷는다 -- 같은 이름의 선은 하나뿐이다. */
   const prepareGuide = (kind) => {
-    const preset = {
-      shoulder: { tool: "hline", pts: [{ x: 0.5, y: 0.28 }] },
-      pelvis: { tool: "hline", pts: [{ x: 0.5, y: 0.54 }] },
-      spine: { tool: "vline", pts: [{ x: 0.5, y: 0.5 }] },
-      knee: { tool: "hline", pts: [{ x: 0.5, y: 0.73 }] },
-      ankle: { tool: "hline", pts: [{ x: 0.5, y: 0.88 }] },
-    }[kind];
+    const preset = POSTURE_GUIDES.find((item) => item.key === kind);
     if (!preset) return;
-    setTool(preset.tool);
-    setGuideSheet(false);
+    const existing = marksRef.current.find((mark) => mark.guide === kind);
+    if (existing) {
+      commitMarks((items) => items.filter((mark) => mark.guide !== kind));
+      if (selectedMarkId === existing.id) setSelectedMarkId(null);
+      return;
+    }
+    const id = uid();
+    commitMarks((items) => [...items, { id, tool: preset.tool, guide: kind, label: preset.label, color, width: 2, opacity, pts: [{ ...preset.at }], source: "manual" }]);
+    setSelectedMarkId(id);
+  };
+  /* 자는 지금 보이는 화면 한가운데에 놓는다 -- 확대한 채 켜도 화면 밖에 생기지 않게. */
+  const toggleRuler = () => {
+    if (ruler) setRuler(null);
+    else {
+      const frame = imageFrame();
+      const at = frame
+        ? screenPointToImagePoint({ clientX: frame.left + frame.width / 2, clientY: frame.top + frame.height * 0.58 }, frame, { zoom, panX: pan.x, panY: pan.y })
+        : { x: 0.5, y: 0.58 };
+      setRuler({ cx: at.x, cy: at.y, deg: 0 });
+    }
+    pickTool("pen");
   };
   const saveMemo = () => {
     const text = String(memoDraft?.text || "").trim();
@@ -6003,9 +6175,11 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
   const instruction = selectedMark?.tool === "arrow"
     ? "양 끝의 원을 끌어 방향을 고치고, 선 가운데를 끌어 통째로 옮기세요"
     : selectedMark?.tool === "text"
-      ? "선택된 손메모를 끌어 정확한 위치에 놓으세요"
+      ? "끌어서 옮기고 · 아래 손잡이로 크기 · 위 손잡이로 기울기 · 두 손가락으로도 돼요"
+      : tool === "guide"
+        ? "넣을 기준선을 누르세요 · 선을 끌어 위치를 맞추고, 다시 누르면 지워져요"
       : ruler
-        ? "자 윗변을 따라 그립니다 · 자는 두 손가락으로 옮기고 돌릴 수 있어요"
+        ? "자 윗변을 따라 그립니다 · 흰 손잡이로 옮기고 분홍 손잡이로 돌려요"
         : tool === "memo"
           ? "문구를 놓을 곳을 누른 뒤 입력하세요 · 입력 후 다시 끌어 옮길 수 있어요"
           : tool === "eraser"
@@ -6028,6 +6202,7 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
         <div ref={wrapRef} className="relative overflow-hidden rounded-xl" style={{ aspectRatio: "3 / 4", maxHeight: "100%", maxWidth: "min(100%, 540px)", width: "100%", border: "1px solid rgba(255,255,255,.12)", boxShadow: "0 16px 36px rgba(0,0,0,.34)" }}>
           <canvas ref={canvasRef} className="absolute inset-0 touch-none" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}
             style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "center center" }} />
+          <canvas ref={toolLayerRef} className="pointer-events-none absolute inset-0" aria-hidden="true" />
           {zoom > 1.02 && (
             <button onClick={resetZoom} className="absolute right-2 top-2 rounded-full px-3 py-1.5 text-xs font-extrabold"
               style={{ backgroundColor: "rgba(255,255,255,.92)", color: "#17171F" }}>{zoom.toFixed(1)}× · 원래대로</button>
@@ -6036,10 +6211,18 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
       </div>
       <div className="px-1.5 pb-1 pt-1" style={{ background: "linear-gradient(180deg, rgba(19,24,34,.9), rgba(15,19,28,.98))", borderTop: "1px solid rgba(255,255,255,.07)", boxShadow: "0 -12px 28px rgba(0,0,0,.22)" }}>
         <div className="rounded-xl p-1" style={{ backgroundColor: "rgba(31,38,52,.94)", border: "1px solid rgba(255,255,255,.08)", boxShadow: "0 8px 24px rgba(0,0,0,.2)" }}>
+          {tool === "guide" && <div className="mb-1 grid grid-cols-5 gap-1" data-posture-guide-strip>
+            {POSTURE_GUIDES.map((item) => {
+              const placed = marks.some((mark) => mark.guide === item.key);
+              return <button type="button" key={item.key} onClick={() => prepareGuide(item.key)} aria-pressed={placed} aria-label={placed ? `${item.label} 지우기` : `${item.label} 넣기`} className="flex h-10 min-w-0 items-center justify-center gap-0.5 rounded-full px-1 text-caption font-bold"
+                style={placed ? { backgroundColor: "#FFFFFF", color: "#17171F" } : { backgroundColor: "rgba(255,255,255,.055)", color: "rgba(255,255,255,.82)", border: "1px solid rgba(255,255,255,.12)" }}>
+                {placed ? <Check size={12} strokeWidth={3} /> : <Plus size={12} />}<span className="whitespace-nowrap">{item.label}</span></button>;
+            })}
+          </div>}
           <div className="grid grid-cols-6 gap-1" data-posture-tool-grid>
             {toolItems.map(({ k, l, I }) => {
-              const active = k === "guide" ? ["hline", "vline"].includes(tool) : k === "ruler" ? Boolean(ruler) : tool === k;
-              return <button key={k} onClick={() => { if (k === "guide") setGuideSheet(true); else if (k === "ruler") { setRuler((value) => value ? null : { cx: 0.5, cy: 0.58, deg: 0 }); pickTool("pen"); } else pickTool(k); }} className="flex h-10 min-w-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0.5 text-caption font-bold"
+              const active = k === "ruler" ? Boolean(ruler) : tool === k;
+              return <button key={k} onClick={() => { if (k === "guide") { setRuler(null); pickTool("guide"); } else if (k === "ruler") toggleRuler(); else pickTool(k); }} className="flex h-10 min-w-0 flex-col items-center justify-center gap-0.5 rounded-lg px-0.5 text-caption font-bold"
                 style={active ? { backgroundColor: BRAND, color: "#fff", boxShadow: "0 5px 12px rgba(224,19,110,.32)" } : { backgroundColor: "rgba(255,255,255,.055)", color: "rgba(255,255,255,.76)", border: "1px solid rgba(255,255,255,.055)" }}
                 aria-pressed={active}><I size={16} strokeWidth={2.1} /><span className="whitespace-nowrap">{l}</span></button>;
             })}
@@ -6083,11 +6266,6 @@ function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDr
           </div>
         </div>
       )}
-      {guideSheet && <ScheduleBottomSheet title="기준선 선택" subtitle="종류를 고른 뒤 사진 위에서 원하는 위치를 직접 눌러 조절하세요" onClose={() => setGuideSheet(false)}>
-        <div className="space-y-2">
-          {[{ key: "shoulder", label: "어깨선", sub: "좌우 어깨 높이 확인" }, { key: "pelvis", label: "골반선", sub: "좌우 골반 높이 확인" }, { key: "spine", label: "척추 중심선", sub: "수직 중심 정렬" }, { key: "knee", label: "무릎선", sub: "좌우 무릎 높이" }, { key: "ankle", label: "발목선", sub: "좌우 발목 높이" }].map((item, index) => <button type="button" key={item.key} onClick={() => prepareGuide(item.key)} className="flex min-h-12 w-full items-center gap-3 px-3 text-left" style={{ borderRadius: 10, backgroundColor: index < 2 ? TINT : CANVAS, border: `1px solid ${index < 2 ? "#D5D1EB" : LINE}` }}><span className="min-w-0 flex-1"><span className="block text-sm font-bold" style={{ color: INK }}>{item.label}</span><span className="mt-0.5 block text-xs" style={{ color: SUB }}>{item.sub} · 위치는 다음 화면에서 지정</span></span><ChevronRight size={15} style={{ color: FAINT }} /></button>)}
-        </div>
-      </ScheduleBottomSheet>}
       {colorPickerOpen && <ScheduleBottomSheet title="사용자 지정 색상" subtitle="화면 안에서 색을 확인한 뒤 적용하세요" onClose={() => setColorPickerOpen(false)}>
         <div className="space-y-4">
           <div className="flex items-center gap-3 rounded-xl p-3" style={{ backgroundColor: CANVAS }}><span className="h-12 w-12 shrink-0 rounded-xl" style={{ backgroundColor: customColorPreview, border: `1px solid ${LINE}` }} /><span className="min-w-0 flex-1"><span className="block text-xs font-bold" style={{ color: INK }}>미리보기</span><span className="mt-1 block text-xs font-extrabold tabular-nums" style={{ color: SUB }}>{customColorPreview}</span></span></div>
@@ -7706,15 +7884,25 @@ function AnnotationSvgMark({ mark, canvasWidth, canvasHeight, hideLabel = false 
      translucent, matching the canvas globalAlpha behaviour. */
   const outlined = (render) => <>{render(outlineColor, layers.halo, "halo")}{render(stroke, layers.core, "core")}</>;
 
+  /* 이름 붙은 기준선의 이름표 -- 캔버스(drawAnnotationMark)와 같은 자리(guideTagBox). */
+  const guideTag = () => {
+    if (!mark.guide || !mark.label || hideLabel) return null;
+    const tag = guideTagBox(mark, start, canvasWidth, canvasHeight, scale);
+    const tagWidth = String(mark.label).length * tag.fontSize + tag.padX * 2;
+    return <g opacity={opacity}>
+      <rect x={tag.x} y={tag.y} width={tagWidth} height={tag.h} fill="rgba(10,10,16,0.74)" />
+      <text x={tag.x + tag.padX} y={tag.y + tag.h / 2} fill="#fff" fontSize={tag.fontSize} fontWeight="700" fontFamily="Pretendard, sans-serif" dominantBaseline="central">{String(mark.label)}</text>
+    </g>;
+  };
   if (mark.tool === "hline") {
-    return outlined((paint, paintWidth, key) => (
+    return <>{outlined((paint, paintWidth, key) => (
       <line key={key} x1="0" y1={start.y} x2={canvasWidth} y2={start.y} stroke={paint} strokeWidth={paintWidth} strokeLinecap="round" opacity={opacity} />
-    ));
+    ))}{guideTag()}</>;
   }
   if (mark.tool === "vline") {
-    return outlined((paint, paintWidth, key) => (
+    return <>{outlined((paint, paintWidth, key) => (
       <line key={key} x1={start.x} y1="0" x2={start.x} y2={canvasHeight} stroke={paint} strokeWidth={paintWidth} strokeLinecap="round" opacity={opacity} />
-    ));
+    ))}{guideTag()}</>;
   }
   if (mark.tool === "point") {
     const dotRadius = ((Number(mark.width) || 3) + 3) * scale;
@@ -7739,7 +7927,8 @@ function AnnotationSvgMark({ mark, canvasWidth, canvasHeight, hideLabel = false 
   }
   if (mark.tool === "text") {
     const lines = annotationTextLines(mark), fontSize = annotationFontSize(mark, scale), lineHeight = fontSize * 1.16, hand = mark.fontStyle === "handwriting";
-    return <text x={start.x} y={start.y} fill={stroke} fontSize={fontSize} fontWeight={hand ? "400" : "700"} fontFamily={hand ? "'Nanum Pen Script', 'Segoe Print', cursive" : "Pretendard, sans-serif"} dominantBaseline="hanging" opacity={opacity} stroke={outlineColor} strokeWidth={annotationTextOutlineWidth(scale)} paintOrder="stroke">
+    const textRot = annotationTextRotation(mark);
+    return <text x={start.x} y={start.y} transform={textRot ? `rotate(${textRot} ${start.x} ${start.y})` : undefined} fill={stroke} fontSize={fontSize} fontWeight={hand ? "400" : "700"} fontFamily={hand ? "'Nanum Pen Script', 'Segoe Print', cursive" : "Pretendard, sans-serif"} dominantBaseline="hanging" opacity={opacity} stroke={outlineColor} strokeWidth={annotationTextOutlineWidth(scale)} paintOrder="stroke">
       {lines.map((line, index) => <tspan key={`${mark.id || "text"}_${index}`} x={start.x} y={start.y + index * lineHeight}>{line || " "}</tspan>)}
     </text>;
   }
@@ -9207,7 +9396,16 @@ const PREVIEW_BOUNDS_RETRY_DELAY_MS = 120;
 function PostureCaptureScreen({
   member, assessmentId, roleLabel, captureViews, currentCapture, capturePhotos, draftSaved, busy, busyKind = null,
   captureImportError = "", albumPending = false, albumReturn = false, onAlbumReturnUsed, onSelectView, onAcceptCapture, onOpenAlbum, onDeleteCapture, onSaveDraft, onContinue, onExit,
+  ghost = null,
 }) {
+  /* 겹쳐 찍기 (2026-11-15 대표). 비포애프터 앨범에서 열면 지난 사진을 미리보기 위에 반투명으로 얹는다 --
+     회원을 그 윤곽에 맞춰 세우고 찍으면 두 사진을 나중에 맞출 일이 거의 없다.
+     겹침은 화면에만 있다. 찍히는 사진에는 들어가지 않는다(사진은 카메라에서 바로 온다).
+     세 단계: 연하게 → 진하게 → 끔. 방금 찍은 사진을 확인할 때도 켜 둘 수 있어 맞았는지 바로 보인다. */
+  const GHOST_LEVELS = [{ opacity: 0.4, label: "겹침 연하게" }, { opacity: 0.65, label: "겹침 진하게" }, { opacity: 0, label: "겹침 끔" }];
+  const [ghostLevel, setGhostLevel] = useState(0);
+  const [ghostBroken, setGhostBroken] = useState(false);
+  const ghostOpacity = ghost?.src && !ghostBroken ? GHOST_LEVELS[ghostLevel].opacity : 0;
   const isNative = Capacitor.isNativePlatform();
   const iosStableCaptureFallback = Capacitor.getPlatform() === "ios" && !IOS_NATIVE_CAPTURE_ENABLED;
   const nativePreviewAvailable = isNative && !iosStableCaptureFallback && Capacitor.isPluginAvailable("CameraPreview");
@@ -10013,7 +10211,8 @@ function PostureCaptureScreen({
 
   // Red: both axes out. Amber: one already in range. Green: ready.
   const frameColor = LEVEL_TONE_COLORS[resolveLevelTone(sensor)];
-  const directionGuide = {
+  /* 지난 사진을 겹쳐 보는 동안에는 방향 안내 대신 "윤곽에 맞춰 세우라" 고 말한다. 수평이 안 맞으면 그 안내가 먼저다. */
+  const directionGuide = ghostOpacity > 0 ? "지난 사진의 윤곽에 회원님을 맞춰 세워 주세요." : {
     front: "정면을 바라보고 양팔을 자연스럽게 내려 주세요.",
     leftSide: "왼쪽 어깨가 카메라를 향하도록 서 주세요.",
     back: "카메라를 등지고 정면 자세로 서 주세요.",
@@ -10053,7 +10252,9 @@ function PostureCaptureScreen({
           {!nativePreviewAvailable && <video ref={videoRef} muted playsInline autoPlay className="h-full w-full object-contain" />}
           {pendingCapture?.src && <img src={pendingCapture.src} alt={`방금 촬영한 ${postureViewLabel(pendingCapture.view)} 사진`} className="absolute inset-0 h-full w-full object-contain" onError={() => setCameraError("사진을 불러오지 못했습니다. 다시 시도해 주세요.")} />}
           {!pendingCapture && !captureCompleteIdle && activePhoto?.src && cameraStatus !== "active" && <img src={activePhoto.src} alt={`${postureViewLabel(activeView)} 기존 촬영`} className="absolute inset-0 h-full w-full object-contain" onError={() => setCameraError("사진을 불러오지 못했습니다. 다시 시도해 주세요.")} />}
-          {!pendingCapture && !captureCompleteIdle && (
+          {ghostOpacity > 0 && (pendingCapture || cameraStatus === "active") && <img src={ghost.src} alt="" aria-hidden="true" data-posture-ghost className="pointer-events-none absolute inset-0 h-full w-full object-contain" style={{ opacity: ghostOpacity }} onError={() => setGhostBroken(true)} />}
+          {ghost?.src && !ghostBroken && !iosStableCaptureFallback && (pendingCapture || cameraStatus === "active") && countdown == null && <button type="button" onClick={() => setGhostLevel((level) => (level + 1) % GHOST_LEVELS.length)} className="absolute left-3 top-12 z-10 flex h-9 items-center gap-1.5 rounded-full px-3 text-caption font-bold" style={{ backgroundColor: "rgba(13,16,22,.72)", border: "1px solid rgba(255,255,255,.22)" }} aria-label={`지난 사진 ${GHOST_LEVELS[ghostLevel].label} · 눌러서 바꾸기`}><SlidersHorizontal size={14} />{ghost.label ? `${ghost.label} · ` : ""}{GHOST_LEVELS[ghostLevel].label}</button>}
+          {!pendingCapture && !captureCompleteIdle && ghostOpacity === 0 && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center" aria-hidden="true">
               {/* One tall frame says "stand inside this" at a glance, and its
                   colour is the whole state readout: red until the phone is
@@ -10074,7 +10275,7 @@ function PostureCaptureScreen({
           {(transferLabel || iosStableCaptureFallback || ["starting", "error", "paused"].includes(cameraStatus)) && !pendingCapture && (transferLabel || !captureCompleteIdle) && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0D1016]/88 px-7 text-center">
               {transferLabel || cameraStatus === "starting" ? <Loader2 size={30} className="animate-spin" /> : cameraStatus === "error" || cameraStatus === "paused" ? <AlertTriangle size={30} style={{ color: "#F2B84B" }} /> : <Camera size={30} />}
-              <div><p className="text-sm font-extrabold">{transferLabel || (iosStableCaptureFallback ? "사진 촬영 또는 선택" : cameraStatus === "starting" ? "카메라 준비 중" : cameraStatus === "paused" ? "카메라가 일시 중지되었습니다" : "카메라를 열 수 없습니다")}</p>{!transferLabel && (iosStableCaptureFallback || cameraError) && <p className="mt-1 text-xs leading-relaxed text-white/65">{iosStableCaptureFallback ? "App Store 안정화 빌드에서는 iOS 기본 사진 선택 화면을 사용합니다." : cameraError}</p>}</div>
+              <div><p className="text-sm font-extrabold">{transferLabel || (iosStableCaptureFallback ? "사진 촬영 또는 선택" : cameraStatus === "starting" ? "카메라 준비 중" : cameraStatus === "paused" ? "카메라가 일시 중지되었습니다" : "카메라를 열 수 없습니다")}</p>{!transferLabel && (iosStableCaptureFallback || cameraError) && <p className="mt-1 text-xs leading-relaxed text-white/65">{iosStableCaptureFallback ? (ghost ? "이 빌드의 아이폰에서는 겹쳐 찍기를 쓸 수 없어요. 기본 카메라로 찍은 뒤 변화 카드에서 [자동으로 맞추기]를 눌러 주세요." : "App Store 안정화 빌드에서는 iOS 기본 사진 선택 화면을 사용합니다.") : cameraError}</p>}</div>
               {/* 진행 중에는 아무 버튼도 내주지 않는다. 다시 시도할 것이 없다. */}
               {!transferLabel && cameraStatus !== "starting" && (iosStableCaptureFallback
                 ? <button type="button" onClick={() => onOpenAlbum(activeView)} className="h-11 rounded-xl px-5 text-sm font-bold text-white" style={{ backgroundColor: BRAND }}>사진 촬영 또는 선택</button>
@@ -27612,7 +27813,8 @@ export function createScheduleFixtureDb() {
 /* Test hook. The canvas editor and the read-only SVG overlay draw the same
    marks through two separate implementations, so a test needs both to prove they
    agree on the contrast outline. Nothing in the app reads this. */
-export const annotationRenderers = { drawAnnotationMark, AnnotationSvgMark };
+/* PostureCanvas 는 화면 확인(tools/qa)에서 편집기만 따로 띄울 때 쓴다. */
+export const annotationRenderers = { drawAnnotationMark, AnnotationSvgMark, PostureCanvas, AlbumCaptureScreen };
 
 export function createAppScreenSmokeCases() {
   const noop = () => {};
@@ -33490,6 +33692,8 @@ export default function App() {
       await blobPut(bid, item.file);
       const record = { id, photoId: id, memberId: target.id, view: item.view, date: item.date,
         albumVersion: 1, memberVisible: false, dateSource: item.dateSource,
+        // 부위 이름은 방향이 "기타" 인 사진에만, 정했을 때만 남긴다 (album-model.js ALBUM_PARTS).
+        ...(item.view === "custom" && item.part ? { albumPart: item.part } : {}),
         createdAt: new Date().toISOString(), blobId: bid, src: await urlFor(bid), marks: [] };
       const current = photosRef.current;
       const bucket = current[target.id] || {};
@@ -34262,6 +34466,9 @@ export default function App() {
               onImport={importAlbumPhotos} onPatch={patchAlbum} onDelete={deleteAlbum} onAnalyze={analyzeAlbumPhoto}
               unlinked={unlinkedPhotos} unlinkedOwnerView={unlinkedPhotoOwnerView} onAssignUnlinked={assignUnlinkedPhoto} onExcludeUnlinked={excludeUnlinkedPhotos}
               drawMarks={drawAlbumMarks}
+              detectPose={detectAlbumPose}
+              capture={renderAlbumCapture}
+              onAlignLog={logAlbumAlign}
               markup={({ photo, memberId, onDone }) => <PostureCanvas key={`album_${photo.bucket}_${photo.id}`} photo={photo} label={`${photo.date || ""} · 펜 · 자`} initialTool="pen"
                 onClose={onDone} onCancel={onDone} onSave={(marks) => patchAlbum(memberId, photo, { marks }, memberId)} onToast={setToast} />}
               backupStatus={cloudBackupStatus} onRetry={retryCloudBackup} onEnableBackup={enablePhotoBackup}

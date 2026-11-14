@@ -11,15 +11,18 @@ const editor = async () => {
 
 /* The ruler's geometry and its handle rule, lifted from App.jsx. Local x runs
    along the ruler, local y away from it; the two handles sit at local y 26 --
-   the move handle at x 0, the rotate handle 150px along. */
+   the move handle at x 0, the rotate handle 150px along.
+
+   2026-11-15: the ruler is screen-sized. k is the photo zoom; local coordinates
+   and L are screen pixels, C is in photo pixels. At zoom 1 nothing changes. */
 const RULER_HANDLE_HIT = 26;
 
-const rulerGeom = (ruler, w, h) => {
+const rulerGeom = (ruler, w, h, zoom = 1) => {
   const C = { x: ruler.cx * w, y: ruler.cy * h };
   const rad = (ruler.deg * Math.PI) / 180;
-  return { C, rad, u: { x: Math.cos(rad), y: Math.sin(rad) }, n: { x: -Math.sin(rad), y: Math.cos(rad) }, L: Math.hypot(w, h) * 1.3 };
+  return { C, rad, u: { x: Math.cos(rad), y: Math.sin(rad) }, n: { x: -Math.sin(rad), y: Math.cos(rad) }, k: zoom, L: Math.hypot(w, h) * 1.3 * zoom };
 };
-const toLocal = (g, P) => { const dx = P.x - g.C.x, dy = P.y - g.C.y; return { x: dx * g.u.x + dy * g.u.y, y: dx * g.n.x + dy * g.n.y }; };
+const toLocal = (g, P) => { const dx = (P.x - g.C.x) * g.k, dy = (P.y - g.C.y) * g.k; return { x: dx * g.u.x + dy * g.u.y, y: dx * g.n.x + dy * g.n.y }; };
 const rulerHandleAt = (g, P) => {
   if (!g) return null;
   const lp = toLocal(g, P);
@@ -80,6 +83,39 @@ test("the two handles do not overlap", () => {
   assert.equal(rulerHandleAt(geom(), at(150, 26)), "rot");
   assert.equal(rulerHandleAt(geom(), at(0, 26)), "move");
   assert.equal(rulerHandleAt(geom(), at(75, 26)), null, "the gap between them is free");
+});
+
+/* ---------------- the ruler does not grow with the photo ---------------- */
+
+test("zooming the photo leaves the ruler the same size on screen", () => {
+  /* 대표: "자 기능이 확대하면 자도 같이 확대가 됨". At 3x the move handle is still
+     26 screen px below the edge -- which is 26/3 photo px. */
+  const zoomed = rulerGeom(flat, W, H, 3);
+  assert.equal(rulerHandleAt(zoomed, at(0, 26 / 3)), "move");
+  assert.equal(rulerHandleAt(zoomed, at(150 / 3, 26 / 3)), "rot");
+  // Where the handle sat before the zoom is now far outside its finger target.
+  assert.equal(rulerHandleAt(zoomed, at(150, 26)), null);
+  assert.equal(rulerHandleAt(zoomed, at(0, 26 + 20)), null);
+});
+
+test("the editor draws and snaps with the same zoom factor", async () => {
+  const source = await editor();
+  assert.match(source, /k: zoom, L: Math\.hypot\(w, h\) \* 1\.3 \* zoom \};/);
+  assert.match(source, /const dx = \(P\.x - g\.C\.x\) \* g\.k, dy = \(P\.y - g\.C\.y\) \* g\.k;/);
+  assert.match(source, /ctx\.translate\(g\.C\.x, g\.C\.y\); ctx\.rotate\(g\.rad\);\s*\r?\n\s*ctx\.scale\(1 \/ g\.k, 1 \/ g\.k\);/);
+  // The snapped point goes back to photo pixels, or the pen would land off the edge when zoomed.
+  assert.match(source, /x: \(g\.C\.x \+ \(lp\.x \/ g\.k\) \* g\.u\.x\) \/ w/);
+  /* The ruler and the handles live on their own layer above the photo. The photo
+     canvas is stretched by CSS when zoomed and goes soft; the tool layer is not
+     stretched -- it applies the same zoom and pan to coordinates only. */
+  assert.match(source, /ctx\.translate\(w \/ 2 \+ pan\.x, h \/ 2 \+ pan\.y\); ctx\.scale\(zoom, zoom\); ctx\.translate\(-w \/ 2, -h \/ 2\);/);
+  assert.match(source, /if \(ruler\) drawRuler\(ctx, w, h\);\s*\r?\n\s*\}, \[marks, ruler, color, size, selectedMarkId, zoom, pan\]\);/);
+  assert.match(source, /<canvas ref=\{toolLayerRef\} className="pointer-events-none absolute inset-0" aria-hidden="true" \/>/);
+  // The exported image comes from the photo canvas alone, so the tools can never be saved into it.
+  const photoDraw = source.slice(source.indexOf("const draw = useCallback("), source.indexOf("const drawTools = useCallback("));
+  assert.doesNotMatch(photoDraw, /drawRuler\(|drawSelection\(/);
+  // Turned on while zoomed in, the ruler appears in the middle of what is visible.
+  assert.match(source, /const toggleRuler = \(\) => \{[\s\S]*?screenPointToImagePoint\(\{ clientX: frame\.left \+ frame\.width \/ 2/);
 });
 
 /* ------------------------------ the wiring ------------------------------ */

@@ -182,10 +182,37 @@ export function annotationTextLines(mark) {
   return lines.length ? lines : [""];
 }
 
+/* 손메모는 넣은 뒤에 손잡이 · 두 손가락으로 크기와 기울기를 바꾼다 (2026-11-15 대표).
+   scale 은 글자 크기에 곱하는 배율, rot 은 기준점(pts[0], 글자 왼쪽 위)을 축으로 한 각도(도)다.
+   둘 다 없으면 예전 표시 그대로 -- 저장된 옛 손메모는 한 글자도 달라지지 않는다. */
+export const ANNOTATION_TEXT_SCALE_MIN = 0.4;
+export const ANNOTATION_TEXT_SCALE_MAX = 6;
+export const ANNOTATION_TEXT_HANDLE_GAP = 26;
+
+export function annotationTextScale(mark) {
+  const scale = Number(mark?.scale);
+  if (!Number.isFinite(scale) || scale <= 0) return 1;
+  return Math.min(ANNOTATION_TEXT_SCALE_MAX, Math.max(ANNOTATION_TEXT_SCALE_MIN, scale));
+}
+
+export function annotationTextRotation(mark) {
+  const rot = Number(mark?.rot);
+  if (!Number.isFinite(rot)) return 0;
+  const turned = ((rot % 360) + 360) % 360;
+  return turned > 180 ? turned - 360 : turned;
+}
+
+/* 수평 · 수직 근처에서는 딱 붙는다 -- 손으로 0° 를 맞추기는 어렵다. */
+export function snapAnnotationRotation(degrees, tolerance = 3) {
+  const rot = annotationTextRotation({ rot: degrees });
+  const nearest = Math.round(rot / 90) * 90;
+  return Math.abs(rot - nearest) <= tolerance ? annotationTextRotation({ rot: nearest }) : rot;
+}
+
 export function annotationFontSize(mark, scale = 1) {
   const width = Math.max(1, Number(mark?.width) || 3);
   const base = mark?.fontStyle === "handwriting" ? Math.max(25, width * 8) : Math.max(13, width * 5);
-  return base * Math.max(0.01, Number(scale) || 1);
+  return base * annotationTextScale(mark) * Math.max(0.01, Number(scale) || 1);
 }
 
 export function annotationFont(mark, scale = 1) {
@@ -233,6 +260,49 @@ export function annotationTextBounds(mark, viewport, measureText, fontScale = 1)
   };
 }
 
+/* 기울어진 손메모의 가운데(픽셀). 크기 · 기울기를 바꿀 때 이 점이 제자리에 있어야 손에 붙는다. */
+export function annotationTextCenter(mark, viewport, measureText, fontScale = 1) {
+  const bounds = annotationTextBounds(mark, viewport, measureText, fontScale);
+  const rad = (annotationTextRotation(mark) * Math.PI) / 180;
+  const hx = bounds.width / 2, hy = bounds.height / 2;
+  return {
+    x: bounds.left + hx * Math.cos(rad) - hy * Math.sin(rad),
+    y: bounds.top + hx * Math.sin(rad) + hy * Math.cos(rad),
+    bounds,
+    rad,
+  };
+}
+
+/* 화면 점을 손메모 자기 좌표로 (기준점이 원점, 기울기를 푼 상태). */
+function textLocalPoint(mark, point, viewport, bounds) {
+  const p = toPixels(point, viewport);
+  const rad = (annotationTextRotation(mark) * Math.PI) / 180;
+  const dx = p.x - bounds.left, dy = p.y - bounds.top;
+  return { x: dx * Math.cos(rad) + dy * Math.sin(rad), y: -dx * Math.sin(rad) + dy * Math.cos(rad) };
+}
+
+/* 크기 · 기울기를 바꾸되 가운데는 그대로 둔다. 기준점은 사진 밖으로 조금 나갈 수 있다(뒤집힌 글자). */
+export function transformAnnotationText(mark, changes, viewport, measureText, fontScale = 1) {
+  const size = viewportSize(viewport);
+  const before = annotationTextCenter(mark, size, measureText, fontScale);
+  const next = {
+    ...mark,
+    scale: annotationTextScale({ scale: changes?.scale ?? annotationTextScale(mark) }),
+    rot: annotationTextRotation({ rot: changes?.rot ?? annotationTextRotation(mark) }),
+  };
+  const bounds = annotationTextBounds(next, size, measureText, fontScale);
+  const rad = (next.rot * Math.PI) / 180;
+  const hx = bounds.width / 2, hy = bounds.height / 2;
+  const center = { x: Math.min(size.width, Math.max(0, before.x)), y: Math.min(size.height, Math.max(0, before.y)) };
+  return {
+    ...next,
+    pts: [{
+      x: (center.x - (hx * Math.cos(rad) - hy * Math.sin(rad))) / size.width,
+      y: (center.y - (hx * Math.sin(rad) + hy * Math.cos(rad))) / size.height,
+    }],
+  };
+}
+
 export function distancePointToSegment(point, start, end, viewport) {
   const p = toPixels(point, viewport), a = toPixels(start, viewport), b = toPixels(end, viewport);
   const dx = b.x - a.x, dy = b.y - a.y;
@@ -272,9 +342,16 @@ export function hitTestAnnotation(mark, point, viewport, options = {}) {
 
   if (mark.tool === "text") {
     const bounds = annotationTextBounds(mark, { width, height }, options.measureText, options.fontScale || 1);
-    const p = toPixels(point, { width, height });
+    const p = textLocalPoint(mark, point, { width, height }, bounds);
     const pad = Math.max(10, Number(options.textPadding) || 12);
-    return p.x >= bounds.left - pad && p.x <= bounds.right + pad && p.y >= bounds.top - pad && p.y <= bounds.bottom + pad
+    /* 손잡이는 고른 손메모에만 있다 -- 보이지 않는 손잡이가 다른 표시를 가로채지 않게. */
+    if (includeHandles && options.selectedId != null && options.selectedId === mark.id) {
+      const resize = Math.hypot(p.x - (bounds.width + 7), p.y - (bounds.height + 6));
+      if (resize <= handleRadius) return { part: "resize", distance: resize, bounds };
+      const rotate = Math.hypot(p.x - bounds.width / 2, p.y - (-6 - ANNOTATION_TEXT_HANDLE_GAP));
+      if (rotate <= handleRadius) return { part: "rotate", distance: rotate, bounds };
+    }
+    return p.x >= -pad && p.x <= bounds.width + pad && p.y >= -pad && p.y <= bounds.height + pad
       ? { part: "body", distance: 0, bounds }
       : null;
   }
@@ -312,6 +389,14 @@ export function hitTestAnnotation(mark, point, viewport, options = {}) {
 export function hitTestAnnotations(marks, point, viewport, options = {}) {
   const list = Array.isArray(marks) ? marks : [];
   const tools = Array.isArray(options.tools) ? new Set(options.tools) : null;
+  /* 고른 손메모의 손잡이가 먼저다 -- 위에 다른 표시가 겹쳐 있어도 잡힌다. */
+  if (options.selectedId != null && options.includeHandles !== false) {
+    const index = list.findIndex((mark) => mark?.id === options.selectedId && mark.tool === "text" && (!tools || tools.has("text")));
+    if (index >= 0) {
+      const hit = hitTestAnnotation(list[index], point, viewport, options);
+      if (hit && hit.part !== "body") return { ...hit, mark: list[index], index, markId: list[index].id };
+    }
+  }
   for (let index = list.length - 1; index >= 0; index -= 1) {
     const mark = list[index];
     if (!mark || (tools && !tools.has(mark.tool))) continue;
@@ -332,6 +417,14 @@ export function translateAnnotationPoints(points, deltaX, deltaY) {
 
 function clampTextAnchor(mark, anchor, viewport, measureText, fontScale) {
   const size = viewportSize(viewport);
+  if (annotationTextRotation(mark)) {
+    /* 기울어진 글자는 기준점이 글자 밖 어디에나 있을 수 있다 -- 가운데를 사진 안에 둔다. */
+    const moved = { ...mark, pts: [{ x: Number(anchor?.x) || 0, y: Number(anchor?.y) || 0 }] };
+    const center = annotationTextCenter(moved, size, measureText, fontScale);
+    const dx = Math.min(size.width, Math.max(0, center.x)) - center.x;
+    const dy = Math.min(size.height, Math.max(0, center.y)) - center.y;
+    return { x: moved.pts[0].x + dx / size.width, y: moved.pts[0].y + dy / size.height };
+  }
   const next = { ...mark, pts: [clampAnnotationPoint(anchor)] };
   const bounds = annotationTextBounds(next, size, measureText, fontScale);
   const maxX = Math.max(0, 1 - bounds.width / size.width);
@@ -348,6 +441,24 @@ export function applyAnnotationDrag(mark, interaction, point, viewport, options 
   if (interaction.kind === "move-arrow") {
     const origin = clampAnnotationPoint(interaction.origin);
     return { ...mark, pts: translateAnnotationPoints(originalPoints, current.x - origin.x, current.y - origin.y) };
+  }
+  if (interaction.kind === "move-guide") {
+    /* 기준선은 한 축으로만 움직인다 -- 가로선은 위아래, 세로선은 좌우. */
+    const first = originalPoints[0] || { x: 0.5, y: 0.5 };
+    return { ...mark, pts: [mark.tool === "vline" ? { x: current.x, y: first.y } : { x: first.x, y: current.y }] };
+  }
+  if (interaction.kind === "resize-text" || interaction.kind === "rotate-text") {
+    const size = viewportSize(viewport);
+    const fontScale = options.fontScale || 1;
+    const center = annotationTextCenter(mark, size, options.measureText, fontScale);
+    const from = toPixels(interaction.origin, size), to = toPixels(point, size);
+    if (interaction.kind === "resize-text") {
+      const start = Math.max(1, Math.hypot(from.x - center.x, from.y - center.y));
+      const scale = annotationTextScale(mark) * (Math.hypot(to.x - center.x, to.y - center.y) / start);
+      return transformAnnotationText(mark, { scale: Math.max(ANNOTATION_TEXT_SCALE_MIN, scale) }, size, options.measureText, fontScale);
+    }
+    const turned = (Math.atan2(to.y - center.y, to.x - center.x) - Math.atan2(from.y - center.y, from.x - center.x)) * 180 / Math.PI;
+    return transformAnnotationText(mark, { rot: snapAnnotationRotation(annotationTextRotation(mark) + turned) }, size, options.measureText, fontScale);
   }
   if (interaction.kind === "move-text") {
     const offset = interaction.grabOffset || { x: 0, y: 0 };

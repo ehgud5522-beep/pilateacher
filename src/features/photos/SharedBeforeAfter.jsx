@@ -73,7 +73,7 @@ function MemoryCanvas({ frame, thumbnail }) {
 
 // Cards are never reconstructed, cached offline, or exposed through a public URL.
 export function CardImage({ src, share, thumbnail = false }) {
-  return <figure><img src={src} alt="공유된 비포애프터 비교 카드" draggable={false} style={{ width: '100%', maxHeight: thumbnail ? 180 : undefined, objectFit: 'contain' }} /><figcaption>{share.teacherName} · {(share.dates || []).join(' → ')}</figcaption></figure>;
+  return <figure className="private-share-card"><img src={src} alt="공유된 비포애프터 비교 카드" draggable={false} style={{ maxWidth: '100%', maxHeight: thumbnail ? 180 : undefined, objectFit: 'contain' }} /><figcaption>{share.teacherName} · {(share.dates || []).join(' → ')}</figcaption></figure>;
 }
 function SharedCard({ share, api, thumbnail = false }) {
   const [src, setSrc] = useState(''), [error, setError] = useState(''), [epoch, setEpoch] = useState(0);

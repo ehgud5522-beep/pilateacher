@@ -45,6 +45,9 @@
 const PASS_FIELDS = Object.freeze([
   "passId", "lessonType", "totalSessions", "serviceSessions",
   "remainingCount", "expiresAt", "status", "isDuet", "partnerName", "holdFrom", "holdUntil",
+  /* 세션업 기간 (2026-11-15, 대표 결정: 회원도 본다). 숫자 둘만 나간다 -- 계산에
+     쓰는 serviceUsed 는 여전히 나가지 않는다. */
+  "sessionUpLimit", "sessionUpLeft",
 ]);
 
 /** 회원 화면이 이름을 짓는 수업 유형. 급여카테고리 문자열을 그대로 내보내지 않는다. */
@@ -170,6 +173,28 @@ const LEDGER_TYPE_DEDUCT = "deduct";
 const text = (value) => String(value ?? "").trim();
 const count = (value) => (Number.isInteger(Number(value)) && Number(value) >= 0 ? Number(value) : 0);
 
+/**
+ * 세션업 기간. functions/shared/session-up.mjs 의 sessionUpWindowOf 와 **같은 식**이다.
+ * 이 파일은 CommonJS 라 그 모듈을 require 하지 않고 식을 적는다 -- 같은지는
+ * functions/tests/member-view.test.js 가 여러 회원권으로 맞춰 본다.
+ *
+ *   총회차(서비스 제외) 10회 이상 → 6회차까지, 미만 → 3회차까지
+ *   left = 지금을 포함해 남은 기회 (1 이면 지금이 마지막, 0 이면 끝)
+ */
+function sessionUpWindow(pass) {
+  const total = count(pass?.totalSessions);
+  const service = count(pass?.serviceSessions);
+  const remaining = count(pass?.remainingCount);
+  const limit = total >= 10 ? 6 : 3;
+  const serviceUsed = Number.isInteger(pass?.serviceUsed) && pass.serviceUsed >= 0
+    ? Math.min(pass.serviceUsed, service)
+    : Math.min(Math.max(0, total + service - remaining), service);
+  const serviceLeft = Math.min(Math.max(0, service - serviceUsed), remaining);
+  const paidLeft = Math.max(0, remaining - serviceLeft);
+  const used = Math.max(0, Math.min(total, total - paidLeft));
+  return { limit, left: used <= limit ? limit - used + 1 : 0 };
+}
+
 /** Firestore Timestamp · Date · 문자열이 섞여 온다. 못 읽으면 null 이다. */
 function toDate(value) {
   if (value === null || value === undefined || value === "") return null;
@@ -255,6 +280,7 @@ function buildMemberView(input) {
 
   const passes = all.map((pass) => {
     const others = clientIdsOf(pass).filter((id) => id !== clientId);
+    const sessionUp = sessionUpWindow(pass);
     return {
       passId: text(pass.id || pass.passId),
       lessonType: lessonTypeOf(pass, input?.productSessionTypes, others.length > 0),
@@ -264,6 +290,7 @@ function buildMemberView(input) {
       expiresAt: toDate(pass.expiresAt),
       status: text(pass.status),
       holdFrom: toDate(pass.holdFrom), holdUntil: toDate(pass.holdUntil),
+      sessionUpLimit: sessionUp.limit, sessionUpLeft: sessionUp.left,
       isDuet: others.length > 0,
       /* 듀엣 상대의 이름은 언제나 보여준다 (확정 2번). 이름을 모르면 빈
          문자열이고, 화면은 "함께 쓰는 분" 으로 적는다 -- uid 나 clientId 를
@@ -368,4 +395,5 @@ module.exports = {
   SCHEDULE_FIELDS,
   VIEW_FIELDS,
   buildMemberView,
+  sessionUpWindow,
 };

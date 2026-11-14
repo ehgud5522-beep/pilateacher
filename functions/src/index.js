@@ -5,13 +5,18 @@ const { getAuth } = require("firebase-admin/auth");
 const { FieldValue, getFirestore } = require("firebase-admin/firestore");
 const { getStorage } = require("firebase-admin/storage");
 const { preparePhotoAccess, listAuthorizedPhotos, movePhotoGroup } = require("./photo-access");
+const { photoAccessRejection } = require("./photo-access-diagnostics");
 const { logger } = require("firebase-functions/logger");
 const { defineSecret } = require("firebase-functions/params");
 const { HttpsError, onCall, onRequest } = require("firebase-functions/v2/https");
 exports.preparePhotoAccess = onCall({ region: "asia-northeast3", timeoutSeconds: 60 }, async (request) => {
   if (!request.auth?.uid) throw new HttpsError("unauthenticated", "Sign in required");
   try { return await preparePhotoAccess(getFirestore(), getStorage().bucket(), request.auth.uid, request.data); }
-  catch (error) { throw new HttpsError("permission-denied", error.message); }
+  catch (error) {
+    const details = photoAccessRejection(error);
+    logger.warn('photo_access_rejected', details);
+    throw new HttpsError("permission-denied", details.reasonCode, details);
+  }
 });
 exports.listAuthorizedPhotos = onCall({ region: "asia-northeast3", timeoutSeconds: 60 }, async (request) => {
   if (!request.auth?.uid) throw new HttpsError("unauthenticated", "Sign in required");

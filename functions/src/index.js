@@ -5,13 +5,18 @@ const { getAuth } = require("firebase-admin/auth");
 const { FieldValue, getFirestore } = require("firebase-admin/firestore");
 const { getStorage } = require("firebase-admin/storage");
 const { preparePhotoAccess, listAuthorizedPhotos, movePhotoGroup } = require("./photo-access");
+const { photoAccessRejection } = require("./photo-access-diagnostics");
 const { logger } = require("firebase-functions/logger");
 const { defineSecret } = require("firebase-functions/params");
 const { HttpsError, onCall, onRequest } = require("firebase-functions/v2/https");
 exports.preparePhotoAccess = onCall({ region: "asia-northeast3", timeoutSeconds: 60 }, async (request) => {
   if (!request.auth?.uid) throw new HttpsError("unauthenticated", "Sign in required");
   try { return await preparePhotoAccess(getFirestore(), getStorage().bucket(), request.auth.uid, request.data); }
-  catch (error) { throw new HttpsError("permission-denied", error.message); }
+  catch (error) {
+    const details = photoAccessRejection(error);
+    logger.warn('photo_access_rejected', details);
+    throw new HttpsError("permission-denied", details.reasonCode, details);
+  }
 });
 exports.listAuthorizedPhotos = onCall({ region: "asia-northeast3", timeoutSeconds: 60 }, async (request) => {
   if (!request.auth?.uid) throw new HttpsError("unauthenticated", "Sign in required");
@@ -142,7 +147,7 @@ const memberAccountService = createMemberAccountService({
   readLink: memberLinkPorts.readLink,
   purgeMemberAccount: async (input) => {
     const result = await memberLinkPorts.purgeMemberAccount(input);
-    await require('./before-after-notifications').eraseMemberShares(firestore, input.userId);
+    await require('./before-after-notifications').eraseMemberShares(firestore, input.userId, getStorage().bucket());
     return result;
   },
   deleteAuthUser: (userId) => getAuth().deleteUser(userId),
@@ -1514,7 +1519,9 @@ exports.beforeAfterSharing = onCall({ region: "asia-northeast3", timeoutSeconds:
     const { createSharingService } = require("./before-after-sharing");
     return await createSharingService({ db: firestore, bucket: getStorage().bucket() }).handle(request.auth.uid, request.data);
   } catch (error) {
-    throw new HttpsError(error.httpsCode || "unavailable", error.httpsCode ? error.message : "share/temporarily-unavailable");
+    const details = require("./share-diagnostics").shareDiagnostic(error, request.data);
+    logger.warn("before_after_share_failed", details);
+    throw new HttpsError(error.httpsCode || "unavailable", details.reasonCode, { reasonCode: details.reasonCode, stage: details.stage, errorCode: details.errorCode });
   }
 });
 exports.notifyBeforeAfterShare = onDocumentWritten({ document: "beforeAfterShares/{shareId}", region: "asia-northeast3" }, async (event) => {
@@ -1525,6 +1532,6 @@ exports.notifyBeforeAfterShare = onDocumentWritten({ document: "beforeAfterShare
 exports.eraseDeletedMemberShares = onDocumentWritten({ document: "memberLinks/{uid}", region: "asia-northeast3" }, async (event) => {
   if (event.data?.before.exists && !event.data?.after.exists) {
     const { eraseMemberShares } = require("./before-after-notifications");
-    await eraseMemberShares(firestore, event.params.uid);
+    await eraseMemberShares(firestore, event.params.uid, getStorage().bucket());
   }
 });

@@ -2,7 +2,8 @@
 
 const { createHash } = require("node:crypto");
 const { mayAccessPhoto } = require("./photo-access");
-const VERSION = 2;
+const { validateCard, deleteShareCard, digest, MAX_BYTES } = require("./share-card");
+const VERSION = 3;
 const CONSENT_VERSION = "before-after-member-v1";
 const fail = (code) => { throw Object.assign(new Error(code), { httpsCode: "failed-precondition", code }); };
 const id = (v) => typeof v === "string" && /^[A-Za-z0-9_.:-]{1,160}$/.test(v);
@@ -60,7 +61,7 @@ function createSharingService({ db, bucket, now = () => new Date() }) {
     if (p.storagePath !== `users/${share.teacherId}/photos/${photoId}/image.jpg`) fail("share/photo-not-ready");
     return p;
   }
-  const publicShare = (s) => ({ id: s.id, status: s.status, shareType: s.shareType, photos: s.photos,
+  const publicShare = (s) => s.shareType === "card" ? ({ id: s.id, status: s.status, shareType: "card", dates: s.dates, teacherName: s.teacherName, sharedAt: s.sharedAt?.toDate?.().toISOString() || s.sharedAt || null, unread: !s.readAt, downloadEnabled: false }) : ({ id: s.id, status: s.status, shareType: s.shareType, photos: s.photos,
     feedback: s.feedback, teacherName: s.teacherName, memberName: s.memberName, comparisonConfig: s.comparisonConfig,
     sharedAt: s.sharedAt?.toDate?.().toISOString() || s.sharedAt || null, unread: !s.readAt, downloadEnabled: false });
   const audit = (tx, shareId, action, uid) => tx.set(db.collection(`beforeAfterShares/${shareId}/events`).doc(), { action, actorId: uid, at: now() });
@@ -70,13 +71,17 @@ function createSharingService({ db, bucket, now = () => new Date() }) {
     if (!s || (memberOnly ? s.memberUserId !== uid : s.teacherId !== uid && s.memberUserId !== uid)) fail("share/not-found");
     if (s.status !== "active" && (memberOnly || s.teacherId !== uid || s.status !== "draft")) fail("share/revoked");
     await authority(reader, s);
-    for (const p of s.photos) await photo(reader, s, p.id);
+    if (s.shareType !== "card") for (const p of s.photos) await photo(reader, s, p.id);
     return s;
   }
   async function handle(uid, input) {
     if (!uid) throw Object.assign(new Error("unauthenticated"), { httpsCode: "unauthenticated" });
-    if (input?.schemaVersion !== VERSION) fail("share/update-required");
+    if (![2, VERSION].includes(input?.schemaVersion)) fail("share/update-required");
     const action = input.action;
+    if (input.schemaVersion < VERSION && ["activate", "read", "detail", "media"].includes(action) && id(input.shareId)) {
+      const existing = await read(direct, "beforeAfterShares/" + input.shareId);
+      if (existing?.shareType === "card" && [existing.teacherId, existing.memberUserId].includes(uid)) fail("share/update-required");
+    }
     if (action === "capability") {
       const flag = await read(direct, "runtimeConfig/beforeAfterSharing");
       return { enabled: enabled(flag, input.role === "teacher" ? uid : null, input.role === "teacher" ? null : uid), aiEnabled: false, schemaVersion: VERSION };
@@ -95,35 +100,54 @@ function createSharingService({ db, bucket, now = () => new Date() }) {
       return { status: value.status, version: CONSENT_VERSION };
     });
     if (action === "prepare") {
-      if (!id(input.requestId) || !Array.isArray(input.photoIds) || input.photoIds.length < 1 || input.photoIds.length > 12 || !input.photoIds.every(id) || new Set(input.photoIds).size !== input.photoIds.length) fail("share/invalid-selection");
-      if (!["photos", "comparison"].includes(input.shareType) || (input.shareType === "comparison" && input.photoIds.length !== 2) || input.aiResults) fail("share/unsupported-type");
-      if (typeof input.feedback !== "string" || input.feedback.length > 1000) fail("share/feedback-too-long");
+      if (input.shareType !== "card" || input.aiResults) fail("share/unsupported-type");
+      if (!id(input.requestId) || !Array.isArray(input.photoIds) || input.photoIds.length !== 2 || !input.photoIds.every(id) || new Set(input.photoIds).size !== 2) fail("share/invalid-selection");
+      if (input.schemaVersion !== VERSION) fail("share/update-required");
+      const bytes = validateCard(input);
       const shareId = hash([uid, input.requestId]);
-      const fingerprint = hash([input.organizationId, input.clientId, input.photoIds, input.shareType, input.feedback, input.comparisonConfig || null]);
-      return db.runTransaction(async (tx) => {
-        const old = await read(tx, `beforeAfterShares/${shareId}`);
+      const fingerprint = hash([input.organizationId, input.clientId, input.photoIds, input.sha256, input.width, input.height, input.dates, input.comment]);
+      const ref = db.doc("beforeAfterShares/" + shareId);
+      // Reserve before upload so retries cannot replace a different card.
+      const reserved = await db.runTransaction(async (tx) => {
+        const old = (await tx.get(ref)).data();
         const base = { organizationId: input.organizationId, clientId: input.clientId, teacherId: uid };
-        const auth = await authority(tx, base);
-        if (old) { if (old.fingerprint !== fingerprint) fail("share/request-conflict"); await authorizeShare(tx, uid, shareId); return publicShare(old); }
-        const photos = [];
-        for (const photoId of input.photoIds) {
-          const p = await photo(tx, base, photoId);
-          if (p.originalPath !== `users/${uid}/photos/${photoId}/original.bin`) fail("share/photo-not-ready");
-          const [original] = await bucket.file(p.originalPath).getMetadata();
-          if (!p.originalSha256 || original.metadata?.sha256 !== p.originalSha256 || !scoped(original.metadata || {}, base)) fail("share/photo-not-ready");
-          const [meta] = await bucket.file(p.storagePath).getMetadata();
-          if (Number(meta.size) > 4 * 1024 * 1024 || meta.contentType !== "image/jpeg" || !scoped(meta.metadata || {}, base) || meta.metadata?.moving === "true") fail("share/photo-not-ready");
-          photos.push({ id: photoId, generation: String(meta.generation), date: String(p.record?.albumDate || p.date || "").slice(0, 10), view: p.record?.albumView || p.view || "custom", edit: cleanEdit(p.record?.albumEdit || { rotate: p.record?.rot, zoom: p.record?.scale, x: p.record?.x, y: p.record?.y }) });
+        const auth = await authority(tx, old || base);
+        if (old) {
+          if (old.fingerprint !== fingerprint) fail("share/request-conflict");
+          if (old.status === "revoked") fail("share/revoked");
+          return old;
         }
-        const comparisonConfig = input.shareType === "comparison" ? { mode: input.comparisonConfig?.mode === "overlay" ? "overlay" : "side", align: [0, 1].map((i) => cleanEdit(input.comparisonConfig?.align?.[i])), split: Math.max(0, Math.min(100, Number.isFinite(input.comparisonConfig?.split) ? input.comparisonConfig.split : 50)) } : null;
-        const share = { ...base, id: shareId, memberUserId: auth.memberUserId, memberName: auth.client.name || "회원", teacherName: auth.teacherName,
-          photos, photoIds: input.photoIds, comparisonConfig, feedback: input.feedback, shareType: input.shareType,
-          status: "draft", schemaVersion: VERSION, consentRevision: auth.grant.revision, consentReference: consentPath(auth.memberUserId, base.organizationId, base.clientId), fingerprint, createdAt: now(), sharedAt: null, revokedAt: null, downloadEnabled: false };
-        tx.set(db.doc(`beforeAfterShares/${shareId}`), share); audit(tx, shareId, "prepared", uid);
-        return publicShare(share);
+        const share = { ...base, id: shareId, memberUserId: auth.memberUserId, teacherName: auth.teacherName,
+          photoIds: input.photoIds, dates: input.dates, feedback: input.comment, shareType: "card",
+          status: "preparing", schemaVersion: VERSION, consentRevision: auth.grant.revision,
+          consentReference: consentPath(auth.memberUserId, base.organizationId, base.clientId),
+          fingerprint, createdAt: now(), sharedAt: null, revokedAt: null, downloadEnabled: false };
+        tx.set(ref, share); return share;
       });
+      if (["draft", "active"].includes(reserved.status)) return publicShare(reserved);
+      const path = "beforeAfterShares/" + shareId + "/card.jpg", file = bucket.file(path);
+      try {
+        try { await file.save(bytes, { resumable: false, preconditionOpts: { ifGenerationMatch: 0 }, metadata: { contentType: "image/jpeg", cacheControl: "private, no-store, max-age=0", metadata: { sha256: input.sha256 } } }); }
+        catch (error) { if (Number(error.code) !== 412) throw error; }
+        const [meta] = await file.getMetadata();
+        if (meta.metadata?.sha256 !== input.sha256 || Number(meta.size) !== bytes.length) fail("share/card-conflict");
+        const card = { path, generation: String(meta.generation), sha256: input.sha256, bytes: bytes.length, width: input.width, height: input.height };
+        return await db.runTransaction(async (tx) => {
+          const current = (await tx.get(ref)).data();
+          if (!current || current.status === "revoked") fail("share/revoked");
+          await authority(tx, current);
+          if (["draft", "active"].includes(current.status)) return publicShare(current);
+          tx.update(ref, { card, status: "draft" }); audit(tx, shareId, "prepared", uid);
+          return publicShare({ ...current, card, status: "draft" });
+        });
+      } catch (error) {
+        const current = (await ref.get()).data();
+        if (!current || current.status === "revoked") await deleteShareCard(bucket, reserved);
+        throw error;
+      }
     }
-    if (["activate", "revoke", "read"].includes(action)) return db.runTransaction(async (tx) => {
+    if (["activate", "revoke", "read"].includes(action)) {
+      const result = await db.runTransaction(async (tx) => {
       const ref = db.doc(`beforeAfterShares/${id(input.shareId) ? input.shareId : "invalid"}`);
       const s = (await tx.get(ref)).data();
       if (!s) fail("share/not-found");
@@ -132,7 +156,7 @@ function createSharingService({ db, bucket, now = () => new Date() }) {
         // Revocation remains possible with the rollout switch off or consent withdrawn.
         await authority(tx, s, { consent: false, flag: false });
         if (s.status !== "revoked") { tx.update(ref, { status: "revoked", revokedAt: now() }); audit(tx, s.id, "revoked", uid); }
-        return { id: s.id, status: "revoked" };
+        return { id: s.id, status: "revoked", shareType: s.shareType };
       }
       await authorizeShare(tx, uid, s.id, action === "read");
       if (action === "activate") {
@@ -142,6 +166,9 @@ function createSharingService({ db, bucket, now = () => new Date() }) {
       }
       tx.update(ref, { readAt: now() }); audit(tx, s.id, "viewed", uid); return publicShare(s);
     });
+      if (action === "revoke") await deleteShareCard(bucket, result);
+      return result;
+    }
     if (action === "teacherList" || action === "memberList") {
       const teacher = action === "teacherList";
       if (!enabled(await read(direct, "runtimeConfig/beforeAfterSharing"), teacher ? uid : null, teacher ? null : uid)) fail("share/disabled");
@@ -149,6 +176,7 @@ function createSharingService({ db, bucket, now = () => new Date() }) {
       const shares = [];
       for (const doc of docs.docs) {
         const s = doc.data();
+        if (input.schemaVersion < VERSION && s.shareType === "card") continue;
         if (input.clientId && !scoped(input, s)) continue;
         try { await authorizeShare(direct, uid, doc.id, !teacher); shares.push(publicShare(s)); } catch { /* never expose revoked or unrelated records */ }
       }
@@ -157,6 +185,19 @@ function createSharingService({ db, bucket, now = () => new Date() }) {
     if (action === "detail") return publicShare(await authorizeShare(direct, uid, input.shareId));
     if (action === "media") {
       const s = await authorizeShare(direct, uid, input.shareId);
+      if (s.shareType === "card") {
+        if (input.photoId) fail("share/not-found");
+        const card = s.card;
+        if (!card || card.path !== "beforeAfterShares/" + s.id + "/card.jpg") fail("share/card-not-ready");
+        const file = bucket.file(card.path, { generation: card.generation });
+        const [meta] = await file.getMetadata();
+        if (String(meta.generation) !== card.generation || Number(meta.size) !== card.bytes || Number(meta.size) > MAX_BYTES) fail("share/card-changed");
+        const [bytes] = await file.download();
+        if (digest(bytes) !== card.sha256) fail("share/card-changed");
+        await authorizeShare(direct, uid, input.shareId);
+        await db.collection("beforeAfterShares/" + s.id + "/events").add({ action: "media-read", actorId: uid, at: now() });
+        return { base64: bytes.toString("base64"), contentType: "image/jpeg" };
+      }
       const p = s.photos.find((p) => p.id === input.photoId);
       if (!p) fail("share/not-found");
       const file = bucket.file(`users/${s.teacherId}/photos/${p.id}/image.jpg`, { generation: p.generation });

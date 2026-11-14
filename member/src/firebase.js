@@ -1,3 +1,4 @@
+import { logSharingFailure } from "../../src/features/photos/sharing-errors.js";
 /**
  * 회원 앱의 Firebase. 강사 앱과 **같은 프로젝트, 다른 번들**이다.
  *
@@ -246,9 +247,13 @@ export async function signOutMember({ quiet = false } = {}) {
 }
 
 export async function memberPhotoSharing(input) {
+  const { Capacitor } = await import("@capacitor/core");
   const uid = auth.currentUser?.uid;
   if (!uid) throw new Error("share/sign-in-required");
-  const response = await httpsCallable(functions, "beforeAfterSharing")({ ...input, schemaVersion: 2 });
+  let response;
+  const context = { appBuild: (typeof __MEMBER_BUILD__ === 'undefined' ? 'unknown' : `${__MEMBER_BUILD__.version} ${__MEMBER_BUILD__.commit}`), platform: Capacitor.getPlatform() };
+  try { response = await httpsCallable(functions, "beforeAfterSharing")({ ...input, ...context, schemaVersion: 3 }); }
+  catch (error) { logSharingFailure(error, { ...input, ...context, bytes: input.cardBase64 ? Math.floor(input.cardBase64.length * 3 / 4) : 0 }); throw error; }
   if (auth.currentUser?.uid !== uid) throw new Error("share/sign-in-required");
   return response.data;
 }

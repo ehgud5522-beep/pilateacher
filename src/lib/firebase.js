@@ -1,4 +1,7 @@
+import { logSharingFailure } from "../features/photos/sharing-errors.js";
 import { assertPhotoPaths, ensureOriginalBackup } from "../features/backup/original-backup.js";
+import { photoStage } from '../features/backup/photo-errors.js';
+import { deletePhotoManifest } from '../features/backup/photo-delete.js';
 /* ===================================================================
    필라티쳐 — Firebase 연결
    config 는 pilateacher 프로젝트 값입니다.
@@ -18,7 +21,7 @@ import {
   reauthenticateWithCredential, reauthenticateWithPopup, revokeAccessToken,
   sendPasswordResetEmail, updateProfile,
 } from "firebase/auth";
-import { getFirestore, deleteDoc, doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { getFirestore, deleteDoc, doc, getDoc, getDocFromServer, updateDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { getStorage, ref as storageRef, uploadBytes, uploadBytesResumable, getMetadata, getBlob } from "firebase/storage";
 import { withAuthTimeout } from "../features/auth/apple-sign-in.js";
@@ -649,20 +652,20 @@ export async function fbUploadPhotoBackup(uid, item, optimized = null, original 
   const imagePath = `users/${safeUid}/photos/${safePhotoId}/image.jpg`;
   const thumbnailPath = `users/${safeUid}/photos/${safePhotoId}/thumb.jpg`;
   const originalPath = `users/${safeUid}/photos/${safePhotoId}/original.bin`;
-  const scope = (await httpsCallable(functions, "preparePhotoAccess")({ photoId: safePhotoId, organizationId: item.organizationId, clientId: item.clientId })).data;
+  const scope = (await photoStage('prepare_access', 'firebase_functions', () => httpsCallable(functions, "preparePhotoAccess")({ photoId: safePhotoId, organizationId: item.organizationId, clientId: item.clientId }))).data;
   const originalRef = storageRef(storage, originalPath);
-  const originalInfo = await ensureOriginalBackup({ item, original, scope, path: originalPath,
+  const originalInfo = await photoStage('original_metadata', 'firebase_storage', () => ensureOriginalBackup({ item, original, scope, path: originalPath,
     getMetadata: () => getMetadata(originalRef),
     upload: (blob, metadata) => uploadBytesResumable(originalRef, blob, metadata),
-    download: () => getBlob(originalRef) });
+    download: () => getBlob(originalRef) }));
   let imageBytes = Math.max(0, Number(item?.imageBytes) || 0);
   let thumbnailBytes = Math.max(0, Number(item?.thumbnailBytes) || 0);
   if (optimized?.image?.blob && optimized?.thumbnail?.blob) {
     const metadata = { contentType: "image/jpeg", cacheControl: "private,no-store,max-age=0", customMetadata: { photoId: safePhotoId, ...scope } };
-    const [imageResult, thumbnailResult] = await Promise.all([
+    const [imageResult, thumbnailResult] = await photoStage('image_upload', 'firebase_storage', () => Promise.all([
       uploadBytes(storageRef(storage, imagePath), optimized.image.blob, metadata),
       uploadBytes(storageRef(storage, thumbnailPath), optimized.thumbnail.blob, metadata),
-    ]);
+    ]));
     imageBytes = imageResult.metadata.size || optimized.image.blob.size;
     thumbnailBytes = thumbnailResult.metadata.size || optimized.thumbnail.blob.size;
   } else if (!item?.storagePath || !item?.thumbnailPath) {
@@ -692,11 +695,11 @@ export async function fbUploadPhotoBackup(uid, item, optimized = null, original 
     deletedAt: null,
     purgeAfter: null,
   };
-  await withAuthTimeout(
+  await photoStage('manifest_write', 'firestore', () => withAuthTimeout(
     () => setDoc(doc(fs, "users", safeUid, "photoBackups", safePhotoId), payload, { merge: false }),
     { timeoutMs: 30000, provider: "firebase", stage: "photo_backup_write" },
-  );
-  await httpsCallable(functions, "preparePhotoAccess")({ photoId: safePhotoId, ...scope });
+  ));
+  await photoStage('prepare_access', 'firebase_functions', () => httpsCallable(functions, "preparePhotoAccess")({ photoId: safePhotoId, ...scope }));
   return { ...payload, uploadedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 }
 
@@ -720,35 +723,16 @@ export async function fbDownloadPhotoBackup(uid, item, thumbnail = false) {
 }
 
 export async function fbSoftDeletePhotoBackup(uid, photoId) {
-  if (!fs) return;
-  const ids = assertOwnPhotoPath(uid, photoId);
-  const purgeAfter = new Date(Date.now() + 30 * 86400000);
-  const imagePath = `users/${ids.safeUid}/photos/${ids.safePhotoId}/image.jpg`;
-  const thumbnailPath = `users/${ids.safeUid}/photos/${ids.safePhotoId}/thumb.jpg`;
-  await withAuthTimeout(
-    () => setDoc(doc(fs, "users", ids.safeUid, "photoBackups", ids.safePhotoId), {
-      schemaVersion: 1,
-      photoId: ids.safePhotoId,
-      memberId: "",
-      assessmentId: "",
-      bucketKey: "",
-      view: "",
-      date: "",
-      width: 0,
-      height: 0,
-      storagePath: imagePath,
-      thumbnailPath,
-      imageBytes: 0,
-      thumbnailBytes: 0,
-      status: "deleted",
-      record: {},
-      references: [],
-      deletedAt: serverTimestamp(),
-      purgeAfter,
-      updatedAt: serverTimestamp(),
-    }, { merge: true }),
-    { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "photo_soft_delete" },
-  );
+  return photoStage("delete", "firestore", async () => {
+    if (!fs) throw Object.assign(new Error("backup/unavailable"), { code: "backup/unavailable" });
+    const ids = assertOwnPhotoPath(uid, photoId);
+    const reference = doc(fs, "users", ids.safeUid, "photoBackups", ids.safePhotoId);
+    // A denied read is not proof of absence; retain that task for manual retry.
+    return deletePhotoManifest(() => getDocFromServer(reference), () => withAuthTimeout(() => updateDoc(reference, {
+      status: "deleted", deletedAt: serverTimestamp(),
+      purgeAfter: new Date(Date.now() + 30 * 86400000), updatedAt: serverTimestamp(),
+    }), { timeoutMs: FIRESTORE_WRITE_TIMEOUT_MS, provider: "firebase", stage: "photo_soft_delete" }));
+  });
 }
 
 /**
@@ -1067,7 +1051,10 @@ export async function fbLoadAIRecordingStatus() {
 export async function fbPrivatePhotoSharing(input) {
   const uid = auth?.currentUser?.uid;
   if (!uid) throw new Error("share/sign-in-required");
-  const response = await httpsCallable(functions, "beforeAfterSharing")({ ...input, schemaVersion: 2 });
+  let response;
+  const context = { appBuild: globalThis.window?.PILATEACHER_VER || import.meta.env?.VITE_APP_VERSION || 'unknown', platform: Capacitor.getPlatform() };
+  try { response = await httpsCallable(functions, "beforeAfterSharing")({ ...input, ...context, schemaVersion: 3 }); }
+  catch (error) { logSharingFailure(error, { ...input, ...context, bytes: input.cardBase64 ? Math.floor(input.cardBase64.length * 3 / 4) : 0 }); throw error; }
   if (auth?.currentUser?.uid !== uid) throw new Error("share/sign-in-required");
   return response.data;
 }

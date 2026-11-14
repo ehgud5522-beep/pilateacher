@@ -2,18 +2,15 @@ import './private-sharing.css';
 import { useEffect, useRef, useState } from 'react';
 import { drawContained, renderAlbumPhoto } from './album-render.js';
 
-export const sharingMessage = (error) => {
-  const code = String(error?.message || '');
-  if (code.includes('consent')) return '회원앱에서 사진 공유 동의를 확인해 주세요.';
-  if (code.includes('member-not-linked')) return '회원앱 계정 연결을 확인할 수 없습니다.';
-  if (code.includes('photo-not-ready') || code.includes('photo-changed')) return '원본 서버 백업과 회원 연결을 확인한 뒤 다시 선택해 주세요.';
-  if (code.includes('disabled')) return '비포애프터 공유는 아직 준비 중입니다.';
-  if (code.includes('update-required')) return '앱을 최신 버전으로 업데이트해 주세요.';
-  return '공유 자료를 확인할 수 없습니다. 연결·권한·공유 상태를 확인한 뒤 다시 시도해 주세요.';
-};
+import { sharingMessage } from './sharing-errors.js';
+export { sharingMessage } from './sharing-errors.js';
+
+export function SharedBeforeAfter(props) {
+  return props.share.shareType === 'card' ? <SharedCard {...props} /> : <LegacySharedBeforeAfter {...props} />;
+}
 
 // Only memory-held blob URLs. Never write member photographs to the offline view cache.
-export function SharedBeforeAfter({ share, api, thumbnail = false }) {
+function LegacySharedBeforeAfter({ share, api, thumbnail = false }) {
   const [images, setImages] = useState([]), [error, setError] = useState(''), [epoch, setEpoch] = useState(0);
   const [mode, setMode] = useState(share.comparisonConfig?.mode || 'side');
   const [split, setSplit] = useState(share.comparisonConfig?.split ?? 50);
@@ -30,7 +27,7 @@ export function SharedBeforeAfter({ share, api, thumbnail = false }) {
         for (const photo of (thumbnail ? share.photos.slice(0, 1) : share.photos)) {
           const result = await api({ action: 'media', shareId: share.id, photoId: photo.id });
           if (!active || request !== serial) return;
-          const bytes = Uint8Array.from(window.atob(result.base64), (c) => c.charCodeAt(0));
+          const bytes = Uint8Array.from(window.globalThis.atob(result.base64), (c) => c.charCodeAt(0));
           const url = URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' })); urls.add(url);
           frames.push(await renderAlbumPhoto(url, photo.edit));
           URL.revokeObjectURL(url); urls.delete(url);
@@ -72,4 +69,37 @@ function MemoryCanvas({ frame, thumbnail }) {
   const ref = useRef(null);
   useEffect(() => { const c = ref.current; c.width = frame.width; c.height = frame.height; c.getContext('2d').drawImage(frame, 0, 0); return () => { c.width = 1; c.height = 1; }; }, [frame]);
   return <canvas ref={ref} role="img" aria-label="공유된 사진" style={{ width: '100%', maxHeight: thumbnail ? 120 : '65vh', objectFit: 'contain' }} />;
+}
+
+// Cards are never reconstructed, cached offline, or exposed through a public URL.
+export function CardImage({ src, share, thumbnail = false }) {
+  return <figure><img src={src} alt="공유된 비포애프터 비교 카드" draggable={false} style={{ width: '100%', maxHeight: thumbnail ? 180 : undefined, objectFit: 'contain' }} /><figcaption>{share.teacherName} · {(share.dates || []).join(' → ')}</figcaption></figure>;
+}
+function SharedCard({ share, api, thumbnail = false }) {
+  const [src, setSrc] = useState(''), [error, setError] = useState(''), [epoch, setEpoch] = useState(0);
+  useEffect(() => {
+    let active = true, serial = 0, url = '';
+    const clear = () => { serial++; if (url) URL.revokeObjectURL(url); url = ''; if (active) setSrc(''); };
+    const load = async () => {
+      clear(); const current = serial;
+      try {
+        if (!navigator.onLine || document.visibilityState === 'hidden') return;
+        await api({ action: 'detail', shareId: share.id });
+        const result = await api({ action: 'media', shareId: share.id });
+        if (!active || current !== serial) return;
+        url = URL.createObjectURL(new Blob([Uint8Array.from(globalThis.atob(result.base64), (c) => c.charCodeAt(0))], { type: 'image/jpeg' }));
+        setSrc(url); setError('');
+      } catch (e) { if (active && current === serial) { clear(); setError(sharingMessage(e)); } }
+    };
+    const verify = async () => {
+      const current = serial;
+      try { await api({ action: 'detail', shareId: share.id }); }
+      catch (e) { if (active && current === serial) { clear(); setError(sharingMessage(e)); } }
+    };
+    const visibility = () => { if (document.visibilityState === 'hidden' || !navigator.onLine) clear(); else load(); };
+    load(); const timer = setInterval(verify, 15000);
+    window.addEventListener('offline', visibility); window.addEventListener('online', visibility); document.addEventListener('visibilitychange', visibility);
+    return () => { active = false; clear(); clearInterval(timer); window.removeEventListener('offline', visibility); window.removeEventListener('online', visibility); document.removeEventListener('visibilitychange', visibility); };
+  }, [share.id, api, epoch]);
+  return <div className="private-share-view">{src ? <CardImage src={src} share={share} thumbnail={thumbnail} /> : error ? <p role="alert">{error}<button type="button" onClick={() => setEpoch((n) => n + 1)}>다시 확인</button></p> : <p role="status">카드를 확인하고 있습니다…</p>}</div>;
 }

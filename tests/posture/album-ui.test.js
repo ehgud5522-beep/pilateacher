@@ -24,5 +24,10 @@ test('album renders compact filters, all same-day photos, and optional AI withou
     assert.ok(empty.includes('아직 등록된 사진이 없습니다.'));
     assert.ok(empty.includes('사진 추가하기'));
     assert.ok(!empty.includes('촬영 방향 필터'));
+    const failure = { photoIdPrefix: 'photo001', category: 'permission', errorCode: 'functions/permission-denied', reasonCode: 'photo/scope-required', stage: 'prepare_access' };
+    const failed = renderToStaticMarkup(createElement(Album, { ...props, backupStatus: { state: 'backing_up', processedPhotos: 2, photoFailures: [failure] } }));
+    for (const text of ['성공 2장', '실패 1장', 'photo001', '권한', 'functions/permission-denied', 'photo/scope-required', 'prepare_access', '다시 시도']) assert.ok(failed.includes(text), text);
+    const unknown = renderToStaticMarkup(createElement(Album, { ...props, backupStatus: { state: 'error' } }));
+    assert.ok(unknown.includes('(unknown)'));
   } finally { await vite.close(); }
 });

@@ -5508,6 +5508,13 @@ function drawAnnotationMark(ctx, mark, width, height, options = {}) {
 /* 자 손잡이의 터치 반경. 그려진 원(15px·13px)보다 넉넉해야 손가락으로 잡힌다. */
 const RULER_HANDLE_HIT = 26;
 
+/* 비포애프터 앨범이 펜 · 자 표시를 그릴 때 쓴다 (BeforeAfterAlbum MarkContext).
+   표시 편집기와 같은 비율 -- 틀 너비 300 을 1 로 보고 선 굵기 · 글자 크기를 키운다. */
+const drawAlbumMarks = (ctx, marks, w, h) => {
+  const scale = w / 300;
+  (marks || []).forEach((mark) => drawAnnotationMark(ctx, mark, w, h, { lineScale: scale, fontScale: scale }));
+};
+
 function PostureCanvas({ photo, label, onClose, onCancel = onClose, onSave, onDraft, onToast, fresh, initialTool = "pen" }) {
   const wrapRef = useRef(null), canvasRef = useRef(null), imgRef = useRef(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -34200,6 +34207,9 @@ export default function App() {
             </div>}
             {tab === "analysis" && <PhotoAccessBoundary sharingApi={fbPrivatePhotoSharing} organizationId={organizationContext?.organizationId} allowed={allowedPhotoMembers} key={account?.id} accountId={account?.id} members={rosterMembers} photos={photos} selectedId={analysisMemberId}
               onImport={importAlbumPhotos} onPatch={patchAlbum} onDelete={deleteAlbum} onAnalyze={analyzeAlbumPhoto}
+              drawMarks={drawAlbumMarks}
+              markup={({ photo, memberId, onDone }) => <PostureCanvas key={`album_${photo.bucket}_${photo.id}`} photo={photo} label={`${photo.date || ""} · 펜 · 자`} initialTool="pen"
+                onClose={onDone} onCancel={onDone} onSave={(marks) => patchAlbum(memberId, photo, { marks }, memberId)} onToast={setToast} />}
               backupStatus={cloudBackupStatus} onRetry={retryCloudBackup} onEnableBackup={enablePhotoBackup}
               onExport={(canvas) => exportCanvas(canvas, `비포애프터_${todayISO()}.jpg`, "비포애프터", true)}
               onSelect={(id, poseId = null) => { setAnalysisMemberId(id); setAnalysisRecordId(poseId); setAnalysisAssessmentId(null); setAnalysisEntryMode(poseId ? "result" : "home"); setAnalysisComparisonEntry(null); }}

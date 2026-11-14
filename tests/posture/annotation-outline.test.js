@@ -146,6 +146,8 @@ function recordingContext() {
     restore() { Object.assign(state, stack.pop() || state); },
     beginPath() {}, moveTo() {}, lineTo() {}, arc() {}, ellipse() {}, rect() {},
     setLineDash() {}, strokeRect() {}, fillRect() {},
+    // 손메모 기울기(2026-11-15)는 기준점으로 옮긴 뒤 돌려서 그린다.
+    translate() {}, rotate() {}, scale() {},
     stroke() { strokes.push({ color: String(state.strokeStyle).toUpperCase(), width: Number(state.lineWidth), alpha: state.globalAlpha }); },
     fill() { fills.push({ color: String(state.fillStyle).toUpperCase() }); },
     strokeText() { strokes.push({ color: String(state.strokeStyle).toUpperCase(), width: Number(state.lineWidth), text: true }); },

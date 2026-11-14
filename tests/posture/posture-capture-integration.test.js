@@ -123,7 +123,9 @@ test("direct annotation exposes opt-in guides, ruler, handwriting, colors, and r
   assert.match(canvas, /initialTool = "pen"/);
   assert.match(canvas, /const \[color, setColor\] = useState\("#FFFFFF"\)/);
   assert.match(canvas, /const chooseColor = \(value\) => \{[\s\S]*setColor\(next\)/);
-  assert.match(canvas, /const \[guideSheet, setGuideSheet\] = useState\(false\)/);
+  // 기준선은 시트가 아니라 도구 띠다 (2026-11-15) -- 고르면 그 이름의 선이 바로 놓인다.
+  assert.doesNotMatch(canvas, /guideSheet/);
+  assert.match(canvas, /tool === "guide" && <div className="mb-1 grid grid-cols-5 gap-1" data-posture-guide-strip>/);
   assert.match(canvas, /\{ k: "ruler", l: "자", I: Move \}/);
   assert.match(canvas, /\{ k: "memo", l: "손메모", I: MessageSquare \}/);
   assert.match(canvas, /tool === "memo"\) \{[\s\S]*memoTapRef\.current =/);

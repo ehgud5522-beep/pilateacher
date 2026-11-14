@@ -1,29 +1,36 @@
 /* 비포애프터 비교 카드 (2026-11-14 대표: "결과물이 너무 간단, 보니따 로고 자동, 고급스럽게").
    화면에 보이는 것이 곧 저장되는 이미지다 -- 같은 함수 하나로 그린다.
 
+   색감 (2026-11-15 대표: "너무 핫핑크라 이질적 · 필라티쳐에서도 부자연스러움").
+   검정 바탕 + 형광 분홍은 밝은 보니따 앱에서도, 남색 필라티쳐에서도 떠 보였다. 인화한 사진처럼
+   따뜻한 아이보리 종이 위에 올리고, 분홍은 채도를 낮춘 로즈 하나를 AFTER 표시 · 기간 숫자 ·
+   코멘트 머리에만 쓴다. 사진 위 기준선도 분홍이 아니라 흰 점선이다 -- 색은 사진이 낸다.
+
    회원 이름은 넣지 않는다. 이미지는 저장 · 전송되어 앱 밖으로 나가고, 거기서는 지울 수 없다.
    브랜드는 센터마다 다르다 -- 보니따 센터에만 보니따 표시를 넣고, 다른 센터 · 개인 계정은
    브랜드 없이 "BEFORE & AFTER" 만 쓴다 (brandFor). */
 
 export const CARD_WIDTH = 1200;
 /* 사진이 주인공이다 (2026-11-14 대표: "로고 더 작게, 사진 더 크게") -- 바깥 여백 · 사진 사이 · 머리 높이를 줄였다. */
-const PAD = 26;
+const PAD = 32;
 const GUTTER = 12;
-const HEADER_BRAND = 206;
-const HEADER_PLAIN = 150;
+const HEADER_BRAND = 148;
+const HEADER_PLAIN = 112;
 /* 강사 코멘트 칸 (2026-11-14 대표). 3줄까지, 넘치면 … */
 export const COMMENT_MAX = 120;
 const COMMENT_LINES = 3;
 const COMMENT_FONT = 30;
 const COMMENT_LINE_H = 44;
 const COMMENT_GAP = 22;
-const FOOTER = 112;
-const RADIUS = 26;
-const PINK = '#E8317F';
-/* 보니따 VIP 앱 로고(member-app/resources/icon-source.png)의 진한 핫핑크 · 굵은 글자를 따른다 (2026-11-14 대표). */
-const LOGO_PINK = '#FF1493';
+const FOOTER = 104;
+const RADIUS = 22;
+const PAPER = '#FBF8F5';
+const PAPER_END = '#F5F0EC';
+const INK = '#2A2427';
+const SUB = '#8E8387';
+const ROSE = '#C8557D';
+const HAIR = 'rgba(42,36,39,.09)';
 const FONT = '"Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", system-ui, sans-serif';
-const FONT_HEAVY = '"Pretendard Variable", Pretendard, "Arial Black", "Helvetica Neue", Arial, "Noto Sans KR", sans-serif';
 
 /** 센터별 표시. 로고 그림 파일이 생기면 logo 에 이미지(HTMLImageElement)를 넣는다. */
 export function brandFor(organizationId) {
@@ -88,78 +95,73 @@ function drawCover(ctx, image, x, y, w, h, align = {}) {
   const dw = image.width * scale, dh = image.height * scale;
   ctx.drawImage(image, x + (w - dw) / 2 + (align.x || 0) * w / 100, y + (h - dh) / 2 + (align.y || 0) * h / 100, dw, dh);
 }
-function pill(ctx, text, x, y, fill, align = 'left') {
-  ctx.font = `700 22px ${FONT}`; spaced(ctx, 3);
+function pill(ctx, text, x, y, fill, ink, align = 'left') {
+  ctx.font = `700 21px ${FONT}`; spaced(ctx, 3);
   const w = ctx.measureText(text).width + 32, h = 40;
   const left = align === 'right' ? x - w : x;
   ctx.fillStyle = fill; roundRect(ctx, left, y, w, h, 20); ctx.fill();
-  ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  ctx.fillStyle = ink; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
   ctx.fillText(text, left + 16, y + h / 2 + 1); spaced(ctx, 0);
 }
 function bottomShade(ctx, x, y, w, h) {
-  const g = ctx.createLinearGradient(0, y + h - 150, 0, y + h);
-  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.62)');
-  ctx.fillStyle = g; ctx.fillRect(x, y + h - 150, w, 150);
+  const g = ctx.createLinearGradient(0, y + h - 130, 0, y + h);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.5)');
+  ctx.fillStyle = g; ctx.fillRect(x, y + h - 130, w, 130);
 }
 function dateText(ctx, text, x, y, align = 'left') {
-  ctx.font = `600 28px ${FONT}`; ctx.fillStyle = '#fff'; ctx.textAlign = align; ctx.textBaseline = 'alphabetic';
+  ctx.font = `600 27px ${FONT}`; ctx.fillStyle = '#fff'; ctx.textAlign = align; ctx.textBaseline = 'alphabetic';
   spaced(ctx, 1); ctx.fillText(text, x, y); spaced(ctx, 0); ctx.textAlign = 'left';
 }
 
 function drawHeader(ctx, brand) {
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
   if (brand?.logo) {
-    const h = 120, w = brand.logo.width * (h / brand.logo.height);
-    ctx.drawImage(brand.logo, (CARD_WIDTH - w) / 2, 40, w, h);
+    const h = 64, w = brand.logo.width * (h / brand.logo.height);
+    ctx.drawImage(brand.logo, (CARD_WIDTH - w) / 2, 26, w, h);
   } else if (brand) {
-    /* 보니따 VIP 로고처럼: 굵은 핫핑크 두 줄, 아랫줄을 윗줄 폭에 맞춰 한 덩어리로.
-       VIP 자리에 PILATES. 가운데 정렬. */
-    const blockW = 220;
-    const fit = (text) => { ctx.font = `900 100px ${FONT_HEAVY}`; spaced(ctx, 0); return 100 * (blockW / ctx.measureText(text).width); };
-    const topSize = fit(brand.primary), bottomSize = fit(brand.secondary);
-    ctx.fillStyle = LOGO_PINK; ctx.textAlign = 'center';
-    ctx.shadowColor = 'rgba(255,20,147,.35)'; ctx.shadowBlur = 18;
-    ctx.font = `900 ${topSize}px ${FONT_HEAVY}`; ctx.fillText(brand.primary, CARD_WIDTH / 2, 34 + topSize * 0.76);
-    ctx.font = `900 ${bottomSize}px ${FONT_HEAVY}`; ctx.fillText(brand.secondary, CARD_WIDTH / 2, 34 + topSize * 0.76 + 6 + bottomSize * 0.76);
-    ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
+    /* 한 줄 워드마크: 굵은 BONITA + 가는 PILATES, 먹색. 형광 분홍 두 줄 로고는 사진보다 먼저 눈에 들어왔다. */
+    spaced(ctx, 9); ctx.textAlign = 'left';
+    ctx.font = `800 38px ${FONT}`; const pw = ctx.measureText(brand.primary).width;
+    ctx.font = `400 38px ${FONT}`; const sw = ctx.measureText(brand.secondary).width;
+    const gap = 14, start = (CARD_WIDTH - (pw + gap + sw)) / 2 + 4;
+    ctx.fillStyle = INK;
+    ctx.font = `800 38px ${FONT}`; ctx.fillText(brand.primary, start, 76);
+    ctx.font = `400 38px ${FONT}`; ctx.fillText(brand.secondary, start + pw + gap, 76);
+    ctx.textAlign = 'center';
   }
-  const titleY = brand ? HEADER_BRAND - 42 : 92;
-  ctx.font = `600 ${brand ? 20 : 30}px ${FONT}`; spaced(ctx, brand ? 8 : 10);
-  ctx.fillStyle = brand ? 'rgba(255,255,255,.62)' : '#fff';
-  ctx.fillText('BEFORE  &  AFTER', CARD_WIDTH / 2, titleY);
+  ctx.font = `${brand ? 500 : 600} ${brand ? 19 : 30}px ${FONT}`; spaced(ctx, brand ? 7 : 9);
+  ctx.fillStyle = brand ? SUB : INK;
+  ctx.fillText('BEFORE  &  AFTER', CARD_WIDTH / 2 + 4, brand ? 114 : 72);
   spaced(ctx, 0);
-  // 가운데 짧은 분홍 선
-  ctx.fillStyle = PINK; ctx.fillRect(CARD_WIDTH / 2 - 22, titleY + 14, 44, 3);
   ctx.textAlign = 'left';
 }
 
 function drawComment(ctx, layout, lines) {
   if (!lines.length) return;
   const x = PAD, y = layout.commentTop, w = CARD_WIDTH - PAD * 2, h = layout.commentH - COMMENT_GAP;
-  ctx.fillStyle = 'rgba(255,255,255,.05)'; roundRect(ctx, x, y, w, h, 22); ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,.10)'; ctx.lineWidth = 2; roundRect(ctx, x + 1, y + 1, w - 2, h - 2, 22); ctx.stroke();
-  ctx.fillStyle = PINK; ctx.fillRect(x + 28, y + 30, 4, 22);
+  ctx.fillStyle = '#FFFFFF'; roundRect(ctx, x, y, w, h, 20); ctx.fill();
+  ctx.strokeStyle = HAIR; ctx.lineWidth = 2; roundRect(ctx, x + 1, y + 1, w - 2, h - 2, 20); ctx.stroke();
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  ctx.font = `700 20px ${FONT}`; ctx.fillStyle = PINK; spaced(ctx, 4); ctx.fillText("TEACHER'S NOTE", x + 44, y + 42); spaced(ctx, 0);
-  ctx.font = `500 ${COMMENT_FONT}px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,.92)'; ctx.textBaseline = 'alphabetic';
+  ctx.font = `700 19px ${FONT}`; ctx.fillStyle = ROSE; spaced(ctx, 4); ctx.fillText("TEACHER'S NOTE", x + 32, y + 42); spaced(ctx, 0);
+  ctx.font = `500 ${COMMENT_FONT}px ${FONT}`; ctx.fillStyle = INK; ctx.textBaseline = 'alphabetic';
   lines.forEach((line, i) => ctx.fillText(line, x + 32, y + 28 + 30 + 34 + i * COMMENT_LINE_H));
 }
 
 function drawFooter(ctx, height, pair) {
   const days = daysBetween(pair[0].date, pair[1].date);
-  const y = height - FOOTER / 2 + 6;
+  const y = height - FOOTER / 2 + 2;
   // 날짜는 사진마다 이미 있다. 여기서는 그 사이 기간만 말한다.
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   if (days === null) { /* 날짜를 못 읽으면 기간을 지어내지 않는다 */ }
-  else if (days === 0) { ctx.font = `600 28px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,.82)'; spaced(ctx, 2); ctx.fillText('같은 날 촬영', CARD_WIDTH / 2, y); }
+  else if (days === 0) { ctx.font = `500 28px ${FONT}`; ctx.fillStyle = SUB; spaced(ctx, 2); ctx.fillText('같은 날 촬영', CARD_WIDTH / 2, y); }
   else {
-    ctx.font = `700 34px ${FONT}`; spaced(ctx, 2);
+    ctx.font = `700 36px ${FONT}`; spaced(ctx, 1);
     const num = `${days}`, rest = '일의 변화';
     const nw = ctx.measureText(num).width; ctx.font = `500 30px ${FONT}`; const rw = ctx.measureText(rest).width;
-    const start = CARD_WIDTH / 2 - (nw + 8 + rw) / 2;
+    const start = CARD_WIDTH / 2 - (nw + 6 + rw) / 2;
     ctx.textAlign = 'left';
-    ctx.font = `700 34px ${FONT}`; ctx.fillStyle = PINK; ctx.fillText(num, start, y);
-    ctx.font = `500 30px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,.86)'; ctx.fillText(rest, start + nw + 8, y);
+    ctx.font = `700 36px ${FONT}`; ctx.fillStyle = ROSE; ctx.fillText(num, start, y);
+    ctx.font = `500 30px ${FONT}`; ctx.fillStyle = 'rgba(42,36,39,.78)'; ctx.fillText(rest, start + nw + 6, y + 1);
   }
   spaced(ctx, 0);
   ctx.textAlign = 'left';
@@ -180,13 +182,10 @@ export function drawComparisonCard(canvas, { images, pair, mode, align, split = 
   canvas.width = layout.width; canvas.height = layout.height;
   const ctx = canvas.getContext('2d');
 
-  // 바탕 -- 깊은 검정에 위쪽 분홍 빛 한 번
+  // 바탕 -- 따뜻한 아이보리 종이. 빛 번짐 없이 아주 옅은 위아래 차이만.
   const bg = ctx.createLinearGradient(0, 0, 0, layout.height);
-  bg.addColorStop(0, '#141017'); bg.addColorStop(1, '#0C0B0E');
+  bg.addColorStop(0, PAPER); bg.addColorStop(1, PAPER_END);
   ctx.fillStyle = bg; ctx.fillRect(0, 0, layout.width, layout.height);
-  const glow = ctx.createRadialGradient(CARD_WIDTH / 2, -40, 10, CARD_WIDTH / 2, -40, 620);
-  glow.addColorStop(0, 'rgba(232,49,127,.30)'); glow.addColorStop(1, 'rgba(232,49,127,0)');
-  ctx.fillStyle = glow; ctx.fillRect(0, 0, layout.width, 520);
 
   drawHeader(ctx, brand);
 
@@ -196,7 +195,7 @@ export function drawComparisonCard(canvas, { images, pair, mode, align, split = 
     : [{ x: PAD, img: 0 }];
   for (const cell of cells) {
     ctx.save(); roundRect(ctx, cell.x, top, cellW, cellH, RADIUS); ctx.clip();
-    ctx.fillStyle = '#1d1a20'; ctx.fillRect(cell.x, top, cellW, cellH);
+    ctx.fillStyle = '#E9E3DE'; ctx.fillRect(cell.x, top, cellW, cellH);
     if (mode === 'side') drawCover(ctx, images[cell.img], cell.x, top, cellW, cellH, align[cell.img]);
     else {
       drawCover(ctx, images[0], cell.x, top, cellW, cellH, align[0]);
@@ -206,28 +205,36 @@ export function drawComparisonCard(canvas, { images, pair, mode, align, split = 
     }
     bottomShade(ctx, cell.x, top, cellW, cellH);
     if (guides) {
-      ctx.strokeStyle = 'rgba(255,111,170,.9)'; ctx.lineWidth = 2; ctx.setLineDash([12, 10]);
-      [0.25, 0.5, 0.75].forEach((f) => { const y = top + cellH * f; ctx.beginPath(); ctx.moveTo(cell.x, y); ctx.lineTo(cell.x + cellW, y); ctx.stroke(); });
+      /* 흰 점선 + 옅은 그림자. 밝은 벽 · 어두운 바닥 어디서나 보이고, 사진 색을 건드리지 않는다. */
+      [0.25, 0.5, 0.75].forEach((f) => {
+        const y = top + cellH * f;
+        ctx.setLineDash([]); ctx.strokeStyle = 'rgba(0,0,0,.22)'; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(cell.x, y); ctx.lineTo(cell.x + cellW, y); ctx.stroke();
+        ctx.setLineDash([12, 10]); ctx.strokeStyle = 'rgba(255,255,255,.88)'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(cell.x, y); ctx.lineTo(cell.x + cellW, y); ctx.stroke();
+      });
       ctx.setLineDash([]);
     }
     ctx.restore();
-    ctx.strokeStyle = 'rgba(255,255,255,.10)'; ctx.lineWidth = 2; roundRect(ctx, cell.x + 1, top + 1, cellW - 2, cellH - 2, RADIUS); ctx.stroke();
+    ctx.strokeStyle = HAIR; ctx.lineWidth = 2; roundRect(ctx, cell.x + 1, top + 1, cellW - 2, cellH - 2, RADIUS); ctx.stroke();
   }
 
+  const beforePill = ['rgba(255,255,255,.9)', INK], afterPill = [ROSE, '#fff'];
   if (mode === 'side') {
-    pill(ctx, 'BEFORE', PAD + 20, top + 20, 'rgba(0,0,0,.55)');
-    pill(ctx, 'AFTER', PAD + cellW + GUTTER + 20, top + 20, PINK);
+    pill(ctx, 'BEFORE', PAD + 20, top + 20, ...beforePill);
+    pill(ctx, 'AFTER', PAD + cellW + GUTTER + 20, top + 20, ...afterPill);
     dateText(ctx, cardDate(pair[0].date), PAD + 24, top + cellH - 26);
     dateText(ctx, cardDate(pair[1].date), PAD + cellW + GUTTER + 24, top + cellH - 26);
   } else {
     const cut = PAD + cellW * (split / 100);
     ctx.fillStyle = '#fff'; ctx.fillRect(cut - 2, top, 4, cellH);
-    ctx.beginPath(); ctx.arc(cut, top + cellH / 2, 26, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
-    ctx.fillStyle = PINK; ctx.beginPath();
+    ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.28)'; ctx.shadowBlur = 12;
+    ctx.beginPath(); ctx.arc(cut, top + cellH / 2, 26, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); ctx.restore();
+    ctx.fillStyle = INK; ctx.beginPath();
     ctx.moveTo(cut - 6, top + cellH / 2 - 9); ctx.lineTo(cut - 15, top + cellH / 2); ctx.lineTo(cut - 6, top + cellH / 2 + 9); ctx.fill();
     ctx.beginPath(); ctx.moveTo(cut + 6, top + cellH / 2 - 9); ctx.lineTo(cut + 15, top + cellH / 2); ctx.lineTo(cut + 6, top + cellH / 2 + 9); ctx.fill();
-    pill(ctx, 'BEFORE', PAD + 20, top + 20, 'rgba(0,0,0,.55)');
-    pill(ctx, 'AFTER', PAD + cellW - 20, top + 20, PINK, 'right');
+    pill(ctx, 'BEFORE', PAD + 20, top + 20, ...beforePill);
+    pill(ctx, 'AFTER', PAD + cellW - 20, top + 20, ...afterPill, 'right');
     dateText(ctx, cardDate(pair[0].date), PAD + 24, top + cellH - 26);
     dateText(ctx, cardDate(pair[1].date), PAD + cellW - 24, top + cellH - 26, 'right');
   }

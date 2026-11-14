@@ -101,7 +101,31 @@ function Compare({ photos, initialPhotos, onClose, onExport, onShare, brand }) {
     {onShare && <Button disabled={!ready} onClick={async () => { try { onShare(await captureShareCard(ref.current, pair, comment)); } catch (e) { logSharingFailure(e, { action: "capture", appBuild: globalThis.window?.PILATEACHER_VER }); setError(sharingMessage(e)); } }}>회원에게 공유</Button>}{error && <p role="alert">{error}</p>}<Button className="ba-primary ba-export" disabled={!ready} onClick={() => onExport(ref.current)}>비교 이미지 저장</Button>
   </section>;
 }
-export default function BeforeAfterAlbum({ accountId, members, photos, selectedId, onSelect, onImport, onPatch, onDelete, hub, onExport, backupStatus, onRetry, onAnalyze, sharingApi, organizationId, markup, drawMarks }) {
+/* 센터 회원과 연결되지 않은 사진 (App.jsx unlinkedPhotos). 백업이 안 되고 앨범에도 안 보이던 사진.
+   대표 · 총괄: 사진을 보고 회원을 지정하거나 백업에서 뺀다. 강사: 수만 보고 백업에서만 뺄 수 있다
+   (담당이 바뀌어 권한이 회수된 회원 사진일 수 있어 보여 주지 않는다). 지우는 버튼은 없다. */
+function UnlinkedPhotos({ entries, ownerView, members, onAssign, onExclude, busy, run, notify }) {
+  const [open, setOpen] = useState(false);
+  const [targets, setTargets] = useState({});
+  const active = entries.filter((e) => e.photo.backupExcluded !== true);
+  if (!entries.length || (!active.length && !open)) return null;
+  const keyOf = (e) => `${e.memberKey}:${photoKey(e.photo)}`;
+  return <section className="ba-unlinked" aria-label="센터 회원과 연결되지 않은 사진">
+    <div className="ba-unlinked-head"><div><strong>센터 회원과 연결되지 않은 사진 {active.length}장</strong><small>회원이 지정되지 않아 백업되지 않아요. 사진은 기기에 그대로 있어요.</small></div>
+      {ownerView ? <Button onClick={() => setOpen((v) => !v)}>{open ? '닫기' : '확인'}</Button>
+        : <Button disabled={busy || !active.length} onClick={() => { if (window.confirm(`연결되지 않은 사진 ${active.length}장을 백업에서 뺄까요? 사진은 기기에 그대로 남아요.`)) run(async () => { if (await onExclude(active) === false) throw new Error('백업 제외 저장 실패'); notify('백업에서 뺐습니다. 사진은 기기에 그대로 있어요.'); }); }}>백업에서 빼기</Button>}</div>
+    {!ownerView && <small className="ba-unlinked-note">담당이 바뀐 회원의 사진일 수 있어요. 회원을 다시 지정하려면 대표님께 문의해 주세요.</small>}
+    {ownerView && open && <ul>{entries.map((e) => <li key={keyOf(e)} className={e.photo.backupExcluded ? 'is-excluded' : ''}>
+      <span className="ba-unlinked-thumb">{e.photo.src ? <Photo photo={e.photo} /> : <ImageOff size={18} aria-hidden="true" />}</span>
+      <div className="ba-unlinked-body"><span>{e.photo.date || '날짜 미확인'} · {label(e.photo.view)}{e.photo.backupExcluded ? ' · 백업에서 뺌' : ''}</span>
+        <small>예전 회원 기록{e.oldName ? ` · ${e.oldName}` : ''}</small>
+        <div className="ba-unlinked-actions"><select aria-label="옮길 센터 회원" value={targets[keyOf(e)] || ''} onChange={(ev) => setTargets((t) => ({ ...t, [keyOf(e)]: ev.target.value }))}><option value="">회원 선택</option>{members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
+          <Button className="ba-primary" disabled={busy || !targets[keyOf(e)]} onClick={() => run(async () => { if (await onAssign(e.memberKey, e.photo, targets[keyOf(e)]) === false) throw new Error('사진을 옮기지 못했습니다. 사진은 그대로입니다.'); notify('사진을 옮겼습니다. 백업을 다시 시도합니다.'); })}>옮기기</Button>
+          {!e.photo.backupExcluded && <Button disabled={busy} onClick={() => run(async () => { if (await onExclude([e]) === false) throw new Error('백업 제외 저장 실패'); notify('백업에서 뺐습니다. 사진은 기기에 그대로 있어요.'); })}>백업에서 빼기</Button>}</div></div>
+    </li>)}</ul>}
+  </section>;
+}
+export default function BeforeAfterAlbum({ accountId, members, photos, selectedId, onSelect, onImport, onPatch, onDelete, hub, onExport, backupStatus, onRetry, onAnalyze, sharingApi, organizationId, markup, drawMarks, unlinked = [], unlinkedOwnerView = false, onAssignUnlinked, onExcludeUnlinked }) {
   const [markupPhoto, setMarkupPhoto] = useState(null);
   const cancelEditRef = useRef(() => {});
   const [sharing, setSharing] = useState(null), [sharingEnabled, setSharingEnabled] = useState(false);
@@ -190,6 +214,7 @@ export default function BeforeAfterAlbum({ accountId, members, photos, selectedI
     {draft?.kind === 'edit' && !editing && <Button onClick={() => { const m = members.find((x) => x.id === draft.memberId); const p = albumPhotos(photos[draft.memberId]).find((x) => x.id === draft.photo.id && x.bucket === draft.photo.bucket); if (!m || !p) { setMessage('초안의 회원 또는 사진에 접근할 수 없습니다.'); return; } if (selectedId !== m.id) { onSelect(m.id); return; } openEditor(p); setEdit(draft.edit); setDate(draft.date); setDirection(draft.direction); setOwner(draft.owner); }}>저장되지 않은 편집 이어하기</Button>}
     {draft?.kind === 'edit' && !editing && <Button className="ba-text" onClick={() => { if (window.confirm('저장하지 않은 편집을 버릴까요? 사진은 그대로입니다.')) persist(null).then(() => setMessage('편집 초안을 버렸습니다.')).catch(() => setMessage('편집 초안을 지우지 못했습니다.')); }}>편집 초안 버리기</Button>}
     {!member ? <>
+      {onAssignUnlinked && onExcludeUnlinked && <UnlinkedPhotos entries={unlinked} ownerView={unlinkedOwnerView} members={members} onAssign={onAssignUnlinked} onExclude={onExcludeUnlinked} busy={busy} run={run} notify={setMessage} />}
       <div className="ba-filterbar"><label className="ba-search"><Search size={15} aria-hidden="true" /><input aria-label="회원 이름 검색" placeholder="회원 이름 검색" value={query} onChange={(e) => setQuery(e.target.value)} /></label>
       <div className="ba-chips" aria-label="회원 필터">{[['all', '전체'], ['photos', '사진 있음'], ['compare', '비교 가능']].map(([k, l]) => <Button key={k} aria-pressed={filter === k} onClick={() => setFilter(k)}>{l}</Button>)}</div></div>
       <div className="ba-members">{members.filter((m) => m.name?.includes(query)).map((m) => ({ m, items: albumPhotos(photos[m.id]) })).filter(({ items }) => filter === 'all' || items.length >= (filter === 'compare' ? 2 : 1)).map(({ m, items }) => <Button className="ba-member" key={m.id} onClick={() => onSelect(m.id)}><span className="ba-avatar">{items[0]?.src ? <Photo photo={items[0]} /> : <ImagePlus size={22} />}</span><span className="ba-member-info"><strong>{m.name}</strong><small>{items[0]?.date || '아직 촬영한 사진이 없어요'}{items.length > 0 && ` · ${items.length}장`}</small></span>{items.length >= 2 && <span className="ba-badge">비교 가능</span>}<ChevronRight size={18} aria-hidden="true" /></Button>)}</div>

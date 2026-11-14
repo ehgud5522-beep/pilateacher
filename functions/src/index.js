@@ -13,7 +13,7 @@ exports.preparePhotoAccess = onCall({ region: "asia-northeast3", timeoutSeconds:
   if (!request.auth?.uid) throw new HttpsError("unauthenticated", "Sign in required");
   try { return await preparePhotoAccess(getFirestore(), getStorage().bucket(), request.auth.uid, request.data); }
   catch (error) {
-    const details = photoAccessRejection(error);
+    const details = photoAccessRejection(error, request.data);
     logger.warn('photo_access_rejected', details);
     throw new HttpsError("permission-denied", details.reasonCode, details);
   }

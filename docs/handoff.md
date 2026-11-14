@@ -211,6 +211,18 @@
 
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-11-15 — 1.1.51 빌드 브랜치 `release/1-1-51` (대표 지시: "새로운 브랜치로 앱 빌드 할 수 있게")
+
+- `release/1-1-50`(6988439) 위에 `feat/before-after-part-names`(#194 · #195 · #196 · #197 · #198, main dd5daeb 포함)를 합쳤다. 충돌 없음
+- 버전: versionName 1.1.51 · versionCode 74(Codemagic 이 `ANDROID_VERSION_CODE` 로 덮어쓴다) · iOS MARKETING_VERSION 1.1.51 ·
+  `release/android-release-policy.json` 허용 브랜치에 `^release/1-1-51$`
+- 확인: 앱 3707 통과 / 0 실패, 타입 · 강사 빌드 통과, `test:android-release` 11 통과, `release-guard --stage preflight` 통과(1.1.51 (74))
+- **다섯 PR 은 아직 main 에 병합되지 않았다.** 이 브랜치에만 들어 있다 -- 빌드는 되지만 main 과 운영 웹에는 없다
+- **웹 · Functions 배포는 하지 않았다**: `npm run deploy:web` 은 main 에서만 돌고, 병합은 대표가 한다. 병합되면 Functions(`beforeAfterSharing`) → 강사 웹 순서.
+  앱이 먼저 나가도 깨지지 않는다(동의 상태를 못 읽으면 예전 흐름)
+- `codemagic.yaml` 에 `VITE_IOS_NATIVE_CAPTURE_ENABLED` 는 없다 -- Codemagic 화면의 환경값에 false 로 넣어 두지 않았다면 iOS 도 겹쳐 찍기가 된다
+- 빌드는 대표가 Codemagic 에서 이 브랜치를 골라 직접 돌린다. 스토어 업로드도 대표
+
 ## 2026-11-15 — 비포애프터: 부위 이름 (`feat/before-after-part-names`, #197 위에 쌓음, 병합 · 배포 전)
 
 - 대표 결정: 부위 사진에 이름을 붙인다. 전에는 부위 사진이 전부 "기타" 하나라 목 사진과 골반 사진이 섞이면 자동으로 고른 짝이 틀릴 수 있었다

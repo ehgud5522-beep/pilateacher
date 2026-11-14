@@ -133,6 +133,10 @@
 /* BEFORE · AFTER 와 날짜는 비교 이미지 위 띠에 들어 있다(저장 이미지에도). 화면에서 두 번 더 쓰지 않는다. */
 .ba-photo-labels,.ba-photo-dates{display:none}
 .ba-comparison{display:block;width:100%;max-height:62dvh;object-fit:contain;margin:4px 0 8px;background:var(--photo,#15151b);border-radius:12px}
+.ba-comment{display:grid;gap:6px;margin:4px 0 10px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--card)}
+.ba-comment>span{display:flex;justify-content:space-between;align-items:center;font-size:var(--t-caption,13px);font-weight:700;color:var(--ink)}
+.ba-comment small{font-size:12px;font-weight:400;color:var(--sub,var(--ink2))}
+.ba-root .ba-comment textarea{width:100%;min-height:76px;resize:vertical;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--canvas);color:var(--ink);font:inherit;font-size:var(--t-body,15px);line-height:1.5}
 .ba-compare-page>details{margin:8px 0;padding:0 12px;border:1px solid var(--line);border-radius:12px;background:var(--card)}
 .ba-compare-page>details label{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:var(--t-caption,13px);color:var(--ink2)}
 .ba-compare-page>details .ba-toolbar{display:grid;grid-template-columns:1fr;gap:6px}

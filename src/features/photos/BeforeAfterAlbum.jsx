@@ -8,7 +8,7 @@ import { ArrowLeft, ChevronRight, ImageOff, ImagePlus, Images, Search, X } from 
 import { usePhotoGestures } from './photo-gestures.js';
 import { createContext, useContext } from 'react';
 import { createPortal } from 'react-dom';
-import { brandFor, drawComparisonCard } from './comparison-card.js';
+import { COMMENT_MAX, brandFor, drawComparisonCard } from './comparison-card.js';
 
 /* 펜 · 자 표시를 그리는 함수. 그리는 코드(drawAnnotationMark)가 App.jsx 에 있어 위에서 받는다. */
 const MarkContext = createContext(null);
@@ -57,6 +57,8 @@ function Range({ title, value, min, max, step = 1, onChange }) {
 }
 function Compare({ photos, initialPhotos, onClose, onExport, onShare, brand }) {
   const draw = useContext(MarkContext);
+  const [images, setImages] = useState(null);
+  const [comment, setComment] = useState('');
   const [pair, setPair] = useState(() => chronologicalPair(initialPhotos));
   const [mode, setMode] = useState('side');
   const [split, setSplit] = useState(50);
@@ -70,20 +72,26 @@ function Compare({ photos, initialPhotos, onClose, onExport, onShare, brand }) {
   useEffect(() => {
     let active = true;
     setReady(false);
-    Promise.all(pair.map((p) => { const [e, overlay] = renderInput(p, draw, p.albumEdit); return renderAlbumPhoto(p.src, e, 1400, overlay); })).then((images) => {
-      if (!active || !ref.current) return;
-      // 화면에 보이는 카드가 곧 저장되는 이미지다 (comparison-card.js).
-      drawComparisonCard(ref.current, { images, pair, mode, align, split, guides, brand });
-      setReady(true); setError('');
+    setImages(null);
+    Promise.all(pair.map((p) => { const [e, overlay] = renderInput(p, draw, p.albumEdit); return renderAlbumPhoto(p.src, e, 1400, overlay); })).then((loaded) => {
+      if (active) { setImages(loaded); setError(''); }
     }).catch(() => { if (active) setError('사진을 불러오지 못했습니다. 원본을 복원한 후 다시 시도하세요.'); });
     return () => { active = false; };
-  }, [pair, mode, split, align, guides, brand, draw]);
+  }, [pair, draw]);
+  /* 사진을 읽는 일과 카드를 그리는 일을 나눈다. 코멘트를 칠 때마다, 슬라이더를 움직일 때마다
+     사진을 다시 읽으면 손이 늦는다. 화면에 보이는 카드가 곧 저장되는 이미지다 (comparison-card.js). */
+  useEffect(() => {
+    if (!images || !ref.current) return;
+    drawComparisonCard(ref.current, { images, pair, mode, align, split, guides, brand, comment });
+    setReady(true);
+  }, [images, pair, mode, split, align, guides, brand, comment]);
   return <section className="ba-compare-page"><div className="ba-toolbar"><Button aria-label="앨범으로" onClick={onClose}><ArrowLeft size={22} /></Button><h2>비포애프터 비교</h2><Button onClick={() => { setPair(([a,b]) => [b,a]); setAlign(([a,b]) => [b,a]); }}>위치 교체</Button></div>
 
     {pair[0].view !== pair[1].view && <p role="status">{label(pair[0].view)}과 {label(pair[1].view)} 사진은 정확한 체형 비교가 어려울 수 있습니다.</p>}
     <div className="ba-photo-labels"><strong>BEFORE</strong><strong>AFTER</strong></div>
     <canvas {...gestures} style={{ touchAction: 'none' }} ref={ref} className="ba-comparison" role="img" aria-label="비포애프터 비교 이미지" />
     {mode === 'overlay' && <Range title="겹침 슬라이더" value={split} min={0} max={100} onChange={setSplit} />}
+    <label className="ba-comment"><span>강사 코멘트 <small>{comment.length}/{COMMENT_MAX}</small></span><textarea rows={3} maxLength={COMMENT_MAX} value={comment} onChange={(e) => setComment(e.target.value)} placeholder="이번 변화에 대한 한마디 · 비교 이미지 아래에 함께 저장돼요" /><small>회원 이름이나 연락처는 적지 않는 것을 권해요. 이미지는 앱 밖으로 나가면 지울 수 없어요.</small></label>
     <div className="ba-photo-dates"><span>{pair[0].date}</span><span>{pair[1].date}</span></div><details><summary>확대 · 정렬</summary><label>정렬할 사진<select value={target} onChange={(e) => setTarget(Number(e.target.value))}><option value={0}>BEFORE</option><option value={1}>AFTER</option></select></label>
     {[['zoom', '확대 / 축소', 0.5, 3, 0.05], ['x', '좌우 위치', -50, 50, 1], ['y', '상하 위치', -50, 50, 1]].map(([key, title, min, max, step]) => <Range key={key} title={title} value={align[target][key]} min={min} max={max} step={step} onChange={(v) => setAlign((old) => old.map((a, i) => i === target ? { ...a, [key]: v } : a))} />)}
     </details><details><summary>비교 사진 변경</summary>    <div className="ba-toolbar">{pair.map((p, i) => <label key={i}>{i ? 'AFTER' : 'BEFORE'}<select value={photoKey(p)} onChange={(e) => { const chosen = photos.find((x) => photoKey(x) === e.target.value); setPair((old) => old.map((x, index) => index === i ? chosen : x)); }}>{photos.map((x, index) => <option disabled={photoKey(pair[1 - i]) === photoKey(x)} key={photoKey(x)} value={photoKey(x)}>{x.date} · {label(x.view)} · {index + 1}</option>)}</select></label>)}</div></details>    <div className="ba-toolbar"><Button aria-pressed={mode === 'side'} onClick={() => setMode('side')}>나란히</Button><Button aria-pressed={mode === 'overlay'} onClick={() => setMode('overlay')}>슬라이더</Button><label><input type="checkbox" checked={guides} onChange={(e) => setGuides(e.target.checked)} /> 기준선</label></div>

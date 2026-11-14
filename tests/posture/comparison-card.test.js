@@ -1,7 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { brandFor, cardDate, cardLayout, daysBetween } from '../../src/features/photos/comparison-card.js';
+import { COMMENT_MAX, brandFor, cardDate, cardLayout, daysBetween, wrapComment } from '../../src/features/photos/comparison-card.js';
+
+test('teacher comment wraps to at most three lines, never past the box, and adds height only when present', () => {
+  const measure = (t) => t.length * 10; // 글자 하나 10px 로 가정
+  assert.deepEqual(wrapComment(measure, '', 100), []);
+  assert.deepEqual(wrapComment(measure, '짧은 말', 100), ['짧은 말']);
+  const long = '가'.repeat(60);
+  const lines = wrapComment(measure, long, 100);
+  assert.equal(lines.length, 3);
+  assert.ok(lines.every((l) => measure(l) <= 100), 'no line overflows');
+  assert.ok(lines[2].endsWith('…'), 'overflow is marked');
+  assert.deepEqual(wrapComment(measure, '골반 정렬 좋아요', 60), ['골반 정렬', '좋아요'], 'breaks at spaces first');
+  assert.equal(wrapComment(measure, 'x'.repeat(COMMENT_MAX + 50), 10_000)[0].length, COMMENT_MAX, 'input capped');
+  assert.ok(cardLayout('side', 4 / 3, null, 2).height > cardLayout('side', 4 / 3, null, 0).height);
+  assert.equal(cardLayout('side', 4 / 3, null, 0).commentH, 0);
+});
+
+test('brand header is shorter than before so the photos get the space', () => {
+  const branded = cardLayout('side', 4 / 3, brandFor('bonita'));
+  assert.ok(branded.top <= 210, `header ${branded.top}`);
+  assert.ok(branded.cellW >= 560, `photo cell ${branded.cellW}`);
+});
 
 test('only the Bonita centre gets the Bonita mark; other centres and personal accounts get none', () => {
   assert.deepEqual(brandFor('bonita'), { primary: 'BONITA', secondary: 'PILATES', logo: null });

@@ -1,3 +1,50 @@
+## 2026-11-14 밤 23:10~23:20 — 배포 기록: 함수 5 · 강사 웹 · 회원 웹 (대표 지시 "네, 배포해")
+
+- 기준 main `6f7c286`(#187 · #186 · #188). 규칙 · Storage 규칙은 바뀐 것 없어 배포 안 함
+- **Functions** (`--config firebase.ai-gateway.json`): `preparePhotoAccess`(거절 시 `photo_access_rejected` 경고 로그 + details 에 단계 · 사유 코드),
+  `beforeAfterSharing` · `notifyBeforeAfterShare` · `eraseDeletedMemberShares` · `deleteMemberAccount`(카드 공유 · 카드 파일 삭제) 모두 update 성공.
+  비로그인 호출 두 함수 모두 401
+- **강사 웹** — `deploy-main` 을 origin/main 으로 fast-forward 만 → `npm run deploy:web`(테스트 3643 통과). 운영 파일 28개 전부 dist 와 일치, 진입 번들
+  `assets/index-1MJHSHYE.js` 에 `6f7c286` · "TEACHER'S NOTE"
+- **회원 웹** — `gh workflow run deploy-member.yml --ref main`(run 43604249782, success), 진입 번들 `assets/index-CAByrc4C.js` 에 `6f7c286`
+- 공유 스위치(`runtimeConfig/beforeAfterSharing`)는 그대로 없음 = 꺼짐
+- 403 원인: 배포 직후에는 폰의 재시도가 없어 아직 사유 로그 없음. 대표 폰에서 백업 [재시도]를 누르면 `photo_access_rejected` 로그에 사유가 남는다
+
+## 2026-11-14 밤 — 병합 #187 · #186 · #188, 코덱스 작업 인계, 남은 일 (Claude)
+
+- **대표: "코덱스는 이제 작업 안 함 -- 남은 것 이어서".** 이 파일의 코덱스 항목은 이제 Claude 가 이어받는다
+- 병합(대표 지시, 모두 `[skip ci]`): #187 백업 대기열 → `07d6800`, #186 비포애프터 디자인 → `74adf48`(기록 충돌 하나 정리),
+  #188 카드 공유(바탕을 main 으로 바꿔 main 합침, 충돌 없음) → main `6f7c286`. 합친 코드로 앱 3643 · 서버 363 · 규칙 425 통과 / 0 실패,
+  타입 · 강사/회원 빌드 통과. main 은 시험한 트리와 같다
+- `release/1-1-50` 을 main `6f7c286` 까지 합침 → `58d5eb3`(앱 3643 · Android 릴리스 11 통과, `npm run build` 통과). 빌드 · 업로드는 대표가
+- **아직 운영에 안 나간 것**(규칙은 바뀐 것 없음):
+  - Functions: `preparePhotoAccess`(거절 사유를 로그 · details 로 -- 403 원인 확정에 필요), `beforeAfterSharing` · `notifyBeforeAfterShare` ·
+    `eraseDeletedMemberShares` · `deleteMemberAccount`(카드 공유 · 카드 파일 삭제)
+  - 강사 웹(비포애프터 디자인 · 편집 잠김 · 펜/자 · 카드 · 백업 대기열), 회원 웹(카드 보기)
+  - 강사 앱 1.1.50 새 빌드, 보니따 앱(카드 보기) 새 빌드
+- 코덱스가 남긴 것: `.codex-worktrees/before-after-phase1` 의 커밋 안 된 변경(옛 사진 회원 연결을 백업 기록으로 다시 확인 · 삭제된 회원 거절 ·
+  메타데이터 조건 쓰기 -- `photo-access.js` 등 12개 파일). 코덱스가 일부러 PR 에서 뺐고 #181 이전 바탕이라 그대로 못 합친다. 서버에 이미 있는 옛 사진에만
+  해당하고 지금 403(새 사진)과는 무관 -- **보류**. 필요하면 최신 main 위에서 다시 만든다. 폴더는 지우지 않음
+- 남은 일(순서): ① 함수 5개 배포 → 운영 로그로 403 사유 확인 → 원인 수정 ② 강사 · 회원 웹 배포 ③ 1.1.50 새 빌드로 실기기(사진 백업 · 펜/자 · 카드 저장 ·
+  공유 미리보기) ④ 테스트 계정만 공유 켜기(`phase1Verified`) ⑤ 폰에서 사진이 "불러오지 못했습니다"로 나오는 2장 조사 ⑥ 진짜 보니따 로고 파일(받으면)
+  ⑦ 열린 옛 PR 정리(#178 은 release 에만 있음 -- main 에도 필요, #142 · #121 · #120 판단, 문서 PR · #91 · #2 닫기 검토)
+  ⑧ 작은 것: 카드 업로드가 끊기면 남는 "preparing" 공유 문서 정리
+
+
+## 2026-11-14 — 강사 앱 1.1.50 빌드 준비 (`release/1-1-50` = `f955998` → 밤에 `58d5eb3`, 빌드 · 업로드 전)
+
+- main `cc2f4a4` 를 `release/1-1-50` 에 합침(fast-forward 로 push). main 과 다른 것은 버전(1.1.50 · versionCode 73) · 허용 브랜치 ·
+  `includePlugins` · 듀엣 출석 버튼 하나(#178, main 에는 아직 PR 로 열려 있음)뿐. `includePlugins` 에 없는
+  `@capacitor-firebase/messaging` · `@capawesome/capacitor-app-update` 는 회원 앱만 쓴다(강사 src 에 import 없음)
+- 확인: 앱 3628 · Android 릴리스 11 · 서버 352 통과 / 0 실패, `npm run build`(prebuild 타입 · 린트 · 테스트) 통과
+- Codemagic 트리거는 모두 주석이라 push 로 빌드가 시작되지 않는다. 빌드 시작 · TestFlight · 내부 트랙 업로드는 대표 지시 때
+- **원본 2건(9/26 · 10/3) 복원은 하지 않기로 함 (대표, 11-14)** -- 원본이 어느 폰에 남았는지 확인할 수 없다. 서버의 편집본 · 썸네일을
+  그대로 쓰고, 원본 없는 사진으로 둔다. 원본 백업은 이 빌드로 **새 사진**을 올려 검증한다
+- 1.1.50 실기기 시험 순서: 사진 클라우드 백업 켜기 → 갤러리 여러 장 등록 · 편집 → 서버에 `original.bin` · 해시 · 같은 사진 ID 연결 확인
+  (서버 확인은 클로드가) → 비행기 모드에서 추가 후 재연결 시 자동 업로드 → 편집 · 일지 작성 중 앱 종료 후 복원 → 확대 · 비교 · 슬라이더
+  → PC 웹에서 같은 사진 보임 → 홀딩 전 수업 차감 · 듀엣 출석 버튼 하나. 원본 백업(앞 두 항목) 통과 뒤에 `phase1Verified` 로
+  테스트 계정 공유를 켤 수 있다
+
 ## 2026-11-14 — 완성된 비교 카드 한 장 공유 (Codex, PR 전용)
 
 - 대표 지시: 원본 사진 2장+설정 재구성 대신 Compare의 현재 카드 JPEG 한 장을 회원에게 전송. 코멘트 중복 입력 제거.

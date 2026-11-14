@@ -1,4 +1,5 @@
 export const sha256Blob = async blob => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer())),b=>b.toString(16).padStart(2,'0')).join('');
+import { photoStage } from './photo-errors.js';
 const fail=message=>{throw new Error(message);};
 export function assertPhotoPaths(uid,photoId,item) {
   const base=`users/${uid}/photos/${photoId}/`;
@@ -9,7 +10,7 @@ export function assertPhotoPaths(uid,photoId,item) {
 }
 export async function ensureOriginalBackup({item,original,scope,path,getMetadata,upload,download}) {
   let remote, uploaded=false;
-  try {remote=await getMetadata();}catch(error){
+  try {remote=await photoStage('original_metadata', 'firebase_storage', getMetadata);}catch(error){
     // A missing object has no ownership metadata, so private Storage rules
     // return 403. Only an uncommitted original may attempt creation here.
     // Server rules prohibit overwriting original.bin and check current assignment.
@@ -26,13 +27,15 @@ export async function ensureOriginalBackup({item,original,scope,path,getMetadata
   if(remote)check(remote);
   else {
     if(!supplied)fail('photo/original-required');
-    await upload(original,{contentType:'application/octet-stream',cacheControl:'private,no-store,max-age=0',customMetadata:{...scope,sha256:digest}});
+    await photoStage('original_upload', 'firebase_storage', () => upload(original,{contentType:'application/octet-stream',cacheControl:'private,no-store,max-age=0',customMetadata:{...scope,sha256:digest}}));
     uploaded=true;
     // Upload acknowledgement alone does not permit the queue to report server completion.
-    remote=await getMetadata();check(remote);
+    remote=await photoStage('original_metadata', 'firebase_storage', getMetadata);check(remote);
   }
   // An interrupted upload can leave an object without a committed manifest.
   // A retry must verify those bytes too, rather than trusting client-written metadata.
-  if((uploaded || !item.originalPath) && await sha256Blob(await download())!==digest)fail('photo/original-checksum');
+  await photoStage('original_verify', 'firebase_storage', async () => {
+    if((uploaded || !item.originalPath) && await sha256Blob(await download())!==digest)fail('photo/original-checksum');
+  });
   return {originalPath:path,originalSha256:digest,originalBytes:size,originalMimeType:supplied?(original.type||'image/jpeg'):(item.originalMimeType||'image/jpeg')};
 }

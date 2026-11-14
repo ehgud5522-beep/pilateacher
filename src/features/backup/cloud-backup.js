@@ -1,4 +1,5 @@
 import { PHOTO_BLOB_ID_FIELDS } from "../../data/photo-blob-fields.js";
+import { photoFailure } from './photo-errors.js';
 
 export const CLOUD_BACKUP_VERSION = 2;
 export const CLOUD_PHOTO_CONSENT_VERSION = "2026-11-12-original-v1";
@@ -210,7 +211,7 @@ export function createPhotoQueue(storage, uid) {
       if (!item?.photoId) return;
       const action = item.action === "delete" ? "delete" : "upload";
       const previous = byId.get(`${action}:${item.photoId}`);
-      byId.set(`${action}:${item.photoId}`, { ...item, action, revision: (previous?.revision || 0) + 1, queuedAt: item.queuedAt || new Date().toISOString() });
+      byId.set(`${action}:${item.photoId}`, { ...item, retry: previous?.retry, action, revision: (previous?.revision || 0) + 1, queuedAt: item.queuedAt || new Date().toISOString() });
       if (action === "delete") byId.delete(`upload:${item.photoId}`);
     });
     const output = [...byId.values()];
@@ -218,27 +219,35 @@ export function createPhotoQueue(storage, uid) {
     return output;
   };
   const remove = (photoId, action = "upload", revision = undefined) => {
-    const output = read().filter((item) => !(item.photoId === photoId && (item.action || "upload") === action && (revision === undefined || item.revision === revision)));
+    const output = read().filter((item) => !(item.photoId === photoId && (item.action || "upload") === action && (revision === undefined || (item.revision ?? null) === revision)));
     write(output);
     return output;
   };
-  return Object.freeze({ key, read, upsert, remove, clear: () => write([]) });
+  const markFailure = (task, retry) => write(read().map(item => item.photoId === task.photoId && (item.action || 'upload') === (task.action || 'upload') && item.revision === task.revision ? { ...item, retry } : item));
+  return Object.freeze({ key, read, upsert, remove, markFailure, clear: () => write([]) });
 }
 
-export async function drainPhotoQueue(queue, handler) {
+export async function drainPhotoQueue(queue, handler, { manual = false, now = Date.now(), diagnose = photoFailure, onFailure = (failure) => { void failure; } } = {}) {
   let processed = 0;
   let failed = 0;
   for (const task of queue?.read?.() || []) {
+    if (!manual && task.retry && (!task.retry.failure?.retryable || task.retry.attempts >= 3 || task.retry.nextAt > now)) continue;
     try {
       await handler(task);
-      queue.remove(task.photoId, task.action || "upload", task.revision);
+      queue.remove(task.photoId, task.action || "upload", task.revision ?? null);
       processed += 1;
     } catch (error) {
       failed += 1;
-      break;
+      const failure = diagnose(error, task);
+      const attempts = manual ? 1 : (task.retry?.attempts || 0) + 1;
+      queue.markFailure(task, { failure, attempts, nextAt: now + 5000 * (2 ** (attempts - 1)) });
+      onFailure(failure);
     }
   }
-  return { processed, failed, pending: queue?.read?.().length || 0 };
+  const remaining = queue?.read?.() || [];
+  const next = remaining.filter(task => !task.retry || (task.retry.failure?.retryable && task.retry.attempts < 3));
+  return { processed, failed, pending: remaining.length, failures: remaining.filter(task => task.retry).map(task => task.retry.failure),
+    retryAfterMs: next.length ? Math.max(100, Math.min(...next.map(task => task.retry?.nextAt || now)) - now) : null };
 }
 
 export function storageUsage(manifest) {

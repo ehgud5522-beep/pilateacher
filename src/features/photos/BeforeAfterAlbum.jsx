@@ -1,4 +1,5 @@
 import TeacherPhotoSharing from './TeacherPhotoSharing.jsx';
+import { photoFailureLabel } from '../backup/photo-errors.js';
 import { useEffect, useRef, useState } from 'react';
 import { ALBUM_VIEWS, DEFAULT_EDIT, albumPhotos, chronologicalPair, exifDate, photoKey } from './album-model.js';
 import { albumDraft } from './album-drafts.js';
@@ -140,7 +141,12 @@ export default function BeforeAfterAlbum({ accountId, members, photos, selectedI
     <input ref={picker} hidden type="file" accept="image/*" multiple onChange={(e) => { const files = [...e.target.files]; e.target.value = ''; if (files.length) importFiles(files); }} />
     {!comparing && <header className="ba-header">{member && <Button className="ba-icon" aria-label="회원 목록으로" onClick={() => onSelect(null)}><ArrowLeft size={22} /></Button>}<div>{member && <span className="ba-eyebrow">비포애프터</span>}<h1>{member ? member.name : '비포애프터'}</h1><p>{member ? `최근 촬영 ${all[0]?.date || '없음'} · ${all.length}장` : '회원의 변화를 사진으로 기록하세요.'}</p></div><Button className="ba-icon ba-primary" aria-label="사진 추가" disabled={busy || !!draft} onClick={() => picker.current.click()}><ImagePlus size={22} /></Button></header>}
     {message && !comparing && <p role="status" className="ba-notice">{message}</p>}
-    {backupStatus?.state === 'error' && <div className="ba-sync" role="status">백업 실패 · 기기 사진은 유지됩니다.<Button onClick={onRetry}>재시도</Button></div>}
+    {(backupStatus?.state === 'error' || backupStatus?.photoFailures?.length > 0) && <div className="ba-sync" role="status"><div>
+      <p>이번 처리 성공 {backupStatus.processedPhotos || 0}장 · 실패 {backupStatus.photoFailures?.length || 0}장 · 기기 사진은 유지됩니다.</p>
+      {(backupStatus.photoFailures || []).map((failure, index) => <p key={index}>사진 {failure.photoIdPrefix || '식별 불가'} · {photoFailureLabel(failure)} · {failure.stage}</p>)}
+      {backupStatus.batchFailure && <p>백업 기록 저장 · {photoFailureLabel(backupStatus.batchFailure)}</p>}
+      {!backupStatus.photoFailures?.length && !backupStatus.batchFailure && <p>실패 원인 확인 필요 (unknown)</p>}
+    </div><Button onClick={onRetry}>다시 시도</Button></div>}
     {draft?.kind === 'import' && <section className="ba-panel"><h2>사진 {draft.items.length}장 등록</h2><input aria-label="등록할 회원 검색" placeholder="회원 이름 검색" value={query} onChange={(e) => setQuery(e.target.value)} /><select aria-label="등록할 회원" value={draft.memberId} disabled={busy} onChange={(e) => persist({ ...draft, memberId: e.target.value }).catch(() => setMessage('임시 저장 실패'))}><option value="">회원을 선택하세요</option>{members.filter((m) => m.id === draft.memberId || m.name?.includes(query)).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
       {draft.items.map((item, i) => <div className="ba-toolbar ba-import-row" key={`${item.hash}_${i}`}><ImportPreview item={item} /><span>사진 {i + 1}{item.dateSource === 'fallback' ? ' · 촬영일 확인 필요' : ''}</span><input aria-label={`사진 ${i + 1} 촬영 날짜`} type="date" value={item.date} disabled={busy} onChange={(e) => persist({ ...draft, items: draft.items.map((x, n) => n === i ? { ...x, date: e.target.value } : x) }).catch(() => setMessage('임시 저장 실패'))} /><select aria-label={`사진 ${i + 1} 방향`} value={item.view} disabled={busy} onChange={(e) => persist({ ...draft, items: draft.items.map((x, n) => n === i ? { ...x, view: e.target.value } : x) }).catch(() => setMessage('임시 저장 실패'))}>{ALBUM_VIEWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></div>)}
       <Button disabled={busy || !draft.memberId || draft.items.some((x) => !x.date)} onClick={() => run(async () => { await writes.current; await onImport(draft); const id = draft.memberId; await persist(null); onSelect(id); setMessage('사진 저장 완료 · AI 분석은 선택 사항입니다.'); })} className="ba-primary">사진 저장</Button><Button disabled={busy} onClick={() => { if (window.confirm('등록하지 않은 임시 사진을 버릴까요?')) persist(null).catch(() => setMessage('임시 사진 삭제 실패')); }}>등록 취소</Button></section>}

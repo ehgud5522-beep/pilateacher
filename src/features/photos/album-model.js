@@ -116,3 +116,21 @@ export function exifDate(buffer) {
   } catch { /* Missing/malformed metadata falls back to a visible editable date. */ }
   return null;
 }
+
+/* 센터 회원과 연결되지 않은 사진 (2026-11-14).
+   사진은 photos[회원 id] 에 저장된다. 그 id 가 지금 명부의 센터 회원(orgClientId 있음)이 아니면
+   사진 백업이 "어느 센터의 어느 회원인지" 를 보낼 수 없어 서버가 photo/scope-required 로 거절한다
+   (이전 폰 기록 불러오기로 옛 회원 번호 아래 되살아난 사진이 실제로 그랬다). 화면에서도 안 보인다.
+   이미 서버에 회원 범위와 함께 올라간 사진(cloud.clientId)은 제외한다 -- 그건 연결이 끝난 사진이다. */
+export function unlinkedAlbumPhotos(photoMap = {}, members = []) {
+  const linked = new Set(members.filter((m) => m && m.id && m.orgClientId).map((m) => String(m.id)));
+  const result = [];
+  for (const [memberKey, buckets] of Object.entries(photoMap || {})) {
+    if (linked.has(String(memberKey))) continue;
+    for (const photo of albumPhotos(buckets || {})) {
+      if (photo.cloud?.clientId || photo.clientId) continue;
+      result.push({ memberKey, photo });
+    }
+  }
+  return result;
+}

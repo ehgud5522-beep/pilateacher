@@ -104,8 +104,10 @@ export function autoAlign(photos, cell) {
 export function alignMessage(error) {
   const which = error?.index === 0 ? 'BEFORE' : error?.index === 1 ? 'AFTER' : '';
   const photo = which ? `${which} 사진` : '사진';
-  if (error?.code === ALIGN_ERROR.NO_PERSON) return `${photo}에서 사람을 찾지 못했어요. 직접 끌어서 맞춰 주세요.`;
-  if (error?.code === ALIGN_ERROR.NO_BODY) return `${photo}에서 어깨와 골반이 잘 보이지 않아요. 직접 끌어서 맞춰 주세요.`;
+  /* 부위만 찍은 사진(목 · 골반 · 다리 …)은 자동으로 맞출 기준이 없다. 사진이 잘못된 것처럼 말하지 않고,
+     어떤 사진에서 되는지와 부위 사진에서 쓸 방법을 말한다. */
+  if (error?.code === ALIGN_ERROR.NO_PERSON) return `${photo}에서 몸 전체를 찾지 못했어요. 자동 맞춤은 전신 · 상반신 사진에서 돼요. 부위 사진은 직접 끌어 맞추거나, 다음부터 [지난 사진에 맞춰 찍기]로 찍어 주세요.`;
+  if (error?.code === ALIGN_ERROR.NO_BODY) return `${photo}에 어깨와 골반이 함께 보이지 않아요. 자동 맞춤은 전신 · 상반신 사진에서 돼요. 부위 사진은 직접 끌어 맞추거나, 다음부터 [지난 사진에 맞춰 찍기]로 찍어 주세요.`;
   if (error?.code === ALIGN_ERROR.MODEL) return '자세 인식 도구를 받지 못했어요. 인터넷 연결을 확인한 뒤 다시 눌러 주세요.';
   return `자동으로 맞추지 못했어요 (코드 ${String(error?.code || ALIGN_ERROR.UNKNOWN).slice(0, 40)}). 직접 끌어서 맞춰 주세요.`;
 }

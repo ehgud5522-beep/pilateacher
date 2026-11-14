@@ -8,11 +8,12 @@ import { memberAppName, shareBadge, shareBlocker, shareState as normalShareState
 import { albumDraft } from './album-drafts.js';
 import { renderAlbumPhoto } from './album-render.js';
 import './album.css';
-import { ArrowLeft, ChevronRight, Copy, ImageOff, ImagePlus, Images, Search, Sparkles, X } from 'lucide-react';
+import { ArrowLeft, ChevronRight, Copy, ImageOff, ImagePlus, Images, Search, Sparkles, Wand2, X } from 'lucide-react';
 import { usePhotoGestures } from './photo-gestures.js';
 import { createContext, useContext } from 'react';
 import { createPortal } from 'react-dom';
 import { COMMENT_MAX, brandFor, drawComparisonCard } from './comparison-card.js';
+import { ALIGN_ERROR, alignError, alignMessage, autoAlign, bodyFrame } from './auto-align.js';
 
 /* 펜 · 자 표시를 그리는 함수. 그리는 코드(drawAnnotationMark)가 App.jsx 에 있어 위에서 받는다. */
 const MarkContext = createContext(null);
@@ -63,8 +64,10 @@ function Photo({ photo, edits, onTransform, className = '' }) {
 function Range({ title, value, min, max, step = 1, onChange }) {
   return <label className="ba-range">{title}<input type="range" aria-label={title} value={value} min={min} max={max} step={step} onChange={(e) => onChange(Number(e.target.value))} /><output>{Number(value).toFixed(step < 1 ? 2 : 0)}</output></label>;
 }
-function Compare({ photos, initialPhotos, onClose, onExport, onShare, brand, blocker }) {
+function Compare({ photos, initialPhotos, onClose, onExport, onShare, brand, blocker, detectPose, onAlignLog }) {
   const draw = useContext(MarkContext);
+  const layout = useRef(null);
+  const [auto, setAuto] = useState({ state: 'idle', text: '', before: null });
   const [copied, setCopied] = useState('');
   /* 복사가 막힌 기기(권한 · 옛 웹뷰)에서는 문구를 펼쳐 보여 준다 -- 길게 눌러 복사할 수 있게. */
   const copyGuide = async () => {
@@ -96,10 +99,36 @@ function Compare({ photos, initialPhotos, onClose, onExport, onShare, brand, blo
      사진을 다시 읽으면 손이 늦는다. 화면에 보이는 카드가 곧 저장되는 이미지다 (comparison-card.js). */
   useEffect(() => {
     if (!images || !ref.current) return;
-    drawComparisonCard(ref.current, { images, pair, mode, align, split, guides, brand, comment });
+    layout.current = drawComparisonCard(ref.current, { images, pair, mode, align, split, guides, brand, comment });
     setReady(true);
   }, [images, pair, mode, split, align, guides, brand, comment]);
-  const swap = () => { setPair(([x, y]) => [y, x]); setAlign(([x, y]) => [y, x]); };
+  const swap = () => { setPair(([x, y]) => [y, x]); setAlign(([x, y]) => [y, x]); setAuto({ state: 'idle', text: '', before: null }); };
+  /* 자동 맞춤: 기기 안에서 두 사진의 자세 점을 찾아 키와 자리를 맞춘다 (auto-align.js). 사진은 밖으로 나가지 않는다.
+     실패해도 지금 맞춰 둔 값은 건드리지 않는다. 성공하면 [되돌리기] 로 직전 값으로 돌아갈 수 있다. */
+  const runAuto = async () => {
+    if (!images || !layout.current || auto.state === 'busy') return;
+    setAuto({ state: 'busy', text: '', before: null });
+    const started = Date.now();
+    try {
+      const frames = [];
+      for (let i = 0; i < images.length; i++) {
+        let landmarks;
+        try { landmarks = await detectPose(images[i]); }
+        catch (cause) { throw alignError(ALIGN_ERROR.MODEL, i, cause); }
+        try { frames.push({ frame: bodyFrame(landmarks), width: images[i].width, height: images[i].height }); }
+        catch (e) { throw alignError(e.code || ALIGN_ERROR.UNKNOWN, i, e); }
+      }
+      const result = autoAlign(frames, layout.current);
+      const before = align;
+      setAlign(result.align);
+      const basis = result.basis === 'full' ? '키' : '몸통 길이';
+      setAuto({ state: 'done', before, text: result.exact ? `두 사진의 ${basis}와 위치를 맞췄어요. 어긋나 보이면 사진을 끌어 고치세요.` : `두 사진의 ${basis}를 최대한 맞췄어요. 찍은 구도 차이가 커서 조금 어긋날 수 있어요 -- 사진을 끌어 고치세요.` });
+      onAlignLog?.('album_auto_align_done', { basis: result.basis, exact: result.exact, ms: Date.now() - started });
+    } catch (e) {
+      setAuto({ state: 'failed', text: alignMessage(e), before: null });
+      onAlignLog?.('album_auto_align_failed', { errorCode: e?.code || ALIGN_ERROR.UNKNOWN, photoIndex: e?.index ?? -1, ms: Date.now() - started }, e?.cause || e);
+    }
+  };
   const setAlignValue = (key, value) => setAlign((old) => old.map((item, i) => i === target ? { ...item, [key]: value } : item));
   const moved = align[target].zoom !== 1 || align[target].x !== 0 || align[target].y !== 0;
   /* 순서 (2026-11-15): 카드 → 보는 방식 → 사진 맞추기 → 코멘트 → 내보내기. 위에서 아래로 한 번에 끝난다.
@@ -117,6 +146,10 @@ function Compare({ photos, initialPhotos, onClose, onExport, onShare, brand, blo
     <div className="ba-align">
       <div className="ba-align-row"><span>맞출 사진</span><div className="ba-segment" role="group" aria-label="맞출 사진">{['BEFORE', 'AFTER'].map((name, i) => <Button key={name} aria-pressed={target === i} onClick={() => setTarget(i)}>{name}</Button>)}</div>
         <Button className="ba-text" disabled={!moved} onClick={() => setAlign((old) => old.map((item, i) => i === target ? { zoom: 1, x: 0, y: 0 } : item))}>처음으로</Button></div>
+      {detectPose && <div className="ba-auto"><Button className="ba-auto-run" disabled={!ready || auto.state === 'busy'} onClick={runAuto}><Wand2 size={16} aria-hidden="true" />{auto.state === 'busy' ? '맞추는 중…' : '자동으로 맞추기'}</Button>
+        {auto.state === 'done' && auto.before && <Button className="ba-text" onClick={() => { setAlign(auto.before); setAuto({ state: 'idle', text: '', before: null }); }}>되돌리기</Button>}
+        {auto.state === 'busy' && <small role="status">처음에는 자세 인식 도구를 받느라 조금 걸려요.</small>}
+        {auto.text && <small role={auto.state === 'failed' ? 'alert' : 'status'} className={auto.state === 'failed' ? 'is-failed' : ''}>{auto.text}</small>}</div>}
       <small>고른 사진을 카드 위에서 손가락으로 끌고, 두 손가락으로 벌려 크기를 맞추세요.</small>
       <details><summary>숫자로 세밀하게 맞추기</summary>
         {[['zoom', '확대 / 축소', 0.5, 3, 0.05], ['x', '좌우 위치', -50, 50, 1], ['y', '상하 위치', -50, 50, 1]].map(([key, title, min, max, step]) => <Range key={key} title={title} value={align[target][key]} min={min} max={max} step={step} onChange={(v) => setAlignValue(key, v)} />)}
@@ -160,7 +193,7 @@ function UnlinkedPhotos({ entries, ownerView, members, onAssign, onExclude, busy
     </li>)}</ul>}
   </section>;
 }
-export default function BeforeAfterAlbum({ accountId, members, photos, selectedId, onSelect, onImport, onPatch, onDelete, hub, onExport, backupStatus, onRetry, onAnalyze, sharingApi, organizationId, markup, drawMarks, unlinked = [], unlinkedOwnerView = false, onAssignUnlinked, onExcludeUnlinked }) {
+export default function BeforeAfterAlbum({ accountId, members, photos, selectedId, onSelect, onImport, onPatch, onDelete, hub, onExport, backupStatus, onRetry, onAnalyze, sharingApi, organizationId, markup, drawMarks, detectPose, onAlignLog, unlinked = [], unlinkedOwnerView = false, onAssignUnlinked, onExcludeUnlinked }) {
   const [markupPhoto, setMarkupPhoto] = useState(null);
   const cancelEditRef = useRef(() => {});
   const [sharing, setSharing] = useState(null), [sharingEnabled, setSharingEnabled] = useState(false);
@@ -269,7 +302,7 @@ export default function BeforeAfterAlbum({ accountId, members, photos, selectedI
       <div className="ba-members">{members.filter((m) => m.name?.includes(query)).map((m) => ({ m, items: albumPhotos(photos[m.id]) })).filter(({ items }) => filter === 'all' || items.length >= (filter === 'compare' ? 2 : 1)).map(({ m, items }) => <Button className="ba-member" key={m.id} onClick={() => onSelect(m.id)}><span className="ba-avatar">{items[0]?.src ? <Photo photo={items[0]} /> : <ImagePlus size={22} />}</span><span className="ba-member-info"><strong>{m.name}</strong><small>{items[0]?.date || '아직 촬영한 사진이 없어요'}{items.length > 0 && ` · ${items.length}장`}</small></span>{items.length >= 2 && <span className="ba-badge">비교 가능</span>}<ChevronRight size={18} aria-hidden="true" /></Button>)}</div>
       {!members.some((m) => m.name?.includes(query) && (filter === 'all' || albumPhotos(photos[m.id]).length >= (filter === 'compare' ? 2 : 1))) && <p className="ba-no-results">조건에 맞는 회원이 없습니다.</p>}
     </> : <>
-      {ai ? <><Button onClick={() => setAi(false)}><ArrowLeft size={18} /> 앨범으로</Button><p>AI 분석은 선택 기능입니다. 자세와 구도에 따라 정확도가 달라질 수 있습니다.</p>{hub(member.id, null)}</> : comparing ? <Compare blocker={sharingEnabled ? shareBlocker(shareState, memberAppName(organizationId)) : null} onShare={sharingEnabled ? (card) => setSharing({ card }) : undefined} photos={all} initialPhotos={all.filter((p) => selected.includes(photoKey(p)))} onClose={() => setComparing(false)} onExport={onExport} brand={brandFor(organizationId)} /> : <>
+      {ai ? <><Button onClick={() => setAi(false)}><ArrowLeft size={18} /> 앨범으로</Button><p>AI 분석은 선택 기능입니다. 자세와 구도에 따라 정확도가 달라질 수 있습니다.</p>{hub(member.id, null)}</> : comparing ? <Compare detectPose={detectPose} onAlignLog={onAlignLog} blocker={sharingEnabled ? shareBlocker(shareState, memberAppName(organizationId)) : null} onShare={sharingEnabled ? (card) => setSharing({ card }) : undefined} photos={all} initialPhotos={all.filter((p) => selected.includes(photoKey(p)))} onClose={() => setComparing(false)} onExport={onExport} brand={brandFor(organizationId)} /> : <>
         {/* 처음 쓰는 강사에게는 이 버튼 하나가 길이다: 누르면 두 장이 골라진 채 카드 화면이 열린다. */}
         {all.length >= 2 && <Button className="ba-start" onClick={startCard}><span className="ba-start-icon"><Sparkles size={18} aria-hidden="true" /></span><span><strong>변화 카드 만들기</strong><small>처음 사진과 최근 사진으로 바로 시작해요</small></span><ChevronRight size={18} aria-hidden="true" /></Button>}
         {all.length === 1 && <p className="ba-start-hint">사진이 한 장 더 있으면 변화 카드를 만들 수 있어요.</p>}

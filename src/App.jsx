@@ -5539,6 +5539,15 @@ function guideTagBox(mark, start, width, height, fontScale, offsetX = 0, offsetY
   return { fontSize, h, padX: 6 * fontScale, x: offsetX + 6 * fontScale, y: above < offsetY ? start.y + gap : above };
 }
 
+/* 비포애프터 자동 맞춤이 쓰는 자세 인식 (BeforeAfterAlbum detectPose). 자세 분석과 같은 인식기를 쓴다 --
+   기기 안에서만 돌고, 받아 오는 것은 모델 파일뿐이다. 사진은 어디로도 보내지 않는다. */
+async function detectAlbumPose(image) {
+  const landmarker = await loadLandmarker();
+  return landmarker.detect(image)?.landmarks?.[0] || null;
+}
+/* 진단에는 코드 · 단계 · 걸린 시간만 남긴다. 회원 · 사진을 가리키는 값은 넣지 않는다. */
+const logAlbumAlign = (event, details, error) => deviceLog(event, { feature: "before_after_align", stage: "auto_align", ...details, ...(error ? deviceError(error) : {}) });
+
 /* 자 손잡이의 터치 반경. 그려진 원(15px·13px)보다 넉넉해야 손가락으로 잡힌다. */
 const RULER_HANDLE_HIT = 26;
 
@@ -34421,6 +34430,8 @@ export default function App() {
               onImport={importAlbumPhotos} onPatch={patchAlbum} onDelete={deleteAlbum} onAnalyze={analyzeAlbumPhoto}
               unlinked={unlinkedPhotos} unlinkedOwnerView={unlinkedPhotoOwnerView} onAssignUnlinked={assignUnlinkedPhoto} onExcludeUnlinked={excludeUnlinkedPhotos}
               drawMarks={drawAlbumMarks}
+              detectPose={detectAlbumPose}
+              onAlignLog={logAlbumAlign}
               markup={({ photo, memberId, onDone }) => <PostureCanvas key={`album_${photo.bucket}_${photo.id}`} photo={photo} label={`${photo.date || ""} · 펜 · 자`} initialTool="pen"
                 onClose={onDone} onCancel={onDone} onSave={(marks) => patchAlbum(memberId, photo, { marks }, memberId)} onToast={setToast} />}
               backupStatus={cloudBackupStatus} onRetry={retryCloudBackup} onEnableBackup={enablePhotoBackup}

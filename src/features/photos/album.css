@@ -147,6 +147,7 @@
 .ba-import-row>span{grid-area:name;align-self:end;font-size:var(--t-caption,13px);font-weight:600;color:var(--ink)}
 .ba-import-row>input{grid-area:date;width:100%}
 .ba-import-row>select{grid-area:view;width:100%}
+.ba-import-row>select.ba-import-part{grid-area:auto;grid-column:2/-1}
 .ba-import-preview{width:48px;height:60px;object-fit:cover;border-radius:8px;background:var(--canvas)}
 .ba-root .ba-panel>.ba-primary{width:100%;margin-top:10px;min-height:44px;font-size:var(--t-body,15px)}
 .ba-root .ba-panel>.ba-primary+button{width:100%;margin-top:6px;border-color:transparent;background:transparent;color:var(--ink2)}

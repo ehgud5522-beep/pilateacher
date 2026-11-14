@@ -1,6 +1,18 @@
 import { POSTURE_STORAGE_KEYS, normalizePostureView } from '../posture/posture-model.js';
 
 export const ALBUM_VIEWS = [['front', '정면'], ['back', '후면'], ['leftSide', '좌측면'], ['rightSide', '우측면'], ['custom', '기타']];
+/* 부위 이름 (2026-11-15 대표: "전신이 아니더라도 부위를 비포애프터할 수도 있음" → 이름을 붙이기로).
+   방향이 "기타" 인 사진에만 붙는다. 붙이지 않아도 된다(빈 값) -- 그러면 지금까지처럼 "기타" 다.
+   목 사진과 골반 사진이 한 회원에게 섞여 있어도, 이름이 있으면 카드와 겹쳐 찍기가 같은 부위끼리 짝을 짓는다. */
+export const ALBUM_PARTS = [['neck', '목'], ['shoulder', '어깨'], ['back', '등 · 허리'], ['belly', '복부'], ['pelvis', '골반'], ['hip', '고관절'], ['knee', '무릎'], ['ankle', '발목 · 발'], ['arm', '팔 · 손목']];
+export const albumPart = (value) => ALBUM_PARTS.some(([key]) => key === value) ? value : '';
+/** 같은 것을 찍은 사진끼리 묶는 열쇠: 방향, 부위 사진이면 방향 + 부위. */
+export const albumGroup = (photo) => photo?.view === 'custom' ? `custom:${albumPart(photo.part)}` : String(photo?.view || '');
+/** 사진에 붙일 이름: 정면 · 후면 …, 부위 사진이면 부위 이름, 이름이 없으면 "기타". */
+export function albumLabel(photo) {
+  if (photo?.view === 'custom' && albumPart(photo.part)) return ALBUM_PARTS.find(([key]) => key === photo.part)[1];
+  return ALBUM_VIEWS.find(([key]) => key === photo?.view)?.[1] || '기타';
+}
 import { DEFAULT_EDIT } from './photo-edit-model.js';
 export { DEFAULT_EDIT };
 export const photoKey = (p) => `${p.bucket}:${p.id}`;
@@ -16,7 +28,7 @@ export function albumPhotos(buckets = {}) {
       const identity = p.sourcePhotoId || p.photoId || p.blobId || p.id;
       if (seen.has(identity)) continue;
       seen.add(identity);
-      result.push({ ...p, bucket, albumEdit: p.albumEdit || { ...DEFAULT_EDIT, rotate: p.rot || 0, zoom: p.scale || 1, x: p.x || 0, y: p.y || 0 }, view: normalizePostureView(p.albumView || p.view || bucket), date: String(p.albumDate || p.date || p.createdAt || p.at || '').slice(0, 10) });
+      result.push({ ...p, bucket, albumEdit: p.albumEdit || { ...DEFAULT_EDIT, rotate: p.rot || 0, zoom: p.scale || 1, x: p.x || 0, y: p.y || 0 }, part: albumPart(p.albumPart), view: normalizePostureView(p.albumView || p.view || bucket), date: String(p.albumDate || p.date || p.createdAt || p.at || '').slice(0, 10) });
     }
   }
   return result.sort((a, b) => b.date.localeCompare(a.date) || String(a.id).localeCompare(String(b.id)));
@@ -32,7 +44,7 @@ export function chronologicalPair(photos) {
 export function suggestPair(photos) {
   const dated = [...(photos || [])].filter((p) => p?.date).sort((a, b) => a.date.localeCompare(b.date));
   if (dated.length < 2) return [];
-  const latest = dated.at(-1), first = dated.find((p) => p.view === latest.view);
+  const latest = dated.at(-1), first = dated.find((p) => albumGroup(p) === albumGroup(latest));
   if (first !== latest && first.date !== latest.date) return [first, latest];
   let best = null;
   for (const [view] of ALBUM_VIEWS) {
@@ -52,8 +64,8 @@ export function suggestPair(photos) {
 export function ghostCandidate(photos) {
   const dated = [...(photos || [])].filter((p) => p?.date && p.src).sort((a, b) => a.date.localeCompare(b.date));
   if (!dated.length) return null;
-  const tracking = dated.at(-1).view;
-  return dated.find((p) => p.view === tracking) || dated[0];
+  const tracking = albumGroup(dated.at(-1));
+  return dated.find((p) => albumGroup(p) === tracking) || dated[0];
 }
 export function patchAlbumPhoto(map, memberId, photo, patch, targetId = memberId) {
   const current = map[memberId] || {};

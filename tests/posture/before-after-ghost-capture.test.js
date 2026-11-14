@@ -70,7 +70,7 @@ test('a failed save keeps the shot: the screen closes only after the album has s
   const wrapper = app.slice(app.indexOf('function AlbumCaptureScreen('), app.indexOf('const EMPTY_OBJECT ='));
   assert.match(wrapper, /const stored = await onCaptured\(blob, view\);\s*\r?\n\s*if \(stored\) \{ setTaken\(true\); onClose\(\); \}\s*\r?\n\s*return stored;/);
   const save = album.slice(album.indexOf('const saveShot = async'), album.indexOf('const startCard ='));
-  assert.match(save, /await onImport\(\{ kind: 'import', memberId: member\.id, items: \[\{ file, hash, date: today\(\), dateSource: 'capture', view: shotView \}\] \}\);/);
+  assert.match(save, /await onImport\(\{ kind: 'import', memberId: member\.id, items: \[\{ file, hash, date: today\(\), dateSource: 'capture', view: shotView, part: shooting\?\.part \|\| '' \}\] \}\);/);
   assert.match(save, /catch \(error\) \{ setMessage\(error\?\.message \|\| '사진 저장 실패 · 촬영 화면에서 다시 시도해 주세요\.'\); return false; \}/);
   // 겹칠 사진은 앨범 편집을 적용한 모습이고, 펜 · 자 표시는 뺀다.
   assert.match(album, /const \[e\] = renderInput\(p, null, p\.albumEdit\); src = \(await renderAlbumPhoto\(p\.src, e, 1080\)\)\.toDataURL\('image\/jpeg', 0\.85\);/);

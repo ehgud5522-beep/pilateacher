@@ -1,3 +1,4 @@
+import { photoFailure, photoStage } from "./features/backup/photo-errors.js";
 import { openManualDraft, noteVersion } from "./features/lesson-record/manual-draft.js";
 import { readAccountDb, writeAccountDb } from "./features/schedule/account-db-storage.js";
 import { fbPrivatePhotoSharing } from "./lib/firebase.js";
@@ -822,6 +823,7 @@ const timeOf = (stamp) => {
 };
 const uid = () => Math.random().toString(36).slice(2, 9);
 const DEVICE_LOG_FIELDS = new Set([
+  "reasonCode", "photoIdPrefix", "hasOrganizationId", "hasClientId", "category", "retryable",
   "memberId", "assessmentId", "lessonId", "view", "storage", "operation",
   "platform", "lifecycleState",
   "permission", "state", "source", "code", "message", "count", "provider",
@@ -30205,6 +30207,8 @@ export default function App() {
   const [lessonExamplesOpen, setLessonExamplesOpen] = useState(false);
   const restoreBlockedRef = useRef(false);
   const photoProcessingRef = useRef(false);
+  const photoRetryTimer = useRef(null);
+  useEffect(() => () => clearTimeout(photoRetryTimer.current), [account?.id]);
   const hydratingPhotosRef = useRef(new Set());
   const memoryRebuildInFlightRef = useRef(false);
   const memoryRebuildAttemptedAccountRef = useRef("");
@@ -31130,14 +31134,16 @@ export default function App() {
     return () => { active = false; };
   }, [allowedPhotoKey]);
 
-  const processPhotoQueue = useCallback(async (uidStr = account?.id, data = db) => {
+  const processPhotoQueue = useCallback(async (uidStr = account?.id, data = db, manual = false) => {
     if (!uidStr || photoProcessingRef.current || restoreBlockedRef.current) return;
     const photoEnabled = data?.settings?.cloudPhotoBackupEnabled === true && data?.settings?.cloudPhotoConsentVersion === CLOUD_PHOTO_CONSENT_VERSION;
     if (!photoEnabled || (typeof navigator !== "undefined" && navigator.onLine === false)) return;
     const queue = createPhotoQueue(window.localStorage, uidStr);
     if (!queue.read().length) return;
     photoProcessingRef.current = true;
-    let retryNewRevision = false;
+    let retryAfterMs = null;
+    clearTimeout(photoRetryTimer.current);
+    const diagnosticContext = new Map();
     setCloudBackupStatus((current) => ({ ...current, state: "backing_up", pendingPhotos: queue.read().length, photoEnabled: true }));
     try {
       const drain = await drainPhotoQueue(queue, async (task) => {
@@ -31147,10 +31153,11 @@ export default function App() {
           return;
         }
         const item = buildPhotoManifest(photosRef.current).find((entry) => entry.photoId === task.photoId);
-        if (!item) return;
+        if (!item) throw new Error("photo/manifest-missing");
         const photoMember = rosterMembers.find((m) => m.id === item.memberId);
         item.organizationId = item.organizationId || organizationContext.organizationId;
         item.clientId = item.clientId || photoMember?.orgClientId;
+        diagnosticContext.set(task.photoId, { ...authDeviceContext(), organizationId: item.organizationId, clientId: item.clientId });
         const original = item.blobId ? await blobGet(item.blobId) : null;
         let optimized = null;
         if (!item.storagePath || !item.thumbnailPath) {
@@ -31169,23 +31176,28 @@ export default function App() {
         photosRef.current = nextPhotos;
         setPhotos(nextPhotos);
         await window.storage.set(phKey(uidStr), JSON.stringify(stripSrc(nextPhotos)));
+      }, { manual,
+        diagnose: (error, task) => photoFailure(error, task, diagnosticContext.get(task.photoId) || authDeviceContext()),
+        onFailure: failure => deviceLog("photo_backup_failed", failure),
       });
-      if (drain.failed) throw Object.assign(new Error("Photo backup queue stopped after a failed item."), { code: "backup/queue-failed" });
-      retryNewRevision = drain.pending > 0;
+      retryAfterMs = drain.retryAfterMs;
+      setCloudBackupStatus(current => ({ ...current, photoFailures: drain.failures, processedPhotos: drain.processed, batchFailure: null }));
       const operational = withoutSampleData(data, photosRef.current);
       const manifest = buildPhotoManifest(operational.photos);
       const uploadedManifest = manifest.filter((item) => item.storagePath && item.thumbnailPath);
       const usage = storageUsage(uploadedManifest);
       const photoGraph = buildPhotoGraph(operational.photos);
-      await pushCloudBackup(uidStr, operational.db, { photoCount: uploadedManifest.length, photoPending: queue.read().length, storageUsage: usage, photoManifest: uploadedManifest, photoGraph });
+      await photoStage('manifest_write', 'firestore', () => pushCloudBackup(uidStr, operational.db, { photoCount: uploadedManifest.length, photoPending: queue.read().length, storageUsage: usage, photoManifest: uploadedManifest, photoGraph }));
       writeCloudSyncMarker(uidStr, { localSavedAt: Date.now(), lastCloudAt: Date.now() });
-      setCloudBackupStatus({ state: retryNewRevision ? "backing_up" : "safe", counts: backupCounts(operational.db, uploadedManifest, photoGraph), pendingPhotos: queue.read().length, localPhotoCount: manifest.length, storageUsage: usage, photoEnabled: true, lastBackupAt: new Date().toISOString() });
+      setCloudBackupStatus({ state: drain.failures.length ? "error" : drain.pending ? "backing_up" : "safe", photoFailures: drain.failures, processedPhotos: drain.processed, counts: backupCounts(operational.db, uploadedManifest, photoGraph), pendingPhotos: queue.read().length, localPhotoCount: manifest.length, storageUsage: usage, photoEnabled: true, lastBackupAt: new Date().toISOString() });
     } catch (error) {
       setCloudBackupStatus((current) => ({ ...current, state: "error", pendingPhotos: queue.read().length, photoEnabled: true }));
-      deviceLog("photo_backup_failed", { stage: "upload_queue", code: error?.code || "unknown" });
+      const failure = photoFailure(error, {}, authDeviceContext());
+      deviceLog("photo_backup_failed", failure);
+      setCloudBackupStatus(current => ({ ...current, batchFailure: failure, photoFailures: queue.read().filter(task => task.retry).map(task => task.retry.failure) }));
     } finally {
       photoProcessingRef.current = false;
-      if (retryNewRevision) setTimeout(() => processPhotoQueue(uidStr, data).catch(() => {}), 100);
+      if (retryAfterMs !== null && accountRef.current?.id === uidStr) photoRetryTimer.current = setTimeout(() => processPhotoQueue(uidStr, data).catch(() => {}), retryAfterMs);
     }
   }, [account?.id, db, rosterMembers, organizationContext.organizationId]);
 
@@ -32349,7 +32361,7 @@ export default function App() {
     if (restoreOffer) return;
     restoreBlockedRef.current = false;
     queueCloud(account?.id, db);
-    processPhotoQueue(account?.id, db).catch(() => {});
+    processPhotoQueue(account?.id, db, true).catch(() => {});
   }, [account?.id, db, processPhotoQueue, queueCloud, restoreOffer]);
 
   /* 되돌리기가 달린 문구는 누를 틈을 준다. */

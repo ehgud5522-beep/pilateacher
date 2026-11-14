@@ -72,8 +72,37 @@
 .ba-toolbar h2{flex:1;margin:0;min-width:0}
 .ba-album-filters{margin:12px 0 4px}
 .ba-root .ba-album-filters select{height:32px;min-height:32px;padding:0 10px;border-radius:8px;font-size:var(--t-caption,13px);font-weight:600;color:var(--ink2)}
-.ba-album-links{display:flex;gap:10px;margin-left:auto}
-.ba-album-filters .ba-text{min-height:32px;padding:0 2px}
+/* 덜 쓰는 것(공유 기록 · AI 분석 기록)은 한 겹 뒤로 */
+.ba-more{position:relative;margin-left:auto}
+.ba-root .ba-more>summary{min-height:32px;gap:6px;padding:0 2px}
+.ba-root .ba-more>summary::after{margin:0 2px 3px 0}
+.ba-more>div{position:absolute;right:0;top:36px;z-index:5;display:grid;gap:2px;min-width:150px;padding:6px;border:1px solid var(--line);border-radius:12px;background:var(--card);box-shadow:var(--shadow,0 8px 24px rgba(0,0,0,.2))}
+.ba-root .ba-more>div button{justify-content:flex-start;border-color:transparent;background:transparent}
+
+/* 한 길: [변화 카드 만들기] */
+.ba-root .ba-start{display:flex;width:100%;gap:12px;margin:12px 0 0;padding:12px 14px;min-height:64px;border-radius:14px;justify-content:flex-start;text-align:left;border-color:var(--ring,var(--brand));background:var(--tint)}
+.ba-start-icon{display:grid;place-items:center;flex-shrink:0;width:38px;height:38px;border-radius:12px;background:var(--brand);color:var(--on-brand,#fff)}
+.ba-start>span:nth-child(2){flex:1;min-width:0;display:grid;gap:2px}
+.ba-start strong{font-size:var(--t-body,15px);font-weight:700;color:var(--ink)}
+.ba-start small{font-size:12px;font-weight:400;color:var(--ink2);white-space:normal}
+.ba-start>svg{flex-shrink:0;color:var(--brand)}
+.ba-root .ba-start-hint{margin:12px 0 0;text-align:center}
+.ba-ready{display:inline-block;margin-left:8px;padding:1px 7px;border-radius:6px;font-size:12px;font-weight:700;vertical-align:1px;background:var(--canvas);color:var(--ink2)}
+.ba-ready.is-good{background:var(--good-s,var(--tint));color:var(--good,var(--brand))}
+.ba-ready.is-warn{background:var(--warn-s,var(--canvas));color:var(--warn,var(--ink))}
+.ba-steps{display:flex;gap:6px;margin:10px 0 0;padding:0;list-style:none;counter-reset:ba-step;font-size:12px;font-weight:600;color:var(--sub,var(--ink2))}
+.ba-steps li{display:flex;align-items:center;gap:5px;counter-increment:ba-step}
+.ba-steps li::before{content:counter(ba-step);display:grid;place-items:center;width:18px;height:18px;border-radius:50%;background:var(--canvas);color:var(--ink2);font-size:11px;font-weight:700}
+.ba-steps li+li{padding-left:6px}
+.ba-steps li+li::before{margin-left:0}
+.ba-steps li:not(:last-child)::after{content:"";width:14px;height:1px;margin-left:3px;background:var(--line)}
+/* 보낼 수 없을 때: 이유와 다음 걸음 */
+.ba-share-gate{display:grid;gap:8px;margin:0 0 10px;padding:12px;border:1px solid var(--warn,var(--line));border-radius:12px;background:var(--warn-s,var(--canvas))}
+.ba-share-gate strong{font-size:var(--t-caption,13px);font-weight:700;color:var(--ink)}
+.ba-root .ba-share-gate p{margin:0;color:var(--ink2)}
+.ba-root .ba-share-gate button{width:100%;min-height:42px}
+.ba-share-gate small{font-size:12px;color:var(--ink2)}
+.ba-root .ba-share-gate textarea{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font:inherit;font-size:var(--t-caption,13px);line-height:1.5;resize:none}
 /* 폰은 두 칸 -- 체형 사진은 커야 보이고, 두 장만 있어도 줄이 찬다. */
 .ba-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
 .ba-grid article{position:relative;border-radius:12px;overflow:hidden;background:var(--canvas)}

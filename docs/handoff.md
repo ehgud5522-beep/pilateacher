@@ -1,4 +1,4 @@
-## 2026-11-15 — 보니따 회원권 카드에 세션업 기간 안내 (`feat/member-session-up`, PR #192, 병합 · 배포 전)
+## 2026-11-15 — 보니따 회원권 카드에 세션업 기간 안내 (#192 병합 `feb32b7` · 회원 웹 · Functions 배포됨)
 
 - 대표: "회원 입장에서 마감 전에 세션업 기회를 몇 회 안에 해야 하는지, 추가로 끊는 것보다 저렴하다는 의미가 있어야 함"
 - **2026-10-30 결정(세션업은 관리용, 회원 화면에 없음)을 이 칸에 한해 바꿨다.** `tests/member/screens.test.js` 의 "관리용 값" 테스트는
@@ -11,7 +11,11 @@
   같은 식인지 테스트가 모든 모양으로 맞춰 본다. **Functions 배포 전에도 화면은 돈다**: 투영에 값이 없으면 회원권 숫자로 같은 모듈이 센다
   (serviceUsed 를 못 봐서 드물게 다를 수 있다 -- 배포 뒤 다음 차감 때 투영이 새로 써진다)
 - 확인: functions 366 · 앱 3655 통과 / 0 실패, 타입 · 회원 빌드 통과, 가짜 회원권 3장(진행 · 마지막 · 끝남)으로 화면 확인. 실기기 미확인
-- 남은 일: 병합(회원 웹 자동 배포) → Functions 배포(member-view 트리거들) → 설치형 보니따는 새 빌드
+- **배포 (대표 지시)**: 회원 웹은 병합 자동 배포 성공. Functions(`feb32b7`, `--config firebase.ai-gateway.json`) 9개 갱신 --
+  rebuildMemberViewOnPassWrite · OnClientWrite · OnLessonNoteWrite · OnLessonWrite · verifyMemberViews · rebuildMemberViews ·
+  linkMemberAccount · linkMemberAccountByOwner · unlinkMemberAccount. 이미 있는 회원 문서는 다음 차감 · 회원 수정 때 새 값이 들어간다
+  (그 전에는 화면이 같은 모듈로 센다)
+- 남은 일: 설치형 보니따 새 빌드, 실기기 확인
 
 ## 2026-11-15 — 비포애프터 공유 스위치: 대표 계정 두 개만 켬 (대표 지시)
 

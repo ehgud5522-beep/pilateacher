@@ -1,3 +1,4 @@
+import { logSharingFailure } from "../features/photos/sharing-errors.js";
 import { assertPhotoPaths, ensureOriginalBackup } from "../features/backup/original-backup.js";
 /* ===================================================================
    필라티쳐 — Firebase 연결
@@ -1067,7 +1068,10 @@ export async function fbLoadAIRecordingStatus() {
 export async function fbPrivatePhotoSharing(input) {
   const uid = auth?.currentUser?.uid;
   if (!uid) throw new Error("share/sign-in-required");
-  const response = await httpsCallable(functions, "beforeAfterSharing")({ ...input, schemaVersion: 2 });
+  let response;
+  const context = { appBuild: globalThis.window?.PILATEACHER_VER || import.meta.env?.VITE_APP_VERSION || 'unknown', platform: Capacitor.getPlatform() };
+  try { response = await httpsCallable(functions, "beforeAfterSharing")({ ...input, ...context, schemaVersion: 3 }); }
+  catch (error) { logSharingFailure(error, { ...input, ...context, bytes: input.cardBase64 ? Math.floor(input.cardBase64.length * 3 / 4) : 0 }); throw error; }
   if (auth?.currentUser?.uid !== uid) throw new Error("share/sign-in-required");
   return response.data;
 }

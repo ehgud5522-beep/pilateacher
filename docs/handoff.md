@@ -1,3 +1,15 @@
+## 2026-11-14 — 완성된 비교 카드 한 장 공유 (Codex, PR 전용)
+
+- 대표 지시: 원본 사진 2장+설정 재구성 대신 Compare의 현재 카드 JPEG 한 장을 회원에게 전송. 코멘트 중복 입력 제거.
+- 별도 브랜치/워크트리: codex/comparison-card-sharing / .codex-worktrees/comparison-card-sharing. #186이 아직 OPEN이라 origin/feat/before-after-design 2283041에서 시작. #186 위의 PR이며 병합 후 main 대상으로 재확인 필요.
+- 백업 대기열은 별도 PR #187(2967316)로 완료. 이번 작업에 섞지 않음. App.jsx와 보안 규칙·photo-access·회원 연결·홀딩·일정·급여 변경 없음.
+- 카드 검증(4MiB/JPEG/해시/1200폭/600~3000높이/120자), 비공개 Admin Storage 저장, prepare 중복 방지, 동의/권한/스위치 확인, 취소·탈퇴 파일 삭제. 원본 백업 검사 없음. 기존 photos/comparison 읽기 유지, 신규 생성 금지. 프로토콜 3, v2의 card 접근 차단.
+- 카드 preview와 upload 동일 바이트. 회원은 이미지+강사+날짜만 봄. 화면을 다시 그리거나 슬라이더를 제공하지 않음. 기존 알림·다운로드 비활성 정책 유지.
+- 검증: 앱 3638 통과/147 제외(일반/+30일/+365일), 서버 362, 규칙 425/1 제외, 실제 에뮬레이터 Auth callable 1, 타입·양쪽 웹 빌드 통과. 가짜 API Chrome 320/390/768px 공유→열람→취소 및 SHA-256 동일 확인. 실기기·운영 알림 미검증.
+- 배포 순서(별도 승인 후): beforeAfterSharing·notifyBeforeAfterShare·eraseDeletedMemberShares·deleteMemberAccount → 강사 웹 → 회원 웹. 규칙 배포 불필요. 스위치 OFF 유지, 실제 runtimeConfig 조작 없음.
+- PR 미리보기 자동 배포도 금지 범위로 보고 [skip ci] 커밋 사용. 로컬 검사만 실행. 병합·배포·스토어 업로드 하지 않음.
+- 상세 파일 목록, 검사 한계, 명령 및 중단된 비공개 준비 문서 정책: docs/comparison-card-sharing.md.
+
 ## 2026-11-14 — 비포애프터 디자인을 앱의 다른 탭에 맞춤 (`feat/before-after-design`, 병합 · 배포 전)
 
 - 대표: "코덱스가 만든 비포애프터 디자인이 별로, 앱 전체와 조화롭게" → 범위는 비포애프터만(A안). 다른 탭은 그대로

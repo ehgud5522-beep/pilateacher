@@ -1,3 +1,15 @@
+## 2026-11-14 밤 23:10~23:20 — 배포 기록: 함수 5 · 강사 웹 · 회원 웹 (대표 지시 "네, 배포해")
+
+- 기준 main `6f7c286`(#187 · #186 · #188). 규칙 · Storage 규칙은 바뀐 것 없어 배포 안 함
+- **Functions** (`--config firebase.ai-gateway.json`): `preparePhotoAccess`(거절 시 `photo_access_rejected` 경고 로그 + details 에 단계 · 사유 코드),
+  `beforeAfterSharing` · `notifyBeforeAfterShare` · `eraseDeletedMemberShares` · `deleteMemberAccount`(카드 공유 · 카드 파일 삭제) 모두 update 성공.
+  비로그인 호출 두 함수 모두 401
+- **강사 웹** — `deploy-main` 을 origin/main 으로 fast-forward 만 → `npm run deploy:web`(테스트 3643 통과). 운영 파일 28개 전부 dist 와 일치, 진입 번들
+  `assets/index-1MJHSHYE.js` 에 `6f7c286` · "TEACHER'S NOTE"
+- **회원 웹** — `gh workflow run deploy-member.yml --ref main`(run 43604249782, success), 진입 번들 `assets/index-CAByrc4C.js` 에 `6f7c286`
+- 공유 스위치(`runtimeConfig/beforeAfterSharing`)는 그대로 없음 = 꺼짐
+- 403 원인: 배포 직후에는 폰의 재시도가 없어 아직 사유 로그 없음. 대표 폰에서 백업 [재시도]를 누르면 `photo_access_rejected` 로그에 사유가 남는다
+
 ## 2026-11-14 밤 — 병합 #187 · #186 · #188, 코덱스 작업 인계, 남은 일 (Claude)
 
 - **대표: "코덱스는 이제 작업 안 함 -- 남은 것 이어서".** 이 파일의 코덱스 항목은 이제 Claude 가 이어받는다

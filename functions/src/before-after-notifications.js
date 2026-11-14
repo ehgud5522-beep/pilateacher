@@ -27,9 +27,13 @@ async function notifyShare({ db, bucket, messaging }, shareId) {
   // No automatic resend after claiming: a crash may leave 'sending', but cannot duplicate a push.
 }
 
-async function eraseMemberShares(db, uid) {
+async function eraseMemberShares(db, uid, bucket) {
   const shares = await db.collection("beforeAfterShares").where("memberUserId", "==", uid).get();
-  for (const doc of shares.docs) await db.recursiveDelete(doc.ref);
+  for (const doc of shares.docs) {
+    await doc.ref.update({ status: "revoked", revokedAt: new Date() });
+    await require("./share-card").deleteShareCard(bucket, { ...doc.data(), id: doc.id });
+    await db.recursiveDelete(doc.ref);
+  }
   await db.recursiveDelete(db.doc(`memberPhotoConsents/${uid}`));
 }
 module.exports = { notifyShare, eraseMemberShares };

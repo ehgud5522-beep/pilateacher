@@ -1,4 +1,5 @@
 import MemberBeforeAfter from "./before-after.jsx";
+import { beforeAfterSummary } from "./before-after-copy.js";
 import { memberPhotoSharing } from "./firebase.js";
 /**
  * 회원 앱. 문서 하나를 그리는 일이다.
@@ -370,6 +371,18 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
   useEffect(() => { if (pendingPhotoShare?.id) { setRequestedShare(pendingPhotoShare.id); setTab('beforeAfter'); } }, [pendingPhotoShare]);
   const [place, setPlace] = useState(0);
   const [slow, setSlow] = useState(false);
+  /* 홈의 "선생님이 남긴 비포애프터" 칸 (2026-11-14). 공유가 켜진 계정에서만 목록 수 · 새 기록 수만 읽는다.
+     홈으로 돌아올 때마다 다시 읽는다. 실패하면 칸을 그대로 두고(0개) 오류를 띄우지 않는다 -- 비포애프터 탭이 자기 오류를 말한다. */
+  const baLink = state.stage === "ready" && Array.isArray(state.places) ? state.places[Math.min(place, Math.max(0, state.places.length - 1))]?.link : null;
+  const [beforeAfterSummaryState, setBeforeAfterSummaryState] = useState(null);
+  useEffect(() => {
+    if (!sharingEnabled || !baLink?.organizationId || !baLink?.clientId || tab !== "home") { if (!sharingEnabled) setBeforeAfterSummaryState(null); return undefined; }
+    let active = true;
+    memberPhotoSharing({ action: "memberList", organizationId: baLink.organizationId, clientId: baLink.clientId })
+      .then((r) => { if (active) setBeforeAfterSummaryState(beforeAfterSummary(r?.shares)); })
+      .catch(() => { if (active) setBeforeAfterSummaryState((old) => old || beforeAfterSummary([])); });
+    return () => { active = false; };
+  }, [sharingEnabled, baLink?.organizationId, baLink?.clientId, tab]);
   /* 수업 알림 (2026-11-07). 앱에서만 -- 웹은 "앱에서만" 안내로 끝난다. */
   const plugin = useMemo(() => pushPlugin(), []);
   const [push, setPush] = useState(() => ({
@@ -647,7 +660,8 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
             lesson={rateLesson} place={current.link} api={callMemberRating} onSeen={markRatingSeen} />
         ) : null}
         <Home view={{ ...current.view, schedule }} onOpenRecords={() => setTab("records")}
-          onOpenLesson={setOpenLesson} />
+          onOpenLesson={setOpenLesson}
+          beforeAfter={sharingEnabled ? beforeAfterSummaryState : null} onOpenBeforeAfter={() => setTab("beforeAfter")} />
       </div>
     );
   }

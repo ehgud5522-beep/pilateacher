@@ -14,7 +14,7 @@ import { useState, useEffect, useMemo, useRef, useCallback, useContext, createCo
 import { createPortal } from "react-dom";
 import PhotoAccessBoundary from "./features/photos/PhotoAccessBoundary.jsx";
 import { usePhotoAccess } from "./features/photos/photo-access.js";
-import { albumPhotos, patchAlbumPhoto, removeAlbumPhoto } from "./features/photos/album-model.js";
+import { albumPhotos, patchAlbumPhoto, removeAlbumPhoto, unlinkedAlbumPhotos } from "./features/photos/album-model.js";
 import { albumDraft } from "./features/photos/album-drafts.js";
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { App as CapacitorApp } from "@capacitor/app";
@@ -31120,12 +31120,22 @@ export default function App() {
     blobIdsOf(photosRef.current[memberId]).forEach(dropUrl);
   }, []);
   const allowedPhotoMembers = usePhotoAccess({ uid: account?.id, organizationId: organizationContext.organizationId, members: rosterMembers, onRevoke: revokeMemberPhotoUrls });
-  const allowedPhotoKey = [...allowedPhotoMembers].sort().join("|");
+  /* 센터 회원과 연결되지 않은 사진 (album-model.js unlinkedAlbumPhotos). 백업이 photo/scope-required 로
+     거절되고 앨범에도 안 보이던 사진이다.
+     **대표 · 총괄만 사진까지 본다.** 강사 명부에는 담당 회원만 있어서, 담당이 바뀌어 권한이 회수된
+     회원의 사진도 "연결 안 됨" 으로 보인다 -- 그걸 보여 주거나 다른 회원에게 옮기게 하면 권한 회수를
+     되돌리는 셈이다. 강사에게는 수만 알리고 백업에서 빼기만 허용한다. */
+  const unlinkedPhotoOwnerView = isOwnerLevelRole(String(organizationContext.role || ""));
+  const unlinkedPhotos = useMemo(() => (organizationContext.organizationId
+    ? unlinkedAlbumPhotos(photos, rosterMembers).map((entry) => ({ ...entry, oldName: String(db.members?.find((m) => m.id === entry.memberKey)?.name || "") }))
+    : []), [photos, rosterMembers, db.members, organizationContext.organizationId]);
+  const unlinkedPhotoKeys = unlinkedPhotoOwnerView ? [...new Set(unlinkedPhotos.map((entry) => entry.memberKey))] : [];
+  const allowedPhotoKey = [...[...allowedPhotoMembers].sort(), ...unlinkedPhotoKeys.map((id) => `unlinked:${id}`)].join("|");
   useEffect(() => {
     let active = true;
     (async () => {
       let next = photosRef.current;
-      for (const id of allowedPhotoMembers) {
+      for (const id of [...allowedPhotoMembers, ...unlinkedPhotoKeys]) {
         const restored = await adoptPhotos({ [id]: next[id] || {} });
         if (!active) return;
         next = { ...photosRef.current, [id]: { ...photosRef.current[id] } };
@@ -31157,6 +31167,8 @@ export default function App() {
         }
         const item = buildPhotoManifest(photosRef.current).find((entry) => entry.photoId === task.photoId);
         if (!item) throw new Error("photo/manifest-missing");
+        // 강사가 "백업에서 빼기" 를 고른 사진. 대기열에서 빠지는 것으로 끝낸다 (사진은 기기에 그대로).
+        if (item.record?.backupExcluded === true) return;
         const photoMember = rosterMembers.find((m) => m.id === item.memberId);
         item.organizationId = item.organizationId || organizationContext.organizationId;
         item.clientId = item.clientId || photoMember?.orgClientId;
@@ -31982,7 +31994,8 @@ export default function App() {
       const before = new Map(buildPhotoManifest(prev).map((item) => [item.photoId, item]));
       const after = buildPhotoManifest(next);
       const afterIds = new Set(after.map((item) => item.photoId));
-      after.filter((item) => item.blobId).forEach((item) => queue.upsert([{ action: "upload", photoId: item.photoId }]));
+      after.filter((item) => item.blobId && item.record?.backupExcluded !== true).forEach((item) => queue.upsert([{ action: "upload", photoId: item.photoId }]));
+      after.filter((item) => item.record?.backupExcluded === true).forEach((item) => queue.remove(item.photoId, "upload"));
       before.forEach((item, photoId) => {
         if (afterIds.has(photoId)) return;
         if (item.storagePath) queue.upsert([{ action: "delete", photoId }]);
@@ -32104,7 +32117,7 @@ export default function App() {
     const saved = await saveDb(next);
     if (!saved) return;
     const queue = createPhotoQueue(window.localStorage, account.id);
-    queue.upsert(buildPhotoManifest(photosRef.current).filter((item) => item.blobId).map((item) => ({ action: "upload", photoId: item.photoId })));
+    queue.upsert(buildPhotoManifest(photosRef.current).filter((item) => item.blobId && item.record?.backupExcluded !== true).map((item) => ({ action: "upload", photoId: item.photoId })));
     setCloudBackupStatus((current) => ({ ...current, photoEnabled: true, state: queue.read().length ? "backing_up" : "safe", pendingPhotos: queue.read().length }));
     await processPhotoQueue(account.id, next);
   }, [account, db, processPhotoQueue, saveDb]);
@@ -33501,6 +33514,38 @@ export default function App() {
     }
     return savePhotos(next);
   };
+  /* 연결 안 된 사진을 센터 회원에게 옮긴다 -- 대표 · 총괄만 (위 unlinkedPhotoOwnerView).
+     함께 묶인 분석 · 세트 기록도 같이 옮긴다 (patchAlbumPhoto). 서버에는 아직 안 올라간 사진이라
+     원격 이동이 필요 없고, 저장하면 대기열이 새 회원 범위로 다시 올린다. */
+  const assignUnlinkedPhoto = async (memberKey, photo, targetId) => {
+    if (!unlinkedPhotoOwnerView) return false;
+    if (!unlinkedPhotos.some((entry) => entry.memberKey === memberKey && entry.photo.id === photo.id && entry.photo.bucket === photo.bucket)) return false;
+    const target = rosterMembers.find((m) => m.id === targetId && m.orgClientId);
+    if (!target) { setToast({ ok: false, msg: "센터 회원을 골라 주세요." }); return false; }
+    try {
+      const next = patchAlbumPhoto(photosRef.current, memberKey, photo, { backupExcluded: false }, targetId);
+      const ok = await savePhotos(next);
+      deviceLog("album_unlinked_photo_assigned", { feature: "photo_backup", stage: "assign_unlinked", ok: ok !== false });
+      return ok;
+    } catch (error) {
+      deviceLog("album_unlinked_photo_assign_failed", { feature: "photo_backup", stage: "assign_unlinked", errorCode: String(error?.code || error?.message || "unknown").slice(0, 80) });
+      setToast({ ok: false, msg: `사진을 옮기지 못했습니다. 사진은 그대로입니다. (코드 ${String(error?.code || "album_assign_failed").slice(0, 40)})` });
+      return false;
+    }
+  };
+  /* 백업에서만 뺀다. 사진은 기기에 그대로 둔다 -- 지우는 것이 아니다 (CLAUDE.md 5). */
+  const excludeUnlinkedPhotos = async (entries) => {
+    let next = photosRef.current;
+    const queue = account ? createPhotoQueue(window.localStorage, account.id) : null;
+    for (const { photo } of entries) {
+      const photoId = photo.photoId || photo.id;
+      next = patchPhotoById(next, photoId, { backupExcluded: true });
+      queue?.remove(photoId, "upload");
+    }
+    const ok = await savePhotos(next);
+    deviceLog("album_unlinked_photo_excluded", { feature: "photo_backup", stage: "exclude_unlinked", count: entries.length, ok: ok !== false });
+    return ok;
+  };
   const deleteAlbum = async (memberId, photo) => {
     if (!rosterMembers.some((m) => m.id === memberId)) return false;
     if (!analysisMember(memberId)) return false;
@@ -34215,6 +34260,7 @@ export default function App() {
             </div>}
             {tab === "analysis" && <PhotoAccessBoundary sharingApi={fbPrivatePhotoSharing} organizationId={organizationContext?.organizationId} allowed={allowedPhotoMembers} key={account?.id} accountId={account?.id} members={rosterMembers} photos={photos} selectedId={analysisMemberId}
               onImport={importAlbumPhotos} onPatch={patchAlbum} onDelete={deleteAlbum} onAnalyze={analyzeAlbumPhoto}
+              unlinked={unlinkedPhotos} unlinkedOwnerView={unlinkedPhotoOwnerView} onAssignUnlinked={assignUnlinkedPhoto} onExcludeUnlinked={excludeUnlinkedPhotos}
               drawMarks={drawAlbumMarks}
               markup={({ photo, memberId, onDone }) => <PostureCanvas key={`album_${photo.bucket}_${photo.id}`} photo={photo} label={`${photo.date || ""} · 펜 · 자`} initialTool="pen"
                 onClose={onDone} onCancel={onDone} onSave={(marks) => patchAlbum(memberId, photo, { marks }, memberId)} onToast={setToast} />}

@@ -205,10 +205,13 @@ test("회원권이 없으면 빈 상태를 그대로 보여준다", async (t) =>
 });
 
 test("관리용 값은 어느 회원 화면에도 없다", async (t) => {
-  /* 차수 · 상품명 · 세션업 · 급여카테고리 · 단가는 FC · 강사 · 대표 화면에서만
-     쓴다. "2차" 같은 우리 셈법도, 분수 표기도 쓰지 않는다. */
+  /* 차수 · 상품명 · 급여카테고리 · 단가는 FC · 강사 · 대표 화면에서만 쓴다.
+     "2차" 같은 우리 셈법도, 분수 표기도 쓰지 않는다.
+     세션업은 2026-11-15 대표 결정으로 회원에게도 알린다 -- 단, 회원권 카드의
+     세션업 안내 칸 안에서만이다 (session-up-copy.js). 그 칸을 빼고 다시 본다. */
   const markupOf = await memberScreens(t);
-  const all = markupOf.names.map((name) => markupOf(name)).join("\n");
+  const all = markupOf.names.map((name) => markupOf(name)).join("\n")
+    .replace(/<div class="session-up[^"]*"[^>]*>(?:<p[^>]*>[^<]*<\/p>)*<\/div>/g, "");
   for (const hidden of [/번째 회원권/, /첫 회원권/, /\d차\b/, /퍼스널/, /세션업/, /신규|재등록/, /\d+\/\d+회/, /깍두기|양도권|세일즈/]) {
     assert.doesNotMatch(all, hidden, String(hidden));
   }

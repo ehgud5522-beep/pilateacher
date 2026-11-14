@@ -19,6 +19,22 @@
   ⑧ 작은 것: 카드 업로드가 끊기면 남는 "preparing" 공유 문서 정리
 
 
+## 2026-11-14 — 강사 앱 1.1.50 빌드 준비 (`release/1-1-50` = `f955998` → 밤에 `58d5eb3`, 빌드 · 업로드 전)
+
+- main `cc2f4a4` 를 `release/1-1-50` 에 합침(fast-forward 로 push). main 과 다른 것은 버전(1.1.50 · versionCode 73) · 허용 브랜치 ·
+  `includePlugins` · 듀엣 출석 버튼 하나(#178, main 에는 아직 PR 로 열려 있음)뿐. `includePlugins` 에 없는
+  `@capacitor-firebase/messaging` · `@capawesome/capacitor-app-update` 는 회원 앱만 쓴다(강사 src 에 import 없음)
+- 확인: 앱 3628 · Android 릴리스 11 · 서버 352 통과 / 0 실패, `npm run build`(prebuild 타입 · 린트 · 테스트) 통과
+- Codemagic 트리거는 모두 주석이라 push 로 빌드가 시작되지 않는다. 빌드 시작 · TestFlight · 내부 트랙 업로드는 대표 지시 때
+- **원본 2건(9/26 · 10/3) 복원은 하지 않기로 함 (대표, 11-14)** -- 원본이 어느 폰에 남았는지 확인할 수 없다. 서버의 편집본 · 썸네일을
+  그대로 쓰고, 원본 없는 사진으로 둔다. 원본 백업은 이 빌드로 **새 사진**을 올려 검증한다
+- 1.1.50 실기기 시험 순서: 사진 클라우드 백업 켜기 → 갤러리 여러 장 등록 · 편집 → 서버에 `original.bin` · 해시 · 같은 사진 ID 연결 확인
+  (서버 확인은 클로드가) → 비행기 모드에서 추가 후 재연결 시 자동 업로드 → 편집 · 일지 작성 중 앱 종료 후 복원 → 확대 · 비교 · 슬라이더
+  → PC 웹에서 같은 사진 보임 → 홀딩 전 수업 차감 · 듀엣 출석 버튼 하나. 원본 백업(앞 두 항목) 통과 뒤에 `phase1Verified` 로
+  테스트 계정 공유를 켤 수 있다
+
+## 2026-11-14 — 완성된 비교 카드 한 장 공유 (Codex, PR 전용)
+
 - 대표 지시: 원본 사진 2장+설정 재구성 대신 Compare의 현재 카드 JPEG 한 장을 회원에게 전송. 코멘트 중복 입력 제거.
 - 별도 브랜치/워크트리: codex/comparison-card-sharing / .codex-worktrees/comparison-card-sharing. #186이 아직 OPEN이라 origin/feat/before-after-design 2283041에서 시작. #186 위의 PR이며 병합 후 main 대상으로 재확인 필요.
 - 백업 대기열은 별도 PR #187(2967316)로 완료. 이번 작업에 섞지 않음. App.jsx와 보안 규칙·photo-access·회원 연결·홀딩·일정·급여 변경 없음.

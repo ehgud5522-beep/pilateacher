@@ -191,6 +191,10 @@
 .ba-align-row>span{font-size:var(--t-caption,13px);font-weight:700;color:var(--ink)}
 .ba-align-row .ba-text{margin-left:auto;padding:0 2px}
 .ba-align>small{display:block;margin:8px 0 2px;font-size:12px;line-height:1.5;color:var(--sub,var(--ink2))}
+.ba-auto{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin-top:10px}
+.ba-root .ba-auto-run{flex:1;min-height:42px;border-color:var(--ring,var(--brand));background:var(--tint);color:var(--brand)}
+.ba-auto small{flex-basis:100%;font-size:12px;line-height:1.5;color:var(--ink2)}
+.ba-auto small.is-failed{color:var(--warn,var(--ink))}
 .ba-align details{border-top:1px solid var(--line);margin-top:8px}
 .ba-align details+details{margin-top:0}
 .ba-pair{display:grid;gap:6px;padding-bottom:10px}

@@ -125,9 +125,17 @@ test('idempotent retries and concurrent requests produce one share; changed requ
 });
 test('off, unverified Phase 1, unlisted accounts, missing consent and old protocol all fail closed', async () => {
   await assert.rejects(service.handle('teacher', { action: 'prepare', ...preparation }));
-  for (const flag of [{}, { mode: 'all' }, { mode: 'test', phase1Verified: false, teacherIds: ['teacher'], memberIds: ['member'] }, { mode: 'test', phase1Verified: true, teacherIds: [], memberIds: ['member'] }]) {
+  /* { mode: 'all' } 은 여기 없다 -- #206(2026-11-15 대표 "모든 강사가 다 할 수 있게")이 일부러 연 값이다.
+     꺼짐을 뜻하는 'off' 와 모르는 값이 대신 선다. */
+  for (const flag of [{}, { mode: 'off' }, { mode: 'unknown' }, { mode: 'test', phase1Verified: false, teacherIds: ['teacher'], memberIds: ['member'] }, { mode: 'test', phase1Verified: true, teacherIds: [], memberIds: ['member'] }]) {
     await db.doc('runtimeConfig/beforeAfterSharing').set(flag); await assert.rejects(call('teacher', 'prepare', preparation));
   }
+});
+test("mode 'all' opens to every teacher and member, but consent is still required (#206)", async () => {
+  await db.doc('runtimeConfig/beforeAfterSharing').set({ mode: 'all' });
+  assert.equal((await call('teacher', 'prepare', preparation)).status, 'draft', '명단 없이도 열린다');
+  await db.doc(consentPath('member', 'org', 'client')).delete();
+  await assert.rejects(call('teacher', 'prepare', { ...preparation, requestId: 'operation-no-consent' }), '동의 없는 회원에게는 여전히 못 보낸다');
 });
 test('AI and legacy creation are unavailable; cards work without either original backup', async () => {
   await assert.rejects(call('teacher', 'prepare', { ...preparation, aiResults: { text: 'diagnosis' } }));

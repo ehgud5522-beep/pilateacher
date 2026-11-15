@@ -5973,11 +5973,14 @@ describe("FC매니저의 담당 강사는 맡은 지점 안에서만", () => {
           organizationId: ORG_A, userId, role: "instructor", status: "active", ...scope,
         });
       }
+      /* 이 묶음은 강사의 지점만 잰다. 회원권은 FC매니저의 지점에 둔다 -- 회원권 지점은
+         아래 "맡은 지점의 회원권만" 묶음이 따로 잰다 (2026-11-15). */
+      await updateDoc(doc(db, "organizations", ORG_A, "passes", PASS_A), { locationId: LOC_MINE });
     });
   };
   const issue = (userId, passId, instructorId) => setDoc(
     doc(dbFor(userId), "organizations", ORG_A, "passes", passId),
-    passFixture(ORG_A, passId, { instructorId }),
+    passFixture(ORG_A, passId, { instructorId, locationId: LOC_MINE }),
   );
   const handOver = async (userId, instructorId) => {
     const db = dbFor(userId), passRef = doc(db, "organizations", ORG_A, "passes", PASS_A);
@@ -6026,6 +6029,110 @@ describe("FC매니저의 담당 강사는 맡은 지점 안에서만", () => {
   test("FC매니저의 지점이 비어 있으면 막지 않는다 (앱과 같은 판단)", async () => {
     await seedScope({});
     await assertSucceeds(issue(users.manager, "fc-empty-far", "inst-far"));
+  });
+});
+
+/* ── FC매니저는 맡은 지점의 회원권만 고친다 (2026-11-15 대표) ─────────────────
+   발급 · 잔여 줄이기 · 만료일 · 갓 발급 취소 · 담당 교체, 그리고 그 원장 항목.
+   대표 · 총괄매니저는 묻지 않는다. 차감은 수업한 사람의 일이라 여기 없다. */
+describe("FC매니저는 맡은 지점의 회원권만", () => {
+  const LOC_MINE = "loc-mine";
+  const LOC_FAR = "loc-far";
+  const passAt = (db, passId) => doc(db, "organizations", ORG_A, "passes", passId);
+  const ledgerAt = (db, passId, entryId) => doc(db, "organizations", ORG_A, "passes", passId, "ledger", entryId);
+  const seedScope = async (managerScope, passLocations = { "pass-mine": LOC_MINE, "pass-mine-fresh": LOC_MINE, "pass-far": LOC_FAR, "pass-far-fresh": LOC_FAR }) => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.manager}`), {
+        organizationId: ORG_A, userId: users.manager, role: "manager", status: "active", ...managerScope,
+      });
+      for (const [passId, locationId] of Object.entries(passLocations)) {
+        await setDoc(doc(db, "organizations", ORG_A, "passes", passId), passFixture(ORG_A, passId, { locationId }));
+      }
+    });
+  };
+  const entry = (passId, locationId, userId, body) => ({
+    organizationId: ORG_A, passId, clientId: "client-member", locationId,
+    occurredAt: hoursAgo(1), createdAt: serverTimestamp(), createdBy: userId, ...body,
+  });
+  const adjustDown = (userId, passId, locationId) => {
+    const db = dbFor(userId);
+    const batch = writeBatch(db);
+    batch.set(ledgerAt(db, passId, `adj-${userId}-${passId}`), entry(passId, locationId, userId, { type: "adjust", delta: -2, reason: "실제 잔여와 맞춤" }));
+    batch.update(passAt(db, passId), { remainingCount: increment(-2) });
+    return batch.commit();
+  };
+  const moveExpiry = async (userId, passId, locationId) => {
+    const db = dbFor(userId);
+    let prior = null;
+    await testEnv.withSecurityRulesDisabled(async (context) => { prior = (await getDoc(passAt(context.firestore(), passId))).data(); });
+    const next = Timestamp.fromDate(new Date(Date.now() + 240 * 24 * 60 * 60 * 1000));
+    const batch = writeBatch(db);
+    batch.set(ledgerAt(db, passId, `exp-${userId}-${passId}`), entry(passId, locationId, userId, {
+      type: "expiry", delta: 0, previousExpiresAt: prior.expiresAt, newExpiresAt: next, reason: "홀딩 60일",
+    }));
+    batch.update(passAt(db, passId), { expiresAt: next });
+    return batch.commit();
+  };
+  const cancelFresh = (userId, passId, locationId) => setDoc(ledgerAt(dbFor(userId), passId, `cancel-${userId}-${passId}`),
+    entry(passId, locationId, userId, { type: "cancel", delta: -20, reason: "잘못 발급했습니다" }));
+  const handOver = async (userId, passId) => {
+    const db = dbFor(userId);
+    const batch = writeBatch(db);
+    // 같은 강사로 두고 넘겨받음 표시만 -- 강사 지점은 위 묶음이 잰다. 여기서는 회원권 지점만.
+    batch.update(passAt(db, passId), { instructorId: users.instructor, handedOver: true });
+    return batch.commit();
+  };
+  const issue = (userId, passId, locationId) => setDoc(passAt(dbFor(userId), passId), passFixture(ORG_A, passId, { locationId }));
+
+  beforeEach(async () => { await seedScope({ locationId: LOC_MINE, locationIds: [LOC_MINE] }); });
+
+  test("맡은 지점 회원권은 지금처럼 고친다", async () => {
+    await assertSucceeds(adjustDown(users.manager, "pass-mine", LOC_MINE));
+    await assertSucceeds(moveExpiry(users.manager, "pass-mine", LOC_MINE));
+    // 취소는 갓 발급하고 안 쓴 회원권만이라 따로 세운 것으로.
+    await assertSucceeds(cancelFresh(users.manager, "pass-mine-fresh", LOC_MINE));
+    await assertSucceeds(issue(users.manager, "issue-mine", LOC_MINE));
+  });
+
+  test("다른 지점 회원권은 잔여 · 만료일 · 취소 · 발급 모두 막힌다 -- 원장 항목 하나만으로도", async () => {
+    await assertFails(adjustDown(users.manager, "pass-far", LOC_FAR));
+    await assertFails(moveExpiry(users.manager, "pass-far", LOC_FAR));
+    await assertFails(cancelFresh(users.manager, "pass-far-fresh", LOC_FAR));
+    await assertFails(issue(users.manager, "issue-far", LOC_FAR));
+    /* 회원권 문서만 고치는 옛 코드도 막힌다. -1 은 아니다 -- 그것은 수업한 사람의 차감 모양이고
+       대타 수업이 지점을 넘으므로 일부러 묻지 않는다. 조정 모양(-2)으로 잰다. */
+    await assertFails(updateDoc(passAt(dbFor(users.manager), "pass-far"), { remainingCount: increment(-2) }));
+    await assertFails(updateDoc(passAt(dbFor(users.manager), "pass-far"), { expiresAt: Timestamp.fromDate(new Date(2030, 0, 1)) }));
+  });
+
+  test("담당 교체도 같은 선", async () => {
+    await assertSucceeds(handOver(users.manager, "pass-mine"));
+    await assertFails(handOver(users.manager, "pass-far"));
+  });
+
+  test("대표 · 총괄매니저는 지점을 묻지 않는다", async () => {
+    for (const userId of [users.owner, users.area_manager]) {
+      await seedScope({ locationId: LOC_MINE, locationIds: [LOC_MINE] });
+      await assertSucceeds(adjustDown(userId, "pass-far", LOC_FAR), userId);
+      await assertSucceeds(moveExpiry(userId, "pass-far", LOC_FAR), userId);
+    }
+  });
+
+  test("지점이 둘인 FC매니저 · 옛 한 칸만 있는 FC매니저", async () => {
+    await seedScope({ locationId: LOC_MINE, locationIds: [LOC_MINE, LOC_FAR] });
+    await assertSucceeds(adjustDown(users.manager, "pass-far", LOC_FAR));
+    await seedScope({ locationId: LOC_MINE });
+    await assertSucceeds(adjustDown(users.manager, "pass-mine", LOC_MINE));
+    await assertFails(adjustDown(users.manager, "pass-far", LOC_FAR));
+  });
+
+  test("FC매니저 지점이 비었거나 회원권 지점이 비었으면 막지 않는다 (instructorInManagerScope 와 같은 판단)", async () => {
+    await seedScope({});
+    await assertSucceeds(adjustDown(users.manager, "pass-far", LOC_FAR));
+    await seedScope({ locationId: LOC_MINE, locationIds: [LOC_MINE] }, { "pass-blank": "" });
+    // 원장 항목은 지점이 필수라 회원권 문서 쪽 문만 잰다.
+    await assertSucceeds(updateDoc(passAt(dbFor(users.manager), "pass-blank"), { remainingCount: increment(-2) }));
   });
 });
 

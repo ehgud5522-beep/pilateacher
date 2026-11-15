@@ -139,6 +139,13 @@ const WRITERS = Object.freeze({
   /* 수업 후 별점 평가 (2026-11-09). listed 의 userIds 는 **강사** 계정 uid -- 그 강사의 수업에만
      평가를 받는다. 서버(memberLessonRating)만 읽는다. 없으면 꺼짐. scheduleSync 문서의 칸. */
   memberRating: scheduleSyncPayload,
+  /* 비포애프터 회원 공유 (2026-11-15). 대표 화면은 끔 · 전체만 고른다(allowListed 없음) -- 고른 계정만은 예전 시범 모양
+     (mode test · teacherIds · memberIds)을 콘솔에서. 서버(beforeAfterSharing)만 읽는다. */
+  beforeAfterSharing: (input) => {
+    const mode = text(input?.mode);
+    if (!["off", "all"].includes(mode)) throw new Error("before_after_sharing_mode_invalid");
+    return { mode, phase1Verified: true };
+  },
 });
 
 /**

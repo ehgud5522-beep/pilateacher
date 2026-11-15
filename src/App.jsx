@@ -137,7 +137,7 @@ import {
 } from "./data/repositories/client-repository.js";
 import {
   ALL_LOCATIONS, BRANCH_SCOPED_ROLES, NO_LOCATION, countByLocation, createLocation, filterByLocation,
-  holdsManyLocations, itemsVisibleTo, listLocations, locationsVisibleTo, scopedLocationIds,
+  holdsManyLocations, itemsVisibleTo, listLocations, locationsVisibleTo, managerCanTouchPass, scopedLocationIds,
 } from "./data/repositories/location-repository.js";
 import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories/repository-read.js";
 import {
@@ -215,7 +215,7 @@ import {
   transferPassInstructor,
   transferPass,
 } from "./data/repositories/pass-repository.js";
-import { ADJUST_INCREASE_NOTICE, passEditFailure } from "./features/membership/pass-edit-failure.js";
+import { ADJUST_INCREASE_NOTICE, OUT_OF_SCOPE_NOTICE, passEditFailure } from "./features/membership/pass-edit-failure.js";
 import {
   SETTLEMENT_GATE, SETTLEMENT_GATE_LABEL, blocksSettlement, settlementGate,
 } from "./features/schedule/settlement-gate.js";
@@ -233,6 +233,7 @@ import {
   BACKUP_SIZE, BACKUP_TOO_LARGE_CODE, BACKUP_WARN_BYTES, buildMigrationSnapshot, describeBackups,
 } from "./features/backup/backup-safety.js";
 import { deviceIdentity } from "./features/backup/device-identity.js";
+import { addDaysISO, planNextWeekLesson, REPEAT_BLOCK } from "./features/schedule/repeat-lesson.js";
 import {
   DELETE_MODE, DELETE_BLOCK_REASON, canEditLessonInfo, isLockedBySettlement, isSettledElsewhere, lessonDeletePolicy,
   opensEditingFirst, restoreDeletedLesson, settledLockNotice,
@@ -359,7 +360,7 @@ import {
 } from "./features/lesson-record/draft-queue.js";
 import { evaluateLessonRecordLink, linkScheduleToMember, upsertLessonRecordNote } from "./features/lesson-record/link-context.js";
 import {
-  defaultLinkLesson, linkableLessonsFor, manualNoteFor, voiceNoteFor,
+  defaultLinkLesson, linkableLessonsFor, manualNoteFor, voiceNoteFor, voiceNoteRestoreState,
 } from "./features/lesson-record/note-edit.js";
 import {
   formatMemberLessonDate, formatMemberLessonHeader, isMeaningfulLessonSession, lessonSessionRepresentative, pendingLessonState,
@@ -1708,6 +1709,10 @@ class Guard extends Component {
     deviceLog("ui_render_failed", {
       surface,
       code: String(err?.name || "Error").slice(0, 80),
+      /* 원본 코드 · 경로. 음성 기록 수정 중 화면이 꺼진 일(2026-11-15)은 name 만 남아
+         TypeError 로만 보였다 -- invalid_output · didToday[0] 이 있어야 원인이 선다. */
+      ...(err?.code ? { errorCode: String(err.code).slice(0, 80) } : {}),
+      ...(err?.path ? { path: String(err.path).slice(0, 80) } : {}),
       ...(surface === "비포애프터" ? { message: String(err?.message || err || "unknown render error").slice(0, 180) } : {}),
       appBuild: APP_BUILD_LABEL,
     });
@@ -1737,7 +1742,7 @@ class Guard extends Component {
         <div className="rounded-3xl bg-white p-5" style={{ boxShadow: SHADOW }}>
           <div className="flex items-center gap-2">
             <AlertTriangle size={18} style={{ color: BAD }} />
-            <p className="text-sm font-extrabold" style={{ color: INK }}>{showInternalDetails ? `${label}을(를) 표시하지 못했습니다` : "일시적인 문제가 발생했어요"}</p>
+            <p className="text-sm font-extrabold" style={{ color: INK }}>{showInternalDetails ? `${label}을(를) 표시하지 못했습니다` : `일시적인 문제가 발생했어요 (코드 ${String(this.state.err?.code || this.state.err?.name || "render_failed").slice(0, 40)})`}</p>
           </div>
           {showInternalDetails && <p className="mt-2 rounded-xl px-3 py-2 text-xs" style={{ backgroundColor: CANVAS, color: SUB, wordBreak: "break-all" }}>{msg}</p>}
           {showInternalDetails && this.state.info && <p className="mt-1 text-xs" style={{ color: FAINT }}>{this.state.info}</p>}
@@ -1907,9 +1912,11 @@ function useScrollLock() {
 }
 
 function Sheet({ title, sub, subtitle, onClose, children, wide = false, safeTop = false, footer = null }) {
+  /* 닫기 · 뒤 어둠 · Esc · 뒤로 가기는 내려가는 움직임 뒤에 닫는다 (teacher-motion.css). 부모가 직접 걷는 경우는 그대로 즉시. */
+  const { closing, close } = useMotionClose(onClose);
   const panelRef = useRef(null);
   const lastFocus = useRef(null);
-  useBackClose(true, onClose);
+  useBackClose(true, close);
   useScrollLock();
   useEffect(() => {
     lastFocus.current = typeof document !== "undefined" ? document.activeElement : null;
@@ -1920,7 +1927,7 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false, safeTop 
     };
   }, []);
   const onKeyDown = (e) => {
-    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); return; }
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); return; }
     if (e.key !== "Tab" || !panelRef.current) return;
     const nodes = panelRef.current.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
     if (!nodes.length) return;
@@ -1930,8 +1937,8 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false, safeTop 
   };
   const secondary = sub || subtitle;
   return (
-    <div className="fixed inset-0" style={{ zIndex: 60 }} role="dialog" aria-modal="true" aria-label={title}>
-      <div className="absolute inset-0" style={{ background: "rgba(28,36,51,0.32)" }} onClick={onClose} />
+    <div className="teacher-sheet fixed inset-0" data-closing={closing || undefined} style={{ zIndex: 60 }} role="dialog" aria-modal="true" aria-label={title}>
+      <div className="teacher-sheet-scrim absolute inset-0" style={{ background: "rgba(28,36,51,0.32)" }} onClick={close} />
       <section ref={panelRef} tabIndex={-1} onKeyDown={onKeyDown}
         className="pt-generic-sheet sheet-in absolute bottom-0 left-1/2 flex w-full flex-col bg-white"
         style={{ transform: "translateX(-50%)", maxHeight: wide ? "92dvh" : "86dvh",
@@ -1942,7 +1949,7 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false, safeTop 
             <h3 style={{ fontSize: TYPE.title, lineHeight: 1.35, fontWeight: 600, color: INK }}>{title}</h3>
             {secondary ? <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2, marginTop: 2 }}>{secondary}</p> : null}
           </div>
-          <button type="button" onClick={onClose} aria-label="닫기" className="flex shrink-0 items-center justify-center"
+          <button type="button" onClick={close} aria-label="닫기" className="flex shrink-0 items-center justify-center"
             style={{ width: 44, height: 44, marginTop: -6, marginRight: -8, borderRadius: 8, color: INK2 }}>
             <X size={18} />
           </button>
@@ -1968,7 +1975,7 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false, safeTop 
  */
 function AppOverlay({ layer, name, children, fill = false }) {
   return (
-    <div data-overlay={name} className={fill ? "absolute inset-0 overflow-hidden" : "absolute inset-0 overflow-y-auto"}
+    <div data-overlay={name} className={`teacher-page-in ${fill ? "absolute inset-0 overflow-hidden" : "absolute inset-0 overflow-y-auto"}`}
       style={{ zIndex: overlayZ(layer), backgroundColor: PAGE }}>
       <div className={fill ? "mx-auto h-full min-h-0 w-full max-w-md overflow-hidden" : "mx-auto w-full max-w-md p-3"} style={fill ? undefined : { paddingTop: "max(env(safe-area-inset-top, 0px), 12px)" }}>
         {children}
@@ -1976,7 +1983,7 @@ function AppOverlay({ layer, name, children, fill = false }) {
     </div>
   );
 }
-function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, children, dismissible = true, aboveTabBar = false, animateClose = false }) {
+function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, children, dismissible = true, aboveTabBar = false, animateClose = true }) {
   const { closing, close } = useMotionClose(onClose, animateClose);
   const panelRef = useRef(null);
   const scrollRef = useRef(null);
@@ -3913,6 +3920,13 @@ function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatu
     saveQueueMarks(restoreDismissedGroups(queueMarks));
     deviceLog("lesson_queue_restore", { feature: "lesson_queue", stage: "restore", count: organizedQueue.dismissedCount });
   };
+  /* 다음 주 같은 시간 등록 (repeat-lesson.js). 등록과 같은 길(onSave = saveSchedule)로 저장한다 --
+     홀딩 검사 · 서버 동기화 · 알림이 거기 있다. 막히면 saveSchedule 이 이유를 말하고 시트는 그대로 둔다. */
+  const repeatNextWeek = (lesson, label) => {
+    if (onSave(lesson, null) === false) return;
+    onToast?.({ ok: true, msg: `${label} 같은 수업을 등록했어요.` });
+    setEditing(null);
+  };
   const markQueueGroup = (kind, key, on) => {
     const next = { ...queueMarks, [kind]: { ...queueMarks[kind] } };
     if (on) next[kind][key] = true; else delete next[kind][key];
@@ -3980,7 +3994,7 @@ function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatu
       </div>
 
       {/* ─── 하단 고정 업무 요약 ─── */}
-      {db.members.length > 0 && db.schedule.length > 0 && <div className="shrink-0" style={{ padding: "6px 12px 8px", backgroundColor: PAGE }}>
+      {db.members.length > 0 && db.schedule.length > 0 && (organizedQueue.todayCount > 0 || organizedQueue.total > 0 || organizedQueue.dismissedCount > 0 || (memberCancelOn && memberCancelCount > 0) || (inbox && (inboxLabel || inbox.error))) && <div className="shrink-0" style={{ padding: "6px 12px 8px", backgroundColor: PAGE }}>
         {/* 회원 앱에서 회원이 직접 취소한 수업 (2026-11-07, 5차 1단계). 기능이 켜진 강사만,
             오늘부터 앞으로, 아직 [확인] 하지 않은 것만 센다 (member-cancel-view.js). 누르면
             가장 가까운 그 수업을 연다. */}
@@ -4002,22 +4016,34 @@ function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatu
             <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>보기</span>
           </button>
         ) : null}
-        {/* 첫 화면은 "오늘 미처리 N건" 하나로 말한다 (2026-11-07). 지난 것은 아래 줄에 수만. */}
-        <button data-queue-summary onClick={(e) => { if (organizedQueue.total || organizedQueue.dismissedCount) { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); } }} disabled={!organizedQueue.total && !organizedQueue.dismissedCount}
-          className="flex h-14 w-full items-center gap-3 rounded-xl px-3 text-left disabled:opacity-80"
-          style={{ background: organizedQueue.todayCount ? "var(--grad-soft)" : CARD, border: `1px solid ${organizedQueue.todayCount ? RING : LINE}`, boxShadow: "0 1px 4px rgba(28,36,51,.06)" }}>
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: organizedQueue.todayCount ? TINT : GOOD_S }}>
-            {organizedQueue.todayCount ? <Pencil size={14} style={{ color: PRIMARY }} /> : <Check size={14} style={{ color: GOOD }} />}
+        {/* 첫 화면은 "오늘 미처리 N건" 하나로 말한다 (2026-11-07). 지난 것은 아래 줄에 수만.
+            오늘 미처리가 없으면 큰 칸을 걷는다 (2026-11-15 강사 제보: "미처리 없음이면 숨기거나 안 뜨게").
+            지난 · 숨긴 항목이 남아 있으면 얇은 한 줄로만, 그것도 없으면 아무것도 없다 -- 시간표가 그만큼 넓어진다. */}
+        {organizedQueue.todayCount > 0 ? (
+        <button data-queue-summary onClick={(e) => { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); }}
+          className="flex h-14 w-full items-center gap-3 rounded-xl px-3 text-left"
+          style={{ background: "var(--grad-soft)", border: `1px solid ${RING}`, boxShadow: "0 1px 4px rgba(28,36,51,.06)" }}>
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: TINT }}>
+            <Pencil size={14} style={{ color: PRIMARY }} />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-extrabold" style={{ color: INK }}>{organizedQueue.todayCount ? `오늘 미처리 ${organizedQueue.todayCount}건` : "오늘 미처리 없음"}</span>
-            <span className="block truncate text-xs" style={{ color: SUB }}>{queueSummaryDetail || "확인할 수업이 없습니다"}</span>
+            <span className="block text-sm font-extrabold" style={{ color: INK }}>{`오늘 미처리 ${organizedQueue.todayCount}건`}</span>
+            {queueSummaryDetail && <span className="block truncate text-xs" style={{ color: SUB }}>{queueSummaryDetail}</span>}
           </span>
-          {organizedQueue.total > 0 && <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>{organizedQueue.todayCount ? "지금 처리" : "보기"}</span>}
+          <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>지금 처리</span>
         </button>
+        ) : (organizedQueue.total || organizedQueue.dismissedCount) ? (
+        <button data-queue-summary data-queue-summary-compact onClick={(e) => { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); }}
+          className="flex h-9 w-full items-center gap-2 rounded-xl px-3 text-left"
+          style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+          <Check size={13} style={{ color: GOOD }} />
+          <span className="min-w-0 flex-1 truncate text-xs font-bold" style={{ color: SUB }}>{`오늘 미처리 없음 · ${queueSummaryDetail}`}</span>
+          <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>보기</span>
+        </button>
+        ) : null}
       </div>}
 
-      {editing && <ScheduleForm memberCancelAcked={isMemberCancelAcked(liveEditing)} draftAccountId={draftAccountId} onAckMemberCancel={() => ackMemberCancel(liveEditing)} draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
+      {editing && <ScheduleForm onRepeatNextWeek={repeatNextWeek} memberCancelAcked={isMemberCancelAcked(liveEditing)} draftAccountId={draftAccountId} onAckMemberCancel={() => ackMemberCancel(liveEditing)} draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
         onSubmit={(v, opened) => { onSave(v, opened); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
         onStatus={onStatus} onStatusAll={onStatusAll} onCareGrade={onCareGrade} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
         organizationMode={organizationMode} rateOf={rateOf} careOptionsOf={careOptionsOf} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} onReadMemberNote={onReadMemberNote} onSaveMemberNote={onSaveMemberNote} onToast={onToast} canUnsettle={canUnsettle}
@@ -4283,7 +4309,7 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
     const needsRecord = !pv && !eq && list.some((a) => a.status === "done" && !(memberOf?.(a.memberId)?.notes || []).some((n) => n?.sid === s.id));
     const briefingLine = !pv && !eq && list.some((attendee) => !!selectScheduleBriefing(briefingOf?.(attendee.memberId, s.id)));
     const typeLabel = typeDef.label;
-    return { s, top: topOf(st), h: Math.max(20, topOf(en) - topOf(st) - 2), label, equipText, typeKey,  typeLabel, typeShape: typeDef.shape, briefingLine, done, cancelled: (eq && !!s.groupCancelled) || status === "cancel", memberCancelled: hasMemberCancel(s), noshow: status === "noshow", eq, pv, next: s.id === nextId, needsRecord, groupPeople };
+    return { s, top: topOf(st), h: Math.max(20, topOf(en) - topOf(st) - 2), label, equipText, typeKey,  typeLabel, typeShape: typeDef.shape, briefingLine, done, settled: !pv && isLockedBySettlement(s), cancelled: (eq && !!s.groupCancelled) || status === "cancel", memberCancelled: hasMemberCancel(s), noshow: status === "noshow", eq, pv, next: s.id === nextId, needsRecord, groupPeople };
   }).filter((b) => b.top >= -GRID_ROW && b.top < totalHeight);
 
   return (
@@ -4343,23 +4369,27 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
                   /* 유형 글자가 화면에서 빠지므로 aria-label 이 읽어 주는
                      유일한 경로가 된다. 도형은 눈으로 보는 쪽이고, 여기서는
                      이름 그대로 말해 준다. */
-                  <button key={b.s.id} data-member-cancelled={b.memberCancelled ? "" : undefined} aria-label={[b.typeLabel, b.label, lessonEquipFullText(b.s), b.memberCancelled ? MEMBER_CANCEL_VIEW_COPY.BADGE : ""].filter(Boolean).join(" · ")} title={[b.typeLabel, b.label, lessonEquipFullText(b.s), b.memberCancelled ? MEMBER_CANCEL_VIEW_COPY.BADGE : ""].filter(Boolean).join(" · ")} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpen(b.s, e.currentTarget); }}
+                  <button key={b.s.id} data-member-cancelled={b.memberCancelled ? "" : undefined} aria-label={[b.typeLabel, b.label, lessonEquipFullText(b.s), b.memberCancelled ? MEMBER_CANCEL_VIEW_COPY.BADGE : "", b.settled ? "확정됨" : ""].filter(Boolean).join(" · ")} data-settled={b.settled ? "" : undefined} title={[b.typeLabel, b.label, lessonEquipFullText(b.s), b.memberCancelled ? MEMBER_CANCEL_VIEW_COPY.BADGE : ""].filter(Boolean).join(" · ")} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpen(b.s, e.currentTarget); }}
                     className="absolute left-0.5 right-0.5 flex min-w-0 flex-col justify-center overflow-hidden text-left"
                     style={{ top: b.top + 1, height: Math.max(18, b.h - 1), borderRadius: 4,
-                      background: b.cancelled ? "transparent" : b.noshow ? "var(--bad-s)" : tone.surface,
-                      border: b.next ? "1.5px solid var(--brand)" : b.cancelled ? `1px dashed ${b.memberCancelled ? WARN : "var(--line)"}` : `1px solid ${b.noshow ? "var(--bad-s)" : tone.border}`,
-                      borderLeft: `3px solid ${b.memberCancelled ? WARN : b.cancelled ? "var(--line)" : tone.edge}`,
-                      color: b.noshow ? "var(--bad)" : b.done || b.cancelled ? "var(--ink2)" : "var(--ink)",
+                      /* 확정된 수업은 회색 카드 + 초록 체크 (2026-11-15 강사 제보: "수업 확정된 회원은 회색 처리나
+                         좀 더 구분이 쉽게"). 전에는 확정이 시간표에 전혀 안 보여 출석만 한 수업과 같았다. */
+                      background: b.cancelled ? "transparent" : b.settled ? "var(--canvas)" : b.noshow ? "var(--bad-s)" : tone.surface,
+                      border: b.next ? "1.5px solid var(--brand)" : b.cancelled ? `1px dashed ${b.memberCancelled ? WARN : "var(--line)"}` : `1px solid ${b.settled ? "var(--line)" : b.noshow ? "var(--bad-s)" : tone.border}`,
+                      borderLeft: `3px solid ${b.memberCancelled ? WARN : b.cancelled ? "var(--line)" : b.settled ? "var(--faint)" : tone.edge}`,
+                      color: b.settled ? "var(--sub)" : b.noshow ? "var(--bad)" : b.done || b.cancelled ? "var(--ink2)" : "var(--ink)",
                       padding: "1px 2px 1px 3px", fontSize: labelLen >= 6 ? 8 : labelLen === 5 ? 9 : labelLen === 4 ? 9.5 : 10.5,
                       letterSpacing: labelLen >= 4 ? "-0.35px" : "-0.15px", lineHeight: 1.08, fontWeight: b.next || (focusedMemberId && memberMatch) ? 700 : 600,
-                      opacity: memberMatch ? (b.done ? 0.74 : 1) : 0.22, boxShadow: focusedMemberId && memberMatch ? `0 0 0 2px ${RING}` : "none", transition: "opacity .18s ease, box-shadow .18s ease" }}>
+                      opacity: memberMatch ? (b.done && !b.settled ? 0.74 : 1) : 0.22, boxShadow: focusedMemberId && memberMatch ? `0 0 0 2px ${RING}` : "none", transition: "opacity .18s ease, box-shadow .18s ease" }}>
                     {b.next && <Play size={7} fill={BRAND} className="absolute left-0.5 top-0.5" />}
                     {memberDot && !tall && <span className="absolute" aria-hidden="true" style={{ left: 2, bottom: 2, width: 5, height: 5, borderRadius: 3, backgroundColor: memberDot, opacity: b.done ? .45 : 1 }} />}
                     <span className="flex w-full min-w-0 items-center" style={{ paddingLeft: b.next ? 8 : 0 }}>
                       {/* 유형은 이제 도형 하나다. 이름 앞 한 자리만 쓰므로 이름이
                           그만큼 길게 들어간다. 읽어 주는 것은 버튼의 aria-label 이라
                           여기서는 화면에서 감춘다 -- 같은 말을 두 번 읽지 않는다. */}
-                      <span className="pt-week-type mr-0.5 shrink-0" aria-hidden="true" style={{ color: tone.edge }}>{b.typeShape}</span>
+                      {b.settled
+                        ? <Check size={8} strokeWidth={3.5} className="mr-0.5 shrink-0" aria-hidden="true" style={{ color: "var(--good)" }} />
+                        : <span className="pt-week-type mr-0.5 shrink-0" aria-hidden="true" style={{ color: tone.edge }}>{b.typeShape}</span>}
                       {memberDot && tall && <span className="shrink-0" aria-hidden="true" style={{ width: 3.5, height: 3.5, borderRadius: 2, marginRight: 1.5, backgroundColor: memberDot, opacity: b.done ? .45 : 1 }} />}
                       <span className="min-w-0 flex-1 truncate" style={{ textDecoration: b.cancelled ? "line-through" : "none" }}>{b.label}</span>
                     </span>
@@ -4439,7 +4469,7 @@ function LessonNoteDraftStatus({ draft }) {
     {draft.conflict && <><p>다른 창의 초안 또는 저장된 기록이 변경됐어요. 내용을 확인한 뒤 계속해 주세요.</p>{draft.alternatives.map((text,i)=><pre key={i} style={{whiteSpace:'pre-wrap'}}>{text}</pre>)}<button type="button" onClick={draft.resolve}>현재 초안으로 계속</button></>}
   </div>;
 }
-function ScheduleForm({ draftAccountId, memberCancelAcked = false, onAckMemberCancel, draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
+function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAcked = false, onAckMemberCancel, draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
   const rosterRefresh = useContext(RosterRefreshContext);
   /* 확정된 수업은 출석을 바꿀 수 없다. 상태를 바꿔도 이미 나간 차감은 따라오지
      않고, 둘이 어긋나면 어느 것이 맞는지 알 수 없다. */
@@ -4572,6 +4602,21 @@ function ScheduleForm({ draftAccountId, memberCancelAcked = false, onAckMemberCa
   /* 그룹 인원은 비워도 기본 8명으로 저장한다 — 빈 칸 때문에 등록 버튼이 막히면 안 된다 */
   const ready = !!f.date && !!f.start && (!isMemberLesson || (chosenIds.length === neededSlots && !unresolved && !duplicateChoice))
     && noRest.length === 0;
+  const [repeatNotice, setRepeatNotice] = useState(null);
+  const repeatDateLabel = draft?.date ? (() => { const next = addDaysISO(draft.date, 7); return `${next.slice(5).replace("-", ".")}(${dow(next)}) ${draft.start || ""}`.trim(); })() : "";
+  const tryRepeatNextWeek = () => {
+    const plan = planNextWeekLesson({ lesson: draft, schedule, newId: uid(), remainingOf: (id) => left(members.find((m) => m.id === id)) });
+    if (plan.block === REPEAT_BLOCK.ALREADY_BOOKED) { setRepeatNotice({ kind: "info", msg: `${repeatDateLabel}에 이미 이 회원 수업이 있어요. (코드 repeat_${plan.block})` }); return; }
+    if (plan.block === REPEAT_BLOCK.NO_REMAINING) {
+      const names = plan.blockedMemberIds.map((id) => members.find((m) => m.id === id)?.name || "회원").join(", ");
+      setRepeatNotice({ kind: "info", msg: `${names}님 잔여 횟수가 없어 다음 주 수업을 등록할 수 없어요. (코드 repeat_${plan.block})` });
+      return;
+    }
+    if (plan.block || !plan.lesson) { setRepeatNotice({ kind: "info", msg: `이 수업은 다음 주로 복사할 수 없어요. (코드 repeat_${plan.block || "unknown"})` }); return; }
+    if (plan.clashes.length) { setRepeatNotice({ kind: "confirm", plan, msg: `${repeatDateLabel}에 겹치는 수업이 ${plan.clashes.length}건 있어요. 그래도 등록할까요?` }); return; }
+    setRepeatNotice(null);
+    onRepeatNextWeek(plan.lesson, repeatDateLabel);
+  };
   const submit = () => {
     const previous = attendeesOf(draft);
     const personal = kind === "consult" || kind === "off";
@@ -4795,6 +4840,29 @@ function ScheduleForm({ draftAccountId, memberCancelAcked = false, onAckMemberCa
               </button>
             )}
 
+            {/* 같은 회원 · 같은 시간으로 다음 주 등록 (2026-11-15 강사 제보: 고정 시간대를 미리 예약).
+                확정된 수업에서도 된다 -- 이 수업은 그대로 두고 7일 뒤에 새 수업을 만든다 (repeat-lesson.js). */}
+            {draft.id && isMemberLesson && attendeesOf(draft).length > 0 && typeof onRepeatNextWeek === "function" && (
+              <div data-repeat-next-week>
+                <button type="button" onClick={tryRepeatNextWeek} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg text-xs font-bold"
+                  style={{ backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>
+                  <RotateCcw size={14} style={{ color: BRAND_D }} /> 다음 주 같은 시간 등록
+                  <span className="font-bold tabular-nums" style={{ color: SUB }}>{repeatDateLabel}</span>
+                </button>
+                {repeatNotice && (
+                  <div role="status" data-repeat-notice={repeatNotice.kind} className="mt-2 rounded-lg px-3 py-2" style={{ backgroundColor: repeatNotice.kind === "confirm" ? WARN_S : CANVAS }}>
+                    <p className="text-xs font-bold leading-relaxed" style={{ color: repeatNotice.kind === "confirm" ? WARN : INK2 }}>{repeatNotice.msg}</p>
+                    {repeatNotice.kind === "confirm" && (
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <button type="button" data-repeat-confirm onClick={() => { const plan = repeatNotice.plan; setRepeatNotice(null); onRepeatNextWeek(plan.lesson, repeatDateLabel); }} className="h-9 rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>그래도 등록</button>
+                        <button type="button" onClick={() => setRepeatNotice(null)} className="h-9 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>취소</button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             {activeMember && activeAttendee && (
               <>
                 {((activeMember.focus || []).length > 0 || currentLessonSession || (latestNote && !latestNote.lessonRecord)) && <div className="rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
@@ -4932,11 +5000,11 @@ function ScheduleForm({ draftAccountId, memberCancelAcked = false, onAckMemberCa
                       <div className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
                         <DeviceOnlyNote />
                         {recordFallback && <p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
-                        {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id}
+                        {recordMode === "voice" && <Guard label="음성 기록"><VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id} savedNote={voiceNoteFor(activeMember?.notes, draft.id)}
                           onLater={closeRecordEntry} onClose={closeRecordEntry} onDeferred={closeRecordEntry}
                           onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }}
                           onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)}
-                          onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
+                          onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} /></Guard>}
                         {recordMode === "write" && <>
                           <textarea rows={4} value={recordBody} readOnly={recordSaving} onChange={(e) => manualDraft.change(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
                           <LessonNoteDraftStatus draft={manualDraft} />
@@ -5361,7 +5429,7 @@ export function ScheduleQueueSheet({ draftAccountId, queue, members, returnFocus
               {recordMode && (
                 <div ref={recordSectionRef} data-lesson-record-entry className="mt-3 space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
                   <DeviceOnlyNote />
-                  {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(task.a.memberId, task.s.id)} memberId={task.a.memberId} memberName={memberName} duetPartner={duetPartnerOf(task?.m)} lessonId={task.s.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={() => setRecordMode("write")} onDraftChange={(text, meta, options) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, { confirmed: true, upsert: true })} />}
+                  {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(task.a.memberId, task.s.id)} memberId={task.a.memberId} memberName={memberName} duetPartner={duetPartnerOf(task?.m)} lessonId={task.s.id} savedNote={voiceNoteFor(task?.m?.notes, task.s.id)} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={() => setRecordMode("write")} onDraftChange={(text, meta, options) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, { confirmed: true, upsert: true })} />}
                   {recordMode === "write" && <><textarea rows={4} value={recordBody} readOnly={recordSaving} onChange={(e) => manualDraft.change(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><LessonNoteDraftStatus draft={manualDraft} />
                     <button disabled={recordSaving || manualDraft.conflict || !recordBody.trim()} onClick={async () => {
                       setRecordSaving(true);
@@ -7680,7 +7748,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             ))}
           </select>
         </label>
-      )}{sheet === "record" && <VoiceNote key={lessonRecordSessionKey(member.id, linkLessonId || null)} memberId={member.id} memberName={member.name || "회원"} duetPartner={duetPartnerOf(member)} lessonId={linkLessonId || undefined} onClose={() => setSheet(null)} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, { ...(options || {}), lessonId: linkLessonId || null })} onApply={(text, meta) => onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true, lessonId: linkLessonId || null })} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: TYPE.caption, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
+      )}{sheet === "record" && <VoiceNote key={lessonRecordSessionKey(member.id, linkLessonId || null)} memberId={member.id} memberName={member.name || "회원"} duetPartner={duetPartnerOf(member)} lessonId={linkLessonId || undefined} savedNote={linkLessonId ? voiceNoteFor(member.notes, linkLessonId) : null} onClose={() => setSheet(null)} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, { ...(options || {}), lessonId: linkLessonId || null })} onApply={(text, meta) => onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true, lessonId: linkLessonId || null })} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: TYPE.caption, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
       {sheet === "record-review" && reviewDraft && <Sheet title="AI 수업기록 확인" sub="확인은 선택입니다. 정리된 기록은 이미 저장되어 있어요." onClose={() => setSheet(null)}><div className="space-y-3"><div className="grid grid-cols-2 gap-2">{[{ k: "didToday", l: "오늘 수업" }, { k: "observations", l: "변화" }, { k: "responses", l: "회원 반응" }, { k: "nextFocus", l: "다음 확인" }].map((field) => <div key={field.k} className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-caption font-extrabold" style={{ color: SUB }}>{field.l}</p>{reviewEditing ? <textarea rows={2} aria-label={`${field.l} 수정`} value={structuredFieldText(reviewDraft, field.k)} onChange={(event) => setReviewDraft((current) => editStructuredField(current, field.k, event.target.value))} className={`${inputCls} mt-1 h-auto resize-none py-2 text-xs`} /> : <p className="mt-1 text-xs font-bold leading-relaxed" style={{ color: INK2 }}>{prepText(reviewDraft[field.k], "기록 없음")}</p>}</div>)}</div><div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setReviewEditing((value) => !value)} className="h-12 rounded-xl text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: BRAND_D }}>{reviewEditing ? "수정 닫기" : "수정"}</button><button type="button" onClick={confirmRecordReview} className="h-12 rounded-xl text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>확인</button></div></div></Sheet>}
       {sheet === "memos-all" && <Sheet title="상담 메모 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2"><DeviceOnlyNote />{consultationNotes.length ? consultationNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: note.important ? WARN_S : CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요 메모" : ""}</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 상담 메모가 없습니다</p>}<button type="button" onClick={openMemo} className="h-11 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>메모 추가</button></div></Sheet>}
       {sheet === "records-all" && <Sheet title="수업 기록 전체 보기" onClose={() => setSheet(null)}><div className="min-w-0 space-y-2">{lessonSessions.length ? lessonSessions.map((session) => <div key={session.key} className="min-w-0" style={{ padding: 10, borderRadius: 8, backgroundColor: CANVAS }}><p className="mb-2 text-caption tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(session.date, { weekday: true })} · {session.type}</p><LessonRecordFieldRows session={session} />{session.warning && <p className="mt-2 text-caption" style={{ color: SUB }}>{session.warning}</p>}</div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div></Sheet>}
@@ -13523,7 +13591,7 @@ function IOSMediaDiagnosticPanel({ memberId = "diagnostics", lessonId = "hidden-
   return <div className="mt-3 rounded-lg p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}><p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>iOS 미디어 진단</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={runMicrophoneTest} disabled={microphoneTest.status === "running" || cameraTest.status === "running"} className="min-h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{microphoneTest.status === "running" ? "마이크 테스트 중…" : "마이크 테스트"}</button><button type="button" onClick={runCameraTest} disabled={cameraTest.status === "running" || microphoneTest.status === "running"} className="min-h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{cameraTest.status === "running" ? "카메라 테스트 중…" : "카메라 테스트"}</button></div><StepList title="마이크" steps={microphoneTest.steps} /><StepList title="카메라" steps={cameraTest.steps} /></div>;
 }
 
-function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId = null, memberName = "회원", duetPartner = null, lessonId = null, onDirectEntry = null, onLater = null, onClose = null, onDeferred = null }) {
+function VoiceNote({ onApply, onDraftChange = null, savedNote = null, highlight, onSeen, memberId = null, memberName = "회원", duetPartner = null, lessonId = null, onDirectEntry = null, onLater = null, onClose = null, onDeferred = null }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const lessonLink = useContext(LessonRecordLinkContext);
   /* 이 수업기록이 동의를 받아야 할 사람 전부. 듀엣이면 둘이다 -- 수업기록에
@@ -13619,6 +13687,11 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const recordingActiveRef = useRef(false);
   const backgroundStopRef = useRef(false);
   const publishedDraftSignatureRef = useRef("");
+  /* 저장된 기록을 펼친 직후의 첫 자동저장은 건너뛴다. 열기만 했는데 확정된 기록이
+     "확인 대기" 로 내려가면 안 된다 -- 강사가 실제로 고칠 때부터 저장한다. */
+  const skipNextAutosaveRef = useRef(false);
+  const savedNoteRef = useRef(savedNote);
+  savedNoteRef.current = savedNote;
   const organizationTimeoutRef = useRef(null);
   const consentContinuationRef = useRef(null);
   const consentDeclineRef = useRef(null);
@@ -13893,8 +13966,22 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       setSummaryBusy(false); setSummaryError(""); setSummaryFailureClass(""); setSummaryFailure(null); setLinkReview(null);
       setConsentGate(null); setOrganizationTimedOut(false); setSummaryEditing(false); setQualityRejection(null); setLowVolumeNotice(""); setErr("");
       publishedDraftSignatureRef.current = "";
+      skipNextAutosaveRef.current = false;
       const pending = loadPendingLessonRecord(memberId, lessonId);
-      if (!pending?.rawTranscript && !(pending?.audioClips || []).some((clip) => clip?.blobId)) return;
+      if (!pending?.rawTranscript && !(pending?.audioClips || []).some((clip) => clip?.blobId)) {
+        /* 보관함이 비었으면 저장된 음성 기록을 펼친다 (note-edit.js voiceNoteRestoreState).
+           전에는 여기서 끝나 빈 녹음 화면만 나왔고, 다시 녹음하면 앞 기록이 덮였다. */
+        const saved = lessonId ? voiceNoteRestoreState(savedNoteRef.current) : null;
+        if (!saved) return;
+        setText(saved.transcript); textRef.current = saved.transcript;
+        setSource(saved.source); sourceRef.current = saved.source;
+        if (saved.structuredDraft) {
+          setSummaryOriginal(saved.summaryOriginal); setSummaryDraft(saved.structuredDraft); setSummaryMeta(saved.aiMeta); setSummaryStatus(AI_STATUSES.DRAFT);
+        } else setSummaryStatus("unstructured");
+        skipNextAutosaveRef.current = true;
+        appendLessonRecordDiagnostic({ code: "restored_saved_note", stage: "voice_note_restore", category: "RESTORE", hasStructuredDraft: Boolean(saved.structuredDraft), confirmed: saved.confirmed });
+        return;
+      }
       setText(String(pending.rawTranscript || ""));
       textRef.current = String(pending.rawTranscript || "");
       setSource(pending.source || "pending");
@@ -15580,9 +15667,23 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const setSummaryField = (field, value) => setSummaryDraft((current) => editStructuredField(current || {}, field, value));
   useEffect(() => {
     if (typeof onDraftChange !== "function" || manualEntry || on || starting || finishing || summaryBusy) return;
-    const payload = currentRecordPayload(false);
+    /* 이 효과 안의 예외는 화면 전체를 꺼뜨린다 (2026-11-15 강사 제보). 고치던 내용은 위
+       효과가 이미 기기에 보관했으니, 여기서는 진단을 남기고 이번 자동저장만 건너뛴다. */
+    let payload;
+    try {
+      payload = currentRecordPayload(false);
+    } catch (error) {
+      appendLessonRecordDiagnostic({ code: String(error?.code || error?.name || "unknown"), stage: "teacher_edit_payload", category: "CLIENT", path: error?.path, expected: error?.expected, received: error?.received });
+      deviceLog("lesson_record_autosave_failed", { memberId, lessonId, code: String(error?.code || error?.name || "unknown"), path: error?.path, appBuild: APP_BUILD_LABEL });
+      return;
+    }
     if (!payload) return;
     const signature = JSON.stringify({ text: payload.transcript, draft: payload.lessonRecord.structuredDraft, flags: payload.lessonRecord.reviewFlags, failed: payload.lessonRecord.organizationStatus });
+    if (skipNextAutosaveRef.current) {
+      skipNextAutosaveRef.current = false;
+      publishedDraftSignatureRef.current = signature;
+      return;
+    }
     if (signature === publishedDraftSignatureRef.current) return;
     publishedDraftSignatureRef.current = signature;
     Promise.resolve(onDraftChange(payload.teacherText, payload.meta, { confirmed: false, upsert: true })).then((stored) => {
@@ -19975,6 +20076,7 @@ function passAdminFailure(error) {
     transfer_target_not_found: "받는 회원을 센터 명부에서 찾지 못했습니다.",
     transfer_instructor_required: "담당 강사가 없는 회원권은 넘길 수 없습니다.",
     transfer_expires_invalid: "이 회원권의 만료일을 읽을 수 없습니다. 만료일을 먼저 맞춰 주세요.",
+    pass_out_of_scope: OUT_OF_SCOPE_NOTICE,
   };
   if (known[reason]) return `${known[reason]} (코드 ${reason})`;
 
@@ -20870,6 +20972,9 @@ function ClientDetail({
   /* 세션업·양도와 같은 선이다. 만료일을 옮기는 사람이 회차를 늘리지 못할
      이유가 없다 -- 둘 다 운영이 매일 하는 일이고, 둘 다 이력이 남는다. */
   const canSessionUp = canChangeExpiry;
+  /* FC매니저는 맡은 지점의 회원권만 고친다 (2026-11-15 대표). 규칙 · 서버가 같은 선이라, 다른 지점
+     회원권에 버튼을 세우면 눌러도 permission-denied 로 끝난다 -- 아예 세우지 않는다. */
+  const touchable = (pass) => managerCanTouchPass(organization, pass);
   const [passEdit, setPassEdit] = useState(initialPassEdit);
   const [passEditError, setPassEditError] = useState("");
 
@@ -21254,22 +21359,22 @@ function ClientDetail({
                   canOverrideSessionUp={canOverrideSessionUpWindow(organization?.role)}
                   /* 대표·총괄은 전처럼 차감이 전부 보정된 것까지 취소한다.
                      FC매니저는 그 위에 "갓 발급 · 안 씀" 이 더 걸린다. */
-                  cancellable={isCancellablePass(pass, entries)
+                  cancellable={isCancellablePass(pass, entries) && touchable(pass)
                     && (canUndo || (canCancelFresh && isFreshlyIssuedPass(pass, at)))}
-                  onCancel={canUndo || (canCancelFresh && isFreshlyIssuedPass(pass, at))
+                  onCancel={touchable(pass) && (canUndo || (canCancelFresh && isFreshlyIssuedPass(pass, at)))
                     ? () => { setUndo({ kind: "cancel", pass }); setReason(""); } : undefined}
-                  onTransfer={canSessionUp && transferableSessions(pass) > 0 && isDeductablePass(pass, at)
+                  onTransfer={canSessionUp && touchable(pass) && transferableSessions(pass) > 0 && isDeductablePass(pass, at)
                     && checkTransfer({ pass, toClientId: "-", sessions: 1 }).code !== TRANSFER_BLOCK.DUET
                     ? () => { setTransfer({ pass }); setTransferError(""); } : undefined}
-                  onSessionUp={canSessionUp && pass.status === "active"
+                  onSessionUp={canSessionUp && touchable(pass) && pass.status === "active"
                     ? () => { setSessionUp({ pass }); setSessionUpErr(""); } : undefined}
-                  onAdjust={canAdjust ? () => { setPassEdit({ kind: "adjust", pass }); setPassEditError(""); } : undefined}
-                  onExpiry={canChangeExpiry && pass.expiresAt
+                  onAdjust={canAdjust && touchable(pass) ? () => { setPassEdit({ kind: "adjust", pass }); setPassEditError(""); } : undefined}
+                  onExpiry={canChangeExpiry && touchable(pass) && pass.expiresAt
                     ? () => { setPassEdit({ kind: "expiry", pass }); setPassEditError(""); } : undefined}
                   /* 넘길 수 있는 것만. 끝난 회원권의 지난 수업료는 그대로 전
                      강사의 급여로 남으므로 넘길 것이 없다 (isHandoverable 과
                      같은 조건이다 -- 여기서만 느슨하면 눌러도 0장이 뜬다). */
-                  onHandover={onHandover && isDeductablePass(pass, at)
+                  onHandover={onHandover && touchable(pass) && isDeductablePass(pass, at)
                     ? () => onHandover(pass) : undefined} />
               ))}
           </div>
@@ -27614,6 +27719,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
         )}
         {view === "member-app-status" && showMemberApp && (
           <MemberAppStatus organizationId={organization?.organizationId || ""}
+            loadInstructors={() => listInstructors(organization?.organizationId || "", { store: instructorStore })}
             loadClients={() => listClients(organization?.organizationId || "", { store: clientStore }).then((result) => result?.items || result || [])}
             loadLocations={() => listLocations(organization?.organizationId || "", { store: locationStore }).then((result) => result?.items || result || [])}
             fetchStatus={fbMemberAppStatus} />
@@ -27678,6 +27784,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="rosterRealtime" title="회원 명단 실시간"
               description="켜진 계정은 센터 회원 명단을 실시간으로 받습니다. 강사는 본인 담당 회원만, FC매니저 · 매니저 · 대표는 회원 목록에서 고른 지점을 받습니다 (대표 · 총괄매니저가 '전체'를 고르면 받지 않고 새로고침으로 맞춥니다). 대표 → 강사 한 명 → 전체 순서로 켜세요. 읽은 횟수는 진단에 남습니다." />
+            {/* 비포애프터 회원 공유 (2026-11-15). 켜면 모든 강사가 비교 카드를 보내고, 동의한 회원이 보니따 앱에서 본다. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="beforeAfterSharing" title="비포애프터 회원 공유" allowListed={false}
+              description="켜면 모든 강사가 변화 카드를 회원에게 보낼 수 있고, 보니따 앱에 비포애프터 탭이 생깁니다. 회원이 앱에서 '사진 공유 동의' 를 한 경우에만 받습니다. 끄면 이미 보낸 카드도 회원 앱에서 보이지 않습니다." />
             {/* 회원 수업 알림 (2026-11-07, 지시서 2차). 서버(sendMemberLessonReminders)만 읽는다. */}
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
@@ -32895,7 +33006,10 @@ export default function App() {
       if (!pending?.structuredDraft || hasLessonRecordReviewFlag(pending)) return;
       const target = findRosterMember(memberId);
       if (!target) return;
-      const existing = (target.notes || []).find((note) => String(note.sid || "") === String(lessonId || ""));
+      /* 같은 수업의 **음성** 기록만 고른다. 전에는 sid 만 보고 첫 기록을 골라, 강사가 먼저
+         직접 쓴 일지가 있으면 그 id 로 upsert 해 AI 정리본이 직접 쓴 글을 덮었다
+         (8496453 이 확정 경로만 voiceNoteFor 로 바꾸고 이 경로는 빠뜨렸다). */
+      const existing = voiceNoteFor(target.notes || [], lessonId);
       const body = structuredRecordBody(pending.structuredDraft, pending.rawTranscript || "");
       const lessonRecord = { ...pending, confirmationStatus: "pending", stage: "structured_draft", status: "structured" };
       const saveToastKey = String(pending.aiMeta?.requestId || `${memberId}:${lessonId}:${pending.updatedAt || pending.recordedAt || "structured"}`);

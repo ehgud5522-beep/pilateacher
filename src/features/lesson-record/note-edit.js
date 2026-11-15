@@ -85,3 +85,33 @@ export function defaultLinkLesson(lessons, today) {
   if (todays) return todays.id;
   return list.find((lesson) => !lesson.hasRecord)?.id || "";
 }
+
+const RECORD_FIELDS = ["didToday", "observations", "responses", "nextFocus", "uncertain"];
+const looksStructured = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value)
+  && RECORD_FIELDS.some((field) => Array.isArray(value[field]));
+
+/**
+ * 저장된 음성 기록을 음성 기록 화면에 다시 펼칠 값 (2026-11-15 강사 제보).
+ *
+ * 음성 기록 화면은 기기 임시 보관함(pending)만 읽었는데, 자동저장이 성공하면 그 보관함을
+ * 지운다. 그래서 저장된 음성 기록을 다시 열면 녹음 시작 화면만 나와 "다 없어졌다" 로 보였고,
+ * 거기서 다시 녹음하면 앞 기록이 새 녹음으로 덮였다. 보관함이 비었을 때 이것으로 채운다.
+ *
+ * 펼칠 것이 없으면 null (직접 입력 · 노코멘트 · 전사 없는 기록).
+ */
+export function voiceNoteRestoreState(note) {
+  if (!isVoiceRecordNote(note)) return null;
+  const record = note.lessonRecord && typeof note.lessonRecord === "object" ? note.lessonRecord : {};
+  const transcript = text(note.transcript) || text(record.rawTranscript);
+  if (!transcript) return null;
+  const draft = [note.aiSummaryTeacherEdited, record.structuredDraft, record.confirmedRecord].find(looksStructured) || null;
+  const original = looksStructured(note.aiSummary) ? note.aiSummary : draft;
+  return {
+    transcript,
+    structuredDraft: draft,
+    summaryOriginal: original,
+    aiMeta: note.aiMeta || record.aiMeta || null,
+    source: text(note.voiceSource) || text(record.source) || "unknown",
+    confirmed: text(record.confirmationStatus) === "confirmed" || text(record.stage) === "confirmed_record",
+  };
+}

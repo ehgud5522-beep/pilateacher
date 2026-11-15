@@ -141,9 +141,36 @@ export function structuredRecordBody(draft, rawTranscript = "") {
   return lines.join("\n") || cleanText(rawTranscript, 12000);
 }
 
+/* 강사가 고친 초안. validateStructuredOutput 은 AI 출력을 받는 문이라 "~하고" 로
+   끝나는 줄을 예외로 막는다. 그런데 한글은 치는 도중에 "브릿지 하고" 같은 순간이
+   거의 반드시 생기고, 자동저장이 글자마다 이 길을 지난다. 예외가 화면 효과 안에서
+   터져 수정 화면이 통째로 꺼지고 -- 꺼지기 직전 내용이 임시저장돼 다시 열 때마다
+   같은 일이 났다 (2026-11-15 강사 제보 "AI 음성기록 수정하면 다 없어지거나 에러").
+
+   그래서 기록 저장은 문장 검사 없이 모양만 맞춘다. 강사가 쓴 글은 강사의 것이다.
+   AI 가 써 둔 summary 는 칸이 비었거나 더는 온전한 문장이 아니면 버린다 --
+   네 칸과 어긋난 요약을 남기지 않는다. */
+export function normalizeEditedStructuredDraft(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const structuredFields = Object.fromEntries(LESSON_RECORD_FIELDS.map((field) => {
+    const rawItems = Array.isArray(value[field]) ? value[field] : [];
+    return [field, rawItems.map((item) => normalizeItem(item, "instructor")).filter(Boolean).slice(0, 20)];
+  }));
+  const suggestions = normalizeSuggestions(value.suggestions);
+  const hasStructuredContent = LESSON_RECORD_FIELDS.some((field) => structuredFields[field].length);
+  const summary = typeof value.summary === "string" ? cleanText(value.summary, 1200) : "";
+  const keepSummary = summary && hasStructuredContent && isCompleteStructuredPhrase(summary) && !LEGACY_SUMMARY_TEMPLATE.test(summary);
+  return {
+    ...structuredFields,
+    suggestions,
+    summary: keepSummary ? summary : null,
+    ...(value.summaryStatus === "dropped" ? { summaryStatus: "dropped" } : {}),
+  };
+}
+
 export function createLessonRecordMeta({ rawTranscript, termMap, structuredDraft = null, status = "pending", source = "unknown", recordedAt, audioBlobId = null, aiMeta = null, usage = null }) {
   const transcript = cleanText(rawTranscript, 12000);
-  const normalizedDraft = structuredDraft ? validateStructuredOutput(structuredDraft) : null;
+  const normalizedDraft = structuredDraft ? normalizeEditedStructuredDraft(structuredDraft) : null;
   const provenanceSource = normalizedDraft
     ? LESSON_RECORD_PROVENANCE_SOURCE.OPENAI
     : LESSON_RECORD_PROVENANCE_SOURCE.FALLBACK_RAW;

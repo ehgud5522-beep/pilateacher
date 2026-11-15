@@ -1,0 +1,58 @@
+/* 필라티쳐(강사 앱)의 움직임 (2026-11-15 강사 제보: "보니따 앱처럼 부드럽게 최적화되는 모션 필요한 곳 다 적용").
+   보니따(member/src/motion.css)와 같은 말을 쓴다.
+   - 누름: 모든 버튼이 손가락에 살짝 눌린다
+   - 창: 아래 시트는 바닥에서 올라오고 바닥으로 내려간다, 뒤 어둠은 번지고 걷힌다
+   - 넘김: 회원 상세 · 급여 · 출석 체크 · 담당 변경 같은 전체 화면은 옆에서 미끄러져 들어온다
+   - 탭: 옮기면 화면이 살짝 떠오르며 바뀐다
+   전부 "움직임 줄이기" 를 켠 기기에서는 꺼진다 -- 움직임 규칙은 한 블록 안에만 있다.
+   공용 motion.css 뒤에 불러온다 (src/main.jsx) -- 같은 무게의 규칙은 뒤의 것이 이긴다.
+   보니따는 이 파일을 불러오지 않는다. */
+
+:root {
+  --t-press: 140ms;
+  --t-page: 280ms;
+  --t-sheet: 320ms;
+  --t-out: 170ms; /* use-motion-close.js 의 180ms 안에 끝나야 한다 */
+  --t-glide: cubic-bezier(.22, 1, .36, 1);
+}
+
+@keyframes teacher-sheet-in { from { transform: translateY(100%); } }
+@keyframes teacher-sheet-out {
+  from { transform: translateY(var(--sheet-drag-offset, 0px)); }
+  to { transform: translateY(100%); }
+}
+/* 공용 시트(Sheet)는 가운데 맞춤 때문에 translateX(-50%) 를 함께 들고 있다. */
+@keyframes teacher-centered-sheet-in { from { transform: translate(-50%, 100%); } to { transform: translate(-50%, 0); } }
+@keyframes teacher-centered-sheet-out { from { transform: translate(-50%, 0); } to { transform: translate(-50%, 100%); } }
+@keyframes teacher-page-in { from { opacity: 0; transform: translateX(24px); } }
+@keyframes teacher-tab-in { from { opacity: 0; transform: translateY(8px); } }
+
+/* 눌렀을 때 회색 네모가 번쩍이는 것(웹뷰 기본)을 끈다 -- 움직임 설정과 무관하게. */
+.app-root button { -webkit-tap-highlight-color: transparent; }
+
+@media (prefers-reduced-motion: no-preference) {
+  /* ── 누름 ─────────────────────────────────────────────
+     transform 이 아니라 scale 속성을 쓴다. 가운데 맞춤(translate)을 transform 으로 든 버튼이
+     많아서, transform 을 덮으면 누르는 순간 버튼이 옆으로 튄다. scale 은 따로 곱해진다. */
+  .app-root button:not([data-no-press]) { transition: scale var(--t-press) var(--t-glide), background-color 180ms ease, color 180ms ease, border-color 180ms ease, opacity 180ms ease, box-shadow 180ms ease; }
+  .app-root button:not(:disabled):not([data-no-press]):active { scale: .97; }
+  /* 탭 아래 아이콘처럼 작은 버튼은 조금 더 눌린다. */
+  .app-root .app-motion-tab:active { scale: .9; }
+
+  /* ── 창: 일정 시트(ScheduleBottomSheet) ──────────────── */
+  .app-motion-sheet { animation: teacher-sheet-in var(--t-sheet) var(--t-glide); }
+  .app-motion-overlay[data-closing] { animation: app-scrim-out var(--t-out) ease-in both; }
+  .app-motion-overlay[data-closing] .app-motion-sheet { animation: teacher-sheet-out var(--t-out) cubic-bezier(.4, 0, 1, 1) both; }
+
+  /* ── 창: 공용 시트(Sheet -- 결제 · 회원권 고치기 · 양도 · 세션업 · 보정 …) ── */
+  .teacher-sheet .teacher-sheet-scrim { animation: app-scrim-in 220ms ease; }
+  .teacher-sheet .sheet-in { animation: teacher-centered-sheet-in var(--t-sheet) var(--t-glide) both; }
+  .teacher-sheet[data-closing] .teacher-sheet-scrim { animation: app-scrim-out var(--t-out) ease-in both; }
+  .teacher-sheet[data-closing] .sheet-in { animation: teacher-centered-sheet-out var(--t-out) cubic-bezier(.4, 0, 1, 1) both; }
+
+  /* ── 넘김: 전체 화면(AppOverlay) ─────────────────────── */
+  .teacher-page-in { animation: teacher-page-in var(--t-page) var(--t-glide); }
+
+  /* ── 탭 ──────────────────────────────────────────────── */
+  .app-root .app-motion-content { animation: teacher-tab-in 240ms var(--t-glide); }
+}

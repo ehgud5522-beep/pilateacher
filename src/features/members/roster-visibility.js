@@ -17,11 +17,15 @@
 
 const text = (value) => String(value ?? "").trim();
 
+/* 총괄매니저(area_manager)는 대표와 같은 자리다 (규칙의 ownerLevel, 2026-10-10). 이 두 목록에서
+   빠져 있어, 총괄매니저가 회원 연락처를 뒤 4자리만 보고 명부도 "내 회원" 으로 열렸다 -- 규칙은
+   이미 센터 전체 명부를 열어 주는데 화면만 막고 있었다 (2026-11-15 FC 권한 정리 중 발견). */
+
 /** 연락처 전체를 보는 역할. 등록·연락·정산을 하는 사람들이다. */
-const FULL_CONTACT_ROLES = Object.freeze(["owner", "manager", "staff"]);
+const FULL_CONTACT_ROLES = Object.freeze(["owner", "area_manager", "manager", "staff"]);
 
 /** 명부 전체를 훑을 수 있는 역할. 강사는 자기 회원부터 본다. */
-const BROWSE_ALL_ROLES = Object.freeze(["owner", "manager", "staff"]);
+const BROWSE_ALL_ROLES = Object.freeze(["owner", "area_manager", "manager", "staff"]);
 
 /** 이 역할이 연락처 전체를 보는가. */
 export const showsFullPhone = (role) => FULL_CONTACT_ROLES.includes(text(role));

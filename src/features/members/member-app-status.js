@@ -42,12 +42,41 @@ export function memberAppRows(clients, usage) {
       if (use?.lastSeenAt) parts.push(`마지막 ${shortSeen(use.lastSeenAt)}${use.lastPlatform ? ` ${PLATFORM_NAME[use.lastPlatform] || use.lastPlatform}` : ''}`);
       if (status === APP_STATUS.APP && !use.notifications) parts.push('알림 꺼짐');
       if (status === APP_STATUS.LINKED && !use?.lastSeenAt) parts.push('앱에서 켠 기록이 아직 없어요');
-      return { id: text(client.id), name: text(client.name) || '(이름 없음)', locationId: text(client.locationId), status, detail: parts.filter(Boolean).join(' · ') };
+      const instructorIds = [...new Set((Array.isArray(client.instructorIds) ? client.instructorIds : []).map(text).filter(Boolean))];
+      return { id: text(client.id), name: text(client.name) || '(이름 없음)', locationId: text(client.locationId), instructorIds, status, detail: parts.filter(Boolean).join(' · ') };
     })
     // 아직 연결 안 한 회원부터 -- 대표가 연락할 사람이 위에 오게.
     .sort((a, b) => order(a.status) - order(b.status) || a.name.localeCompare(b.name, 'ko'));
 }
 const order = (status) => ({ none: 0, linked: 1, app: 2 })[status] ?? 3;
+
+/**
+ * 지점 → 강사 → 회원으로 묶는다 (2026-11-15 대표: "지점별로 강사별로 아직 미연결된 거 정리해서").
+ * 담당 강사가 둘인 회원은 두 강사 아래에 다 나온다 -- 강사마다 자기 회원을 챙기게. 지점 · 강사 합계는 회원 수(중복 없이)다.
+ * 연결 안 한 회원이 많은 지점 · 강사가 위로.
+ */
+export function memberAppGroups(rows, { locations = [], instructors = [] } = {}) {
+  const placeName = new Map(locations.map((item) => [text(item.id), text(item.name)]));
+  const teacherName = new Map(instructors.map((item) => [text(item.userId), text(item.displayName) || text(item.name)]));
+  const byPlace = new Map();
+  for (const row of rows) {
+    const placeId = row.locationId || '';
+    if (!byPlace.has(placeId)) byPlace.set(placeId, { id: placeId, name: placeName.get(placeId) || (placeId ? '다른 지점' : '지점 미지정'), rows: [], teachers: new Map() });
+    const place = byPlace.get(placeId);
+    place.rows.push(row);
+    for (const teacherId of row.instructorIds?.length ? row.instructorIds : ['']) {
+      if (!place.teachers.has(teacherId)) place.teachers.set(teacherId, { id: teacherId, name: teacherId ? (teacherName.get(teacherId) || '다른 직원') : '담당 강사 없음', rows: [] });
+      place.teachers.get(teacherId).rows.push(row);
+    }
+  }
+  const byNeed = (a, b) => b.counts.none - a.counts.none || b.counts.linked - a.counts.linked || a.name.localeCompare(b.name, 'ko');
+  return [...byPlace.values()]
+    .map((place) => ({
+      id: place.id, name: place.name, counts: countByStatus(place.rows),
+      teachers: [...place.teachers.values()].map((teacher) => ({ ...teacher, counts: countByStatus(teacher.rows) })).sort(byNeed),
+    }))
+    .sort(byNeed);
+}
 
 export function countByStatus(rows) {
   const counts = { all: rows.length, app: 0, linked: 0, none: 0 };

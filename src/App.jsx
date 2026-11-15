@@ -34469,7 +34469,7 @@ export default function App() {
               detectPose={detectAlbumPose}
               capture={renderAlbumCapture}
               onAlignLog={logAlbumAlign}
-              markup={({ photo, memberId, onDone }) => <PostureCanvas key={`album_${photo.bucket}_${photo.id}`} photo={photo} label={`${photo.date || ""} · 펜 · 자`} initialTool="pen"
+              markup={({ photo, memberId, onDone }) => <PostureCanvas key={`album_${photo.bucket}_${photo.id}`} photo={photo} label={photo.date || "사진"} initialTool="pen"
                 onClose={onDone} onCancel={onDone} onSave={(marks) => patchAlbum(memberId, photo, { marks }, memberId)} onToast={setToast} />}
               backupStatus={cloudBackupStatus} onRetry={retryCloudBackup} onEnableBackup={enablePhotoBackup}
               onExport={(canvas) => exportCanvas(canvas, `비포애프터_${todayISO()}.jpg`, "비포애프터", true)}

@@ -3,7 +3,7 @@
    32px 알약 필터, 줄마다 따로 선 카드(반경 14), 글자는 --t-* 단계만.
    색은 전부 테마 변수라 밝은 · 어두운 화면이 같이 따라간다. */
 
-.ba-root{height:100%;overflow-y:auto;padding:0 12px 104px;color:var(--ink);background:var(--page);font-size:var(--t-body,15px);isolation:isolate;-webkit-tap-highlight-color:transparent}
+.ba-root{height:100%;overflow-y:auto;padding:0 12px 40px;color:var(--ink);background:var(--page);font-size:var(--t-body,15px);isolation:isolate;-webkit-tap-highlight-color:transparent}
 .ba-root *{box-sizing:border-box}
 .ba-root h1{font-size:var(--t-title,17px);font-weight:600;letter-spacing:-.2px;margin:0;line-height:1.3}
 .ba-root h2{font-size:var(--t-body,15px);font-weight:700;margin:16px 0 10px}
@@ -131,11 +131,20 @@
 .ba-empty p{margin:0 0 18px}
 .ba-empty button{margin:4px}
 
-/* 고른 사진 작업 띠 */
-.ba-selection{position:sticky;bottom:12px;z-index:3;display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:16px;padding:8px;background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
-.ba-selection>div{display:flex;align-items:center;gap:2px;margin-right:auto;padding-left:6px;font-size:var(--t-caption,13px)}
-.ba-root .ba-selection>div button{border-color:transparent;background:transparent;width:32px;min-height:32px;padding:0;color:var(--ink2)}
-.ba-selection>span{font-size:var(--t-caption,13px);color:var(--ink2);padding:0 6px}
+/* 고른 사진 작업 띠 (2026-11-15 대표: "중간에 떠서 사진을 가림").
+   전에는 화면 아래쪽에 떠서 사진 위를 덮었다. 이제 필터 줄 자리에 서고, 내려가면 머리 띠 바로 밑에 붙는다 --
+   사진 판 한가운데에 서는 일이 없다. 버튼이 많으면 옆으로 민다(줄바꿈으로 높이가 늘지 않게). */
+.ba-selection{position:sticky;top:var(--ba-head,56px);z-index:3;display:flex;align-items:center;gap:8px;margin:12px -12px 4px;padding:6px 12px;min-height:52px;background:var(--card);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.ba-selection>div:first-child{display:flex;align-items:center;gap:2px;flex-shrink:0;font-size:var(--t-caption,13px);white-space:nowrap}
+.ba-root .ba-selection>div:first-child button{border-color:transparent;background:transparent;width:32px;min-height:32px;padding:0;color:var(--ink2)}
+.ba-selection-actions{display:flex;align-items:center;gap:6px;margin-left:auto;min-width:0;overflow-x:auto;scrollbar-width:none}
+.ba-selection-actions::-webkit-scrollbar{display:none}
+.ba-root .ba-selection-actions button{flex-shrink:0;min-height:38px;padding:0 12px}
+.ba-selection-actions>span{font-size:var(--t-caption,13px);color:var(--ink2);white-space:nowrap}
+/* 상세에서 고른 사진: 잠깐 분홍 테두리가 번진다 */
+.ba-grid article.is-flash{animation:ba-flash 1s ease-out}
+@keyframes ba-flash{0%{box-shadow:0 0 0 0 var(--brand)}35%{box-shadow:0 0 0 5px var(--brand)}100%{box-shadow:0 0 0 2px var(--brand)}}
+@media (prefers-reduced-motion:reduce){.ba-grid article.is-flash{animation:none}}
 
 /* 등록 · 상세 · 편집 */
 .ba-panel{background:var(--card);padding:14px;border:1px solid var(--line);border-radius:14px;margin:12px 0}
@@ -152,6 +161,8 @@
 .ba-root .ba-panel>.ba-primary{width:100%;margin-top:10px;min-height:44px;font-size:var(--t-body,15px)}
 .ba-root .ba-panel>.ba-primary+button{width:100%;margin-top:6px;border-color:transparent;background:transparent;color:var(--ink2)}
 
+/* 본문에 띄운 창의 바깥 껍데기 (BeforeAfterAlbum layer). 탭 막대(z-40) · 시트 위, 알림(OVERLAY_LAYER.TOAST 80) 아래. */
+.ba-root.ba-layer{position:fixed;inset:0;z-index:75;height:auto;padding:0;overflow:visible;background:transparent}
 .ba-root .ba-editor,.ba-root .ba-viewer{position:fixed;inset:0;z-index:160;overflow:auto;max-width:760px;margin:auto;padding:0 14px calc(28px + env(safe-area-inset-bottom,0px));border:0;border-radius:0;background:var(--card);box-shadow:0 0 0 100vmax var(--scrim,rgba(0,0,0,.5))}
 .ba-editor>.ba-toolbar:first-child,.ba-viewer>.ba-toolbar:first-child{position:sticky;top:0;z-index:2;flex-wrap:nowrap;min-height:56px;margin:0 -14px;padding:calc(8px + env(safe-area-inset-top,0px)) 14px 8px;background:var(--card);border-bottom:1px solid var(--line)}
 .ba-editor>.ba-toolbar:first-child h2,.ba-viewer>.ba-toolbar:first-child h2{font-size:var(--t-title,17px);font-weight:600;text-align:center}
@@ -159,9 +170,12 @@
 .ba-root .ba-editor>.ba-toolbar:first-child button:not(.ba-primary),.ba-root .ba-viewer>.ba-toolbar:first-child button:not(.ba-primary){border-color:transparent;background:transparent}
 .ba-root .ba-editor>.ba-toolbar:first-child .ba-primary{min-height:36px;border-radius:8px}
 .ba-edit-preview{display:block;width:100%;height:48dvh;object-fit:contain;background:var(--photo,#15151b);border-radius:12px;margin:12px 0}
-.ba-viewer .ba-edit-preview{height:62dvh}
-.ba-viewer>.ba-toolbar:last-child{display:grid;grid-template-columns:1fr 1fr}
-.ba-viewer>.ba-toolbar:last-child>.ba-primary{grid-column:1/-1}
+/* 사진 상세: 사진이 남는 자리를 다 쓰고, 버튼 줄은 늘 화면 안에 있다 */
+.ba-root .ba-viewer{display:flex;flex-direction:column;overflow:hidden}
+.ba-viewer .ba-edit-preview{flex:1 1 0;min-height:0;height:auto;margin:12px 0}
+.ba-viewer>.ba-toolbar:last-child{display:flex;flex-wrap:wrap;gap:8px;margin:0}
+.ba-root .ba-viewer>.ba-toolbar:last-child>button{flex:1 1 0;min-width:0;min-height:44px}
+.ba-root .ba-viewer>.ba-toolbar:last-child>.ba-primary{flex-basis:100%;min-height:48px;font-size:var(--t-body,15px)}
 .ba-metadata{margin:4px 0 8px;border:1px solid var(--line);border-radius:12px;padding:0 12px}
 .ba-root summary{cursor:pointer;min-height:44px;display:flex;align-items:center;font-size:var(--t-caption,13px);font-weight:600;color:var(--ink2);list-style:none}
 .ba-root summary::-webkit-details-marker{display:none}
@@ -239,8 +253,8 @@
 .ba-root .ba-sync button{min-height:32px;border-radius:8px;flex-shrink:0}
 
 @media(min-width:768px){
-  .ba-root{padding:0 24px 104px}
-  .ba-header,.ba-filterbar{margin-left:-24px;margin-right:-24px;padding-left:24px;padding-right:24px}
+  .ba-root{padding:0 24px 40px}
+  .ba-header,.ba-filterbar,.ba-selection{margin-left:-24px;margin-right:-24px;padding-left:24px;padding-right:24px}
   .ba-members{grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
   .ba-grid{grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px}
   .ba-root .ba-editor,.ba-root .ba-viewer{inset:24px;border-radius:18px}
@@ -252,7 +266,7 @@
 @media(max-width:359px){
   .ba-compare-controls{flex-wrap:wrap}
   .ba-root{padding-left:10px;padding-right:10px}
-  .ba-header,.ba-filterbar{margin-left:-10px;margin-right:-10px}
+  .ba-header,.ba-filterbar,.ba-selection{margin-left:-10px;margin-right:-10px}
   .ba-root .ba-member{gap:8px}
   .ba-badge{display:none}
   .ba-root .ba-selection button{padding:0 8px}

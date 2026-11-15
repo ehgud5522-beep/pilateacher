@@ -36,9 +36,10 @@ function Star({ filled }) {
  *   initialPhase?: string, initialScores?: Record<string, number>,
  * }} props
  * onSeen: 보냈거나 "다음에" 를 눌렀거나 받지 않는 수업일 때 -- 다시 묻지 않게 기기에 적는다.
+ * onStopAsking: "앞으로 묻지 않기" -- 평가 전체를 끈다(마이페이지 알림 설정의 "수업 후 평가" 와 같은 스위치). 없으면 버튼도 없다.
  * 보낸 직후에는 keep:true -- "고마워요" 를 이번 화면에 남긴다.
  */
-export function LessonRatingCard({ lesson, place, api, onSeen, initialPhase = "loading", initialScores = {} }) {
+export function LessonRatingCard({ lesson, place, api, onSeen, onStopAsking, initialPhase = "loading", initialScores = {} }) {
   const lessonId = text(lesson?.lessonId);
   const request = { organizationId: text(place?.organizationId), clientId: text(place?.clientId), lessonId };
   /* phase: loading · hidden · ready · sending · done */
@@ -108,6 +109,13 @@ export function LessonRatingCard({ lesson, place, api, onSeen, initialPhase = "l
     setPhase("hidden");
     onSeen?.(lessonId);
   };
+  /* 평가가 귀찮은 회원을 위한 끄기 (2026-11-15 대표). 실수로 누르지 않게 한 번 묻는다. 끈 뒤에도 마이페이지에서 다시 켤 수 있다. */
+  const stopAsking = () => {
+    if (!onStopAsking || !window.confirm("수업 후 평가를 앞으로 묻지 않을까요?\n마이페이지 › 알림 설정에서 다시 켤 수 있어요.")) return;
+    setPhase("hidden");
+    onSeen?.(lessonId);
+    onStopAsking();
+  };
 
   if (phase === "loading" || phase === "hidden") return null;
 
@@ -156,6 +164,7 @@ export function LessonRatingCard({ lesson, place, api, onSeen, initialPhase = "l
         {phase === "sending" ? "보내는 중…" : RATING_COPY.SUBMIT}
       </button>
       <button type="button" className="btn mt" disabled={phase === "sending"} onClick={later}>{RATING_COPY.LATER}</button>
+      {onStopAsking ? <button type="button" className="ratestop" disabled={phase === "sending"} onClick={stopAsking}>앞으로 묻지 않기</button> : null}
     </section>
   );
 }

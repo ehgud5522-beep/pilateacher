@@ -21,7 +21,9 @@ export const PUSH_KIND = Object.freeze({ LESSON_RATING: "lessonRating", LESSON_3
 
 /** 설정 화면의 두 줄. 이름과 설명은 대표가 정한 알림 이름 그대로다. */
 export const PUSH_ROWS = Object.freeze([
-  Object.freeze({ kind: PUSH_KIND.LESSON_RATING, title: "수업 후 평가", label: "수업 종료 10분 뒤 · 한 번만" }),
+  /* 이 한 줄이 평가 전체를 켜고 끈다 (2026-11-15 대표: "귀찮아하는 사람이 있을 수 있으니 끄는 버튼") --
+     끄면 알림도, 홈의 평가 카드도 멈춘다. */
+  Object.freeze({ kind: PUSH_KIND.LESSON_RATING, title: "수업 후 평가", label: "수업 끝나고 한 번 묻기 · 끄면 알림과 홈의 평가 카드가 모두 멈춰요" }),
   Object.freeze({ kind: PUSH_KIND.LESSON_30M, title: "수업 30분 전", label: "수업 리마인드" }),
 ]);
 

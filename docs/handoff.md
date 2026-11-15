@@ -205,6 +205,31 @@
 
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-11-15 — 배포 기록: 비포애프터 개편 #194 ~ #200 (대표 지시: "병합하고 배포해")
+
+- **병합**: #194 → #200 차례로 main 에. 위 PR 은 병합 직전 기준을 main 으로 옮겼다. main `8c7235a`
+- **Functions** (`--config firebase.ai-gateway.json`, `deploy-main` 의 main 8c7235a): `beforeAfterSharing` · `notifyBeforeAfterShare` · `eraseDeletedMemberShares`.
+  지난 배포(feb32b7) 뒤 바뀐 서버 파일은 before-after-sharing.js · share-diagnostics.js 둘뿐 -- 이 둘을 쓰는 함수 셋. 서버 테스트 371 통과
+- **강사 웹**: `deploy-main` 로컬 main 을 origin/main 으로 fast-forward 만 한 뒤 `npm run deploy:web`. 배포 전 테스트 3720 통과 / 0 실패.
+  운영 `version.json` = `mwhbz0ei-8c7235a` 확인
+- **보니따 웹**: 병합 자동 배포 성공(GitHub Actions `deploy-member.yml`, 8c7235a)
+- 앱 빌드: `release/1-1-52`(강사 1.1.52 · 보니따 1.1.4) -- 대표가 Codemagic 에서
+
+## 2026-11-15 — 보니따 수업 후 평가 끄기 · 필라티쳐 "보니따 앱 설치 현황" (`feat/member-app-status-and-rating-off`, 병합 · 배포 전)
+
+- 대표: ① "보니따 앱에서 수업 끝나고 하는 평가를 귀찮아하는 사람이 있을 수 있으니 끄는 버튼" ② "누가 아직 안 깔았는지 깔았는지 확인하는 거 더보기에"
+- **평가 끄기**: 새 스위치를 만들지 않고 이미 있던 알림 설정 `lessonRating`(memberPush/{uid}.prefs) 하나로 묶었다 -- 끄면 평가 알림(서버가 이미 prefs 를 봄)과
+  **홈의 평가 카드**가 함께 멈춘다. 끄는 곳 셋: 평가 카드의 "앞으로 묻지 않기"(한 번 묻고 끔) · 마이페이지 알림 설정(앱) · 마이페이지 알림 설정(웹 -- 웹은 알림을 못 받아도 카드는 끌 수 있게 새 줄).
+  다시 켜는 곳은 마이페이지. 서버 변경 없음
+- **설치 현황**: 더보기 › "보니따 앱 설치 현황"(대표 · 총괄 = 회원 앱 연결과 같은 사람). 상태 셋 -- 아직 연결 안 함(명부에 userId 없음) ·
+  연결됨 · 앱 확인 전 · 앱 사용 중. 근거는 서버만 쓰는 `memberPush/{uid}`: 알림을 허락한 휴대폰 토큰(ios · android) + **새로 남기는 "켠 흔적"**
+  (`seen.{ios|android|web}` · `appVersion`). 회원 앱이 켜질 때 이미 부르던 `memberPushSettings get` 에 `seenPlatform` · `appVersion` 을 실어 보내고,
+  서버는 **12시간에 한 번만** 적는다. 새 콜러블 `memberAppStatus`(대표 · 총괄만, 회원 id 와 "어디서 · 언제" 만 -- 이름 · 토큰 값 없음, 이름은 강사 앱이 명부에서 붙임)
+- **한계(화면이 말함)**: 옛 보니따 앱(1.1.3 이하)은 켠 흔적을 남기지 않는다 -- 알림을 허락했으면 토큰으로 "앱 사용 중", 알림을 끈 채 쓰면 "연결됨 · 앱 확인 전" 으로 보인다.
+  그래서 "앱 확인 전" 을 "안 깔았다" 고 말하지 않는다. 새 앱(1.1.4)을 한 번 켜면 바뀐다
+- 규칙 변경 없음(memberPush 는 원래 서버만). 확인: 새 테스트 서버 4 · 회원/강사 6, 앱 3728 · 회원 292 · 서버 375 통과 / 0 실패, 타입 · 린트 · 두 앱 빌드 통과. 알림 설정 테스트 두 건은 새 동작(평가 줄 문구 · 웹의 평가 스위치)에 맞게 고침. 가짜 데이터로 설치 현황 화면(폰 폭) 확인. 실기기 미확인
+- **배포 순서(지시 뒤)**: Functions `memberAppStatus`(새로) · `memberPushSettings` → 강사 웹 · 보니따 웹(병합 자동). 켠 흔적은 보니따 새 빌드부터 쌓인다(웹은 배포 즉시)
+
 ## 2026-11-15 — 보니따 비포애프터 안정화 · 카드 크게 보기 · 카드 꾸미기 · 탭 순서 (`feat/member-before-after-polish`, #199 위 · `release/1-1-51` 에도 합침)
 
 - 대표 폰 화면(보니따 1.1.3 · 1f80d2b) 지적 여섯

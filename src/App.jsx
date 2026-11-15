@@ -55,7 +55,7 @@ import {
   fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone,
-  fbVerifyMemberViews,
+  fbVerifyMemberViews, fbMemberAppStatus,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
 import { readPendingClientWrites, runAppDualWrite } from "./data/dual-write/app-runtime";
@@ -414,6 +414,7 @@ import {
   createEmergencyBackupEnvelope, drainPhotoQueue, mergePhotoGraph, mergePhotoMetadata, storageUsage,
 } from "./features/backup/cloud-backup.js";
 import { optimizePhotoBackup } from "./features/backup/photo-optimizer.js";
+import MemberAppStatus from "./features/members/MemberAppStatus.jsx";
 import { downscaleToFit } from "./features/photos/downscale.js";
 import {
   SCOPE_HEALTH, instructorScopeRows, rebuildDoneMessage, rebuildPreviewMessage,
@@ -27064,6 +27065,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     "group-payroll": "그룹 급여 정산",
     issues: "발급 내역",
     "member-app": "회원 앱",
+    "member-app-status": "보니따 앱 설치 현황",
     audit: "감사 로그",
   };
   /* 센터를 운영하는 일과 이 기기를 쓰는 일은 다른 묶음이다. 한 그룹에 섞여
@@ -27097,6 +27099,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       /* 회원이 자기 잔여를 보는 앱. 여기서는 연결만 다룬다 -- 자동으로 잇지
          못한 것과, 잘못 이은 것과, 화면의 숫자가 맞는지. */
       ...(showMemberApp ? [{ key: "member-app", title: "회원 앱", description: "연결 대기 · 끊기 · 점검", Icon: Users }] : []),
+      /* 누가 보니따 앱을 깔았는지 · 아직인지 (2026-11-15 대표). 회원 앱 연결과 같은 사람(대표 · 총괄)만 본다. */
+      ...(showMemberApp ? [{ key: "member-app-status", title: "보니따 앱 설치 현황", description: "누가 깔았는지 · 아직 안 깔았는지", Icon: Smartphone }] : []),
     ] },
     { label: "강사 · 급여", items: [
       ...(showInstructorAdmin ? [{ key: "instructor-admin", title: "강사 관리", description: "강사 추가 · 지점 · 직함 · 풀방금액", Icon: Users }] : []),
@@ -27611,6 +27615,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
         {view === "member-app" && showMemberApp && (
           <MemberAppAdmin organization={organization}
             clientStore={clientStore} locationStore={locationStore} onToast={onToast} />
+        )}
+        {view === "member-app-status" && showMemberApp && (
+          <MemberAppStatus organizationId={organization?.organizationId || ""}
+            loadClients={() => listClients(organization?.organizationId || "", { store: clientStore }).then((result) => result?.items || result || [])}
+            loadLocations={() => listLocations(organization?.organizationId || "", { store: locationStore }).then((result) => result?.items || result || [])}
+            fetchStatus={fbMemberAppStatus} />
         )}
         {view === "issues" && showIssues && (
           <IssueReport organization={organization}

@@ -118,7 +118,8 @@ test("설정 카드 — 두 알림이 따로 켜고 꺼진다", async () => {
   const { PushSettings } = await screens();
   const html = renderToStaticMarkup(createElement(PushSettings, { push: { ...basePush, prefs: { lessonRating: true, lesson30m: false } } }));
   assert.match(html, /수업 후 평가/);
-  assert.match(html, /수업 종료 10분 뒤 · 한 번만/);
+  // 2026-11-15: 이 줄이 평가 전체(알림 + 홈의 평가 카드)를 켜고 끈다는 것을 말한다.
+  assert.match(html, /끄면 알림과 홈의 평가 카드가 모두 멈춰요/);
   assert.match(html, /수업 30분 전/);
   assert.match(html, /수업 리마인드/);
   assert.match(html, /data-push-row="lessonRating"[\s\S]*?aria-checked="true"/);
@@ -129,7 +130,10 @@ test("설정 카드 — 웹은 '앱에서만', 권한이 꺼졌으면 켜는 길
   const { PushSettings } = await screens();
   const web = renderToStaticMarkup(createElement(PushSettings, { push: { ...basePush, support: PUSH_SUPPORT.WEB } }));
   assert.match(web, /앱에서만 받을 수 있어요/);
-  assert.doesNotMatch(web, /role="switch"/);
+  /* 2026-11-15: 웹은 알림을 못 받아도 홈의 평가 카드는 끌 수 있어야 한다 -- 스위치는 평가 하나뿐, 알림(30분 전) 스위치는 없다. */
+  assert.equal((web.match(/role="switch"/g) || []).length, 1);
+  assert.match(web, /data-push-row="lessonRating"/);
+  assert.doesNotMatch(web, /data-push-row="lesson30m"/);
   const blocked = renderToStaticMarkup(createElement(PushSettings, { push: { ...basePush, permission: PUSH_PERMISSION.DENIED } }));
   assert.match(blocked, /data-push-blocked/);
   assert.match(blocked, /휴대폰 설정에서 켜 주세요/);

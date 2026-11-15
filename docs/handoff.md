@@ -4,8 +4,8 @@
   화면 `managerCanTouchPass`(location-repository.js) 세 곳이 같은 선: 회원권 `locationId` 가 FC 지점 안이어야 발급 · 잔여 줄이기 ·
   만료일 · 갓 발급 취소 · 담당 교체 · 세션업 · 양도 · 홀딩, 차감 뺀 원장 항목. 거절 코드 `pass_out_of_scope`(서버) / permission-denied(규칙)
 - 예외: 대표 · 총괄 안 물음, FC 지점 비었거나 회원권 지점 비었으면 통과, **차감(−1)은 안 물음**(대타가 지점을 넘음)
-- 확인: 규칙 430 통과 · Functions 376 · 앱 3746. **남은 규칙 1 실패는 무관** -- `before-after-sharing.rules.test.js` "off … fail closed" 가
-  `mode: all` 도 닫혀야 한다고 기대(#206 이 일부러 열었음). 낡은 테스트, 따로 고칠 것
+- 확인: 규칙 430 통과 · Functions 376 · 앱 3746. 남은 규칙 1 실패는 무관 -- `before-after-sharing.rules.test.js` 가 `mode: all` 도
+  닫혀야 한다고 기대하던 낡은 테스트(#206 이 일부러 열었음). **#214 가 고침** (테스트만, main 기준 규칙 426 통과 / 0 실패)
 - **배포 순서(지시 뒤)**: 규칙 → Functions(sessionUpPass · handoverPass · managePassHold) → 웹. 배포 전 FC 4명 `locationIds` 확인 --
   틀린 FC는 자기 회원권을 못 고치게 된다
 

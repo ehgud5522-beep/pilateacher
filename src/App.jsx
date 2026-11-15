@@ -20003,14 +20003,25 @@ function PassEditSheet({
 }) {
   const adjust = kind === "adjust";
   const held = isPassHeld(pass);
-  const [delta, setDelta] = useState(initialDelta);
+  /* 방향은 버튼으로 고른다 (2026-11-15 대표: "아이폰에 마이너스 입력칸이 없다고 함").
+     아이폰 숫자 자판(inputMode numeric)에는 '-' 키가 없어서 "-2" 를 칠 수 없었다 -- 줄이는 조정을 아예 못 했다.
+     이제 [줄이기 −] [늘리기 +] 를 고르고 칸에는 횟수만 넣는다. 예전처럼 부호를 직접 쳐도(PC) 그 부호를 따른다.
+     늘리기를 못 하는 사람(FC매니저)은 줄이기로 정해져 있다. */
+  const initialSign = String(initialDelta).trim().startsWith("-") ? -1 : String(initialDelta).trim().startsWith("+") ? 1 : (canIncrease ? 0 : -1);
+  const [sign, setSign] = useState(initialSign);
+  const [delta, setDelta] = useState(String(initialDelta).trim().replace(/^[+-]/, ""));
   const [mode, setMode] = useState(initialMode);
   const [days, setDays] = useState(initialDays);
   const [date, setDate] = useState(initialDate);
   const [reason, setReason] = useState(initialReason);
 
   const remaining = remainingCountOf(pass);
-  const deltaNumber = Number.parseInt(String(delta).trim(), 10);
+  const typed = String(delta).trim();
+  const typedSign = typed.startsWith("-") ? -1 : typed.startsWith("+") ? 1 : 0;
+  const count = Number.parseInt(typed.replace(/^[+-]/, ""), 10);
+  const direction = typedSign || sign;
+  const deltaNumber = Number.isInteger(count) && count > 0 && direction ? direction * count : NaN;
+  const needsDirection = adjust && Number.isInteger(count) && count > 0 && !direction;
   const nextRemaining = Number.isInteger(deltaNumber) ? remaining + deltaNumber : null;
   const below = nextRemaining !== null && nextRemaining < 0;
   /* FC매니저는 줄이는 조정만 한다 (2026-11-04 대표). 저장을 눌러 규칙에
@@ -20050,16 +20061,30 @@ function PassEditSheet({
 
       {adjust ? (
         <>
-          <div className="mt-3 flex items-center gap-2">
-            <input inputMode="numeric" value={delta} placeholder={canIncrease ? "+3 또는 -2" : "-2"}
-              onChange={(event) => setDelta(event.target.value)} className={inputCls}
+          <div className="mt-3 grid grid-cols-2 gap-1.5" role="group" aria-label="조정 방향" data-adjust-direction>
+            {[[-1, "줄이기 −"], [1, "늘리기 +"]].filter(([value]) => canIncrease || value < 0).map(([value, title]) => {
+              const on = direction === value;
+              return <button key={value} type="button" aria-pressed={on} onClick={() => { setSign(value); setDelta(typed.replace(/^[+-]/, "")); }}
+                className="h-11 rounded-lg text-sm font-bold"
+                style={on ? { backgroundColor: value < 0 ? BAD : PRIMARY, color: "#fff", border: "1px solid transparent" } : { backgroundColor: CANVAS, color: INK2, border: `1px solid ${LINE}` }}>{title}</button>;
+            })}
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <input inputMode="numeric" pattern="[0-9]*" value={delta} placeholder="횟수 (예: 2)" aria-label="조정할 횟수"
+              onChange={(event) => setDelta(event.target.value.replace(/[^0-9+-]/g, ""))} className={inputCls}
               style={{ maxWidth: 140 }} />
+            <span style={{ fontSize: TYPE.caption, color: SUB }}>회</span>
             <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: below || increaseBlocked ? BAD : SUB }}>
               {Number.isInteger(deltaNumber) && deltaNumber !== 0
                 ? `${remaining}회 → ${nextRemaining}회`
                 : `지금 ${remaining}회`}
             </p>
           </div>
+          {needsDirection ? (
+            <p role="alert" className="mt-1 font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>
+              줄일지 늘릴지 위에서 골라 주세요.
+            </p>
+          ) : null}
           {below ? (
             <p role="alert" className="mt-1 font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>
               잔여는 0회 미만이 될 수 없어요. 지금 {remaining}회 남아 있습니다.

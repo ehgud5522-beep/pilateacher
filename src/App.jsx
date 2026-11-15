@@ -137,7 +137,7 @@ import {
 } from "./data/repositories/client-repository.js";
 import {
   ALL_LOCATIONS, BRANCH_SCOPED_ROLES, NO_LOCATION, countByLocation, createLocation, filterByLocation,
-  holdsManyLocations, itemsVisibleTo, listLocations, locationsVisibleTo, scopedLocationIds,
+  holdsManyLocations, itemsVisibleTo, listLocations, locationsVisibleTo, managerCanTouchPass, scopedLocationIds,
 } from "./data/repositories/location-repository.js";
 import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories/repository-read.js";
 import {
@@ -215,7 +215,7 @@ import {
   transferPassInstructor,
   transferPass,
 } from "./data/repositories/pass-repository.js";
-import { ADJUST_INCREASE_NOTICE, passEditFailure } from "./features/membership/pass-edit-failure.js";
+import { ADJUST_INCREASE_NOTICE, OUT_OF_SCOPE_NOTICE, passEditFailure } from "./features/membership/pass-edit-failure.js";
 import {
   SETTLEMENT_GATE, SETTLEMENT_GATE_LABEL, blocksSettlement, settlementGate,
 } from "./features/schedule/settlement-gate.js";
@@ -20080,6 +20080,7 @@ function passAdminFailure(error) {
     transfer_target_not_found: "받는 회원을 센터 명부에서 찾지 못했습니다.",
     transfer_instructor_required: "담당 강사가 없는 회원권은 넘길 수 없습니다.",
     transfer_expires_invalid: "이 회원권의 만료일을 읽을 수 없습니다. 만료일을 먼저 맞춰 주세요.",
+    pass_out_of_scope: OUT_OF_SCOPE_NOTICE,
   };
   if (known[reason]) return `${known[reason]} (코드 ${reason})`;
 
@@ -20975,6 +20976,9 @@ function ClientDetail({
   /* 세션업·양도와 같은 선이다. 만료일을 옮기는 사람이 회차를 늘리지 못할
      이유가 없다 -- 둘 다 운영이 매일 하는 일이고, 둘 다 이력이 남는다. */
   const canSessionUp = canChangeExpiry;
+  /* FC매니저는 맡은 지점의 회원권만 고친다 (2026-11-15 대표). 규칙 · 서버가 같은 선이라, 다른 지점
+     회원권에 버튼을 세우면 눌러도 permission-denied 로 끝난다 -- 아예 세우지 않는다. */
+  const touchable = (pass) => managerCanTouchPass(organization, pass);
   const [passEdit, setPassEdit] = useState(initialPassEdit);
   const [passEditError, setPassEditError] = useState("");
 
@@ -21359,22 +21363,22 @@ function ClientDetail({
                   canOverrideSessionUp={canOverrideSessionUpWindow(organization?.role)}
                   /* 대표·총괄은 전처럼 차감이 전부 보정된 것까지 취소한다.
                      FC매니저는 그 위에 "갓 발급 · 안 씀" 이 더 걸린다. */
-                  cancellable={isCancellablePass(pass, entries)
+                  cancellable={isCancellablePass(pass, entries) && touchable(pass)
                     && (canUndo || (canCancelFresh && isFreshlyIssuedPass(pass, at)))}
-                  onCancel={canUndo || (canCancelFresh && isFreshlyIssuedPass(pass, at))
+                  onCancel={touchable(pass) && (canUndo || (canCancelFresh && isFreshlyIssuedPass(pass, at)))
                     ? () => { setUndo({ kind: "cancel", pass }); setReason(""); } : undefined}
-                  onTransfer={canSessionUp && transferableSessions(pass) > 0 && isDeductablePass(pass, at)
+                  onTransfer={canSessionUp && touchable(pass) && transferableSessions(pass) > 0 && isDeductablePass(pass, at)
                     && checkTransfer({ pass, toClientId: "-", sessions: 1 }).code !== TRANSFER_BLOCK.DUET
                     ? () => { setTransfer({ pass }); setTransferError(""); } : undefined}
-                  onSessionUp={canSessionUp && pass.status === "active"
+                  onSessionUp={canSessionUp && touchable(pass) && pass.status === "active"
                     ? () => { setSessionUp({ pass }); setSessionUpErr(""); } : undefined}
-                  onAdjust={canAdjust ? () => { setPassEdit({ kind: "adjust", pass }); setPassEditError(""); } : undefined}
-                  onExpiry={canChangeExpiry && pass.expiresAt
+                  onAdjust={canAdjust && touchable(pass) ? () => { setPassEdit({ kind: "adjust", pass }); setPassEditError(""); } : undefined}
+                  onExpiry={canChangeExpiry && touchable(pass) && pass.expiresAt
                     ? () => { setPassEdit({ kind: "expiry", pass }); setPassEditError(""); } : undefined}
                   /* 넘길 수 있는 것만. 끝난 회원권의 지난 수업료는 그대로 전
                      강사의 급여로 남으므로 넘길 것이 없다 (isHandoverable 과
                      같은 조건이다 -- 여기서만 느슨하면 눌러도 0장이 뜬다). */
-                  onHandover={onHandover && isDeductablePass(pass, at)
+                  onHandover={onHandover && touchable(pass) && isDeductablePass(pass, at)
                     ? () => onHandover(pass) : undefined} />
               ))}
           </div>

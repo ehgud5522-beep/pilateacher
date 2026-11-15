@@ -141,6 +141,27 @@ service cloud.firestore {
         );
     }
 
+    /* ── FC매니저는 맡은 지점의 회원권만 고친다 (2026-11-15 대표) ──────────
+       전에는 FC매니저의 회원권 쓰기(발급 · 잔여 줄이기 · 만료일 · 취소 · 담당 교체와
+       그 원장 항목)를 "FC매니저인가" 로만 봤다. 다른 지점 회원을 화면이 보여 주지
+       않을 뿐, 옛 앱이나 직접 쓰기로는 다른 지점 회원권도 고칠 수 있었다.
+       회원권의 locationId(발급 때 회원의 지점)로 묻는다. 앱의 managerCanTouchPass
+       (location-repository.js) · 서버의 passInManagerScope(pass-admin.js)와 같은 선.
+
+       예외는 instructorInManagerScope 와 같다:
+         - 대표 · 총괄매니저는 묻지 않는다 (부르는 쪽이 manager 일 때만 쓴다)
+         - FC매니저 본인의 지점이 비어 있으면 막지 않는다
+         - 지점이 비어 있는 회원권은 막지 않는다 (옛 이관분)
+       **차감은 여기 없다.** 수업한 사람이 차감한다 -- 대타 수업이 지점을 넘는다. */
+    function passInManagerScope(organizationId, passData) {
+      let mine = scopedLocationsOf(membership(organizationId).data);
+      let location = passData.get("locationId", "");
+      return mine.size() == 0
+        || !(location is string)
+        || location == ""
+        || location in mine;
+    }
+
     function canRegisterClient(organizationId) {
       return hasRole(organizationId, ["owner", "area_manager", "manager"]);
     }
@@ -1147,6 +1168,11 @@ service cloud.firestore {
           && (
             !hasRole(organizationId, ["manager"])
             || instructorInManagerScope(organizationId, request.resource.data.instructorId)
+          )
+          // FC매니저는 맡은 지점의 회원에게만 발급한다 (passInManagerScope).
+          && (
+            !hasRole(organizationId, ["manager"])
+            || passInManagerScope(organizationId, request.resource.data)
           );
         /* ── 세션업 기간은 왜 여기 없는가 (2026-10-27) ───────────────────
            세션업은 **이 문을 아예 지나지 않는다.** totalSessions 는 아래 어느
@@ -1224,6 +1250,7 @@ service cloud.firestore {
             // 수 있다 -- 둘 중 하나만 바뀌면 단가가 조용히 틀린다.
             || (
               hasRole(organizationId, ["manager"])
+              && passInManagerScope(organizationId, resource.data)
               && request.resource.data.diff(resource.data).affectedKeys()
                 .hasOnly(["instructorId", "handedOver"])
               && request.resource.data.handedOver == true
@@ -1242,6 +1269,7 @@ service cloud.firestore {
                아닌 값은 못 들어온다" 까지다 (위 불변식). */
             || (
               hasRole(organizationId, ["manager"])
+              && passInManagerScope(organizationId, resource.data)
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["expiresAt"])
             )
             /* ── 잔여 조정 (FC매니저) ──────────────────────────────────
@@ -1257,6 +1285,7 @@ service cloud.firestore {
                사유 필수)은 그쪽 문이 지킨다. */
             || (
               hasRole(organizationId, ["manager"])
+              && passInManagerScope(organizationId, resource.data)
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["remainingCount"])
               && request.resource.data.remainingCount < resource.data.remainingCount
             )
@@ -1272,6 +1301,7 @@ service cloud.firestore {
                없다. */
             || (
               hasRole(organizationId, ["manager"])
+              && passInManagerScope(organizationId, resource.data)
               && request.resource.data.diff(resource.data).affectedKeys()
                 .hasOnly(["status", "remainingCount"])
               && resource.data.status == "active"
@@ -1327,6 +1357,15 @@ service cloud.firestore {
                   || !passHeldAt(get(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(passId)).data, request.time))
             )
             && request.resource.data.passId == passId
+            /* FC매니저는 맡은 지점 회원권의 원장에만 쓴다 (passInManagerScope) -- 차감만 빼고.
+               getAfter: 발급 항목은 회원권과 한 배치라 get 으로는 아직 없다 (아래 clientId 대조와 같은 이유). */
+            && (
+              request.resource.data.type == "deduct"
+              || !hasRole(organizationId, ["manager"])
+              || passInManagerScope(organizationId, getAfter(
+                /databases/$(database)/documents/organizations/$(organizationId)/passes/$(passId)
+              ).data)
+            )
             && request.resource.data.keys().hasOnly([
               "organizationId", "passId", "clientId", "locationId", "type", "delta",
               "category", "unitPrice", "rule", "lessonId", "instructorId",

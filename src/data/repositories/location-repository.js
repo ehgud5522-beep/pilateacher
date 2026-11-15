@@ -246,6 +246,24 @@ export function canSeeLocation(viewer, locationId) {
 }
 
 /**
+ * FC매니저가 이 회원권을 고칠 수 있는가 (2026-11-15 대표: 맡은 지점의 회원권만).
+ * 규칙의 passInManagerScope · 서버의 passInManagerScope(functions/src/pass-admin.js)와 같은 선 --
+ * 셋이 어긋나면 버튼은 보이는데 눌러도 permission-denied 다.
+ *
+ * FC매니저가 아니면 늘 참(다른 역할의 권한은 각 버튼이 따로 본다). FC매니저 지점이 비었거나
+ * 회원권 지점이 비었으면 참 (instructorInManagerScope 와 같은 판단).
+ *
+ * @param {{ role?: string, locationId?: string, locationIds?: Array<string> }} viewer
+ * @param {{ locationId?: string } | null | undefined} pass
+ */
+export function managerCanTouchPass(viewer, pass) {
+  if (String(viewer?.role || "").trim() !== "manager") return true;
+  const mine = scopedLocationIds(viewer);
+  const location = String(pass?.locationId ?? "").trim();
+  return mine.length === 0 || !location || mine.includes(location);
+}
+
+/**
  * **명단**이 좁혀지는 역할. 칩(BRANCH_SCOPED_ROLES)보다 좁다 -- FC매니저뿐이다.
  *
  * 둘이 다른 이유가 있다. 강사·팀장·점장은 전부터 **칩만** 자기 지점으로

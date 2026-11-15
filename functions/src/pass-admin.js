@@ -71,9 +71,30 @@ const isPassAdmin = (membership) => Boolean(membership)
   && membership.status === "active"
   && PASS_ADMIN_ROLES.includes(text(membership.role));
 
+/** 소속 문서가 가리키는 지점들. 규칙의 scopedLocationsOf 와 같은 읽기 (locationIds 먼저). */
+const scopedLocationsOf = (membership) => {
+  const many = Array.isArray(membership?.locationIds) ? membership.locationIds.map(text).filter(Boolean) : [];
+  if (many.length) return many;
+  const one = text(membership?.locationId);
+  return one ? [one] : [];
+};
+
+/**
+ * FC매니저는 맡은 지점의 회원권만 (2026-11-15 대표). 규칙의 passInManagerScope 와 같은 선 --
+ * 세션업 · 양도 · 홀딩은 Admin SDK 라 규칙을 지나지 않으므로 여기서 다시 묻는다.
+ * 대표 · 총괄매니저는 묻지 않는다. FC매니저 지점이 비었거나 회원권 지점이 비었으면 막지 않는다.
+ */
+const passInManagerScope = (membership, pass) => {
+  if (text(membership?.role) !== "manager") return true;
+  const mine = scopedLocationsOf(membership);
+  const location = text(pass?.locationId);
+  return mine.length === 0 || !location || mine.includes(location);
+};
+
 /** 왜 거부됐는가. 코드 없는 "할 수 없습니다" 를 남기지 않는다. */
 const ADMIN_ERROR = Object.freeze({
   NOT_FOUND: "pass_not_found",
+  OUT_OF_SCOPE: "pass_out_of_scope",
   TARGET_NOT_FOUND: "transfer_target_not_found",
   INSTRUCTOR_REQUIRED: "transfer_instructor_required",
   EXPIRES_INVALID: "transfer_expires_invalid",
@@ -114,6 +135,7 @@ async function runSessionUp(firestore, input) {
   const snapshot = await reference.get();
   if (!snapshot.exists) throw new Error(ADMIN_ERROR.NOT_FOUND);
   const pass = snapshot.data() || {};
+  if (input?.actorMembership && !passInManagerScope(input.actorMembership, pass)) throw new Error(ADMIN_ERROR.OUT_OF_SCOPE);
 
   const refused = sessionUpError({ pass, ...input });
   if (refused) throw new Error(refused);
@@ -220,6 +242,7 @@ async function runHandover(firestore, input) {
   const snapshot = await source.get();
   if (!snapshot.exists) throw new Error(ADMIN_ERROR.NOT_FOUND);
   const pass = { id: passId, ...(snapshot.data() || {}) };
+  if (input?.actorMembership && !passInManagerScope(input.actorMembership, pass)) throw new Error(ADMIN_ERROR.OUT_OF_SCOPE);
   if ((await import("../shared/pass-hold.mjs")).isPassHeld(pass, at)) throw new Error("pass_on_hold");
 
   /* 받는 회원이 이 센터에 있는가. 앱이 명부에서 골라 보내지만 id 는 그냥
@@ -339,6 +362,7 @@ module.exports = {
   ADMIN_ERROR,
   PASS_ADMIN_ROLES,
   isPassAdmin,
+  passInManagerScope,
   runHandover,
   runSessionUp,
 };

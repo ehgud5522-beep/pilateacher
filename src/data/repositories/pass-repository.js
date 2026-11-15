@@ -35,7 +35,8 @@ import {
   MIXED_PAYMENT_PARTS, PAYMENT_NOTE_MAX, PAY_CATEGORY, PAYMENT_METHOD, ROLES, isOwnerLevelRole,
 } from "../schema/constants.js";
 import {
-  netContractPriceFor, netContractPriceOf, resolveDeductionUnitPrice, spendsServiceSession,
+  netContractPriceFor, netContractPriceOf, paidServiceSessionsOf, resolveDeductionUnitPrice,
+  spendsServiceSession,
 } from "../schema/deduction-pricing.js";
 import { holdBlocksLesson, isPassHeld } from "../../../functions/shared/pass-hold.mjs";
 import { paths } from "../schema/paths.js";
@@ -773,6 +774,7 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     handedOver: pass?.handedOver === true,
     priorSessions,
     serviceUsedCount: pass?.serviceUsed,
+    paidServiceSessions: paidServiceSessionsOf(pass),
   });
 
   const lessonId = String(input?.lessonId || newId());

@@ -77,7 +77,8 @@ test('the screen never says "not installed" for a linked member, and shows its c
   await withVite(async (vite) => {
     const { default: MemberAppStatus } = await vite.ssrLoadModule('/src/features/members/MemberAppStatus.jsx');
     const props = { organizationId: 'o', loadClients: async () => [], loadLocations: async () => [], fetchStatus: async () => ({ members: [] }) };
-    const html = renderToStaticMarkup(createElement(MemberAppStatus, { ...props, initialState: { clients, usage, locations: [{ id: 'L1', name: '반송점' }, { id: 'L2', name: '해운대점' }] } }));
+    // 전체 목록 · 전체 상태로 열면 세 상태가 다 보인다. (처음 열 때는 지점 · 강사별 + 연결 안 함 -- 아래 테스트)
+    const html = renderToStaticMarkup(createElement(MemberAppStatus, { ...props, initialState: { layout: 'list', filter: 'all', clients, usage, locations: [{ id: 'L1', name: '반송점' }, { id: 'L2', name: '해운대점' }] } }));
     for (const label of ['아직 연결 안 함', '연결됨 · 앱 확인 전', '앱 사용 중', '모든 지점', '반송점']) assert.ok(html.includes(label), label);
     assert.ok(!html.includes('라'), 'archived member hidden');
     assert.doesNotMatch(html, /설치 안 함|안 깔았음/);

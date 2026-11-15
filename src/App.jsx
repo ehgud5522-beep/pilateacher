@@ -27618,6 +27618,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
         )}
         {view === "member-app-status" && showMemberApp && (
           <MemberAppStatus organizationId={organization?.organizationId || ""}
+            loadInstructors={() => listInstructors(organization?.organizationId || "", { store: instructorStore })}
             loadClients={() => listClients(organization?.organizationId || "", { store: clientStore }).then((result) => result?.items || result || [])}
             loadLocations={() => listLocations(organization?.organizationId || "", { store: locationStore }).then((result) => result?.items || result || [])}
             fetchStatus={fbMemberAppStatus} />
@@ -27682,6 +27683,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="rosterRealtime" title="회원 명단 실시간"
               description="켜진 계정은 센터 회원 명단을 실시간으로 받습니다. 강사는 본인 담당 회원만, FC매니저 · 매니저 · 대표는 회원 목록에서 고른 지점을 받습니다 (대표 · 총괄매니저가 '전체'를 고르면 받지 않고 새로고침으로 맞춥니다). 대표 → 강사 한 명 → 전체 순서로 켜세요. 읽은 횟수는 진단에 남습니다." />
+            {/* 비포애프터 회원 공유 (2026-11-15). 켜면 모든 강사가 비교 카드를 보내고, 동의한 회원이 보니따 앱에서 본다. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="beforeAfterSharing" title="비포애프터 회원 공유" allowListed={false}
+              description="켜면 모든 강사가 변화 카드를 회원에게 보낼 수 있고, 보니따 앱에 비포애프터 탭이 생깁니다. 회원이 앱에서 '사진 공유 동의' 를 한 경우에만 받습니다. 끄면 이미 보낸 카드도 회원 앱에서 보이지 않습니다." />
             {/* 회원 수업 알림 (2026-11-07, 지시서 2차). 서버(sendMemberLessonReminders)만 읽는다. */}
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}

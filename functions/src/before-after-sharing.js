@@ -10,7 +10,12 @@ const id = (v) => typeof v === "string" && /^[A-Za-z0-9_.:-]{1,160}$/.test(v);
 const hash = (v) => createHash("sha256").update(JSON.stringify(v)).digest("hex");
 const consentPath = (uid, org, client) => `memberPhotoConsents/${uid}/scopes/${hash([org, client])}`;
 const scoped = (a, b) => a.organizationId === b.organizationId && a.clientId === b.clientId;
+/* 공유 스위치 (runtimeConfig/beforeAfterSharing).
+   all  -- 모든 강사 · 회원 (2026-11-15 대표: "모든 강사들이 다 할 수 있게 켜줘"). 대표가 운영 설정 카드에서 켜고 끈다.
+   test -- 시범: teacherIds · memberIds 에 적힌 계정만 (처음 켤 때 쓰던 모양, 그대로 둔다).
+   그 밖(off · 문서 없음) -- 꺼짐. 강사가 그 회원의 사진을 볼 수 있는지 · 회원 동의는 이 스위치와 따로 늘 본다. */
 function enabled(flag, teacher, member) {
+  if (flag?.mode === "all") return true;
   return flag?.mode === "test" && flag.phase1Verified === true
     && (!teacher || flag.teacherIds?.includes(teacher)) && (!member || flag.memberIds?.includes(member));
 }

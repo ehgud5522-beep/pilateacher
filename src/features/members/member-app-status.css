@@ -29,5 +29,23 @@
 .mas-badge.is-warn{background:var(--warn-s,var(--canvas));color:var(--warn,var(--ink))}
 .mas-badge.is-muted{background:var(--canvas);color:var(--sub)}
 .mas-empty{margin:0;padding:28px 0;text-align:center;font-size:var(--t-caption,13px);color:var(--sub)}
+/* 지점 · 강사별 */
+.mas-layout{display:inline-flex;padding:3px;border-radius:10px;background:var(--canvas);justify-self:start}
+.mas-layout button{min-height:34px;padding:0 14px;border:0;border-radius:8px;background:transparent;color:var(--sub);font-size:var(--t-caption,13px);font-weight:700}
+.mas-layout button[aria-pressed=true]{background:var(--card);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.14)}
+.mas-groups{display:grid;gap:14px}
+.mas-legend{margin:0;font-size:12px;color:var(--sub)}
+.mas-legend i,.mas-tally i{font-style:normal;font-weight:800;font-variant-numeric:tabular-nums}
+.mas-place{display:grid;gap:8px}
+.mas-place>h3{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0;font-size:var(--t-body,15px);font-weight:800}
+.mas-tally{display:inline-flex;gap:8px;font-size:13px}
+.is-none{color:var(--bad,var(--ink))}
+.is-linked{color:var(--warn,var(--ink))}
+.is-app{color:var(--good,var(--ink))}
+.mas-teacher{border:1px solid var(--line);border-radius:12px;background:var(--card);overflow:hidden}
+.mas-teacher>summary{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:46px;padding:0 14px;cursor:pointer;list-style:none;font-size:var(--t-caption,13px);font-weight:700}
+.mas-teacher>summary::-webkit-details-marker{display:none}
+.mas-teacher>summary small{font-weight:400;color:var(--sub)}
+.mas-teacher .mas-list{border:0;border-top:1px solid var(--line);border-radius:0}
 .mas-note{margin:0;font-size:12px;line-height:1.55;color:var(--sub)}
 @media(max-width:359px){.mas-count span{font-size:11px}}

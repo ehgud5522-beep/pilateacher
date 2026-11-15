@@ -33696,6 +33696,8 @@ export default function App() {
       await blobPut(bid, item.file);
       const record = { id, photoId: id, memberId: target.id, view: item.view, date: item.date,
         albumVersion: 1, memberVisible: false, dateSource: item.dateSource,
+        // 부위 이름은 방향이 "기타" 인 사진에만, 정했을 때만 남긴다 (album-model.js ALBUM_PARTS).
+        ...(item.view === "custom" && item.part ? { albumPart: item.part } : {}),
         createdAt: new Date().toISOString(), blobId: bid, src: await urlFor(bid), marks: [] };
       const current = photosRef.current;
       const bucket = current[target.id] || {};

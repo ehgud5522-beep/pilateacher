@@ -86,6 +86,26 @@ function createSharingService({ db, bucket, now = () => new Date() }) {
       const flag = await read(direct, "runtimeConfig/beforeAfterSharing");
       return { enabled: enabled(flag, input.role === "teacher" ? uid : null, input.role === "teacher" ? null : uid), aiEnabled: false, schemaVersion: VERSION };
     }
+    /* 강사가 보내기 전에 "이 회원에게 보낼 수 있는가" 를 미리 안다 (2026-11-15 대표).
+       전에는 카드를 다 만들고 [공유하기] 를 누른 뒤에야 share/consent-required 가 났다 -- 강사는 왜 막혔는지 몰랐다.
+       돌려주는 것은 네 가지 상태뿐이다. 회원의 이름 · 계정 · 동의 시각은 나가지 않는다.
+       물을 수 있는 사람은 그 회원의 사진을 볼 수 있는 강사(mayAccessPhoto)로, 공유를 보낼 수 있는 사람과 같다. */
+    if (action === "teacherConsent") {
+      if (!id(input.organizationId) || !id(input.clientId)) fail("share/member-required");
+      const flag = await read(direct, "runtimeConfig/beforeAfterSharing");
+      if (!enabled(flag, uid, null)) fail("share/disabled");
+      const [membership, client] = await Promise.all([
+        read(direct, `memberships/${input.organizationId}_${uid}`),
+        read(direct, `organizations/${input.organizationId}/clients/${input.clientId}`),
+      ]);
+      if (!mayAccessPhoto(uid, membership, client)) fail("share/teacher-access-revoked");
+      let memberUserId;
+      try { memberUserId = (await relationship(direct, input)).memberUserId; }
+      catch (error) { if (error.code === "share/member-not-linked") return { status: "not_linked" }; throw error; }
+      if (!enabled(flag, null, memberUserId)) return { status: "not_open" };
+      const grant = await read(direct, consentPath(memberUserId, input.organizationId, input.clientId));
+      return { status: grant?.status === "granted" && grant.version === CONSENT_VERSION ? "ready" : "consent_needed" };
+    }
     if (action === "consent" || action === "consentStatus") return db.runTransaction(async (tx) => {
       await relationship(tx, input, uid);
       const path = consentPath(uid, input.organizationId, input.clientId);

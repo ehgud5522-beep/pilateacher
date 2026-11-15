@@ -4,7 +4,7 @@ export function sharingDiagnostic(error, context = {}) {
   const reasonCode = reasons.has(candidate) ? candidate : 'share/unknown';
   const raw = String(error?.code || 'unknown');
   const errorCode = /^(?:functions\/)?[a-z][a-z-]{0,60}$/.test(raw) ? raw : 'unknown';
-  const stage = ['capture', 'prepare', 'activate', 'revoke', 'read', 'detail', 'media', 'teacherList', 'memberList', 'consent', 'consentStatus', 'capability'].includes(context.action) ? context.action : 'unknown';
+  const stage = ['capture', 'prepare', 'activate', 'revoke', 'read', 'detail', 'media', 'teacherList', 'memberList', 'consent', 'consentStatus', 'teacherConsent', 'capability'].includes(context.action) ? context.action : 'unknown';
   return { feature: 'before_after_share', stage, errorDomain: stage === 'capture' ? 'canvas' : 'firebase_functions', errorCode, reasonCode,
     shareIdPrefix: String(context.shareId || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8), bytes: Number.isFinite(context.bytes) ? context.bytes : 0,
     appBuild: String(context.appBuild || 'unknown').slice(0, 40), platform: ['web', 'ios', 'android'].includes(context.platform) ? context.platform : 'web' };

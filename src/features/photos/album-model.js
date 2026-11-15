@@ -24,6 +24,22 @@ export function albumPhotos(buckets = {}) {
 export function chronologicalPair(photos) {
   return [...photos].sort((a, b) => a.date.localeCompare(b.date)).slice(0, 2);
 }
+/* [변화 카드 만들기] 가 처음에 골라 주는 두 장 (2026-11-15). 강사가 고르지 않아도 되게 한다.
+   같은 방향끼리(정면 ↔ 정면) 가장 오래 떨어진 두 장이 먼저다 -- 방향이 다르면 체형 비교가 안 된다.
+   그런 짝이 없으면 가장 오래된 사진과 가장 최근 사진. 두 장이 안 되면 빈 배열. */
+export function suggestPair(photos) {
+  const dated = [...(photos || [])].filter((p) => p?.date).sort((a, b) => a.date.localeCompare(b.date));
+  if (dated.length < 2) return [];
+  let best = null;
+  for (const [view] of ALBUM_VIEWS) {
+    if (view === 'custom') continue;
+    const same = dated.filter((p) => p.view === view);
+    if (same.length < 2 || same[0].date === same.at(-1).date) continue;
+    const span = Date.parse(same.at(-1).date) - Date.parse(same[0].date);
+    if (Number.isFinite(span) && (!best || span > best.span)) best = { span, pair: [same[0], same.at(-1)] };
+  }
+  return best ? best.pair : [dated[0], dated.at(-1)];
+}
 export function patchAlbumPhoto(map, memberId, photo, patch, targetId = memberId) {
   const current = map[memberId] || {};
   const record = (current[photo.bucket] || []).find((p) => p.id === photo.id);

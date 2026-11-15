@@ -3,7 +3,7 @@ const reasons = new Set(("card-too-large card-not-jpeg card-hash-mismatch card-c
 function shareDiagnostic(error, input = {}) {
   const code = String(error?.code || "unknown");
   return { feature: "before_after_share",
-    stage: ["prepare", "activate", "revoke", "read", "detail", "media", "consent", "consentStatus", "teacherList", "memberList", "capability"].includes(input.action) ? input.action : "unknown",
+    stage: ["prepare", "activate", "revoke", "read", "detail", "media", "consent", "consentStatus", "teacherConsent", "teacherList", "memberList", "capability"].includes(input.action) ? input.action : "unknown",
     errorDomain: error?.httpsCode ? "sharing" : "firebase_admin",
     errorCode: /^(?:share\/[a-z-]+|[a-z-]+|\d{1,3})$/.test(code) && code.length < 80 ? code : "unknown",
     reasonCode: reasons.has(error?.code) ? error.code : "share/temporarily-unavailable",

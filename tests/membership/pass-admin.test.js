@@ -6,7 +6,7 @@ import { transferPass } from "../../src/data/repositories/pass-repository.js";
 
 const require = createRequire(import.meta.url);
 const {
-  ADMIN_ERROR, PASS_ADMIN_ROLES, isPassAdmin, runHandover, runSessionUp,
+  ADMIN_ERROR, PASS_ADMIN_ROLES, isPassAdmin, passInManagerScope, runHandover, runSessionUp,
 } = require("../../functions/src/pass-admin.js");
 
 /**
@@ -467,4 +467,47 @@ test("held pass cannot be transferred through the server", async () => {
   const store = fakeFirestore({ [`${ORG}/passes/pass-1`]: source, [`${ORG}/clients/client-b`]: { name: "박두리" } });
   await assert.rejects(runHandover(store, { fieldValue, organizationId: "center-a", passId: "pass-1", toClientId: "client-b", sessions: 5, actorId: "u-owner", now: () => now }), /pass_on_hold/);
   assert.equal(store.writes.length, 0);
+});
+
+/* ── FC매니저는 맡은 지점의 회원권만 (2026-11-15 대표) ──────────────────────
+   세션업 · 양도는 Admin SDK 라 규칙(passInManagerScope)을 지나지 않는다. 같은 선을 여기서. */
+
+test("지점 판정: FC매니저만 묻고, 지점이 비면 막지 않는다 (규칙과 같은 선)", () => {
+  const fc = (scope) => ({ role: "manager", status: "active", ...scope });
+  assert.equal(passInManagerScope(fc({ locationIds: ["loc-1"] }), { locationId: "loc-1" }), true);
+  assert.equal(passInManagerScope(fc({ locationIds: ["loc-2"] }), { locationId: "loc-1" }), false);
+  assert.equal(passInManagerScope(fc({ locationIds: ["loc-2", "loc-1"] }), { locationId: "loc-1" }), true, "둘 맡은 FC");
+  assert.equal(passInManagerScope(fc({ locationId: "loc-2" }), { locationId: "loc-1" }), false, "옛 한 칸");
+  assert.equal(passInManagerScope(fc({ locationIds: [], locationId: "" }), { locationId: "loc-1" }), true, "FC 지점 없음");
+  assert.equal(passInManagerScope(fc({ locationIds: ["loc-2"] }), { locationId: "" }), true, "회원권 지점 없음");
+  for (const role of ["owner", "area_manager"]) {
+    assert.equal(passInManagerScope({ role, locationIds: ["loc-2"] }, { locationId: "loc-1" }), true, role);
+  }
+});
+
+test("다른 지점 FC매니저의 세션업 · 양도는 거부되고 아무것도 쓰이지 않는다", async () => {
+  const far = { role: "manager", status: "active", locationIds: ["loc-2"] };
+  const store = fakeFirestore({
+    [`${ORG}/passes/pass-1`]: basePass({ remainingCount: 16 }),
+    [`${ORG}/clients/client-b`]: { name: "박두리" },
+  });
+  await assert.rejects(runSessionUp(store, {
+    fieldValue, organizationId: "center-a", passId: "pass-1", actorId: "u-fc", actorRole: "manager", actorMembership: far,
+    addSessions: 10, addPrice: 500000, paymentMethod: "card", now: () => new Date(2026, 9, 3, 10, 0),
+  }), new RegExp(ADMIN_ERROR.OUT_OF_SCOPE));
+  await assert.rejects(runHandover(store, {
+    fieldValue, organizationId: "center-a", passId: "pass-1", toClientId: "client-b",
+    sessions: 5, actorId: "u-fc", actorMembership: far, newPassId: "pass-new", now: () => new Date(2026, 9, 3),
+  }), new RegExp(ADMIN_ERROR.OUT_OF_SCOPE));
+  assert.equal(store.writes.length, 0);
+});
+
+test("맡은 지점 FC매니저의 세션업은 지금처럼 된다", async () => {
+  const mine = { role: "manager", status: "active", locationIds: ["loc-1"] };
+  const store = fakeFirestore({ [`${ORG}/passes/pass-1`]: basePass({ remainingCount: 16 }) });
+  await runSessionUp(store, {
+    fieldValue, organizationId: "center-a", passId: "pass-1", actorId: "u-fc", actorRole: "manager", actorMembership: mine,
+    addSessions: 10, addPrice: 500000, paymentMethod: "card", now: () => new Date(2026, 9, 3, 10, 0),
+  });
+  assert.equal(store.docs.get(`${ORG}/passes/pass-1`).totalSessions, 30);
 });

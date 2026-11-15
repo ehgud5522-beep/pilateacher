@@ -1111,10 +1111,10 @@ const assertPassAdmin = async (organizationId, callerUid) => {
   if (!isPassAdmin(data)) {
     throw new HttpsError("permission-denied", "Only the owner or manager can do this.");
   }
-  /* 역할을 돌려준다. 세션업 기간 예외는 **대표·총괄매니저만** 열 수 있는데,
+  /* 소속 문서를 돌려준다. 세션업 기간 예외는 **대표·총괄매니저만** 열 수 있는데,
      앱이 보낸 역할을 믿으면 그것은 잠긴 문이 아니다 -- 소속 문서가 말한
-     역할만 쓴다. */
-  return String(data?.role || "").trim();
+     역할만 쓴다. FC매니저의 지점(passInManagerScope)도 같은 문서에서 읽는다. */
+  return data;
 };
 
 exports.managePassHold = onCall({
@@ -1131,7 +1131,7 @@ exports.managePassHold = onCall({
   } catch (error) {
     const reason = String(error?.message || "hold_failed");
     logger.error("pass_hold_failed", { feature: "pass_hold", stage: "commit", errorCode: String(error?.code || reason) });
-    throw new HttpsError(reason === "hold_permission_denied" ? "permission-denied" : "failed-precondition", reason, { code: reason });
+    throw new HttpsError(["hold_permission_denied", "pass_out_of_scope"].includes(reason) ? "permission-denied" : "failed-precondition", reason, { code: reason });
   }
 });
 
@@ -1142,7 +1142,8 @@ exports.sessionUpPass = onCall({
 }, async (request) => {
   const callerUid = String(request?.auth?.uid || "").trim();
   const organizationId = String(request?.data?.organizationId || "").trim();
-  const actorRole = await assertPassAdmin(organizationId, callerUid);
+  const actorMembership = await assertPassAdmin(organizationId, callerUid);
+  const actorRole = String(actorMembership?.role || "").trim();
   try {
     const expiresAt = request?.data?.expiresAt ? new Date(String(request.data.expiresAt)) : null;
     const result = await runSessionUp(firestore, {
@@ -1151,6 +1152,7 @@ exports.sessionUpPass = onCall({
       actorId: callerUid,
       /* 기간 판정이 쓴다. 앱이 보낸 역할이 아니라 소속 문서의 역할이다. */
       actorRole,
+      actorMembership,
       overrideReason: String(request?.data?.overrideReason || ""),
       addSessions: Number(request?.data?.addSessions),
       addPrice: Number(request?.data?.addPrice),
@@ -1172,7 +1174,8 @@ exports.sessionUpPass = onCall({
       errorCode: error?.message || "unknown",
     });
     /* 막힌 이유를 그대로 올린다 -- 화면이 "왜 안 되는지" 를 말할 수 있어야 한다. */
-    throw new HttpsError("failed-precondition", String(error?.message || "session_up_failed"));
+    const reason = String(error?.message || "session_up_failed");
+    throw new HttpsError(reason === "pass_out_of_scope" ? "permission-denied" : "failed-precondition", reason);
   }
 });
 
@@ -1183,9 +1186,10 @@ exports.handoverPass = onCall({
 }, async (request) => {
   const callerUid = String(request?.auth?.uid || "").trim();
   const organizationId = String(request?.data?.organizationId || "").trim();
-  await assertPassAdmin(organizationId, callerUid);
+  const actorMembership = await assertPassAdmin(organizationId, callerUid);
   try {
     const result = await runHandover(firestore, {
+      actorMembership,
       organizationId,
       passId: String(request?.data?.passId || "").trim(),
       toClientId: String(request?.data?.toClientId || "").trim(),
@@ -1204,7 +1208,8 @@ exports.handoverPass = onCall({
       feature: "handover", stage: "done", organizationId,
       errorCode: error?.message || "unknown",
     });
-    throw new HttpsError("failed-precondition", String(error?.message || "handover_failed"));
+    const reason = String(error?.message || "handover_failed");
+    throw new HttpsError(reason === "pass_out_of_scope" ? "permission-denied" : "failed-precondition", reason);
   }
 });
 

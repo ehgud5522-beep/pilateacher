@@ -3,7 +3,7 @@
 /** Server transaction serializes holds with attendance and repeated submissions. */
 async function runPassHold(firestore, input) {
   const { planPassHold } = await import("../shared/pass-hold.mjs");
-  const { isPassAdmin } = require("./pass-admin");
+  const { isPassAdmin, passInManagerScope } = require("./pass-admin");
   const { membershipId } = require("./member-link");
   const { organizationId, passId, actorId } = input;
   for (const value of [organizationId, passId, actorId]) {
@@ -17,6 +17,8 @@ async function runPassHold(firestore, input) {
     const snapshot = await tx.get(ref);
     if (!snapshot.exists || snapshot.data().organizationId !== organizationId) throw new Error("hold_pass_not_found");
     const pass = snapshot.data();
+    // FC매니저는 맡은 지점의 회원권만 (pass-admin.js passInManagerScope).
+    if (!passInManagerScope(membership.data(), pass)) throw new Error("pass_out_of_scope");
     const now = input.now ? input.now() : new Date();
     const plan = planPassHold(pass, input, now);
     tx.update(ref, { holdFrom: plan.holdFrom, holdUntil: plan.holdUntil, expiresAt: plan.expiresAt });

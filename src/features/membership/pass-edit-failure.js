@@ -10,6 +10,9 @@
 
 import { isOwnerLevelRole } from "../../data/schema/constants.js";
 
+/** FC매니저가 맡은 지점 밖 회원권을 고치려 할 때 (2026-11-15). 세션업 · 양도 화면도 같은 말을 쓴다. */
+export const OUT_OF_SCOPE_NOTICE = "맡은 지점의 회원권만 고칠 수 있어요. 다른 지점 회원권은 대표·총괄매니저에게 요청해 주세요.";
+
 /** FC매니저가 잔여를 늘리려 할 때 화면과 오류가 같이 쓰는 말. */
 export const ADJUST_INCREASE_NOTICE = "증가는 대표·총괄매니저만 가능해요.";
 
@@ -27,6 +30,7 @@ export function passEditFailure(error, context = {}) {
     hold_days_invalid: "홀딩 기간은 1일부터 365일까지 입력해 주세요.",
     hold_permission_denied: "대표·총괄매니저·FC매니저만 홀딩을 변경할 수 있어요.",
     hold_pass_not_found: "회원권을 찾지 못했습니다. 새로고침해 주세요.",
+    pass_out_of_scope: OUT_OF_SCOPE_NOTICE,
   };
   if (holdMessages[code]) return `${holdMessages[code]} (코드 ${code})`;
   if (code === "below_zero") {
@@ -48,6 +52,10 @@ export function passEditFailure(error, context = {}) {
     if (context.direction === "increase" && !isOwnerLevelRole(context.role)) {
       return `${ADJUST_INCREASE_NOTICE} (코드 ${code})`;
     }
+    /* FC매니저의 규칙 거절은 대부분 지점 밖 회원권이다 (passInManagerScope) -- 화면이 버튼을
+       감추지만, 지점이 바뀐 뒤 열어 둔 화면이나 옛 앱에서 온다. 규칙은 이유를 말하지 않으므로
+       코드는 permission-denied 그대로 두고 그럴 수 있다는 것만 말한다. */
+    if (context.role === "manager") return `${OUT_OF_SCOPE_NOTICE} (코드 ${code})`;
     return `이 회원권을 고칠 권한이 없어요. 센터에 문의해 주세요. (코드 ${code})`;
   }
   if (["unavailable", "deadline-exceeded", "aborted", "cancelled"].includes(code)) {

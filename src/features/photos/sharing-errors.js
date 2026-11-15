@@ -20,8 +20,18 @@ export function sharingMessage(error) {
     'share/revoked': '취소된 공유입니다.', 'share/disabled': '비포애프터 공유는 아직 준비 중입니다.',
     'share/update-required': '앱을 최신 버전으로 업데이트해 주세요.', 'share/unsupported-type': '완성된 비교 카드만 새로 공유할 수 있습니다.',
   };
-  const fallback = /unavailable|deadline-exceeded|network/.test(d.errorCode) || error?.message === 'offline' ? '네트워크 연결을 확인한 뒤 다시 시도해 주세요.' : /permission-denied/.test(d.errorCode) ? '공유 접근 권한이 없습니다.' : '공유 자료를 처리하지 못했습니다.';
+  const fallback = /unavailable|deadline-exceeded|network|internal/.test(d.errorCode) || error?.message === 'offline' ? '네트워크 연결을 확인한 뒤 다시 시도해 주세요.' : /permission-denied/.test(d.errorCode) ? '공유 접근 권한이 없습니다.' : '공유 자료를 처리하지 못했습니다.';
   return `${messages[r] || fallback} (코드 ${d.errorCode}${r !== 'share/unknown' ? ` · ${r}` : ''})`;
+}
+/* 다시 해 보면 될 수 있는 실패 (CLAUDE.md 원칙 3 · 6: network · unavailable 만 자동 재시도).
+   functions/internal 도 여기다 -- 서버(beforeAfterSharing)는 이 코드를 만들지 않는다. 오류를 늘 unavailable · failed-precondition
+   으로 바꿔 보낸다. internal 은 Firebase 호출 도구가 응답을 아예 못 받았을 때(앱이 뒤에서 돌아오는 순간 · 연결 끊김) 붙이는 코드다.
+   서버가 이유(reasonCode)를 말한 실패는 결정된 것이다 -- 다시 하지 않는다. */
+export function isTransientSharingError(error) {
+  if (error?.message === 'offline') return true;
+  const d = sharingDiagnostic(error);
+  if (d.reasonCode !== 'share/unknown' && d.reasonCode !== 'share/temporarily-unavailable') return false;
+  return /^(functions\/)?(internal|unavailable|deadline-exceeded|network-request-failed|resource-exhausted|aborted)$/.test(d.errorCode);
 }
 export function logSharingFailure(error, input) {
   const details = sharingDiagnostic(error, input);

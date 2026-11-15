@@ -218,6 +218,14 @@
 .ba-pair{display:grid;gap:6px;padding-bottom:10px}
 .ba-pair label{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:var(--t-caption,13px);font-weight:600;color:var(--ink2)}
 .ba-root .ba-pair select{flex:0 1 72%}
+/* 카드 꾸미기: 바탕 셋 · 포인트 색 다섯 */
+.ba-look{display:grid;gap:10px;margin:0 0 10px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--card)}
+.ba-look-row{display:flex;align-items:center;gap:10px}
+.ba-look-row>span{flex-shrink:0;width:52px;font-size:var(--t-caption,13px);font-weight:700;color:var(--ink)}
+.ba-look-chip{display:inline-block;width:12px;height:12px;border-radius:50%;border:1px solid rgba(127,127,127,.45)}
+.ba-swatches{display:flex;gap:10px;flex-wrap:wrap}
+.ba-root .ba-swatch{width:30px;min-height:30px;height:30px;padding:0;border-radius:50%;border:2px solid transparent;box-shadow:inset 0 0 0 1px rgba(255,255,255,.18)}
+.ba-root .ba-swatch[aria-pressed=true]{border-color:var(--card);box-shadow:0 0 0 2px var(--ink)}
 .ba-compare-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:8px;margin-top:4px}
 .ba-comment{display:grid;gap:6px;margin:4px 0 10px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--card)}
 .ba-comment>span{display:flex;justify-content:space-between;align-items:center;font-size:var(--t-caption,13px);font-weight:700;color:var(--ink)}

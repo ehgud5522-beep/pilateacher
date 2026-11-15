@@ -3,6 +3,9 @@
 /* 받은 카드는 가운데에 -- 글줄도 카드 아래 가운데, 작게. */
 .private-share-view .private-share-card { text-align:center; }
 .private-share-view .private-share-card img { display:block; margin:0 auto; }
+/* 누르면 크게 보기 -- 공용 버튼 모양(테두리 · 바탕)을 걷는다 */
+.private-share-view .private-share-zoom { display:block; width:100%; padding:0; border:0; border-radius:0; background:none; cursor:zoom-in; }
+.private-share-view .private-share-zoom img { display:block; margin:0 auto; }
 .private-share-view .private-share-card figcaption { margin-top:8px; font-size:12px; color:var(--sub,var(--ink2,#7b7175)); font-variant-numeric:tabular-nums; }
 .private-share-view canvas { display:block; border-radius:12px; background:#15151b; }
 .private-share-view button,.private-member-sharing button { border:1px solid var(--line,#eadde3); border-radius:10px; background:var(--card,#fff); color:var(--ink,#241c20); padding:9px 12px; cursor:pointer; font:inherit; }
@@ -12,5 +15,11 @@
 .private-member-sharing input[type=checkbox] { accent-color:var(--rose,#f0137f); margin-right:8px; }
 .private-member-sharing button:disabled { opacity:.5; cursor:default; }
 .private-member-sharing .share-record { width:100%; text-align:left; }
+/* 카드 크게 보기 (ZoomViewer) -- 본문에 띄운다 */
+.zoom-viewer { position:fixed; inset:0; z-index:300; display:flex; flex-direction:column; background:rgba(8,8,10,.96); color:#fff; }
+.zoom-viewer .zoom-close { position:absolute; top:calc(12px + env(safe-area-inset-top, 0px)); right:12px; z-index:2; min-width:44px; min-height:44px; padding:0 16px; border:1px solid rgba(255,255,255,.28); border-radius:22px; background:rgba(16,16,20,.78); color:#fff; font:inherit; font-size:14px; font-weight:600; cursor:pointer; }
+.zoom-stage { flex:1; min-height:0; display:flex; align-items:center; justify-content:center; overflow:hidden; touch-action:none; cursor:zoom-in; padding-top:calc(60px + env(safe-area-inset-top, 0px)); }
+.zoom-stage img { max-width:100%; max-height:100%; object-fit:contain; transform-origin:center; will-change:transform; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
+.zoom-hint { margin:0; padding:10px 16px calc(14px + env(safe-area-inset-bottom, 0px)); text-align:center; font-size:12px; color:rgba(255,255,255,.62); }
 .private-share-teacher textarea { display:block; width:100%; min-height:90px; border:1px solid var(--line,#eadde3); border-radius:10px; padding:10px; color:inherit; background:transparent; }
 .private-share-teacher small { overflow-wrap:anywhere; }

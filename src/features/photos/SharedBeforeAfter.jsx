@@ -2,7 +2,8 @@ import './private-sharing.css';
 import { useEffect, useRef, useState } from 'react';
 import { drawContained, renderAlbumPhoto } from './album-render.js';
 
-import { sharingMessage } from './sharing-errors.js';
+import { isTransientSharingError, sharingMessage } from './sharing-errors.js';
+import ZoomViewer from './ZoomViewer.jsx';
 export { sharingMessage } from './sharing-errors.js';
 
 export function SharedBeforeAfter(props) {
@@ -72,16 +73,20 @@ function MemoryCanvas({ frame, thumbnail }) {
 }
 
 // Cards are never reconstructed, cached offline, or exposed through a public URL.
-export function CardImage({ src, share, thumbnail = false }) {
-  return <figure className="private-share-card"><img src={src} alt="공유된 비포애프터 비교 카드" draggable={false} style={{ maxWidth: '100%', maxHeight: thumbnail ? 180 : undefined, objectFit: 'contain' }} /><figcaption>{share.teacherName} · {(share.dates || []).join(' → ')}</figcaption></figure>;
+/* zoomable: 누르면 크게 보기(ZoomViewer). 같은 메모리 주소를 크게 보여 줄 뿐 -- 새로 저장하거나 내려받지 않는다. */
+export function CardImage({ src, share, thumbnail = false, zoomable = false }) {
+  const [open, setOpen] = useState(false);
+  const image = <img src={src} alt="공유된 비포애프터 비교 카드" draggable={false} style={{ maxWidth: '100%', maxHeight: thumbnail ? 180 : undefined, objectFit: 'contain' }} />;
+  return <figure className="private-share-card">{zoomable ? <button type="button" className="private-share-zoom" aria-label="카드 크게 보기" onClick={() => setOpen(true)}>{image}</button> : image}{open && <ZoomViewer src={src} alt="공유된 비포애프터 비교 카드 크게 보기" onClose={() => setOpen(false)} />}<figcaption>{share.teacherName} · {(share.dates || []).join(' → ')}</figcaption></figure>;
 }
-function SharedCard({ share, api, thumbnail = false }) {
+function SharedCard({ share, api, thumbnail = false, zoomable = false }) {
   const [src, setSrc] = useState(''), [error, setError] = useState(''), [epoch, setEpoch] = useState(0);
   useEffect(() => {
-    let active = true, serial = 0, url = '';
+    let active = true, serial = 0, url = '', retry = 0;
     const clear = () => { serial++; if (url) URL.revokeObjectURL(url); url = ''; if (active) setSrc(''); };
-    const load = async () => {
-      clear(); const current = serial;
+    /* 잠깐 끊긴 실패(isTransientSharingError)는 2 · 5 · 10초 뒤 다시 받는다. 결정된 실패만 바로 말한다. */
+    const load = async (attempt = 0) => {
+      clearTimeout(retry); clear(); const current = serial;
       try {
         if (!navigator.onLine || document.visibilityState === 'hidden') return;
         await api({ action: 'detail', shareId: share.id });
@@ -89,17 +94,23 @@ function SharedCard({ share, api, thumbnail = false }) {
         if (!active || current !== serial) return;
         url = URL.createObjectURL(new Blob([Uint8Array.from(globalThis.atob(result.base64), (c) => c.charCodeAt(0))], { type: 'image/jpeg' }));
         setSrc(url); setError('');
-      } catch (e) { if (active && current === serial) { clear(); setError(sharingMessage(e)); } }
+      } catch (e) {
+        if (!active || current !== serial) return;
+        if (isTransientSharingError(e) && e?.message !== 'offline' && attempt < 3) { retry = setTimeout(() => load(attempt + 1), [2000, 5000, 10000][attempt]); return; }
+        clear(); setError(sharingMessage(e));
+      }
     };
+    /* 15초마다 공유가 아직 살아 있는지 본다. 잠깐 끊겨 확인을 못 했으면 보던 카드는 그대로 둔다 --
+       전에는 한 번 실패에 카드를 지워 새로고침해야 다시 보였다. 취소 · 동의 철회처럼 결정된 답이면 바로 지운다. */
     const verify = async () => {
       const current = serial;
       try { await api({ action: 'detail', shareId: share.id }); }
-      catch (e) { if (active && current === serial) { clear(); setError(sharingMessage(e)); } }
+      catch (e) { if (active && current === serial && !isTransientSharingError(e)) { clear(); setError(sharingMessage(e)); } }
     };
     const visibility = () => { if (document.visibilityState === 'hidden' || !navigator.onLine) clear(); else load(); };
     load(); const timer = setInterval(verify, 15000);
     window.addEventListener('offline', visibility); window.addEventListener('online', visibility); document.addEventListener('visibilitychange', visibility);
-    return () => { active = false; clear(); clearInterval(timer); window.removeEventListener('offline', visibility); window.removeEventListener('online', visibility); document.removeEventListener('visibilitychange', visibility); };
+    return () => { active = false; clear(); clearTimeout(retry); clearInterval(timer); window.removeEventListener('offline', visibility); window.removeEventListener('online', visibility); document.removeEventListener('visibilitychange', visibility); };
   }, [share.id, api, epoch]);
-  return <div className="private-share-view">{src ? <CardImage src={src} share={share} thumbnail={thumbnail} /> : error ? <p role="alert">{error}<button type="button" onClick={() => setEpoch((n) => n + 1)}>다시 확인</button></p> : <p role="status">카드를 확인하고 있습니다…</p>}</div>;
+  return <div className="private-share-view">{src ? <CardImage src={src} share={share} thumbnail={thumbnail} zoomable={zoomable && !thumbnail} /> : error ? <p role="alert">{error}<button type="button" onClick={() => setEpoch((n) => n + 1)}>다시 확인</button></p> : <p role="status">카드를 확인하고 있습니다…</p>}</div>;
 }

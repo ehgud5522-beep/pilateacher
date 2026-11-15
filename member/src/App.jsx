@@ -52,6 +52,7 @@ import { pickRatingCandidate } from "../../functions/shared/lesson-rating.mjs";
    쓰는 것은 넷뿐이다. */
 /* 홈 · 수업기록 · 마이페이지 (2026-10-30 개편). 예약 탭은 다음 단계에서 이
    자리에 들어간다 -- 지금 두면 누를 데 없는 탭이 된다. */
+const BEFORE_AFTER_TAB = { key: 'beforeAfter', label: '비포애프터', path: 'M3 3h18v18H3z M3 16l6-6 5 5 3-3 4 4' };
 const TABS = [
   { key: "home", label: "홈", path: "M3 10.5 12 3l9 7.5M5.5 9.5V20h13V9.5" },
   { key: "records", label: "수업기록", path: "M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM9 8h6M9 12h6M9 16h4" },
@@ -704,7 +705,8 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
 }
 
 function Tabs({ tab, onPick, sharingEnabled = false }) {
-  const items = sharingEnabled ? [...TABS, { key: 'beforeAfter', label: '비포애프터', path: 'M3 3h18v18H3z M3 16l6-6 5 5 3-3 4 4' }] : TABS;
+  /* 홈 · 수업기록 · 비포애프터 · 마이페이지 (2026-11-15 대표: "비포애프터가 3번째, 마이페이지가 마지막"). */
+  const items = sharingEnabled ? TABS.flatMap((item) => item.key === 'mypage' ? [BEFORE_AFTER_TAB, item] : [item]) : TABS;
   return (
     <nav className="tabs" aria-label="주요 메뉴" style={{ gridTemplateColumns: `repeat(${items.length}, 1fr)`, "--member-tab-count": items.length, "--member-tab-index": Math.max(0, items.findIndex((item) => item.key === tab)) }}>
       <span className="tab-indicator" aria-hidden="true" />

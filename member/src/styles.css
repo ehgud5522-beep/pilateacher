@@ -567,10 +567,12 @@ body {
 .ba-privacy { display: block; margin-top: 10px; font-size: 11px; line-height: 1.5; color: var(--sub); }
 .ba-home-privacy { margin-top: 8px; }
 
-.ba-member h1 { font-size: 20px; margin: 0; }
+/* 글자 단계 (2026-11-15 대표: "글씨체 전체적으로 밸런스 있게"): 제목 20/800 · 소제목 17/800 · 본문 14 · 보조 12.5~13 · 안내 11.
+   다른 탭(.title · .sechead)과 같은 단계를 쓴다. */
+.ba-member h1 { font-size: var(--t-heading); font-weight: 800; letter-spacing: -.02em; line-height: 1.3; margin: 0; }
 .ba-member-head { display: flex; align-items: center; gap: 10px; }
 .ba-member-head > div { flex: 1; min-width: 0; }
-.ba-member-head p { margin: 2px 0 0; font-size: 13px; }
+.ba-member-head p { margin: 4px 0 0; font-size: var(--t-caption); line-height: 1.5; }
 .ba-member .ba-back { min-width: 40px; min-height: 40px; padding: 0; border: 0; background: transparent; font-size: 26px; line-height: 1; color: var(--ink); }
 .ba-member .ba-refresh, .ba-member .ba-withdraw { min-height: 36px; padding: 0 12px; border: 0; border-radius: 10px; background: var(--card-tone); color: var(--sub); font: inherit; font-size: 12px; }
 .ba-member .ba-withdraw { display: block; margin-left: auto; background: transparent; text-decoration: underline; }
@@ -591,16 +593,23 @@ body {
 .ba-member-card figcaption { display: none; }
 .ba-member-card .private-share-view > p { margin: 0; padding: 28px 20px; text-align: center; font-size: 13px; color: var(--sub); }
 .ba-member .ba-privacy { text-align: center; }
-.ba-consent h2 { font-size: 16px; margin: 0; }
-.ba-consent p { font-size: 13px; line-height: 1.6; margin: 0; }
-.ba-check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.5; }
-.ba-check input { margin-top: 3px; accent-color: var(--rose); }
-.ba-member .share-confirm { min-height: 44px; border: 0; border-radius: 12px; background: var(--rose); color: #fff; font: inherit; font-weight: 700; }
+.ba-consent h2 { font-size: var(--t-title); font-weight: 800; letter-spacing: -.01em; margin: 0; }
+.ba-consent p { font-size: 14px; line-height: 1.65; margin: 0; word-break: keep-all; }
+.ba-consent p.muted { font-size: 12.5px; line-height: 1.6; }
+/* 공용 규칙(.private-member-sharing label = block)보다 강하게 -- 상자와 글이 한 줄에 선다. */
+.ba-member .ba-check { display: flex; gap: 10px; align-items: center; margin: 0; font-size: 14px; line-height: 1.5; word-break: keep-all; }
+.ba-member .ba-check input[type=checkbox] { flex-shrink: 0; width: 20px; height: 20px; margin: 0; accent-color: var(--rose); }
+.ba-member .share-confirm { width: 100%; min-height: 48px; border: 0; border-radius: 14px; background: var(--rose); color: #fff; font: inherit; font-size: 15px; font-weight: 700; }
 .ba-member .share-confirm:disabled { opacity: .45; }
 .ba-empty-share p { margin: 0; font-size: 14px; }
 .ba-empty-share p + p { margin-top: 4px; font-size: 12px; }
-.ba-error { font-size: 13px; }
-.ba-error button { margin-left: 8px; }
+/* 오류는 한 칸 안에: 이유(코드 포함) + [다시 확인]. 잠깐 끊긴 것은 작은 한 줄(.ba-quiet)로만. */
+.ba-member .ba-error { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 14px; background: var(--card-tone); font-size: 13px; line-height: 1.5; color: var(--ink); word-break: keep-all; }
+.ba-member .ba-error span { flex: 1; min-width: 0; }
+.ba-member .ba-error button { flex-shrink: 0; min-height: 36px; padding: 0 12px; font-size: 12px; }
+.ba-quiet { font-size: 12px; color: var(--sub); }
+.ba-status { padding: 28px 0; text-align: center; font-size: 13px; color: var(--sub); }
+.ba-zoom-hint { margin-top: 8px; text-align: center; font-size: 12px; color: var(--sub); }
 /* 공용 공유 스타일(.private-member-sharing button)의 테두리를 목록 줄에서는 걷는다 -- 한 카드 안의 줄이다. */
 .ba-member .ba-share-row { border: 0; border-radius: 0; background: transparent; padding: 14px 20px; }
 .ba-member .ba-share-row + .ba-share-row { border-top: 1px solid var(--line); }

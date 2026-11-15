@@ -1485,6 +1485,23 @@ exports.teacherPushSettings = onCall(MEMBER_LINK_OPTIONS, async (request) => {
   }
 });
 
+/* 보니따 앱 설치 현황 (member-app-status.js). 대표 · 총괄만. 회원 id 와 "어디서 · 언제" 만 돌려준다. */
+exports.memberAppStatus = onCall(MEMBER_LINK_OPTIONS, async (request) => {
+  try {
+    const { createMemberAppStatusService } = require("./member-app-status");
+    const result = await createMemberAppStatusService({ firestore }).list(request);
+    logger.info("member_app_status_listed", { feature: "member_app_status", stage: "list", organizationId: String(request?.data?.organizationId || ""), members: result.members.length });
+    return result;
+  } catch (error) {
+    logger.warn("member_app_status_failed", {
+      feature: "member_app_status", stage: "list", errorDomain: "member_app_status",
+      errorCode: String(error?.code || error?.message || "unknown"),
+    });
+    if (error?.httpsCode) throw new HttpsError(error.httpsCode, String(error.code), { code: String(error.code) });
+    throw new HttpsError("unavailable", "member_app_status_unavailable", { code: "member_app_status_unavailable" });
+  }
+});
+
 /* 회원 앱의 알림 설정 · 기기 토큰. 회원 계정만 (memberLinks 가 있는 계정). 토큰과
    설정은 서버만 쓴다 -- 회원 앱에 Firestore 쓰기 문을 새로 내지 않는다. */
 exports.memberPushSettings = onCall(MEMBER_LINK_OPTIONS, async (request) => {
@@ -1496,6 +1513,8 @@ exports.memberPushSettings = onCall(MEMBER_LINK_OPTIONS, async (request) => {
       token: request?.data?.token,
       platform: request?.data?.platform,
       prefs: request?.data?.prefs,
+      seenPlatform: request?.data?.seenPlatform,
+      appVersion: request?.data?.appVersion,
     });
   } catch (error) {
     logger.warn("member_push_settings_failed", {

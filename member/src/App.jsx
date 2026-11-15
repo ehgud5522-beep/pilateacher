@@ -24,7 +24,7 @@ import {
   watchAuth, db,
 } from "./firebase.js";
 import {
-  DEFAULT_PREFS, PUSH_PERMISSION, PUSH_SUPPORT, forgetPushDevice, normalizePrefs, permissionGuide,
+  DEFAULT_PREFS, PUSH_KIND, PUSH_PERMISSION, PUSH_SUPPORT, forgetPushDevice, normalizePrefs, permissionGuide,
   platformOf, pushPlugin, registerDevice, tapTarget, ratingTarget, sharedPhotoTarget,
 } from "./push.js";
 import { wantsAccountDeletion } from "./delete-account.js";
@@ -509,7 +509,11 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
         if (alive) setPush((current) => ({ ...current, permission: outcome.permission, errorCode: outcome.errorCode || "" }));
       }
       try {
-        const result = await memberPushSettings({ action: "get" });
+        /* 어디서 켰는지 함께 보낸다 -- 대표의 "보니따 앱 설치 현황" 이 이것을 본다(서버가 12시간에 한 번만 적음). */
+        const result = await memberPushSettings({
+          action: "get", seenPlatform: platformOf() || "web",
+          appVersion: typeof __MEMBER_BUILD__ === "undefined" ? "" : String(__MEMBER_BUILD__.version || ""),
+        });
         if (alive) setPush((current) => ({ ...current, prefs: normalizePrefs(result?.prefs) }));
       } catch (error) {
         recordPush({ stage: "read_prefs", errorDomain: "functions", errorCode: String(error?.details?.code || error?.code || "unknown"), message: error?.message });
@@ -653,12 +657,15 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
     /* 평가 카드는 연결돼 있을 때만 -- 오프라인 사본을 보는 중에는 보낼 수 없다. 카드를 그릴지는
        서버가 정한다 (스위치가 꺼져 있으면 아무것도 그리지 않는다). */
     const requestedHere = requestedRating && requestedRating.organizationId === current.link.organizationId && requestedRating.clientId === current.link.clientId;
-    const rateLesson = state.offlineAt ? null : requestedHere ? requestedRating : pickRatingCandidate(current.view.history, { skip: ratingSeen });
+    /* 회원이 평가를 껐으면(마이페이지 · 카드의 "앞으로 묻지 않기") 카드를 그리지 않는다. */
+    const ratingOff = push.prefs?.[PUSH_KIND.LESSON_RATING] === false;
+    const rateLesson = state.offlineAt || ratingOff ? null : requestedHere ? requestedRating : pickRatingCandidate(current.view.history, { skip: ratingSeen });
     body = (
       <div className="stack">
         {rateLesson ? (
           <LessonRatingCard key={`${current.link.organizationId}/${current.link.clientId}/${text(rateLesson.lessonId)}/${requestedHere ? requestedRating.openedAt : "home"}`}
-            lesson={rateLesson} place={current.link} api={callMemberRating} onSeen={markRatingSeen} />
+            lesson={rateLesson} place={current.link} api={callMemberRating} onSeen={markRatingSeen}
+            onStopAsking={() => savePushPref(PUSH_KIND.LESSON_RATING, false)} />
         ) : null}
         <Home view={{ ...current.view, schedule }} onOpenRecords={() => setTab("records")}
           onOpenLesson={setOpenLesson}

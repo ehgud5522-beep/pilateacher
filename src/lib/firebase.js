@@ -780,6 +780,9 @@ export const fbUnlinkMemberAccount = callableAsOwner("unlinkMemberAccount");
 /** 읽기 전용 점검. 어긋난 회원을 만나면 거기서 멈추고 무엇이 다른지 돌려준다. */
 export const fbVerifyMemberViews = callableAsOwner("verifyMemberViews");
 
+/** 보니따 앱 설치 현황 (대표 · 총괄). 회원 id 마다 "앱을 쓰는가 · 어디서 · 언제" 만 돌아온다. */
+export const fbMemberAppStatus = callableAsOwner("memberAppStatus");
+
 /** 투영을 다시 만든다. **`dryRun: false` 를 명시해야 실제로 쓴다.** */
 export const fbRebuildMemberViews = callableAsOwner("rebuildMemberViews");
 

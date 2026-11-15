@@ -317,6 +317,10 @@ async function sendOne(firestore, messaging, input) {
    새로 내지 않는다 -- 규칙 변경 없이 간다. */
 
 const PLATFORMS = new Set(["ios", "android"]);
+/* 앱이 켜진 흔적 (2026-11-15). 회원 앱은 켜질 때마다 get 을 부르며 어디서 켰는지(ios · android · web) 함께 보낸다.
+   대표의 "보니따 앱 설치 현황" 이 이것을 본다(member-app-status.js). 12시간에 한 번만 적는다 -- 켤 때마다 쓰지 않게. */
+const SEEN_PLATFORMS = new Set(["ios", "android", "web"]);
+const SEEN_EVERY_MS = 12 * 60 * 60 * 1000;
 
 const settingsError = (httpsCode, code) => Object.assign(new Error(code), { httpsCode, code });
 
@@ -334,6 +338,16 @@ async function handleMemberPushSettings(firestore, input) {
   const ref = firestore.collection("memberPush").doc(uid);
   const at = (input?.now || (() => new Date()))();
   const action = text(input?.action);
+
+  const seenPlatform = text(input?.seenPlatform);
+  if (action === "get" && SEEN_PLATFORMS.has(seenPlatform)) {
+    const before = await ref.get();
+    const last = toMillis(before.exists ? before.data()?.seen?.[seenPlatform] : null);
+    if (!Number.isFinite(last) || at.getTime() - last >= SEEN_EVERY_MS) {
+      const version = text(input?.appVersion).slice(0, 20);
+      await ref.set({ seen: { [seenPlatform]: at }, ...(/^[0-9][0-9A-Za-z.() -]*$/.test(version) ? { appVersion: { [seenPlatform]: version } } : {}) }, { merge: true });
+    }
+  }
 
   if (action === "register" || action === "unregister") {
     const token = text(input?.token);

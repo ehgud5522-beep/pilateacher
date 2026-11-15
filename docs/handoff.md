@@ -1,3 +1,14 @@
+## 2026-11-15 — FC매니저는 맡은 지점의 회원권만 (#213, 병합 · 배포 전, 규칙 배포 필요)
+
+- 대표: "네, PR까지" (FC 권한 정리에서 찾은 구멍). 규칙 `passInManagerScope` · 서버 `passInManagerScope`(pass-admin.js) ·
+  화면 `managerCanTouchPass`(location-repository.js) 세 곳이 같은 선: 회원권 `locationId` 가 FC 지점 안이어야 발급 · 잔여 줄이기 ·
+  만료일 · 갓 발급 취소 · 담당 교체 · 세션업 · 양도 · 홀딩, 차감 뺀 원장 항목. 거절 코드 `pass_out_of_scope`(서버) / permission-denied(규칙)
+- 예외: 대표 · 총괄 안 물음, FC 지점 비었거나 회원권 지점 비었으면 통과, **차감(−1)은 안 물음**(대타가 지점을 넘음)
+- 확인: 규칙 430 통과 · Functions 376 · 앱 3746. **남은 규칙 1 실패는 무관** -- `before-after-sharing.rules.test.js` "off … fail closed" 가
+  `mode: all` 도 닫혀야 한다고 기대(#206 이 일부러 열었음). 낡은 테스트, 따로 고칠 것
+- **배포 순서(지시 뒤)**: 규칙 → Functions(sessionUpPass · handoverPass · managePassHold) → 웹. 배포 전 FC 4명 `locationIds` 확인 --
+  틀린 FC는 자기 회원권을 못 고치게 된다
+
 ## 2026-11-15 — FC매니저 권한 정리 · 총괄매니저 연락처 버그 (#212, 병합 · 배포 전)
 
 - 대표: "4번(출석)은 패스, FC매니저 권한 정리 -- 조사부터". 규칙 · Functions · 화면을 대조했다

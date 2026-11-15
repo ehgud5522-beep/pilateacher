@@ -499,6 +499,8 @@ body {
 
 /* ── 수업 후 별점 평가 (2026-11-09) ───────────────────────────────────── */
 .ratecard .ratehead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+/* "앞으로 묻지 않기" -- 작게, 글자 단추로. 주 버튼들과 겨루지 않는다. */
+.ratecard .ratestop { display: block; margin: 12px auto 0; min-height: 40px; padding: 0 12px; border: 0; background: none; color: var(--sub); font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; }
 .ratecard .ratecap { font-size: var(--t-caption); color: var(--sub); }
 .ratecard .ratesec { padding: 2px 10px; border-radius: 999px; background: var(--card-tone); font-size: 12px; font-weight: 700; color: var(--sub); }
 .ratecard .ratetitle { margin: 6px 0 2px; font-size: 22px; font-weight: 800; word-break: keep-all; }

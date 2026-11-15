@@ -55,7 +55,7 @@ import {
   fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone,
-  fbVerifyMemberViews,
+  fbVerifyMemberViews, fbMemberAppStatus,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
 import { readPendingClientWrites, runAppDualWrite } from "./data/dual-write/app-runtime";
@@ -414,6 +414,7 @@ import {
   createEmergencyBackupEnvelope, drainPhotoQueue, mergePhotoGraph, mergePhotoMetadata, storageUsage,
 } from "./features/backup/cloud-backup.js";
 import { optimizePhotoBackup } from "./features/backup/photo-optimizer.js";
+import MemberAppStatus from "./features/members/MemberAppStatus.jsx";
 import { downscaleToFit } from "./features/photos/downscale.js";
 import {
   SCOPE_HEALTH, instructorScopeRows, rebuildDoneMessage, rebuildPreviewMessage,
@@ -19999,14 +20000,25 @@ function PassEditSheet({
 }) {
   const adjust = kind === "adjust";
   const held = isPassHeld(pass);
-  const [delta, setDelta] = useState(initialDelta);
+  /* 방향은 버튼으로 고른다 (2026-11-15 대표: "아이폰에 마이너스 입력칸이 없다고 함").
+     아이폰 숫자 자판(inputMode numeric)에는 '-' 키가 없어서 "-2" 를 칠 수 없었다 -- 줄이는 조정을 아예 못 했다.
+     이제 [줄이기 −] [늘리기 +] 를 고르고 칸에는 횟수만 넣는다. 예전처럼 부호를 직접 쳐도(PC) 그 부호를 따른다.
+     늘리기를 못 하는 사람(FC매니저)은 줄이기로 정해져 있다. */
+  const initialSign = String(initialDelta).trim().startsWith("-") ? -1 : String(initialDelta).trim().startsWith("+") ? 1 : (canIncrease ? 0 : -1);
+  const [sign, setSign] = useState(initialSign);
+  const [delta, setDelta] = useState(String(initialDelta).trim().replace(/^[+-]/, ""));
   const [mode, setMode] = useState(initialMode);
   const [days, setDays] = useState(initialDays);
   const [date, setDate] = useState(initialDate);
   const [reason, setReason] = useState(initialReason);
 
   const remaining = remainingCountOf(pass);
-  const deltaNumber = Number.parseInt(String(delta).trim(), 10);
+  const typed = String(delta).trim();
+  const typedSign = typed.startsWith("-") ? -1 : typed.startsWith("+") ? 1 : 0;
+  const count = Number.parseInt(typed.replace(/^[+-]/, ""), 10);
+  const direction = typedSign || sign;
+  const deltaNumber = Number.isInteger(count) && count > 0 && direction ? direction * count : NaN;
+  const needsDirection = adjust && Number.isInteger(count) && count > 0 && !direction;
   const nextRemaining = Number.isInteger(deltaNumber) ? remaining + deltaNumber : null;
   const below = nextRemaining !== null && nextRemaining < 0;
   /* FC매니저는 줄이는 조정만 한다 (2026-11-04 대표). 저장을 눌러 규칙에
@@ -20046,16 +20058,30 @@ function PassEditSheet({
 
       {adjust ? (
         <>
-          <div className="mt-3 flex items-center gap-2">
-            <input inputMode="numeric" value={delta} placeholder={canIncrease ? "+3 또는 -2" : "-2"}
-              onChange={(event) => setDelta(event.target.value)} className={inputCls}
+          <div className="mt-3 grid grid-cols-2 gap-1.5" role="group" aria-label="조정 방향" data-adjust-direction>
+            {[[-1, "줄이기 −"], [1, "늘리기 +"]].filter(([value]) => canIncrease || value < 0).map(([value, title]) => {
+              const on = direction === value;
+              return <button key={value} type="button" aria-pressed={on} onClick={() => { setSign(value); setDelta(typed.replace(/^[+-]/, "")); }}
+                className="h-11 rounded-lg text-sm font-bold"
+                style={on ? { backgroundColor: value < 0 ? BAD : PRIMARY, color: "#fff", border: "1px solid transparent" } : { backgroundColor: CANVAS, color: INK2, border: `1px solid ${LINE}` }}>{title}</button>;
+            })}
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <input inputMode="numeric" pattern="[0-9]*" value={delta} placeholder="횟수 (예: 2)" aria-label="조정할 횟수"
+              onChange={(event) => setDelta(event.target.value.replace(/[^0-9+-]/g, ""))} className={inputCls}
               style={{ maxWidth: 140 }} />
+            <span style={{ fontSize: TYPE.caption, color: SUB }}>회</span>
             <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: below || increaseBlocked ? BAD : SUB }}>
               {Number.isInteger(deltaNumber) && deltaNumber !== 0
                 ? `${remaining}회 → ${nextRemaining}회`
                 : `지금 ${remaining}회`}
             </p>
           </div>
+          {needsDirection ? (
+            <p role="alert" className="mt-1 font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>
+              줄일지 늘릴지 위에서 골라 주세요.
+            </p>
+          ) : null}
           {below ? (
             <p role="alert" className="mt-1 font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>
               잔여는 0회 미만이 될 수 없어요. 지금 {remaining}회 남아 있습니다.
@@ -27035,6 +27061,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     "group-payroll": "그룹 급여 정산",
     issues: "발급 내역",
     "member-app": "회원 앱",
+    "member-app-status": "보니따 앱 설치 현황",
     audit: "감사 로그",
   };
   /* 센터를 운영하는 일과 이 기기를 쓰는 일은 다른 묶음이다. 한 그룹에 섞여
@@ -27068,6 +27095,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       /* 회원이 자기 잔여를 보는 앱. 여기서는 연결만 다룬다 -- 자동으로 잇지
          못한 것과, 잘못 이은 것과, 화면의 숫자가 맞는지. */
       ...(showMemberApp ? [{ key: "member-app", title: "회원 앱", description: "연결 대기 · 끊기 · 점검", Icon: Users }] : []),
+      /* 누가 보니따 앱을 깔았는지 · 아직인지 (2026-11-15 대표). 회원 앱 연결과 같은 사람(대표 · 총괄)만 본다. */
+      ...(showMemberApp ? [{ key: "member-app-status", title: "보니따 앱 설치 현황", description: "누가 깔았는지 · 아직 안 깔았는지", Icon: Smartphone }] : []),
     ] },
     { label: "강사 · 급여", items: [
       ...(showInstructorAdmin ? [{ key: "instructor-admin", title: "강사 관리", description: "강사 추가 · 지점 · 직함 · 풀방금액", Icon: Users }] : []),
@@ -27582,6 +27611,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
         {view === "member-app" && showMemberApp && (
           <MemberAppAdmin organization={organization}
             clientStore={clientStore} locationStore={locationStore} onToast={onToast} />
+        )}
+        {view === "member-app-status" && showMemberApp && (
+          <MemberAppStatus organizationId={organization?.organizationId || ""}
+            loadClients={() => listClients(organization?.organizationId || "", { store: clientStore }).then((result) => result?.items || result || [])}
+            loadLocations={() => listLocations(organization?.organizationId || "", { store: locationStore }).then((result) => result?.items || result || [])}
+            fetchStatus={fbMemberAppStatus} />
         )}
         {view === "issues" && showIssues && (
           <IssueReport organization={organization}

@@ -211,6 +211,18 @@
 
 # 이어서 작업하기 — 최근 변경과 남은 일
 
+## 2026-11-15 — 빌드 브랜치 `release/1-1-52` · 배포는 병합 대기 (대표 지시: "모두 배포해주고 브랜치 새로 해줘")
+
+- **배포 안 함 -- 병합 대기.** PR #194 ~ #200 이 모두 열려 있다(main 에 없음). `deploy:web` 은 main 에서만 돌고, 병합은 대표가 한다(CLAUDE.md).
+  Functions 를 병합 안 된 브랜치에서 내보내면 운영이 main 보다 앞서게 되어(11-13 코덱스 때 생긴 일) 같이 보류했다
+- 병합되면 배포 순서: Functions(`beforeAfterSharing` -- 강사 `teacherConsent` 추가) → 강사 웹(`npm run deploy:web`). 회원 웹은 병합 시 자동.
+  PR 은 #194 → #200 차례로 쌓여 있다 -- 아래부터 병합하면 위 PR 의 기준이 main 으로 옮겨진다
+- `release/1-1-52` = `release/1-1-51`(d908789, #194~#200 전부) + 버전만. 1.1.51(86)은 대표가 이미 빌드했다(서버 로그의 appBuild)
+  - 강사: versionName 1.1.52 · versionCode 75(Codemagic 이 덮어씀) · iOS MARKETING_VERSION 1.1.52 · 허용 브랜치 `^release/1-1-52$`
+  - 보니따: 1.1.3 → **1.1.4** (package.json · Android versionName · iOS MARKETING_VERSION). 1.1.3 이 스토어에 나갔는지 확인 못 해,
+    11-11 처럼 "이미 승인된 버전의 새 제출 거부(90186/90062)" 를 피하려고 올렸다
+- 빌드 · 스토어 업로드는 대표가 Codemagic 에서
+
 ## 2026-11-15 — 보니따 비포애프터 안정화 · 카드 크게 보기 · 카드 꾸미기 · 탭 순서 (`feat/member-before-after-polish`, #199 위 · `release/1-1-51` 에도 합침)
 
 - 대표 폰 화면(보니따 1.1.3 · 1f80d2b) 지적 여섯

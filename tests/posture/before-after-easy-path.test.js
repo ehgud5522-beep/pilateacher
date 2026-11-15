@@ -58,11 +58,16 @@ test('a failed readiness check is logged under its own stage, not as "unknown"',
 
 /* ------------------------------ ② 한 길 ------------------------------ */
 
-test('the suggested pair is the same direction, as far apart as possible', () => {
+test('the suggested pair is the photo just taken and the first one of the same direction', () => {
   const photos = [photo('a', '2026-06-02'), photo('b', '2026-08-01', 'leftSide'), photo('c', '2026-09-01'), photo('d', '2026-11-13'), photo('e', '2026-11-14', 'leftSide')];
-  assert.deepEqual(suggestPair(photos).map((p) => p.id), ['a', 'd'], 'front ↔ front spans longer than side ↔ side');
-  const sideOnly = [photo('a', '2026-06-02'), photo('b', '2026-07-01', 'leftSide'), photo('e', '2026-11-14', 'leftSide')];
-  assert.deepEqual(suggestPair(sideOnly).map((p) => p.id), ['b', 'e'], 'a same-direction pair beats a longer mixed one');
+  assert.deepEqual(suggestPair(photos).map((p) => p.id), ['b', 'e'], 'the last shot was a side view → side ↔ side');
+  assert.deepEqual(suggestPair(photos.slice(0, 4)).map((p) => p.id), ['a', 'd'], 'the last shot was a front view → front ↔ front');
+  /* 대표: "전신이 아니더라도 부위를 비포애프터할 수도 있음". 부위 사진("기타")도 같은 규칙이다. */
+  const parts = [photo('full', '2026-05-01'), photo('neck1', '2026-06-02', 'custom'), photo('full2', '2026-09-01'), photo('neck2', '2026-11-14', 'custom')];
+  assert.deepEqual(suggestPair(parts).map((p) => p.id), ['neck1', 'neck2'], 'body-part photos are paired with each other, not pushed behind full-body ones');
+  // 방금 찍은 방향이 한 장뿐이면 같은 방향끼리 가장 오래 떨어진 짝.
+  const lone = [photo('a', '2026-06-02'), photo('d', '2026-11-13'), photo('s', '2026-11-14', 'leftSide')];
+  assert.deepEqual(suggestPair(lone).map((p) => p.id), ['a', 'd']);
 });
 
 test('with no same-direction pair it falls back to oldest and newest; fewer than two gives nothing', () => {

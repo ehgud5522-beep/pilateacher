@@ -25,11 +25,15 @@ export function chronologicalPair(photos) {
   return [...photos].sort((a, b) => a.date.localeCompare(b.date)).slice(0, 2);
 }
 /* [변화 카드 만들기] 가 처음에 골라 주는 두 장 (2026-11-15). 강사가 고르지 않아도 되게 한다.
-   같은 방향끼리(정면 ↔ 정면) 가장 오래 떨어진 두 장이 먼저다 -- 방향이 다르면 체형 비교가 안 된다.
-   그런 짝이 없으면 가장 오래된 사진과 가장 최근 사진. 두 장이 안 되면 빈 배열. */
+   ① 방금(가장 최근에) 찍은 사진과, 같은 방향의 가장 오래된 사진. 강사는 방금 찍은 것으로 카드를 만들려는 것이다 --
+      전신이든 부위("기타")든 같다 (대표: "부위를 비포애프터할 수도 있음").
+   ② 그 방향이 한 장뿐이면, 같은 방향끼리 가장 오래 떨어진 두 장 -- 방향이 다르면 체형 비교가 안 된다.
+   ③ 그런 짝도 없으면 가장 오래된 사진과 가장 최근 사진. 두 장이 안 되면 빈 배열. */
 export function suggestPair(photos) {
   const dated = [...(photos || [])].filter((p) => p?.date).sort((a, b) => a.date.localeCompare(b.date));
   if (dated.length < 2) return [];
+  const latest = dated.at(-1), first = dated.find((p) => p.view === latest.view);
+  if (first !== latest && first.date !== latest.date) return [first, latest];
   let best = null;
   for (const [view] of ALBUM_VIEWS) {
     if (view === 'custom') continue;
@@ -39,6 +43,17 @@ export function suggestPair(photos) {
     if (Number.isFinite(span) && (!best || span > best.span)) best = { span, pair: [same[0], same.at(-1)] };
   }
   return best ? best.pair : [dated[0], dated.at(-1)];
+}
+/* [지난 사진에 맞춰 찍기] 가 겹쳐 보여 줄 사진. 없으면 null.
+   강사는 전신만 찍지 않는다 (2026-11-15 대표: "부위를 비포애프터할 수도 있음" -- 목 · 골반 · 고관절처럼 한 부위만).
+   그래서 "기타"(부위 사진)를 뒤로 미루지 않는다. 가장 최근에 찍은 사진의 방향이 지금 추적하는 것이라고 보고,
+   그 방향의 가장 오래된 사진을 고른다 -- 새 사진은 그 사진과 비교될 것이다.
+   다른 사진에 맞추고 싶으면 사진을 열어 [이 사진에 맞춰 찍기] 를 누른다. */
+export function ghostCandidate(photos) {
+  const dated = [...(photos || [])].filter((p) => p?.date && p.src).sort((a, b) => a.date.localeCompare(b.date));
+  if (!dated.length) return null;
+  const tracking = dated.at(-1).view;
+  return dated.find((p) => p.view === tracking) || dated[0];
 }
 export function patchAlbumPhoto(map, memberId, photo, patch, targetId = memberId) {
   const current = map[memberId] || {};

@@ -5539,6 +5539,32 @@ function guideTagBox(mark, start, width, height, fontScale, offsetX = 0, offsetY
   return { fontSize, h, padX: 6 * fontScale, x: offsetX + 6 * fontScale, y: above < offsetY ? start.y + gap : above };
 }
 
+/* 비포애프터 앨범의 "지난 사진에 맞춰 찍기". 자세 기록의 촬영 화면을 한 방향짜리로 그대로 쓴다 --
+   카메라 권한 · 수평 센서 · 타이머 · 실패 진단이 이미 그 안에 있다. 찍은 사진은 앨범이 받아 저장한다(onCaptured).
+   저장에 실패하면 화면은 닫히지 않고 방금 찍은 사진을 쥔 채 남는다. */
+function AlbumCaptureScreen({ member, view, ghost, onCaptured, onPickFile, onClose }) {
+  const [busy, setBusy] = useState(false);
+  const [taken, setTaken] = useState(false);
+  const session = useRef(`album_${Date.now().toString(36)}`);
+  const captureViews = useMemo(() => [{ key: view, label: postureViewLabel(view) }], [view]);
+  /* 저장이 끝나면 "다 찍었다" 로 바꿔 미리보기가 다시 켜지지 않게 한 뒤 닫는다. */
+  const capturePhotos = useMemo(() => (taken ? { [view]: { src: "" } } : {}), [taken, view]);
+  const accept = async (blob) => {
+    setBusy(true);
+    try {
+      const stored = await onCaptured(blob, view);
+      if (stored) { setTaken(true); onClose(); }
+      return stored;
+    } finally { setBusy(false); }
+  };
+  return <PostureCaptureScreen member={member} assessmentId={session.current} roleLabel="비포애프터" captureViews={captureViews} currentCapture={captureViews[0]}
+    capturePhotos={capturePhotos} draftSaved={EMPTY_OBJECT} busy={busy} ghost={ghost}
+    onSelectView={NOOP} onAcceptCapture={accept} onOpenAlbum={onPickFile} onContinue={onClose} onExit={onClose} />;
+}
+const EMPTY_OBJECT = Object.freeze({});
+const NOOP = () => {};
+const renderAlbumCapture = (props) => <AlbumCaptureScreen {...props} />;
+
 /* 비포애프터 자동 맞춤이 쓰는 자세 인식 (BeforeAfterAlbum detectPose). 자세 분석과 같은 인식기를 쓴다 --
    기기 안에서만 돌고, 받아 오는 것은 모델 파일뿐이다. 사진은 어디로도 보내지 않는다. */
 async function detectAlbumPose(image) {
@@ -9374,7 +9400,16 @@ const PREVIEW_BOUNDS_RETRY_DELAY_MS = 120;
 function PostureCaptureScreen({
   member, assessmentId, roleLabel, captureViews, currentCapture, capturePhotos, draftSaved, busy, busyKind = null,
   captureImportError = "", albumPending = false, albumReturn = false, onAlbumReturnUsed, onSelectView, onAcceptCapture, onOpenAlbum, onDeleteCapture, onSaveDraft, onContinue, onExit,
+  ghost = null,
 }) {
+  /* 겹쳐 찍기 (2026-11-15 대표). 비포애프터 앨범에서 열면 지난 사진을 미리보기 위에 반투명으로 얹는다 --
+     회원을 그 윤곽에 맞춰 세우고 찍으면 두 사진을 나중에 맞출 일이 거의 없다.
+     겹침은 화면에만 있다. 찍히는 사진에는 들어가지 않는다(사진은 카메라에서 바로 온다).
+     세 단계: 연하게 → 진하게 → 끔. 방금 찍은 사진을 확인할 때도 켜 둘 수 있어 맞았는지 바로 보인다. */
+  const GHOST_LEVELS = [{ opacity: 0.4, label: "겹침 연하게" }, { opacity: 0.65, label: "겹침 진하게" }, { opacity: 0, label: "겹침 끔" }];
+  const [ghostLevel, setGhostLevel] = useState(0);
+  const [ghostBroken, setGhostBroken] = useState(false);
+  const ghostOpacity = ghost?.src && !ghostBroken ? GHOST_LEVELS[ghostLevel].opacity : 0;
   const isNative = Capacitor.isNativePlatform();
   const iosStableCaptureFallback = Capacitor.getPlatform() === "ios" && !IOS_NATIVE_CAPTURE_ENABLED;
   const nativePreviewAvailable = isNative && !iosStableCaptureFallback && Capacitor.isPluginAvailable("CameraPreview");
@@ -10180,7 +10215,8 @@ function PostureCaptureScreen({
 
   // Red: both axes out. Amber: one already in range. Green: ready.
   const frameColor = LEVEL_TONE_COLORS[resolveLevelTone(sensor)];
-  const directionGuide = {
+  /* 지난 사진을 겹쳐 보는 동안에는 방향 안내 대신 "윤곽에 맞춰 세우라" 고 말한다. 수평이 안 맞으면 그 안내가 먼저다. */
+  const directionGuide = ghostOpacity > 0 ? "지난 사진의 윤곽에 회원님을 맞춰 세워 주세요." : {
     front: "정면을 바라보고 양팔을 자연스럽게 내려 주세요.",
     leftSide: "왼쪽 어깨가 카메라를 향하도록 서 주세요.",
     back: "카메라를 등지고 정면 자세로 서 주세요.",
@@ -10220,7 +10256,9 @@ function PostureCaptureScreen({
           {!nativePreviewAvailable && <video ref={videoRef} muted playsInline autoPlay className="h-full w-full object-contain" />}
           {pendingCapture?.src && <img src={pendingCapture.src} alt={`방금 촬영한 ${postureViewLabel(pendingCapture.view)} 사진`} className="absolute inset-0 h-full w-full object-contain" onError={() => setCameraError("사진을 불러오지 못했습니다. 다시 시도해 주세요.")} />}
           {!pendingCapture && !captureCompleteIdle && activePhoto?.src && cameraStatus !== "active" && <img src={activePhoto.src} alt={`${postureViewLabel(activeView)} 기존 촬영`} className="absolute inset-0 h-full w-full object-contain" onError={() => setCameraError("사진을 불러오지 못했습니다. 다시 시도해 주세요.")} />}
-          {!pendingCapture && !captureCompleteIdle && (
+          {ghostOpacity > 0 && (pendingCapture || cameraStatus === "active") && <img src={ghost.src} alt="" aria-hidden="true" data-posture-ghost className="pointer-events-none absolute inset-0 h-full w-full object-contain" style={{ opacity: ghostOpacity }} onError={() => setGhostBroken(true)} />}
+          {ghost?.src && !ghostBroken && !iosStableCaptureFallback && (pendingCapture || cameraStatus === "active") && countdown == null && <button type="button" onClick={() => setGhostLevel((level) => (level + 1) % GHOST_LEVELS.length)} className="absolute left-3 top-12 z-10 flex h-9 items-center gap-1.5 rounded-full px-3 text-caption font-bold" style={{ backgroundColor: "rgba(13,16,22,.72)", border: "1px solid rgba(255,255,255,.22)" }} aria-label={`지난 사진 ${GHOST_LEVELS[ghostLevel].label} · 눌러서 바꾸기`}><SlidersHorizontal size={14} />{ghost.label ? `${ghost.label} · ` : ""}{GHOST_LEVELS[ghostLevel].label}</button>}
+          {!pendingCapture && !captureCompleteIdle && ghostOpacity === 0 && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center" aria-hidden="true">
               {/* One tall frame says "stand inside this" at a glance, and its
                   colour is the whole state readout: red until the phone is
@@ -10241,7 +10279,7 @@ function PostureCaptureScreen({
           {(transferLabel || iosStableCaptureFallback || ["starting", "error", "paused"].includes(cameraStatus)) && !pendingCapture && (transferLabel || !captureCompleteIdle) && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0D1016]/88 px-7 text-center">
               {transferLabel || cameraStatus === "starting" ? <Loader2 size={30} className="animate-spin" /> : cameraStatus === "error" || cameraStatus === "paused" ? <AlertTriangle size={30} style={{ color: "#F2B84B" }} /> : <Camera size={30} />}
-              <div><p className="text-sm font-extrabold">{transferLabel || (iosStableCaptureFallback ? "사진 촬영 또는 선택" : cameraStatus === "starting" ? "카메라 준비 중" : cameraStatus === "paused" ? "카메라가 일시 중지되었습니다" : "카메라를 열 수 없습니다")}</p>{!transferLabel && (iosStableCaptureFallback || cameraError) && <p className="mt-1 text-xs leading-relaxed text-white/65">{iosStableCaptureFallback ? "App Store 안정화 빌드에서는 iOS 기본 사진 선택 화면을 사용합니다." : cameraError}</p>}</div>
+              <div><p className="text-sm font-extrabold">{transferLabel || (iosStableCaptureFallback ? "사진 촬영 또는 선택" : cameraStatus === "starting" ? "카메라 준비 중" : cameraStatus === "paused" ? "카메라가 일시 중지되었습니다" : "카메라를 열 수 없습니다")}</p>{!transferLabel && (iosStableCaptureFallback || cameraError) && <p className="mt-1 text-xs leading-relaxed text-white/65">{iosStableCaptureFallback ? (ghost ? "이 빌드의 아이폰에서는 겹쳐 찍기를 쓸 수 없어요. 기본 카메라로 찍은 뒤 변화 카드에서 [자동으로 맞추기]를 눌러 주세요." : "App Store 안정화 빌드에서는 iOS 기본 사진 선택 화면을 사용합니다.") : cameraError}</p>}</div>
               {/* 진행 중에는 아무 버튼도 내주지 않는다. 다시 시도할 것이 없다. */}
               {!transferLabel && cameraStatus !== "starting" && (iosStableCaptureFallback
                 ? <button type="button" onClick={() => onOpenAlbum(activeView)} className="h-11 rounded-xl px-5 text-sm font-bold text-white" style={{ backgroundColor: BRAND }}>사진 촬영 또는 선택</button>
@@ -27780,7 +27818,7 @@ export function createScheduleFixtureDb() {
    marks through two separate implementations, so a test needs both to prove they
    agree on the contrast outline. Nothing in the app reads this. */
 /* PostureCanvas 는 화면 확인(tools/qa)에서 편집기만 따로 띄울 때 쓴다. */
-export const annotationRenderers = { drawAnnotationMark, AnnotationSvgMark, PostureCanvas };
+export const annotationRenderers = { drawAnnotationMark, AnnotationSvgMark, PostureCanvas, AlbumCaptureScreen };
 
 export function createAppScreenSmokeCases() {
   const noop = () => {};
@@ -34431,6 +34469,7 @@ export default function App() {
               unlinked={unlinkedPhotos} unlinkedOwnerView={unlinkedPhotoOwnerView} onAssignUnlinked={assignUnlinkedPhoto} onExcludeUnlinked={excludeUnlinkedPhotos}
               drawMarks={drawAlbumMarks}
               detectPose={detectAlbumPose}
+              capture={renderAlbumCapture}
               onAlignLog={logAlbumAlign}
               markup={({ photo, memberId, onDone }) => <PostureCanvas key={`album_${photo.bucket}_${photo.id}`} photo={photo} label={`${photo.date || ""} · 펜 · 자`} initialTool="pen"
                 onClose={onDone} onCancel={onDone} onSave={(marks) => patchAlbum(memberId, photo, { marks }, memberId)} onToast={setToast} />}

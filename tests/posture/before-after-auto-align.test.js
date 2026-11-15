@@ -102,8 +102,10 @@ test('each failure has its own sentence, names the photo, and unknown ones keep 
     alignMessage(new Error('boom')),
   ];
   assert.equal(new Set(texts).size, 4);
-  assert.match(texts[0], /BEFORE 사진에서 사람을/);
-  assert.match(texts[1], /AFTER 사진에서 어깨와 골반/);
+  assert.match(texts[0], /BEFORE 사진에서 몸 전체를/);
+  assert.match(texts[1], /AFTER 사진에 어깨와 골반/);
+  // 부위 사진(목 · 골반 …)은 틀린 사진이 아니다 -- 되는 사진과 부위 사진에서 쓸 방법을 말한다.
+  for (const text of texts.slice(0, 2)) { assert.match(text, /전신 · 상반신 사진에서 돼요/); assert.match(text, /\[지난 사진에 맞춰 찍기\]/); }
   assert.match(texts[2], /인터넷 연결/);
   assert.match(texts[3], /\(코드 align\/unknown\)/, 'never a bare "오류가 발생했습니다"');
   // 네트워크 문구는 네트워크 코드에만 붙는다.

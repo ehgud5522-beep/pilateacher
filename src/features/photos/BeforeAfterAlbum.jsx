@@ -3,12 +3,12 @@ import { sharingMessage, logSharingFailure } from './sharing-errors.js';
 import TeacherPhotoSharing from './TeacherPhotoSharing.jsx';
 import { photoFailureLabel } from '../backup/photo-errors.js';
 import { useEffect, useRef, useState } from 'react';
-import { ALBUM_VIEWS, DEFAULT_EDIT, albumPhotos, chronologicalPair, exifDate, photoKey, suggestPair } from './album-model.js';
+import { ALBUM_VIEWS, DEFAULT_EDIT, albumPhotos, chronologicalPair, exifDate, ghostCandidate, photoKey, suggestPair } from './album-model.js';
 import { memberAppName, shareBadge, shareBlocker, shareState as normalShareState } from './share-readiness.js';
 import { albumDraft } from './album-drafts.js';
 import { renderAlbumPhoto } from './album-render.js';
 import './album.css';
-import { ArrowLeft, ChevronRight, Copy, ImageOff, ImagePlus, Images, Search, Sparkles, Wand2, X } from 'lucide-react';
+import { ArrowLeft, Camera, ChevronRight, Copy, ImageOff, ImagePlus, Images, Search, Sparkles, Wand2, X } from 'lucide-react';
 import { usePhotoGestures } from './photo-gestures.js';
 import { createContext, useContext } from 'react';
 import { createPortal } from 'react-dom';
@@ -193,7 +193,7 @@ function UnlinkedPhotos({ entries, ownerView, members, onAssign, onExclude, busy
     </li>)}</ul>}
   </section>;
 }
-export default function BeforeAfterAlbum({ accountId, members, photos, selectedId, onSelect, onImport, onPatch, onDelete, hub, onExport, backupStatus, onRetry, onAnalyze, sharingApi, organizationId, markup, drawMarks, detectPose, onAlignLog, unlinked = [], unlinkedOwnerView = false, onAssignUnlinked, onExcludeUnlinked }) {
+export default function BeforeAfterAlbum({ accountId, members, photos, selectedId, onSelect, onImport, onPatch, onDelete, hub, onExport, backupStatus, onRetry, onAnalyze, sharingApi, organizationId, markup, drawMarks, detectPose, onAlignLog, capture, unlinked = [], unlinkedOwnerView = false, onAssignUnlinked, onExcludeUnlinked }) {
   const [markupPhoto, setMarkupPhoto] = useState(null);
   const cancelEditRef = useRef(() => {});
   const [sharing, setSharing] = useState(null), [sharingEnabled, setSharingEnabled] = useState(false);
@@ -241,6 +241,29 @@ export default function BeforeAfterAlbum({ accountId, members, photos, selectedI
     return () => { active = false; };
   }, [sharingApi, sharingEnabled, memberKey, memberClientId, organizationId, sharing]);
   const badge = sharingEnabled ? shareBadge(shareState) : null;
+  /* 지난 사진에 맞춰 찍기. 겹쳐 보일 사진은 앨범 편집(자르기 · 회전)을 적용한 모습이다 -- 카드에 들어갈 모습과 같아야 맞춘 보람이 있다.
+     펜 · 자 표시는 뺀다. 겹칠 사진을 못 읽어도 촬영은 연다(겹침 없이). */
+  const [shooting, setShooting] = useState(null);
+  const ghostBase = capture ? ghostCandidate(all) : null;
+  const startShot = async (p) => {
+    let src = '';
+    try { const [e] = renderInput(p, null, p.albumEdit); src = (await renderAlbumPhoto(p.src, e, 1080)).toDataURL('image/jpeg', 0.85); }
+    catch { setMessage('지난 사진을 불러오지 못해 겹쳐 보기 없이 촬영합니다.'); }
+    setPreview(null);
+    setShooting({ view: p.view, ghost: src ? { src, label: shortDate(p.date) } : null });
+  };
+  /* 찍은 사진은 회원 · 날짜(오늘) · 방향(겹친 사진과 같은 방향)을 이미 알므로 확인 칸 없이 바로 저장한다.
+     저장에 실패하면 false -- 촬영 화면이 방금 찍은 사진을 쥔 채 남아 다시 시도할 수 있다. */
+  const saveShot = async (blob, shotView) => {
+    try {
+      const file = new File([blob], `capture_${Date.now()}.jpg`, { type: blob.type || 'image/jpeg' });
+      const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+      const hash = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+      await onImport({ kind: 'import', memberId: member.id, items: [{ file, hash, date: today(), dateSource: 'capture', view: shotView }] });
+      setMessage('사진을 저장했습니다. [변화 카드 만들기]로 바로 비교해 보세요.');
+      return true;
+    } catch (error) { setMessage(error?.message || '사진 저장 실패 · 촬영 화면에서 다시 시도해 주세요.'); return false; }
+  };
   const startCard = () => { const pair = suggestPair(all); if (pair.length === 2) { setSelected(pair.map(photoKey)); setComparing(true); } };
   const persist = (value) => {
     setDraft(value);
@@ -305,6 +328,7 @@ export default function BeforeAfterAlbum({ accountId, members, photos, selectedI
       {ai ? <><Button onClick={() => setAi(false)}><ArrowLeft size={18} /> 앨범으로</Button><p>AI 분석은 선택 기능입니다. 자세와 구도에 따라 정확도가 달라질 수 있습니다.</p>{hub(member.id, null)}</> : comparing ? <Compare detectPose={detectPose} onAlignLog={onAlignLog} blocker={sharingEnabled ? shareBlocker(shareState, memberAppName(organizationId)) : null} onShare={sharingEnabled ? (card) => setSharing({ card }) : undefined} photos={all} initialPhotos={all.filter((p) => selected.includes(photoKey(p)))} onClose={() => setComparing(false)} onExport={onExport} brand={brandFor(organizationId)} /> : <>
         {/* 처음 쓰는 강사에게는 이 버튼 하나가 길이다: 누르면 두 장이 골라진 채 카드 화면이 열린다. */}
         {all.length >= 2 && <Button className="ba-start" onClick={startCard}><span className="ba-start-icon"><Sparkles size={18} aria-hidden="true" /></span><span><strong>변화 카드 만들기</strong><small>처음 사진과 최근 사진으로 바로 시작해요</small></span><ChevronRight size={18} aria-hidden="true" /></Button>}
+        {ghostBase && <Button className="ba-start ba-shot" disabled={busy || !!draft} onClick={() => startShot(ghostBase)}><span className="ba-start-icon"><Camera size={18} aria-hidden="true" /></span><span><strong>지난 사진에 맞춰 찍기</strong><small>{shortDate(ghostBase.date)} {label(ghostBase.view)} 사진을 겹쳐 보며 같은 구도로 찍어요</small></span><ChevronRight size={18} aria-hidden="true" /></Button>}
         {all.length === 1 && <p className="ba-start-hint">사진이 한 장 더 있으면 변화 카드를 만들 수 있어요.</p>}
         {all.length > 0 ? <><div className="ba-toolbar ba-album-filters"><select aria-label="촬영 방향 필터" value={view} onChange={(e) => setView(e.target.value)}><option value="all">모든 방향</option>{ALBUM_VIEWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select><select aria-label="사진 정렬" value={String(oldest)} onChange={(e) => setOldest(e.target.value === 'true')}><option value="false">최신 순</option><option value="true">오래된 순</option></select><details className="ba-more"><summary>더보기</summary><div>{sharingEnabled && <Button onClick={() => setSharing({ card: null })}>공유 기록</Button>}<Button onClick={() => setAi(true)}>AI 분석 기록</Button></div></details></div>
         {displayed.length > 0 && <div className="ba-grid">{displayed.map((p) => <article key={photoKey(p)} className={selected.includes(photoKey(p)) ? 'is-selected' : ''}><Button className="ba-thumb" aria-label={`${p.date} ${label(p.view)} 사진 보기`} onClick={() => setPreview(p)}><Photo photo={p} /></Button><span className="ba-direction"><b>{shortDate(p.date)}</b>{label(p.view)}</span><label className="ba-select"><input type="checkbox" aria-label={`${p.date} ${label(p.view)} 비교 선택`} checked={selected.includes(photoKey(p))} onChange={(e) => setSelected((old) => e.target.checked ? [...old, photoKey(p)] : old.filter((x) => x !== photoKey(p)))} /></label></article>)}</div>}
@@ -312,7 +336,8 @@ export default function BeforeAfterAlbum({ accountId, members, photos, selectedI
         </> : <div className="ba-empty"><span className="ba-empty-icon"><Images size={32} strokeWidth={1.5} /></span><h2>아직 등록된 사진이 없습니다.</h2><p>첫 사진을 추가하고<br />회원의 변화를 기록해 보세요.</p><Button className="ba-primary" disabled={busy || !!draft} onClick={() => picker.current.click()}><ImagePlus size={18} />사진 추가하기</Button>{(photos[member.id]?.poses || []).length > 0 && <Button onClick={() => setAi(true)}>기존 분석 기록</Button>}{sharingEnabled && <Button onClick={() => setSharing({ card: null })}>공유 기록</Button>}</div>}
         {selected.length > 0 && <div className="ba-selection" aria-label="선택 사진 작업"><div><strong>{selected.length}장 선택</strong><Button aria-label="선택 해제" onClick={() => setSelected([])}><X size={18} /></Button></div>{selected.length === 1 && <><Button disabled={!!draft || busy} onClick={() => openEditor(all.find((p) => photoKey(p) === selected[0]))}>편집</Button>{markup && <Button disabled={busy} onClick={() => setMarkupPhoto(all.find((p) => photoKey(p) === selected[0]))}>펜 · 자</Button>}<Button disabled={busy} onClick={() => run(async () => { await onAnalyze(member.id, all.find((p) => photoKey(p) === selected[0])); setAi(true); setMessage('선택 사진으로 분석을 준비했습니다.'); })}>AI 분석</Button><Button className="ba-danger" disabled={busy || !!draft} onClick={() => { if (window.confirm('선택한 사진을 삭제할까요? 분석 결과는 유지됩니다.')) run(async () => { if (await onDelete(member.id, all.find((p) => photoKey(p) === selected[0])) === false) throw new Error('사진 삭제 실패'); setSelected([]); setMessage('사진을 삭제했습니다.'); }); }}>삭제</Button></>}{selected.length === 2 && <Button className="ba-primary" onClick={() => setComparing(true)}>비포애프터 비교</Button>}{selected.length > 2 && <span>비교할 사진 2장을 선택해 주세요.</span>}</div>}
       </>}
-      {preview && !editing && <section ref={dialog} className="ba-viewer ba-panel" role="dialog" aria-modal="true" aria-label="사진 상세"><div className="ba-toolbar"><h2>{preview.date} · {label(preview.view)}</h2><Button aria-label="사진 상세 닫기" onClick={() => setPreview(null)}><X size={22} /></Button></div><Photo photo={preview} className="ba-edit-preview" /><div className="ba-toolbar"><Button disabled={!!draft || busy} onClick={() => { openEditor(preview); setPreview(null); }}>편집</Button>{markup && <Button disabled={busy} onClick={() => { setMarkupPhoto(preview); setPreview(null); }}>펜 · 자</Button>}<Button className="ba-primary" onClick={() => { setSelected((old) => old.includes(photoKey(preview)) ? old : [...old, photoKey(preview)]); setPreview(null); }}>사진 선택</Button></div></section>}
+      {preview && !editing && <section ref={dialog} className="ba-viewer ba-panel" role="dialog" aria-modal="true" aria-label="사진 상세"><div className="ba-toolbar"><h2>{preview.date} · {label(preview.view)}</h2><Button aria-label="사진 상세 닫기" onClick={() => setPreview(null)}><X size={22} /></Button></div><Photo photo={preview} className="ba-edit-preview" /><div className="ba-toolbar"><Button disabled={!!draft || busy} onClick={() => { openEditor(preview); setPreview(null); }}>편집</Button>{markup && <Button disabled={busy} onClick={() => { setMarkupPhoto(preview); setPreview(null); }}>펜 · 자</Button>}{capture && <Button disabled={busy || !!draft} onClick={() => startShot(preview)}><Camera size={15} aria-hidden="true" />이 사진에 맞춰 찍기</Button>}<Button className="ba-primary" onClick={() => { setSelected((old) => old.includes(photoKey(preview)) ? old : [...old, photoKey(preview)]); setPreview(null); }}>사진 선택</Button></div></section>}
+      {shooting && capture && capture({ member: { id: member.id, name: member.name }, view: shooting.view, ghost: shooting.ghost, onCaptured: saveShot, onPickFile: () => { setShooting(null); picker.current?.click(); }, onClose: () => setShooting(null) })}
       {editing && <section ref={dialog} className="ba-editor ba-panel" role="dialog" aria-modal="true" aria-label="사진 편집"><div className="ba-toolbar"><Button disabled={busy} onClick={cancelEdit}>취소</Button><h2>사진 편집</h2><Button className="ba-primary" disabled={busy || !date} onClick={saveEdit}>저장</Button></div><Photo photo={editing} edits={edit} onTransform={(next) => { setEdit(next); persist(editorValue({ edit: next })).catch(() => setMessage("편집 임시 저장 실패")); }} className="ba-edit-preview" /><details className="ba-metadata"><summary>촬영 정보 · 회원 변경</summary><label>촬영 날짜<input type="date" value={date} onChange={(e) => { setDate(e.target.value); persist(editorValue({ date: e.target.value })).catch(() => setMessage('편집 임시 저장 실패')); }} /></label><label>방향<select value={direction} onChange={(e) => { setDirection(e.target.value); persist(editorValue({ direction: e.target.value })).catch(() => setMessage('편집 임시 저장 실패')); }}>{ALBUM_VIEWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select></label><label>회원<select value={owner} onChange={(e) => { setOwner(e.target.value); persist(editorValue({ owner: e.target.value })).catch(() => setMessage('편집 임시 저장 실패')); }}>{members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
         </details><div className="ba-chips ba-tools">{[['crop', '자르기'], ['rotate', '회전'], ['align', '정렬'], ['brightness', '밝기']].map(([key, title]) => <Button key={key} aria-pressed={tool === key} onClick={() => setTool(key)}>{title}</Button>)}</div>
         {[['crop', '자르기 (가장자리)', 0, 70, 1], ['rotate', '회전 / 수평', -180, 180, 1], ['zoom', '확대', 0.5, 3, 0.05], ['x', '좌우 위치', -50, 50, 1], ['y', '상하 위치', -50, 50, 1], ['brightness', '밝기', 0.3, 2, 0.05]].filter(([key]) => key === tool || (tool === 'align' && ['zoom', 'x', 'y'].includes(key))).map(([key, title, min, max, step]) => <Range key={key} title={title} value={edit[key]} min={min} max={max} step={step} onChange={(v) => { const next = { ...edit, [key]: v }; setEdit(next); persist(editorValue({ edit: next })).catch(() => setMessage('편집 임시 저장 실패')); }} />)}

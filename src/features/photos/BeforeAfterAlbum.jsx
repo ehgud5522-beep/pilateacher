@@ -30,6 +30,10 @@ function renderInput(photo, draw, edits) {
 
 const label = (view) => ALBUM_VIEWS.find(([key]) => key === view)?.[1] || '기타';
 const today = () => new Date().toLocaleDateString('sv-SE');
+/* 앨범은 날짜로 끊지 않고 한 판으로 잇는다 (2026-11-15 대표: "배열이 왼쪽으로 쏠려 있음").
+   날마다(또는 달마다) 줄을 끊으면 한 번에 한 장 찍는 회원은 줄마다 사진 하나만 왼쪽에 붙고 오른쪽이 빈다 --
+   실제로 대부분이 그렇게 찍는다. 날짜는 사진 위에 쓴다. */
+const shortDate = (date) => { const [y, m, d] = String(date || '').slice(0, 10).split('-'); return y && m && d ? `${y.slice(2)}.${m}.${d}` : '날짜 미확인'; };
 const Button = ({ children, ...props }) => <button type="button" {...props}>{children}</button>;
 function ImportPreview({ item }) {
   const [src, setSrc] = useState('');
@@ -88,17 +92,35 @@ function Compare({ photos, initialPhotos, onClose, onExport, onShare, brand }) {
     drawComparisonCard(ref.current, { images, pair, mode, align, split, guides, brand, comment });
     setReady(true);
   }, [images, pair, mode, split, align, guides, brand, comment]);
-  return <section className="ba-compare-page"><div className="ba-toolbar"><Button aria-label="앨범으로" onClick={onClose}><ArrowLeft size={22} /></Button><h2>비포애프터 비교</h2><Button onClick={() => { setPair(([a,b]) => [b,a]); setAlign(([a,b]) => [b,a]); }}>위치 교체</Button></div>
-
-    {pair[0].view !== pair[1].view && <p role="status">{label(pair[0].view)}과 {label(pair[1].view)} 사진은 정확한 체형 비교가 어려울 수 있습니다.</p>}
-    <div className="ba-photo-labels"><strong>BEFORE</strong><strong>AFTER</strong></div>
+  const swap = () => { setPair(([x, y]) => [y, x]); setAlign(([x, y]) => [y, x]); };
+  const setAlignValue = (key, value) => setAlign((old) => old.map((item, i) => i === target ? { ...item, [key]: value } : item));
+  const moved = align[target].zoom !== 1 || align[target].x !== 0 || align[target].y !== 0;
+  /* 순서 (2026-11-15): 카드 → 보는 방식 → 사진 맞추기 → 코멘트 → 내보내기. 위에서 아래로 한 번에 끝난다.
+     전에는 맞출 사진을 접힌 칸 안의 선택 상자로 골라야 했다 -- 이제 BEFORE · AFTER 를 눌러 고르고 사진을 바로 끈다. */
+  return <section className="ba-compare-page"><div className="ba-toolbar"><Button aria-label="앨범으로" onClick={onClose}><ArrowLeft size={22} /></Button><h2>비포애프터 비교</h2></div>
+    {pair[0].view !== pair[1].view && <p role="status" className="ba-notice">{label(pair[0].view)}과 {label(pair[1].view)} 사진은 정확한 체형 비교가 어려울 수 있습니다.</p>}
     <canvas {...gestures} style={{ touchAction: 'none' }} ref={ref} className="ba-comparison" role="img" aria-label="비포애프터 비교 이미지" />
-    {mode === 'overlay' && <Range title="겹침 슬라이더" value={split} min={0} max={100} onChange={setSplit} />}
+    <div className="ba-compare-controls">
+      <div className="ba-segment" role="group" aria-label="비교 방식"><Button aria-pressed={mode === 'side'} onClick={() => setMode('side')}>나란히</Button><Button aria-pressed={mode === 'overlay'} onClick={() => setMode('overlay')}>슬라이더</Button></div>
+      <Button aria-pressed={guides} onClick={() => setGuides((v) => !v)}>기준선</Button>
+      <Button onClick={swap}>좌우 바꾸기</Button>
+    </div>
+    {mode === 'overlay' && <Range title="겹침 위치" value={split} min={0} max={100} onChange={setSplit} />}
+    <div className="ba-align">
+      <div className="ba-align-row"><span>맞출 사진</span><div className="ba-segment" role="group" aria-label="맞출 사진">{['BEFORE', 'AFTER'].map((name, i) => <Button key={name} aria-pressed={target === i} onClick={() => setTarget(i)}>{name}</Button>)}</div>
+        <Button className="ba-text" disabled={!moved} onClick={() => setAlign((old) => old.map((item, i) => i === target ? { zoom: 1, x: 0, y: 0 } : item))}>처음으로</Button></div>
+      <small>고른 사진을 카드 위에서 손가락으로 끌고, 두 손가락으로 벌려 크기를 맞추세요.</small>
+      <details><summary>숫자로 세밀하게 맞추기</summary>
+        {[['zoom', '확대 / 축소', 0.5, 3, 0.05], ['x', '좌우 위치', -50, 50, 1], ['y', '상하 위치', -50, 50, 1]].map(([key, title, min, max, step]) => <Range key={key} title={title} value={align[target][key]} min={min} max={max} step={step} onChange={(v) => setAlignValue(key, v)} />)}
+      </details>
+      <details><summary>비교 사진 바꾸기</summary><div className="ba-pair">{pair.map((p, i) => <label key={i}>{i ? 'AFTER' : 'BEFORE'}<select value={photoKey(p)} onChange={(e) => { const chosen = photos.find((x) => photoKey(x) === e.target.value); setPair((old) => old.map((x, index) => index === i ? chosen : x)); }}>{photos.map((x, index) => <option disabled={photoKey(pair[1 - i]) === photoKey(x)} key={photoKey(x)} value={photoKey(x)}>{x.date} · {label(x.view)} · {index + 1}</option>)}</select></label>)}</div></details>
+    </div>
     <label className="ba-comment"><span>강사 코멘트 <small>{comment.length}/{COMMENT_MAX}</small></span><textarea rows={3} maxLength={COMMENT_MAX} value={comment} onChange={(e) => setComment(e.target.value)} placeholder="이번 변화에 대한 한마디 · 비교 이미지 아래에 함께 저장돼요" /><small>회원 이름이나 연락처는 적지 않는 것을 권해요. 이미지는 앱 밖으로 나가면 지울 수 없어요.</small></label>
-    <div className="ba-photo-dates"><span>{pair[0].date}</span><span>{pair[1].date}</span></div><details><summary>확대 · 정렬</summary><label>정렬할 사진<select value={target} onChange={(e) => setTarget(Number(e.target.value))}><option value={0}>BEFORE</option><option value={1}>AFTER</option></select></label>
-    {[['zoom', '확대 / 축소', 0.5, 3, 0.05], ['x', '좌우 위치', -50, 50, 1], ['y', '상하 위치', -50, 50, 1]].map(([key, title, min, max, step]) => <Range key={key} title={title} value={align[target][key]} min={min} max={max} step={step} onChange={(v) => setAlign((old) => old.map((a, i) => i === target ? { ...a, [key]: v } : a))} />)}
-    </details><details><summary>비교 사진 변경</summary>    <div className="ba-toolbar">{pair.map((p, i) => <label key={i}>{i ? 'AFTER' : 'BEFORE'}<select value={photoKey(p)} onChange={(e) => { const chosen = photos.find((x) => photoKey(x) === e.target.value); setPair((old) => old.map((x, index) => index === i ? chosen : x)); }}>{photos.map((x, index) => <option disabled={photoKey(pair[1 - i]) === photoKey(x)} key={photoKey(x)} value={photoKey(x)}>{x.date} · {label(x.view)} · {index + 1}</option>)}</select></label>)}</div></details>    <div className="ba-toolbar"><Button aria-pressed={mode === 'side'} onClick={() => setMode('side')}>나란히</Button><Button aria-pressed={mode === 'overlay'} onClick={() => setMode('overlay')}>슬라이더</Button><label><input type="checkbox" checked={guides} onChange={(e) => setGuides(e.target.checked)} /> 기준선</label></div>
-    {onShare && <Button disabled={!ready} onClick={async () => { try { onShare(await captureShareCard(ref.current, pair, comment)); } catch (e) { logSharingFailure(e, { action: "capture", appBuild: globalThis.window?.PILATEACHER_VER }); setError(sharingMessage(e)); } }}>회원에게 공유</Button>}{error && <p role="alert">{error}</p>}<Button className="ba-primary ba-export" disabled={!ready} onClick={() => onExport(ref.current)}>비교 이미지 저장</Button>
+    {error && <p role="alert" className="ba-notice">{error}</p>}
+    <div className="ba-compare-actions">
+      <Button className={onShare ? 'ba-export' : 'ba-primary ba-export'} disabled={!ready} onClick={() => onExport(ref.current)}>이미지 저장</Button>
+      {onShare && <Button className="ba-primary ba-export" disabled={!ready} onClick={async () => { try { onShare(await captureShareCard(ref.current, pair, comment)); } catch (e) { logSharingFailure(e, { action: "capture", appBuild: globalThis.window?.PILATEACHER_VER }); setError(sharingMessage(e)); } }}>회원에게 공유</Button>}
+    </div>
   </section>;
 }
 /* 센터 회원과 연결되지 않은 사진 (App.jsx unlinkedPhotos). 백업이 안 되고 앨범에도 안 보이던 사진.
@@ -198,7 +220,6 @@ export default function BeforeAfterAlbum({ accountId, members, photos, selectedI
   const displayed = all.filter((p) => view === 'all' || p.view === view).sort((a, b) => oldest ? a.date.localeCompare(b.date) : b.date.localeCompare(a.date));
   if (sharing && member) return <div className="ba-root"><TeacherPhotoSharing api={sharingApi} organizationId={organizationId} member={member} card={sharing.card} onClose={() => setSharing(null)} /></div>;
   return <MarkContext.Provider value={drawMarks || null}><div className="ba-root">
-    {sharingEnabled && member && <Button onClick={() => setSharing({ card: null })}>공유 기록</Button>}
     <input ref={picker} hidden type="file" accept="image/*" multiple onChange={(e) => { const files = [...e.target.files]; e.target.value = ''; if (files.length) importFiles(files); }} />
     {!comparing && <header className="ba-header">{member && <Button className="ba-icon" aria-label="회원 목록으로" onClick={() => onSelect(null)}><ArrowLeft size={22} /></Button>}<div>{member && <span className="ba-eyebrow">비포애프터</span>}<h1>{member ? member.name : '비포애프터'}</h1><p>{member ? `최근 촬영 ${all[0]?.date || '없음'} · ${all.length}장` : '회원의 변화를 사진으로 기록하세요.'}</p></div><Button className="ba-icon ba-primary" aria-label="사진 추가" disabled={busy || !!draft} onClick={() => picker.current.click()}><ImagePlus size={16} aria-hidden="true" />사진 추가</Button></header>}
     {message && !comparing && <p role="status" className="ba-notice">{message}</p>}
@@ -221,10 +242,10 @@ export default function BeforeAfterAlbum({ accountId, members, photos, selectedI
       {!members.some((m) => m.name?.includes(query) && (filter === 'all' || albumPhotos(photos[m.id]).length >= (filter === 'compare' ? 2 : 1))) && <p className="ba-no-results">조건에 맞는 회원이 없습니다.</p>}
     </> : <>
       {ai ? <><Button onClick={() => setAi(false)}><ArrowLeft size={18} /> 앨범으로</Button><p>AI 분석은 선택 기능입니다. 자세와 구도에 따라 정확도가 달라질 수 있습니다.</p>{hub(member.id, null)}</> : comparing ? <Compare onShare={sharingEnabled ? (card) => setSharing({ card }) : undefined} photos={all} initialPhotos={all.filter((p) => selected.includes(photoKey(p)))} onClose={() => setComparing(false)} onExport={onExport} brand={brandFor(organizationId)} /> : <>
-        {all.length > 0 ? <><div className="ba-toolbar ba-album-filters"><select aria-label="촬영 방향 필터" value={view} onChange={(e) => setView(e.target.value)}><option value="all">모든 방향</option>{ALBUM_VIEWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select><select aria-label="사진 정렬" value={String(oldest)} onChange={(e) => setOldest(e.target.value === 'true')}><option value="false">최신 순</option><option value="true">오래된 순</option></select><Button className="ba-text" onClick={() => setAi(true)}>분석 기록</Button></div>
-        {[...new Set(displayed.map((p) => p.date))].map((day) => <section className="ba-day" key={day}><h2>{day || '날짜 미확인'}<span>{displayed.filter((p) => p.date === day).length}장</span></h2><div className="ba-grid">{displayed.filter((p) => p.date === day).map((p) => <article key={photoKey(p)} className={selected.includes(photoKey(p)) ? 'is-selected' : ''}><Button className="ba-thumb" aria-label={`${p.date} ${label(p.view)} 사진 보기`} onClick={() => setPreview(p)}><Photo photo={p} /></Button><span className="ba-direction">{label(p.view)}</span><label className="ba-select"><input type="checkbox" aria-label={`${p.date} ${label(p.view)} 비교 선택`} checked={selected.includes(photoKey(p))} onChange={(e) => setSelected((old) => e.target.checked ? [...old, photoKey(p)] : old.filter((x) => x !== photoKey(p)))} /></label></article>)}</div></section>)}
+        {all.length > 0 ? <><div className="ba-toolbar ba-album-filters"><select aria-label="촬영 방향 필터" value={view} onChange={(e) => setView(e.target.value)}><option value="all">모든 방향</option>{ALBUM_VIEWS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select><select aria-label="사진 정렬" value={String(oldest)} onChange={(e) => setOldest(e.target.value === 'true')}><option value="false">최신 순</option><option value="true">오래된 순</option></select><span className="ba-album-links">{sharingEnabled && <Button className="ba-text" onClick={() => setSharing({ card: null })}>공유 기록</Button>}<Button className="ba-text" onClick={() => setAi(true)}>분석 기록</Button></span></div>
+        {displayed.length > 0 && <div className="ba-grid">{displayed.map((p) => <article key={photoKey(p)} className={selected.includes(photoKey(p)) ? 'is-selected' : ''}><Button className="ba-thumb" aria-label={`${p.date} ${label(p.view)} 사진 보기`} onClick={() => setPreview(p)}><Photo photo={p} /></Button><span className="ba-direction"><b>{shortDate(p.date)}</b>{label(p.view)}</span><label className="ba-select"><input type="checkbox" aria-label={`${p.date} ${label(p.view)} 비교 선택`} checked={selected.includes(photoKey(p))} onChange={(e) => setSelected((old) => e.target.checked ? [...old, photoKey(p)] : old.filter((x) => x !== photoKey(p)))} /></label></article>)}</div>}
         {!displayed.length && <p className="ba-no-results">이 방향의 사진은 아직 없습니다.</p>}
-        </> : <div className="ba-empty"><span className="ba-empty-icon"><Images size={32} strokeWidth={1.5} /></span><h2>아직 등록된 사진이 없습니다.</h2><p>첫 사진을 추가하고<br />회원의 변화를 기록해 보세요.</p><Button className="ba-primary" disabled={busy || !!draft} onClick={() => picker.current.click()}><ImagePlus size={18} />사진 추가하기</Button>{(photos[member.id]?.poses || []).length > 0 && <Button onClick={() => setAi(true)}>기존 분석 기록</Button>}</div>}
+        </> : <div className="ba-empty"><span className="ba-empty-icon"><Images size={32} strokeWidth={1.5} /></span><h2>아직 등록된 사진이 없습니다.</h2><p>첫 사진을 추가하고<br />회원의 변화를 기록해 보세요.</p><Button className="ba-primary" disabled={busy || !!draft} onClick={() => picker.current.click()}><ImagePlus size={18} />사진 추가하기</Button>{(photos[member.id]?.poses || []).length > 0 && <Button onClick={() => setAi(true)}>기존 분석 기록</Button>}{sharingEnabled && <Button onClick={() => setSharing({ card: null })}>공유 기록</Button>}</div>}
         {selected.length > 0 && <div className="ba-selection" aria-label="선택 사진 작업"><div><strong>{selected.length}장 선택</strong><Button aria-label="선택 해제" onClick={() => setSelected([])}><X size={18} /></Button></div>{selected.length === 1 && <><Button disabled={!!draft || busy} onClick={() => openEditor(all.find((p) => photoKey(p) === selected[0]))}>편집</Button>{markup && <Button disabled={busy} onClick={() => setMarkupPhoto(all.find((p) => photoKey(p) === selected[0]))}>펜 · 자</Button>}<Button disabled={busy} onClick={() => run(async () => { await onAnalyze(member.id, all.find((p) => photoKey(p) === selected[0])); setAi(true); setMessage('선택 사진으로 분석을 준비했습니다.'); })}>AI 분석</Button><Button className="ba-danger" disabled={busy || !!draft} onClick={() => { if (window.confirm('선택한 사진을 삭제할까요? 분석 결과는 유지됩니다.')) run(async () => { if (await onDelete(member.id, all.find((p) => photoKey(p) === selected[0])) === false) throw new Error('사진 삭제 실패'); setSelected([]); setMessage('사진을 삭제했습니다.'); }); }}>삭제</Button></>}{selected.length === 2 && <Button className="ba-primary" onClick={() => setComparing(true)}>비포애프터 비교</Button>}{selected.length > 2 && <span>비교할 사진 2장을 선택해 주세요.</span>}</div>}
       </>}
       {preview && !editing && <section ref={dialog} className="ba-viewer ba-panel" role="dialog" aria-modal="true" aria-label="사진 상세"><div className="ba-toolbar"><h2>{preview.date} · {label(preview.view)}</h2><Button aria-label="사진 상세 닫기" onClick={() => setPreview(null)}><X size={22} /></Button></div><Photo photo={preview} className="ba-edit-preview" /><div className="ba-toolbar"><Button disabled={!!draft || busy} onClick={() => { openEditor(preview); setPreview(null); }}>편집</Button>{markup && <Button disabled={busy} onClick={() => { setMarkupPhoto(preview); setPreview(null); }}>펜 · 자</Button>}<Button className="ba-primary" onClick={() => { setSelected((old) => old.includes(photoKey(preview)) ? old : [...old, photoKey(preview)]); setPreview(null); }}>사진 선택</Button></div></section>}

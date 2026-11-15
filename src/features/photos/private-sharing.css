@@ -1,5 +1,9 @@
 .private-share-view { min-width:0; overflow-wrap:anywhere; }
 .private-share-view figure { margin:12px 0; }
+/* 받은 카드는 가운데에 -- 글줄도 카드 아래 가운데, 작게. */
+.private-share-view .private-share-card { text-align:center; }
+.private-share-view .private-share-card img { display:block; margin:0 auto; }
+.private-share-view .private-share-card figcaption { margin-top:8px; font-size:12px; color:var(--sub,var(--ink2,#7b7175)); font-variant-numeric:tabular-nums; }
 .private-share-view canvas { display:block; border-radius:12px; background:#15151b; }
 .private-share-view button,.private-member-sharing button { border:1px solid var(--line,#eadde3); border-radius:10px; background:var(--card,#fff); color:var(--ink,#241c20); padding:9px 12px; cursor:pointer; font:inherit; }
 .private-share-view button[aria-pressed=true],.private-member-sharing .share-confirm { background:var(--rose,#f0137f); color:white; border-color:transparent; }

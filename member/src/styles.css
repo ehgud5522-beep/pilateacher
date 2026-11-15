@@ -583,8 +583,14 @@ body {
 .ba-share-new { margin-left: 8px; padding: 2px 7px; border-radius: 6px; background: var(--card-tone); color: var(--rose); font-size: 11px; font-style: normal; font-weight: 700; vertical-align: 1px; }
 .ba-share-sub { font-size: 12px; color: var(--sub); }
 .ba-share-go { color: var(--sub); font-size: 20px; }
-.ba-member-card { padding: 10px; }
-.ba-member-card img { border-radius: 14px; }
+/* 카드 이미지가 곧 카드다 (2026-11-15). 흰 칸 안에 또 카드를 넣으면 테두리가 두 겹이 된다.
+   선생님 · 날짜는 머리에 이미 있으니 이미지 아래에 다시 쓰지 않는다. */
+.card.ba-member-card { padding: 0; overflow: hidden; background: transparent; }
+.ba-member-card .private-share-view figure { margin: 0; }
+.ba-member-card img { display: block; width: 100%; border-radius: 0; }
+.ba-member-card figcaption { display: none; }
+.ba-member-card .private-share-view > p { margin: 0; padding: 28px 20px; text-align: center; font-size: 13px; color: var(--sub); }
+.ba-member .ba-privacy { text-align: center; }
 .ba-consent h2 { font-size: 16px; margin: 0; }
 .ba-consent p { font-size: 13px; line-height: 1.6; margin: 0; }
 .ba-check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.5; }

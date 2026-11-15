@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ZOOM_DOUBLE, clampView, zoomAt } from './zoom-view.js';
+import { useMotionClose } from '../ui/use-motion-close.js';
 
 /* 카드 크게 보기. 두 손가락으로 벌리기 · 한 손가락으로 옮기기 · 두 번 눌러 크게/원래대로 · PC 는 휠.
    같은 이미지(메모리의 blob 주소)를 그대로 크게 보여 줄 뿐이다 -- 저장 · 다운로드 · 새 주소를 만들지 않는다. */
@@ -12,14 +13,16 @@ export default function ZoomViewer({ src, alt, onClose }) {
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
   const viewRef = useRef(view);
   viewRef.current = view;
+  /* 닫을 때 번지듯 사라진다 (움직임 줄이기를 켠 기기에서는 바로 닫힌다). */
+  const { closing, close } = useMotionClose(onClose);
 
   useEffect(() => {
-    const key = (event) => { if (event.key === 'Escape') onClose(); };
+    const key = (event) => { if (event.key === 'Escape') close(); };
     window.addEventListener('keydown', key);
     const overflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => { window.removeEventListener('keydown', key); document.body.style.overflow = overflow; };
-  }, [onClose]);
+  }, [close]);
 
   const frame = () => stage.current?.getBoundingClientRect() || { left: 0, top: 0, width: 1, height: 1 };
   const size = () => { const r = frame(); return { width: r.width, height: r.height }; };
@@ -68,8 +71,8 @@ export default function ZoomViewer({ src, alt, onClose }) {
   };
 
   return createPortal(
-    <div className="zoom-viewer" role="dialog" aria-modal="true" aria-label="카드 크게 보기">
-      <button type="button" className="zoom-close" onClick={onClose} aria-label="크게 보기 닫기">닫기</button>
+    <div className="zoom-viewer" role="dialog" aria-modal="true" aria-label="카드 크게 보기" data-closing={closing || undefined}>
+      <button type="button" className="zoom-close" onClick={close} aria-label="크게 보기 닫기">닫기</button>
       <div ref={stage} className="zoom-stage" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up} onWheel={wheel}>
         <img src={src} alt={alt} draggable={false} onContextMenu={(event) => event.preventDefault()}
           style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }} />

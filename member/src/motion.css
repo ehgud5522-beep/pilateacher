@@ -1,0 +1,95 @@
+/* 보니따 앱의 움직임 (2026-11-15 대표: "넘기거나 누를 때 부드럽게, 창 열고 닫을 때 · 별점 달 때 스무스하게").
+   - 누름: 버튼 · 탭 · 줄이 손가락에 살짝 눌린다
+   - 넘김: 탭을 옮기면 가는 방향으로 화면이 미끄러져 들어온다 (오른쪽 탭 → 오른쪽에서, 왼쪽 탭 → 왼쪽에서)
+   - 창: 아래 시트는 바닥에서 올라오고 바닥으로 내려간다, 크게 보기는 번지듯 열린다
+   - 별점: 고른 별까지 차례로 톡 튀고, 숫자가 따라 커진다
+   전부 "움직임 줄이기" 를 켠 기기에서는 꺼진다 -- 이 파일의 규칙은 한 블록 안에 있다.
+   공용 motion.css 뒤에 불러온다 (main.jsx) -- 같은 무게의 규칙은 뒤의 것이 이긴다. */
+
+:root {
+  --m-press: 140ms;
+  --m-page: 280ms;
+  --m-sheet: 340ms;
+  --m-out: 170ms; /* use-motion-close.js 의 180ms 안에 끝나야 한다 */
+  --m-glide: cubic-bezier(.22, 1, .36, 1);
+  --m-pop: cubic-bezier(.34, 1.56, .64, 1);
+}
+
+@keyframes member-page-forward { from { opacity: 0; transform: translateX(24px); } }
+@keyframes member-page-back { from { opacity: 0; transform: translateX(-24px); } }
+@keyframes member-page-rise { from { opacity: 0; transform: translateY(10px); } }
+@keyframes member-sheet-in { from { transform: translateY(100%); } }
+@keyframes member-sheet-out { to { transform: translateY(100%); } }
+@keyframes member-card-in { from { opacity: 0; transform: translateY(12px) scale(.98); } }
+@keyframes member-pop-in { from { opacity: 0; transform: scale(.94); } }
+@keyframes member-star-pop { 0% { transform: scale(.55); } 55% { transform: scale(1.3); } 100% { transform: scale(1); } }
+@keyframes member-num-pop { 0% { transform: scale(.7); } 60% { transform: scale(1.35); } 100% { transform: scale(1); } }
+@keyframes member-tab-pop { 0% { transform: scale(.82); } 60% { transform: scale(1.12); } 100% { transform: scale(1); } }
+
+/* 눌렀을 때 회색 네모가 번쩍이는 것(웹뷰 기본)을 끈다 -- 움직임 설정과 무관하게. */
+.btn, .chip, .tab, .lesson, .day, .ba-share-row, .ba-home-card, .star, .share-confirm, .ba-refresh, .ba-back, .private-share-zoom {
+  -webkit-tap-highlight-color: transparent;
+}
+/* 넘어오는 화면이 옆으로 삐져나와 가로 스크롤이 생기지 않게. */
+.main { overflow-x: clip; }
+
+@media (prefers-reduced-motion: no-preference) {
+  /* ── 누름 ─────────────────────────────────────────────── */
+  .btn, .chip, button.lesson, .ba-home-card, .share-confirm, .ba-refresh, .ba-withdraw, .sechead button, .calhead button, .sheethead .x, .ba-back {
+    transition: transform var(--m-press) var(--m-glide), background-color 180ms ease, color 180ms ease, border-color 180ms ease, opacity 180ms ease;
+  }
+  .btn:active:not(:disabled), .share-confirm:active:not(:disabled), button.lesson:active, .ba-home-card:active { transform: scale(.97); }
+  .chip:active:not(:disabled), .ba-refresh:active, .sechead button:active { transform: scale(.94); }
+  .calhead button:active:not(:disabled), .sheethead .x:active, .ba-back:active { transform: scale(.86); }
+  .ba-share-row { transition: background-color 180ms ease; }
+  .ba-share-row:active { background-color: var(--card-tone); }
+  .ba-share-go { transition: transform var(--m-press) var(--m-glide); }
+  .ba-share-row:active .ba-share-go { transform: translateX(3px); }
+  .day b { transition: transform var(--m-press) var(--m-glide), background-color 180ms ease, color 180ms ease, box-shadow 180ms ease; }
+  .day:active b { transform: scale(.88); }
+  .tab svg { transition: transform var(--m-press) var(--m-glide); }
+  .tab:active svg { transform: scale(.86); }
+  .tab.on svg { animation: member-tab-pop 320ms var(--m-glide); }
+  .private-share-zoom img { transition: transform var(--m-press) var(--m-glide); }
+  .private-share-zoom:active img { transform: scale(.985); }
+
+  /* ── 넘김: 탭 · 비포애프터 기록 열고 닫기 ───────────────── */
+  .member-page { animation: member-page-rise var(--m-page) var(--m-glide); }
+  .member-page[data-dir="forward"], .member-push { animation: member-page-forward var(--m-page) var(--m-glide); }
+  .member-page[data-dir="back"], .member-pop { animation: member-page-back var(--m-page) var(--m-glide); }
+
+  /* ── 창 ──────────────────────────────────────────────── */
+  .sheetwrap { animation: app-scrim-in 240ms ease; }
+  .sheetwrap .sheet { animation: member-sheet-in var(--m-sheet) var(--m-glide); }
+  .sheetwrap[data-closing] { animation: app-scrim-out var(--m-out) ease-in both; }
+  .sheetwrap[data-closing] .sheet { animation: member-sheet-out var(--m-out) cubic-bezier(.4, 0, 1, 1) both; }
+  .updatewall { animation: app-scrim-in 240ms ease; }
+  .updatewall .updatecard { animation: member-pop-in 320ms var(--m-glide); }
+  .zoom-viewer { animation: app-scrim-in 200ms ease; }
+  .zoom-viewer .zoom-stage img { animation: member-pop-in 300ms var(--m-glide); }
+  .zoom-viewer[data-closing] { animation: app-scrim-out var(--m-out) ease-in both; }
+  .membership-disclosure[open] > :not(summary) { animation: member-page-rise 240ms var(--m-glide); }
+  .ba-member-card img { animation: member-card-in 320ms var(--m-glide); }
+
+  /* ── 평가 카드: 나타날 때 떠오르고, 닫을 때 접히며 사라진다 ── */
+  .ratecard { animation: member-card-in 360ms var(--m-glide); }
+  .ratewrap { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--m-out) var(--m-glide), opacity var(--m-out) ease, margin-bottom var(--m-out) var(--m-glide); }
+  .ratewrap[data-closing] { grid-template-rows: 0fr; opacity: 0; margin-bottom: -16px; }
+  .ratewrap[data-closing] .ratewrap-clip { overflow: hidden; }
+
+  /* ── 별점 ─────────────────────────────────────────────── */
+  .ratecard .star svg { transform-origin: 50% 55%; transition: transform var(--m-press) var(--m-glide); }
+  .ratecard .star:active:not(:disabled) svg { transform: scale(.8); }
+  /* 새로 켜진 별만 튄다 (이미 켜져 있던 별은 그대로). 고른 별은 바로, 그 앞의 별들은 차례로. */
+  .ratecard .star.on svg { animation: member-star-pop 360ms var(--m-pop) backwards; animation-delay: calc(var(--star-i, 0) * 28ms); }
+  .ratecard .star:nth-child(2) { --star-i: 1; }
+  .ratecard .star:nth-child(3) { --star-i: 2; }
+  .ratecard .star:nth-child(4) { --star-i: 3; }
+  .ratecard .star:nth-child(5) { --star-i: 4; }
+  .ratecard .star[aria-checked="true"] svg { animation-delay: 0ms; }
+  .ratecard .star path { transition: fill-opacity 200ms ease; }
+  .ratecard .starnum { display: inline-block; transition: color 180ms ease; }
+  .ratecard .starnum.picked { animation: member-num-pop 320ms var(--m-pop); }
+}
+
+.ratewrap-clip { min-height: 0; }

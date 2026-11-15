@@ -697,7 +697,8 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
           ))}
         </div>
       ) : null}
-      <div key={tab} className="app-motion-content">{body}</div>
+      {/* 탭을 옮기면 가는 방향에서 화면이 미끄러져 들어온다 (motion.css .member-page). */}
+      <div key={tab} className="app-motion-content member-page" data-dir={pageDirection(tab)}>{body}</div>
       {openLesson && current ? (
         <LessonSheet lesson={openLesson} place={current.link} offline={Boolean(state.offlineAt)}
           api={callMemberCancel}
@@ -709,6 +710,17 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
       ) : null}
     </Shell>
   );
+}
+
+/* 방금 옮긴 탭이 앞 탭의 오른쪽이면 forward, 왼쪽이면 back. 처음 그릴 때와 같은 탭이면 none.
+   탭 순서는 아래 Tabs 와 같다 (비포애프터가 없는 계정에서도 순서는 같다). */
+const TAB_ORDER = ["home", "records", "beforeAfter", "mypage"];
+let lastPageTab = "";
+let lastPageDirection = "none";
+export function pageDirection(tab) {
+  if (lastPageTab && lastPageTab !== tab) lastPageDirection = TAB_ORDER.indexOf(tab) >= TAB_ORDER.indexOf(lastPageTab) ? "forward" : "back";
+  lastPageTab = tab;
+  return lastPageDirection;
 }
 
 function Tabs({ tab, onPick, sharingEnabled = false }) {

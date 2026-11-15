@@ -12,7 +12,11 @@ import { ArrowLeft, Camera, ChevronRight, Copy, ImageOff, ImagePlus, Images, Sea
 import { usePhotoGestures } from './photo-gestures.js';
 import { createContext, useContext } from 'react';
 import { createPortal } from 'react-dom';
-import { COMMENT_MAX, brandFor, drawComparisonCard } from './comparison-card.js';
+import { CARD_ACCENTS, CARD_THEMES, COMMENT_MAX, brandFor, cardStyle, drawComparisonCard } from './comparison-card.js';
+/* 카드 꾸미기는 이 기기에 기억한다 -- 강사마다 한 번 고르면 다음 카드도 같은 색. 못 읽으면 기본값(흰색 · 핫핑크). */
+const CARD_STYLE_KEY = 'pilateacher.beforeAfter.cardStyle.v1';
+const readCardStyle = () => { try { return cardStyle(JSON.parse(globalThis.localStorage?.getItem(CARD_STYLE_KEY) || 'null')); } catch { return cardStyle(null); } };
+const writeCardStyle = (value) => { try { globalThis.localStorage?.setItem(CARD_STYLE_KEY, JSON.stringify(value)); } catch { /* 기억 못 해도 이번 카드는 그대로 */ } };
 import { ALIGN_ERROR, alignError, alignMessage, autoAlign, bodyFrame } from './auto-align.js';
 
 /* 펜 · 자 표시를 그리는 함수. 그리는 코드(drawAnnotationMark)가 App.jsx 에 있어 위에서 받는다. */
@@ -81,6 +85,8 @@ function Compare({ photos, initialPhotos, onClose, onExport, onShare, brand, blo
   const [target, setTarget] = useState(0);
   const [align, setAlign] = useState([{ zoom: 1, x: 0, y: 0 }, { zoom: 1, x: 0, y: 0 }]);
   const [guides, setGuides] = useState(false);
+  const [look, setLook] = useState(readCardStyle);
+  const changeLook = (patchValue) => setLook((old) => { const next = cardStyle({ ...old, ...patchValue }); writeCardStyle(next); return next; });
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
   const ref = useRef(null);
@@ -98,9 +104,9 @@ function Compare({ photos, initialPhotos, onClose, onExport, onShare, brand, blo
      사진을 다시 읽으면 손이 늦는다. 화면에 보이는 카드가 곧 저장되는 이미지다 (comparison-card.js). */
   useEffect(() => {
     if (!images || !ref.current) return;
-    layout.current = drawComparisonCard(ref.current, { images, pair, mode, align, split, guides, brand, comment });
+    layout.current = drawComparisonCard(ref.current, { images, pair, mode, align, split, guides, brand, comment, style: look });
     setReady(true);
-  }, [images, pair, mode, split, align, guides, brand, comment]);
+  }, [images, pair, mode, split, align, guides, brand, comment, look]);
   const swap = () => { setPair(([x, y]) => [y, x]); setAlign(([x, y]) => [y, x]); setAuto({ state: 'idle', text: '', before: null }); };
   /* 자동 맞춤: 기기 안에서 두 사진의 자세 점을 찾아 키와 자리를 맞춘다 (auto-align.js). 사진은 밖으로 나가지 않는다.
      실패해도 지금 맞춰 둔 값은 건드리지 않는다. 성공하면 [되돌리기] 로 직전 값으로 돌아갈 수 있다. */
@@ -154,6 +160,10 @@ function Compare({ photos, initialPhotos, onClose, onExport, onShare, brand, blo
         {[['zoom', '확대 / 축소', 0.5, 3, 0.05], ['x', '좌우 위치', -50, 50, 1], ['y', '상하 위치', -50, 50, 1]].map(([key, title, min, max, step]) => <Range key={key} title={title} value={align[target][key]} min={min} max={max} step={step} onChange={(v) => setAlignValue(key, v)} />)}
       </details>
       <details><summary>비교 사진 바꾸기</summary><div className="ba-pair">{pair.map((p, i) => <label key={i}>{i ? 'AFTER' : 'BEFORE'}<select value={photoKey(p)} onChange={(e) => { const chosen = photos.find((x) => photoKey(x) === e.target.value); setPair((old) => old.map((x, index) => index === i ? chosen : x)); }}>{photos.map((x, index) => <option disabled={photoKey(pair[1 - i]) === photoKey(x)} key={photoKey(x)} value={photoKey(x)}>{x.date} · {photoLabel(x)} · {index + 1}</option>)}</select></label>)}</div></details>
+    </div>
+    <div className="ba-look" aria-label="카드 꾸미기">
+      <div className="ba-look-row"><span>바탕</span><div className="ba-segment" role="group" aria-label="카드 바탕">{Object.entries(CARD_THEMES).map(([key, theme]) => <Button key={key} aria-pressed={look.theme === key} onClick={() => changeLook({ theme: key })}><i className="ba-look-chip" style={{ background: theme.bg }} aria-hidden="true" />{theme.label}</Button>)}</div></div>
+      <div className="ba-look-row"><span>{brand ? '로고 색' : '포인트 색'}</span><div className="ba-swatches" role="group" aria-label={brand ? '로고 색' : '포인트 색'}>{CARD_ACCENTS.map(([color, name]) => <button type="button" key={color} className="ba-swatch" aria-pressed={look.accent === color} aria-label={name} title={name} onClick={() => changeLook({ accent: color })} style={{ background: color }} />)}</div></div>
     </div>
     <label className="ba-comment"><span>강사 코멘트 <small>{comment.length}/{COMMENT_MAX}</small></span><textarea rows={3} maxLength={COMMENT_MAX} value={comment} onChange={(e) => setComment(e.target.value)} placeholder="이번 변화에 대한 한마디 · 비교 이미지 아래에 함께 저장돼요" /><small>회원 이름이나 연락처는 적지 않는 것을 권해요. 이미지는 앱 밖으로 나가면 지울 수 없어요.</small></label>
     {error && <p role="alert" className="ba-notice">{error}</p>}

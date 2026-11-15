@@ -172,13 +172,13 @@ test('named guides carry their name in both renderers, from one shared position'
 
 /* ------------------------------ ① 카드 색감 ------------------------------ */
 
-test('the card is warm paper with one muted rose -- no neon pink, no glow', async () => {
+/* 11-15 두 번째 지적: "보니따 부분만 핫핑크로 포인트, 기본은 흰색, 강사가 커스텀" -- before-after-member-polish.test.js 가 이어 받는다.
+   여기서는 처음 지적(형광 분홍 범벅 · 빛 번짐)이 돌아오지 않았는지만 본다. */
+test('the card has no neon glow and no pink everywhere', async () => {
   const source = await read('src/features/photos/comparison-card.js');
-  for (const gone of ['#FF1493', '#E8317F', 'rgba(255,20,147', 'rgba(232,49,127', 'rgba(255,111,170', '#141017', 'createRadialGradient']) {
+  for (const gone of ['#FF1493', '#E8317F', 'rgba(255,20,147', 'rgba(232,49,127', 'rgba(255,111,170', '#141017', 'createRadialGradient', 'shadowBlur = 18']) {
     assert.ok(!source.includes(gone), `${gone} is gone`);
   }
-  assert.match(source, /const PAPER = '#FBF8F5';/);
-  assert.match(source, /const ROSE = '#C8557D';/);
   // 사진 위 기준선은 분홍이 아니라 흰 점선.
   assert.match(source, /ctx\.setLineDash\(\[12, 10\]\); ctx\.strokeStyle = 'rgba\(255,255,255,\.88\)'/);
 });

@@ -24,12 +24,24 @@ const COMMENT_LINE_H = 44;
 const COMMENT_GAP = 22;
 const FOOTER = 104;
 const RADIUS = 22;
-const PAPER = '#FBF8F5';
-const PAPER_END = '#F5F0EC';
-const INK = '#2A2427';
-const SUB = '#8E8387';
-const ROSE = '#C8557D';
-const HAIR = 'rgba(42,36,39,.09)';
+/* 카드 꾸미기 (2026-11-15 대표: "보니따 부분만 핫핑크로 포인트, 기본은 흰색 화면, 강사가 커스텀할 수 있게").
+   바탕 셋 × 포인트 색 다섯. 포인트 색은 보니따 표시(BONITA)에만 쓴다 -- 그 밖은 바탕의 먹색 · 회색이다.
+   브랜드가 없는 센터는 BONITA 자리가 없으므로 포인트 색을 AFTER 표시와 기간 숫자에 쓴다(색이 하나도 없는 카드가 되지 않게). */
+export const CARD_THEMES = Object.freeze({
+  white: { label: '흰색', bg: '#FFFFFF', bgEnd: '#FFFFFF', ink: '#1F1A1C', sub: '#8E8387', body: 'rgba(31,26,28,.78)', hair: 'rgba(31,26,28,.09)', box: '#F7F5F6', photo: '#ECE8EA', before: ['rgba(255,255,255,.92)', '#1F1A1C'] },
+  ivory: { label: '아이보리', bg: '#FBF8F5', bgEnd: '#F5F0EC', ink: '#2A2427', sub: '#8E8387', body: 'rgba(42,36,39,.78)', hair: 'rgba(42,36,39,.09)', box: '#FFFFFF', photo: '#E9E3DE', before: ['rgba(255,255,255,.92)', '#2A2427'] },
+  black: { label: '검정', bg: '#141216', bgEnd: '#0E0D10', ink: '#F5F2F3', sub: 'rgba(245,242,243,.6)', body: 'rgba(245,242,243,.82)', hair: 'rgba(255,255,255,.10)', box: 'rgba(255,255,255,.06)', photo: '#1F1C22', before: ['rgba(0,0,0,.55)', '#FFFFFF'] },
+});
+/* 핫핑크는 보니따 VIP 앱의 분홍(member/src/styles.css --rose)과 같은 값이다. */
+export const CARD_ACCENTS = Object.freeze([['#F0137F', '핫핑크'], ['#C8557D', '로즈'], ['#E8735A', '코랄'], ['#3E5BA9', '네이비'], ['#2A2427', '먹색']]);
+export const DEFAULT_CARD_STYLE = Object.freeze({ theme: 'white', accent: '#F0137F' });
+/** 저장된 값이 무엇이든 쓸 수 있는 꾸미기로. 모르는 값은 기본값. */
+export function cardStyle(value) {
+  return {
+    theme: Object.hasOwn(CARD_THEMES, value?.theme) ? value.theme : DEFAULT_CARD_STYLE.theme,
+    accent: CARD_ACCENTS.some(([color]) => color === value?.accent) ? value.accent : DEFAULT_CARD_STYLE.accent,
+  };
+}
 const FONT = '"Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", system-ui, sans-serif';
 
 /** 센터별 표시. 로고 그림 파일이 생기면 logo 에 이미지(HTMLImageElement)를 넣는다. */
@@ -113,55 +125,56 @@ function dateText(ctx, text, x, y, align = 'left') {
   spaced(ctx, 1); ctx.fillText(text, x, y); spaced(ctx, 0); ctx.textAlign = 'left';
 }
 
-function drawHeader(ctx, brand) {
+function drawHeader(ctx, brand, t, accent) {
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
   if (brand?.logo) {
     const h = 64, w = brand.logo.width * (h / brand.logo.height);
     ctx.drawImage(brand.logo, (CARD_WIDTH - w) / 2, 26, w, h);
   } else if (brand) {
-    /* 한 줄 워드마크: 굵은 BONITA + 가는 PILATES, 먹색. 형광 분홍 두 줄 로고는 사진보다 먼저 눈에 들어왔다. */
+    /* 한 줄 워드마크: 굵은 BONITA(포인트 색) + 가는 PILATES(먹색). 분홍은 이 한 단어에만 -- 두 줄 형광 로고는 사진보다 먼저 눈에 들어왔다. */
     spaced(ctx, 9); ctx.textAlign = 'left';
     ctx.font = `800 38px ${FONT}`; const pw = ctx.measureText(brand.primary).width;
     ctx.font = `400 38px ${FONT}`; const sw = ctx.measureText(brand.secondary).width;
     const gap = 14, start = (CARD_WIDTH - (pw + gap + sw)) / 2 + 4;
-    ctx.fillStyle = INK;
+    ctx.fillStyle = accent;
     ctx.font = `800 38px ${FONT}`; ctx.fillText(brand.primary, start, 76);
+    ctx.fillStyle = t.ink;
     ctx.font = `400 38px ${FONT}`; ctx.fillText(brand.secondary, start + pw + gap, 76);
     ctx.textAlign = 'center';
   }
   ctx.font = `${brand ? 500 : 600} ${brand ? 19 : 30}px ${FONT}`; spaced(ctx, brand ? 7 : 9);
-  ctx.fillStyle = brand ? SUB : INK;
+  ctx.fillStyle = brand ? t.sub : t.ink;
   ctx.fillText('BEFORE  &  AFTER', CARD_WIDTH / 2 + 4, brand ? 114 : 72);
   spaced(ctx, 0);
   ctx.textAlign = 'left';
 }
 
-function drawComment(ctx, layout, lines) {
+function drawComment(ctx, layout, lines, t) {
   if (!lines.length) return;
   const x = PAD, y = layout.commentTop, w = CARD_WIDTH - PAD * 2, h = layout.commentH - COMMENT_GAP;
-  ctx.fillStyle = '#FFFFFF'; roundRect(ctx, x, y, w, h, 20); ctx.fill();
-  ctx.strokeStyle = HAIR; ctx.lineWidth = 2; roundRect(ctx, x + 1, y + 1, w - 2, h - 2, 20); ctx.stroke();
+  ctx.fillStyle = t.box; roundRect(ctx, x, y, w, h, 20); ctx.fill();
+  ctx.strokeStyle = t.hair; ctx.lineWidth = 2; roundRect(ctx, x + 1, y + 1, w - 2, h - 2, 20); ctx.stroke();
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-  ctx.font = `700 19px ${FONT}`; ctx.fillStyle = ROSE; spaced(ctx, 4); ctx.fillText("TEACHER'S NOTE", x + 32, y + 42); spaced(ctx, 0);
-  ctx.font = `500 ${COMMENT_FONT}px ${FONT}`; ctx.fillStyle = INK; ctx.textBaseline = 'alphabetic';
+  ctx.font = `700 19px ${FONT}`; ctx.fillStyle = t.sub; spaced(ctx, 4); ctx.fillText("TEACHER'S NOTE", x + 32, y + 42); spaced(ctx, 0);
+  ctx.font = `500 ${COMMENT_FONT}px ${FONT}`; ctx.fillStyle = t.ink; ctx.textBaseline = 'alphabetic';
   lines.forEach((line, i) => ctx.fillText(line, x + 32, y + 28 + 30 + 34 + i * COMMENT_LINE_H));
 }
 
-function drawFooter(ctx, height, pair) {
+function drawFooter(ctx, height, pair, t, numberColor) {
   const days = daysBetween(pair[0].date, pair[1].date);
   const y = height - FOOTER / 2 + 2;
   // 날짜는 사진마다 이미 있다. 여기서는 그 사이 기간만 말한다.
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   if (days === null) { /* 날짜를 못 읽으면 기간을 지어내지 않는다 */ }
-  else if (days === 0) { ctx.font = `500 28px ${FONT}`; ctx.fillStyle = SUB; spaced(ctx, 2); ctx.fillText('같은 날 촬영', CARD_WIDTH / 2, y); }
+  else if (days === 0) { ctx.font = `500 28px ${FONT}`; ctx.fillStyle = t.sub; spaced(ctx, 2); ctx.fillText('같은 날 촬영', CARD_WIDTH / 2, y); }
   else {
     ctx.font = `700 36px ${FONT}`; spaced(ctx, 1);
     const num = `${days}`, rest = '일의 변화';
     const nw = ctx.measureText(num).width; ctx.font = `500 30px ${FONT}`; const rw = ctx.measureText(rest).width;
     const start = CARD_WIDTH / 2 - (nw + 6 + rw) / 2;
     ctx.textAlign = 'left';
-    ctx.font = `700 36px ${FONT}`; ctx.fillStyle = ROSE; ctx.fillText(num, start, y);
-    ctx.font = `500 30px ${FONT}`; ctx.fillStyle = 'rgba(42,36,39,.78)'; ctx.fillText(rest, start + nw + 6, y + 1);
+    ctx.font = `700 36px ${FONT}`; ctx.fillStyle = numberColor; ctx.fillText(num, start, y);
+    ctx.font = `500 30px ${FONT}`; ctx.fillStyle = t.body; ctx.fillText(rest, start + nw + 6, y + 1);
   }
   spaced(ctx, 0);
   ctx.textAlign = 'left';
@@ -170,9 +183,10 @@ function drawFooter(ctx, height, pair) {
 /**
  * @param {HTMLCanvasElement} canvas
  * @param {{ images: (HTMLCanvasElement|HTMLImageElement)[], pair: {date:string}[], mode: 'side'|'overlay',
- *   align: object[], split?: number, guides?: boolean, brand?: object|null, comment?: string }} input
+ *   align: object[], split?: number, guides?: boolean, brand?: object|null, comment?: string, style?: {theme?: string, accent?: string} }} input
  */
-export function drawComparisonCard(canvas, { images, pair, mode, align, split = 50, guides = false, brand = null, comment = '' }) {
+export function drawComparisonCard(canvas, { images, pair, mode, align, split = 50, guides = false, brand = null, comment = '', style = DEFAULT_CARD_STYLE }) {
+  const look = cardStyle(style), t = CARD_THEMES[look.theme], accent = look.accent;
   const ratio = Math.max(...images.map((img) => img.height / img.width));
   // 줄 수를 먼저 재야 카드 높이를 정할 수 있다. 캔버스 크기를 바꾸면 그림이 지워지므로 그리기 전에 잰다.
   const measureCtx = canvas.getContext('2d');
@@ -182,12 +196,12 @@ export function drawComparisonCard(canvas, { images, pair, mode, align, split = 
   canvas.width = layout.width; canvas.height = layout.height;
   const ctx = canvas.getContext('2d');
 
-  // 바탕 -- 따뜻한 아이보리 종이. 빛 번짐 없이 아주 옅은 위아래 차이만.
+  // 바탕 -- 고른 색 묶음(기본 흰색). 빛 번짐 없이 아주 옅은 위아래 차이만.
   const bg = ctx.createLinearGradient(0, 0, 0, layout.height);
-  bg.addColorStop(0, PAPER); bg.addColorStop(1, PAPER_END);
+  bg.addColorStop(0, t.bg); bg.addColorStop(1, t.bgEnd);
   ctx.fillStyle = bg; ctx.fillRect(0, 0, layout.width, layout.height);
 
-  drawHeader(ctx, brand);
+  drawHeader(ctx, brand, t, accent);
 
   const { cellW, cellH, top } = layout;
   const cells = mode === 'side'
@@ -195,7 +209,7 @@ export function drawComparisonCard(canvas, { images, pair, mode, align, split = 
     : [{ x: PAD, img: 0 }];
   for (const cell of cells) {
     ctx.save(); roundRect(ctx, cell.x, top, cellW, cellH, RADIUS); ctx.clip();
-    ctx.fillStyle = '#E9E3DE'; ctx.fillRect(cell.x, top, cellW, cellH);
+    ctx.fillStyle = t.photo; ctx.fillRect(cell.x, top, cellW, cellH);
     if (mode === 'side') drawCover(ctx, images[cell.img], cell.x, top, cellW, cellH, align[cell.img]);
     else {
       drawCover(ctx, images[0], cell.x, top, cellW, cellH, align[0]);
@@ -216,10 +230,11 @@ export function drawComparisonCard(canvas, { images, pair, mode, align, split = 
       ctx.setLineDash([]);
     }
     ctx.restore();
-    ctx.strokeStyle = HAIR; ctx.lineWidth = 2; roundRect(ctx, cell.x + 1, top + 1, cellW - 2, cellH - 2, RADIUS); ctx.stroke();
+    ctx.strokeStyle = t.hair; ctx.lineWidth = 2; roundRect(ctx, cell.x + 1, top + 1, cellW - 2, cellH - 2, RADIUS); ctx.stroke();
   }
 
-  const beforePill = ['rgba(255,255,255,.9)', INK], afterPill = [ROSE, '#fff'];
+  // 보니따 카드에서는 AFTER 표시도 먹색 -- 분홍은 BONITA 한 단어에만. 브랜드 없는 카드는 AFTER 에 포인트 색.
+  const beforePill = t.before, afterPill = brand ? (look.theme === 'black' ? ['#F5F2F3', '#141216'] : [t.ink, '#FFFFFF']) : [accent, '#FFFFFF'];
   if (mode === 'side') {
     pill(ctx, 'BEFORE', PAD + 20, top + 20, ...beforePill);
     pill(ctx, 'AFTER', PAD + cellW + GUTTER + 20, top + 20, ...afterPill);
@@ -230,7 +245,7 @@ export function drawComparisonCard(canvas, { images, pair, mode, align, split = 
     ctx.fillStyle = '#fff'; ctx.fillRect(cut - 2, top, 4, cellH);
     ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.28)'; ctx.shadowBlur = 12;
     ctx.beginPath(); ctx.arc(cut, top + cellH / 2, 26, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); ctx.restore();
-    ctx.fillStyle = INK; ctx.beginPath();
+    ctx.fillStyle = '#2A2427'; ctx.beginPath();
     ctx.moveTo(cut - 6, top + cellH / 2 - 9); ctx.lineTo(cut - 15, top + cellH / 2); ctx.lineTo(cut - 6, top + cellH / 2 + 9); ctx.fill();
     ctx.beginPath(); ctx.moveTo(cut + 6, top + cellH / 2 - 9); ctx.lineTo(cut + 15, top + cellH / 2); ctx.lineTo(cut + 6, top + cellH / 2 + 9); ctx.fill();
     pill(ctx, 'BEFORE', PAD + 20, top + 20, ...beforePill);
@@ -239,7 +254,7 @@ export function drawComparisonCard(canvas, { images, pair, mode, align, split = 
     dateText(ctx, cardDate(pair[1].date), PAD + cellW - 24, top + cellH - 26, 'right');
   }
 
-  drawComment(ctx, layout, lines);
-  drawFooter(ctx, layout.height, pair);
+  drawComment(ctx, layout, lines, t);
+  drawFooter(ctx, layout.height, pair, t, brand ? t.ink : accent);
   return layout;
 }

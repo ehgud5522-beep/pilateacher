@@ -23,8 +23,8 @@ test("강사에게는 뒤 4자리만 보인다", () => {
   assert.equal(phoneForViewer("01012345678", "instructor"), "···5678");
 });
 
-test("대표 · FC매니저 · 직원은 지금처럼 전체를 본다", () => {
-  for (const role of ["owner", "manager", "staff"]) {
+test("대표 · 총괄매니저 · FC매니저 · 직원은 전체를 본다", () => {
+  for (const role of ["owner", "area_manager", "manager", "staff"]) {
     assert.equal(showsFullPhone(role), true, role);
     assert.equal(phoneForViewer("010-1234-5678", role), "01012345678", role);
   }
@@ -118,4 +118,10 @@ test("이름 전체 일치는 앞뒤 공백을 지운 뒤에 본다", () => {
   assert.deepEqual(exactNameMatches(ROSTER, "  이수민  ").map((item) => item.id), ["c3"]);
   assert.deepEqual(exactNameMatches(ROSTER, "수민"), []);
   assert.deepEqual(exactNameMatches(ROSTER, ""), []);
+});
+
+test("총괄매니저는 대표와 같은 자리 -- 연락처 전체 · 명부 전체 (2026-11-15)", () => {
+  assert.equal(showsFullPhone("area_manager"), true);
+  assert.equal(canBrowseAllClients("area_manager"), true);
+  assert.equal(phoneForViewer("010-1234-5678", "area_manager"), "01012345678");
 });

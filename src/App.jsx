@@ -1907,9 +1907,11 @@ function useScrollLock() {
 }
 
 function Sheet({ title, sub, subtitle, onClose, children, wide = false, safeTop = false, footer = null }) {
+  /* 닫기 · 뒤 어둠 · Esc · 뒤로 가기는 내려가는 움직임 뒤에 닫는다 (teacher-motion.css). 부모가 직접 걷는 경우는 그대로 즉시. */
+  const { closing, close } = useMotionClose(onClose);
   const panelRef = useRef(null);
   const lastFocus = useRef(null);
-  useBackClose(true, onClose);
+  useBackClose(true, close);
   useScrollLock();
   useEffect(() => {
     lastFocus.current = typeof document !== "undefined" ? document.activeElement : null;
@@ -1920,7 +1922,7 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false, safeTop 
     };
   }, []);
   const onKeyDown = (e) => {
-    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); return; }
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); return; }
     if (e.key !== "Tab" || !panelRef.current) return;
     const nodes = panelRef.current.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
     if (!nodes.length) return;
@@ -1930,8 +1932,8 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false, safeTop 
   };
   const secondary = sub || subtitle;
   return (
-    <div className="fixed inset-0" style={{ zIndex: 60 }} role="dialog" aria-modal="true" aria-label={title}>
-      <div className="absolute inset-0" style={{ background: "rgba(28,36,51,0.32)" }} onClick={onClose} />
+    <div className="teacher-sheet fixed inset-0" data-closing={closing || undefined} style={{ zIndex: 60 }} role="dialog" aria-modal="true" aria-label={title}>
+      <div className="teacher-sheet-scrim absolute inset-0" style={{ background: "rgba(28,36,51,0.32)" }} onClick={close} />
       <section ref={panelRef} tabIndex={-1} onKeyDown={onKeyDown}
         className="pt-generic-sheet sheet-in absolute bottom-0 left-1/2 flex w-full flex-col bg-white"
         style={{ transform: "translateX(-50%)", maxHeight: wide ? "92dvh" : "86dvh",
@@ -1942,7 +1944,7 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false, safeTop 
             <h3 style={{ fontSize: TYPE.title, lineHeight: 1.35, fontWeight: 600, color: INK }}>{title}</h3>
             {secondary ? <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2, marginTop: 2 }}>{secondary}</p> : null}
           </div>
-          <button type="button" onClick={onClose} aria-label="닫기" className="flex shrink-0 items-center justify-center"
+          <button type="button" onClick={close} aria-label="닫기" className="flex shrink-0 items-center justify-center"
             style={{ width: 44, height: 44, marginTop: -6, marginRight: -8, borderRadius: 8, color: INK2 }}>
             <X size={18} />
           </button>
@@ -1968,7 +1970,7 @@ function Sheet({ title, sub, subtitle, onClose, children, wide = false, safeTop 
  */
 function AppOverlay({ layer, name, children, fill = false }) {
   return (
-    <div data-overlay={name} className={fill ? "absolute inset-0 overflow-hidden" : "absolute inset-0 overflow-y-auto"}
+    <div data-overlay={name} className={`teacher-page-in ${fill ? "absolute inset-0 overflow-hidden" : "absolute inset-0 overflow-y-auto"}`}
       style={{ zIndex: overlayZ(layer), backgroundColor: PAGE }}>
       <div className={fill ? "mx-auto h-full min-h-0 w-full max-w-md overflow-hidden" : "mx-auto w-full max-w-md p-3"} style={fill ? undefined : { paddingTop: "max(env(safe-area-inset-top, 0px), 12px)" }}>
         {children}
@@ -1976,7 +1978,7 @@ function AppOverlay({ layer, name, children, fill = false }) {
     </div>
   );
 }
-function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, children, dismissible = true, aboveTabBar = false, animateClose = false }) {
+function ScheduleBottomSheet({ title, subtitle, onClose, returnFocusRef, children, dismissible = true, aboveTabBar = false, animateClose = true }) {
   const { closing, close } = useMotionClose(onClose, animateClose);
   const panelRef = useRef(null);
   const scrollRef = useRef(null);

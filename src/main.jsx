@@ -5,6 +5,11 @@ import App from "./App.jsx";
 import { SERVICE_WORKER_ACTION, purgeServiceWorkers, serviceWorkerAction } from "./features/ui/service-worker.js";
 import "./index.css";
 import "./features/ui/motion.css";
+import "./features/ui/teacher-motion.css";
+
+/* 아이폰 웹뷰는 문서에 touchstart 가 하나도 없으면 :active 를 그리지 않는다 -- 누름 움직임이
+   손가락을 따라오게 빈 것 하나를 건다 (teacher-motion.css, 보니따 main.jsx 와 같은 이유). */
+document.addEventListener("touchstart", () => {}, { passive: true });
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>

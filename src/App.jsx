@@ -233,6 +233,7 @@ import {
   BACKUP_SIZE, BACKUP_TOO_LARGE_CODE, BACKUP_WARN_BYTES, buildMigrationSnapshot, describeBackups,
 } from "./features/backup/backup-safety.js";
 import { deviceIdentity } from "./features/backup/device-identity.js";
+import { addDaysISO, planNextWeekLesson, REPEAT_BLOCK } from "./features/schedule/repeat-lesson.js";
 import {
   DELETE_MODE, DELETE_BLOCK_REASON, canEditLessonInfo, isLockedBySettlement, isSettledElsewhere, lessonDeletePolicy,
   opensEditingFirst, restoreDeletedLesson, settledLockNotice,
@@ -3917,6 +3918,13 @@ function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatu
     saveQueueMarks(restoreDismissedGroups(queueMarks));
     deviceLog("lesson_queue_restore", { feature: "lesson_queue", stage: "restore", count: organizedQueue.dismissedCount });
   };
+  /* 다음 주 같은 시간 등록 (repeat-lesson.js). 등록과 같은 길(onSave = saveSchedule)로 저장한다 --
+     홀딩 검사 · 서버 동기화 · 알림이 거기 있다. 막히면 saveSchedule 이 이유를 말하고 시트는 그대로 둔다. */
+  const repeatNextWeek = (lesson, label) => {
+    if (onSave(lesson, null) === false) return;
+    onToast?.({ ok: true, msg: `${label} 같은 수업을 등록했어요.` });
+    setEditing(null);
+  };
   const markQueueGroup = (kind, key, on) => {
     const next = { ...queueMarks, [kind]: { ...queueMarks[kind] } };
     if (on) next[kind][key] = true; else delete next[kind][key];
@@ -4033,7 +4041,7 @@ function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatu
         ) : null}
       </div>}
 
-      {editing && <ScheduleForm memberCancelAcked={isMemberCancelAcked(liveEditing)} draftAccountId={draftAccountId} onAckMemberCancel={() => ackMemberCancel(liveEditing)} draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
+      {editing && <ScheduleForm onRepeatNextWeek={repeatNextWeek} memberCancelAcked={isMemberCancelAcked(liveEditing)} draftAccountId={draftAccountId} onAckMemberCancel={() => ackMemberCancel(liveEditing)} draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
         onSubmit={(v, opened) => { onSave(v, opened); setEditing(null); }} onDelete={(id) => { onDelete(id); setEditing(null); }}
         onStatus={onStatus} onStatusAll={onStatusAll} onCareGrade={onCareGrade} onNoshowFee={onNoshowFee} onGroupDone={onGroupDone}
         organizationMode={organizationMode} rateOf={rateOf} careOptionsOf={careOptionsOf} onSettleLesson={onSettleLesson} onUnsettleLesson={onUnsettleLesson} onReadMemberNote={onReadMemberNote} onSaveMemberNote={onSaveMemberNote} onToast={onToast} canUnsettle={canUnsettle}
@@ -4459,7 +4467,7 @@ function LessonNoteDraftStatus({ draft }) {
     {draft.conflict && <><p>다른 창의 초안 또는 저장된 기록이 변경됐어요. 내용을 확인한 뒤 계속해 주세요.</p>{draft.alternatives.map((text,i)=><pre key={i} style={{whiteSpace:'pre-wrap'}}>{text}</pre>)}<button type="button" onClick={draft.resolve}>현재 초안으로 계속</button></>}
   </div>;
 }
-function ScheduleForm({ draftAccountId, memberCancelAcked = false, onAckMemberCancel, draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
+function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAcked = false, onAckMemberCancel, draft, members, schedule, briefingOf, returnFocusRef, onClose, onSubmit, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onOpenMember, onFocusMemberWeek, scheduleColors = null, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, onToast, canUnsettle = false }) {
   const rosterRefresh = useContext(RosterRefreshContext);
   /* 확정된 수업은 출석을 바꿀 수 없다. 상태를 바꿔도 이미 나간 차감은 따라오지
      않고, 둘이 어긋나면 어느 것이 맞는지 알 수 없다. */
@@ -4592,6 +4600,21 @@ function ScheduleForm({ draftAccountId, memberCancelAcked = false, onAckMemberCa
   /* 그룹 인원은 비워도 기본 8명으로 저장한다 — 빈 칸 때문에 등록 버튼이 막히면 안 된다 */
   const ready = !!f.date && !!f.start && (!isMemberLesson || (chosenIds.length === neededSlots && !unresolved && !duplicateChoice))
     && noRest.length === 0;
+  const [repeatNotice, setRepeatNotice] = useState(null);
+  const repeatDateLabel = draft?.date ? (() => { const next = addDaysISO(draft.date, 7); return `${next.slice(5).replace("-", ".")}(${dow(next)}) ${draft.start || ""}`.trim(); })() : "";
+  const tryRepeatNextWeek = () => {
+    const plan = planNextWeekLesson({ lesson: draft, schedule, newId: uid(), remainingOf: (id) => left(members.find((m) => m.id === id)) });
+    if (plan.block === REPEAT_BLOCK.ALREADY_BOOKED) { setRepeatNotice({ kind: "info", msg: `${repeatDateLabel}에 이미 이 회원 수업이 있어요. (코드 repeat_${plan.block})` }); return; }
+    if (plan.block === REPEAT_BLOCK.NO_REMAINING) {
+      const names = plan.blockedMemberIds.map((id) => members.find((m) => m.id === id)?.name || "회원").join(", ");
+      setRepeatNotice({ kind: "info", msg: `${names}님 잔여 횟수가 없어 다음 주 수업을 등록할 수 없어요. (코드 repeat_${plan.block})` });
+      return;
+    }
+    if (plan.block || !plan.lesson) { setRepeatNotice({ kind: "info", msg: `이 수업은 다음 주로 복사할 수 없어요. (코드 repeat_${plan.block || "unknown"})` }); return; }
+    if (plan.clashes.length) { setRepeatNotice({ kind: "confirm", plan, msg: `${repeatDateLabel}에 겹치는 수업이 ${plan.clashes.length}건 있어요. 그래도 등록할까요?` }); return; }
+    setRepeatNotice(null);
+    onRepeatNextWeek(plan.lesson, repeatDateLabel);
+  };
   const submit = () => {
     const previous = attendeesOf(draft);
     const personal = kind === "consult" || kind === "off";
@@ -4813,6 +4836,29 @@ function ScheduleForm({ draftAccountId, memberCancelAcked = false, onAckMemberCa
                 style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid #D5D1EB` }}>
                 <CalendarDays size={14} /> 이번 주 이 회원 일정만 보기
               </button>
+            )}
+
+            {/* 같은 회원 · 같은 시간으로 다음 주 등록 (2026-11-15 강사 제보: 고정 시간대를 미리 예약).
+                확정된 수업에서도 된다 -- 이 수업은 그대로 두고 7일 뒤에 새 수업을 만든다 (repeat-lesson.js). */}
+            {draft.id && isMemberLesson && attendeesOf(draft).length > 0 && typeof onRepeatNextWeek === "function" && (
+              <div data-repeat-next-week>
+                <button type="button" onClick={tryRepeatNextWeek} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg text-xs font-bold"
+                  style={{ backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>
+                  <RotateCcw size={14} style={{ color: BRAND_D }} /> 다음 주 같은 시간 등록
+                  <span className="font-bold tabular-nums" style={{ color: SUB }}>{repeatDateLabel}</span>
+                </button>
+                {repeatNotice && (
+                  <div role="status" data-repeat-notice={repeatNotice.kind} className="mt-2 rounded-lg px-3 py-2" style={{ backgroundColor: repeatNotice.kind === "confirm" ? WARN_S : CANVAS }}>
+                    <p className="text-xs font-bold leading-relaxed" style={{ color: repeatNotice.kind === "confirm" ? WARN : INK2 }}>{repeatNotice.msg}</p>
+                    {repeatNotice.kind === "confirm" && (
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <button type="button" data-repeat-confirm onClick={() => { const plan = repeatNotice.plan; setRepeatNotice(null); onRepeatNextWeek(plan.lesson, repeatDateLabel); }} className="h-9 rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>그래도 등록</button>
+                        <button type="button" onClick={() => setRepeatNotice(null)} className="h-9 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>취소</button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
 
             {activeMember && activeAttendee && (

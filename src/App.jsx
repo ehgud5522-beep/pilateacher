@@ -359,7 +359,7 @@ import {
 } from "./features/lesson-record/draft-queue.js";
 import { evaluateLessonRecordLink, linkScheduleToMember, upsertLessonRecordNote } from "./features/lesson-record/link-context.js";
 import {
-  defaultLinkLesson, linkableLessonsFor, manualNoteFor, voiceNoteFor,
+  defaultLinkLesson, linkableLessonsFor, manualNoteFor, voiceNoteFor, voiceNoteRestoreState,
 } from "./features/lesson-record/note-edit.js";
 import {
   formatMemberLessonDate, formatMemberLessonHeader, isMeaningfulLessonSession, lessonSessionRepresentative, pendingLessonState,
@@ -1708,6 +1708,10 @@ class Guard extends Component {
     deviceLog("ui_render_failed", {
       surface,
       code: String(err?.name || "Error").slice(0, 80),
+      /* 원본 코드 · 경로. 음성 기록 수정 중 화면이 꺼진 일(2026-11-15)은 name 만 남아
+         TypeError 로만 보였다 -- invalid_output · didToday[0] 이 있어야 원인이 선다. */
+      ...(err?.code ? { errorCode: String(err.code).slice(0, 80) } : {}),
+      ...(err?.path ? { path: String(err.path).slice(0, 80) } : {}),
       ...(surface === "비포애프터" ? { message: String(err?.message || err || "unknown render error").slice(0, 180) } : {}),
       appBuild: APP_BUILD_LABEL,
     });
@@ -1737,7 +1741,7 @@ class Guard extends Component {
         <div className="rounded-3xl bg-white p-5" style={{ boxShadow: SHADOW }}>
           <div className="flex items-center gap-2">
             <AlertTriangle size={18} style={{ color: BAD }} />
-            <p className="text-sm font-extrabold" style={{ color: INK }}>{showInternalDetails ? `${label}을(를) 표시하지 못했습니다` : "일시적인 문제가 발생했어요"}</p>
+            <p className="text-sm font-extrabold" style={{ color: INK }}>{showInternalDetails ? `${label}을(를) 표시하지 못했습니다` : `일시적인 문제가 발생했어요 (코드 ${String(this.state.err?.code || this.state.err?.name || "render_failed").slice(0, 40)})`}</p>
           </div>
           {showInternalDetails && <p className="mt-2 rounded-xl px-3 py-2 text-xs" style={{ backgroundColor: CANVAS, color: SUB, wordBreak: "break-all" }}>{msg}</p>}
           {showInternalDetails && this.state.info && <p className="mt-1 text-xs" style={{ color: FAINT }}>{this.state.info}</p>}
@@ -4932,11 +4936,11 @@ function ScheduleForm({ draftAccountId, memberCancelAcked = false, onAckMemberCa
                       <div className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
                         <DeviceOnlyNote />
                         {recordFallback && <p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
-                        {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id}
+                        {recordMode === "voice" && <Guard label="음성 기록"><VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id} savedNote={voiceNoteFor(activeMember?.notes, draft.id)}
                           onLater={closeRecordEntry} onClose={closeRecordEntry} onDeferred={closeRecordEntry}
                           onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }}
                           onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)}
-                          onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} />}
+                          onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} /></Guard>}
                         {recordMode === "write" && <>
                           <textarea rows={4} value={recordBody} readOnly={recordSaving} onChange={(e) => manualDraft.change(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
                           <LessonNoteDraftStatus draft={manualDraft} />
@@ -5365,7 +5369,7 @@ export function ScheduleQueueSheet({ draftAccountId, queue, members, returnFocus
               {recordMode && (
                 <div ref={recordSectionRef} data-lesson-record-entry className="mt-3 space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
                   <DeviceOnlyNote />
-                  {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(task.a.memberId, task.s.id)} memberId={task.a.memberId} memberName={memberName} duetPartner={duetPartnerOf(task?.m)} lessonId={task.s.id} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={() => setRecordMode("write")} onDraftChange={(text, meta, options) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, { confirmed: true, upsert: true })} />}
+                  {recordMode === "voice" && <VoiceNote key={lessonRecordSessionKey(task.a.memberId, task.s.id)} memberId={task.a.memberId} memberName={memberName} duetPartner={duetPartnerOf(task?.m)} lessonId={task.s.id} savedNote={voiceNoteFor(task?.m?.notes, task.s.id)} onLater={() => setRecordMode(null)} onClose={onClose} onDeferred={onClose} onDirectEntry={() => setRecordMode("write")} onDraftChange={(text, meta, options) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, options)} onApply={(text, meta) => onSaveNote?.(task.a.memberId, task.s.type, task.s.id, text, meta, { confirmed: true, upsert: true })} />}
                   {recordMode === "write" && <><textarea rows={4} value={recordBody} readOnly={recordSaving} onChange={(e) => manualDraft.change(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} /><LessonNoteDraftStatus draft={manualDraft} />
                     <button disabled={recordSaving || manualDraft.conflict || !recordBody.trim()} onClick={async () => {
                       setRecordSaving(true);
@@ -7684,7 +7688,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
             ))}
           </select>
         </label>
-      )}{sheet === "record" && <VoiceNote key={lessonRecordSessionKey(member.id, linkLessonId || null)} memberId={member.id} memberName={member.name || "회원"} duetPartner={duetPartnerOf(member)} lessonId={linkLessonId || undefined} onClose={() => setSheet(null)} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, { ...(options || {}), lessonId: linkLessonId || null })} onApply={(text, meta) => onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true, lessonId: linkLessonId || null })} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: TYPE.caption, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
+      )}{sheet === "record" && <VoiceNote key={lessonRecordSessionKey(member.id, linkLessonId || null)} memberId={member.id} memberName={member.name || "회원"} duetPartner={duetPartnerOf(member)} lessonId={linkLessonId || undefined} savedNote={linkLessonId ? voiceNoteFor(member.notes, linkLessonId) : null} onClose={() => setSheet(null)} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, { ...(options || {}), lessonId: linkLessonId || null })} onApply={(text, meta) => onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true, lessonId: linkLessonId || null })} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: TYPE.caption, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
       {sheet === "record-review" && reviewDraft && <Sheet title="AI 수업기록 확인" sub="확인은 선택입니다. 정리된 기록은 이미 저장되어 있어요." onClose={() => setSheet(null)}><div className="space-y-3"><div className="grid grid-cols-2 gap-2">{[{ k: "didToday", l: "오늘 수업" }, { k: "observations", l: "변화" }, { k: "responses", l: "회원 반응" }, { k: "nextFocus", l: "다음 확인" }].map((field) => <div key={field.k} className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-caption font-extrabold" style={{ color: SUB }}>{field.l}</p>{reviewEditing ? <textarea rows={2} aria-label={`${field.l} 수정`} value={structuredFieldText(reviewDraft, field.k)} onChange={(event) => setReviewDraft((current) => editStructuredField(current, field.k, event.target.value))} className={`${inputCls} mt-1 h-auto resize-none py-2 text-xs`} /> : <p className="mt-1 text-xs font-bold leading-relaxed" style={{ color: INK2 }}>{prepText(reviewDraft[field.k], "기록 없음")}</p>}</div>)}</div><div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setReviewEditing((value) => !value)} className="h-12 rounded-xl text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: BRAND_D }}>{reviewEditing ? "수정 닫기" : "수정"}</button><button type="button" onClick={confirmRecordReview} className="h-12 rounded-xl text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>확인</button></div></div></Sheet>}
       {sheet === "memos-all" && <Sheet title="상담 메모 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2"><DeviceOnlyNote />{consultationNotes.length ? consultationNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: note.important ? WARN_S : CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요 메모" : ""}</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 상담 메모가 없습니다</p>}<button type="button" onClick={openMemo} className="h-11 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>메모 추가</button></div></Sheet>}
       {sheet === "records-all" && <Sheet title="수업 기록 전체 보기" onClose={() => setSheet(null)}><div className="min-w-0 space-y-2">{lessonSessions.length ? lessonSessions.map((session) => <div key={session.key} className="min-w-0" style={{ padding: 10, borderRadius: 8, backgroundColor: CANVAS }}><p className="mb-2 text-caption tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(session.date, { weekday: true })} · {session.type}</p><LessonRecordFieldRows session={session} />{session.warning && <p className="mt-2 text-caption" style={{ color: SUB }}>{session.warning}</p>}</div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div></Sheet>}
@@ -13527,7 +13531,7 @@ function IOSMediaDiagnosticPanel({ memberId = "diagnostics", lessonId = "hidden-
   return <div className="mt-3 rounded-lg p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}><p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>iOS 미디어 진단</p><div className="mt-2 grid grid-cols-2 gap-1.5"><button type="button" onClick={runMicrophoneTest} disabled={microphoneTest.status === "running" || cameraTest.status === "running"} className="min-h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{microphoneTest.status === "running" ? "마이크 테스트 중…" : "마이크 테스트"}</button><button type="button" onClick={runCameraTest} disabled={cameraTest.status === "running" || microphoneTest.status === "running"} className="min-h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: TINT, color: BRAND_D }}>{cameraTest.status === "running" ? "카메라 테스트 중…" : "카메라 테스트"}</button></div><StepList title="마이크" steps={microphoneTest.steps} /><StepList title="카메라" steps={cameraTest.steps} /></div>;
 }
 
-function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId = null, memberName = "회원", duetPartner = null, lessonId = null, onDirectEntry = null, onLater = null, onClose = null, onDeferred = null }) {
+function VoiceNote({ onApply, onDraftChange = null, savedNote = null, highlight, onSeen, memberId = null, memberName = "회원", duetPartner = null, lessonId = null, onDirectEntry = null, onLater = null, onClose = null, onDeferred = null }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const lessonLink = useContext(LessonRecordLinkContext);
   /* 이 수업기록이 동의를 받아야 할 사람 전부. 듀엣이면 둘이다 -- 수업기록에
@@ -13623,6 +13627,11 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const recordingActiveRef = useRef(false);
   const backgroundStopRef = useRef(false);
   const publishedDraftSignatureRef = useRef("");
+  /* 저장된 기록을 펼친 직후의 첫 자동저장은 건너뛴다. 열기만 했는데 확정된 기록이
+     "확인 대기" 로 내려가면 안 된다 -- 강사가 실제로 고칠 때부터 저장한다. */
+  const skipNextAutosaveRef = useRef(false);
+  const savedNoteRef = useRef(savedNote);
+  savedNoteRef.current = savedNote;
   const organizationTimeoutRef = useRef(null);
   const consentContinuationRef = useRef(null);
   const consentDeclineRef = useRef(null);
@@ -13897,8 +13906,22 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
       setSummaryBusy(false); setSummaryError(""); setSummaryFailureClass(""); setSummaryFailure(null); setLinkReview(null);
       setConsentGate(null); setOrganizationTimedOut(false); setSummaryEditing(false); setQualityRejection(null); setLowVolumeNotice(""); setErr("");
       publishedDraftSignatureRef.current = "";
+      skipNextAutosaveRef.current = false;
       const pending = loadPendingLessonRecord(memberId, lessonId);
-      if (!pending?.rawTranscript && !(pending?.audioClips || []).some((clip) => clip?.blobId)) return;
+      if (!pending?.rawTranscript && !(pending?.audioClips || []).some((clip) => clip?.blobId)) {
+        /* 보관함이 비었으면 저장된 음성 기록을 펼친다 (note-edit.js voiceNoteRestoreState).
+           전에는 여기서 끝나 빈 녹음 화면만 나왔고, 다시 녹음하면 앞 기록이 덮였다. */
+        const saved = lessonId ? voiceNoteRestoreState(savedNoteRef.current) : null;
+        if (!saved) return;
+        setText(saved.transcript); textRef.current = saved.transcript;
+        setSource(saved.source); sourceRef.current = saved.source;
+        if (saved.structuredDraft) {
+          setSummaryOriginal(saved.summaryOriginal); setSummaryDraft(saved.structuredDraft); setSummaryMeta(saved.aiMeta); setSummaryStatus(AI_STATUSES.DRAFT);
+        } else setSummaryStatus("unstructured");
+        skipNextAutosaveRef.current = true;
+        appendLessonRecordDiagnostic({ code: "restored_saved_note", stage: "voice_note_restore", category: "RESTORE", hasStructuredDraft: Boolean(saved.structuredDraft), confirmed: saved.confirmed });
+        return;
+      }
       setText(String(pending.rawTranscript || ""));
       textRef.current = String(pending.rawTranscript || "");
       setSource(pending.source || "pending");
@@ -15584,9 +15607,23 @@ function VoiceNote({ onApply, onDraftChange = null, highlight, onSeen, memberId 
   const setSummaryField = (field, value) => setSummaryDraft((current) => editStructuredField(current || {}, field, value));
   useEffect(() => {
     if (typeof onDraftChange !== "function" || manualEntry || on || starting || finishing || summaryBusy) return;
-    const payload = currentRecordPayload(false);
+    /* 이 효과 안의 예외는 화면 전체를 꺼뜨린다 (2026-11-15 강사 제보). 고치던 내용은 위
+       효과가 이미 기기에 보관했으니, 여기서는 진단을 남기고 이번 자동저장만 건너뛴다. */
+    let payload;
+    try {
+      payload = currentRecordPayload(false);
+    } catch (error) {
+      appendLessonRecordDiagnostic({ code: String(error?.code || error?.name || "unknown"), stage: "teacher_edit_payload", category: "CLIENT", path: error?.path, expected: error?.expected, received: error?.received });
+      deviceLog("lesson_record_autosave_failed", { memberId, lessonId, code: String(error?.code || error?.name || "unknown"), path: error?.path, appBuild: APP_BUILD_LABEL });
+      return;
+    }
     if (!payload) return;
     const signature = JSON.stringify({ text: payload.transcript, draft: payload.lessonRecord.structuredDraft, flags: payload.lessonRecord.reviewFlags, failed: payload.lessonRecord.organizationStatus });
+    if (skipNextAutosaveRef.current) {
+      skipNextAutosaveRef.current = false;
+      publishedDraftSignatureRef.current = signature;
+      return;
+    }
     if (signature === publishedDraftSignatureRef.current) return;
     publishedDraftSignatureRef.current = signature;
     Promise.resolve(onDraftChange(payload.teacherText, payload.meta, { confirmed: false, upsert: true })).then((stored) => {
@@ -32905,7 +32942,10 @@ export default function App() {
       if (!pending?.structuredDraft || hasLessonRecordReviewFlag(pending)) return;
       const target = findRosterMember(memberId);
       if (!target) return;
-      const existing = (target.notes || []).find((note) => String(note.sid || "") === String(lessonId || ""));
+      /* 같은 수업의 **음성** 기록만 고른다. 전에는 sid 만 보고 첫 기록을 골라, 강사가 먼저
+         직접 쓴 일지가 있으면 그 id 로 upsert 해 AI 정리본이 직접 쓴 글을 덮었다
+         (8496453 이 확정 경로만 voiceNoteFor 로 바꾸고 이 경로는 빠뜨렸다). */
+      const existing = voiceNoteFor(target.notes || [], lessonId);
       const body = structuredRecordBody(pending.structuredDraft, pending.rawTranscript || "");
       const lessonRecord = { ...pending, confirmationStatus: "pending", stage: "structured_draft", status: "structured" };
       const saveToastKey = String(pending.aiMeta?.requestId || `${memberId}:${lessonId}:${pending.updatedAt || pending.recordedAt || "structured"}`);

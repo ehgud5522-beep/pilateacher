@@ -222,6 +222,19 @@
   - 보니따: 1.1.3 → **1.1.4** (package.json · Android versionName · iOS MARKETING_VERSION). 1.1.3 이 스토어에 나갔는지 확인 못 해,
     11-11 처럼 "이미 승인된 버전의 새 제출 거부(90186/90062)" 를 피하려고 올렸다
 - 빌드 · 스토어 업로드는 대표가 Codemagic 에서
+- 확인: 앱 3722 통과 / 0 실패, `test:android-release` 11, 강사 · 회원 빌드, `release-guard --stage preflight` 통과(1.1.52 (75), 27e07c8)
+
+## 2026-11-15 — 원격 브랜치 정리 136개 (대표 지시: "138개 지워 줘")
+
+- 지운 것: **main 에 이미 들어간** 브랜치 136개 (일반 작업 127 + 옛 릴리스 9 가운데 7 -- 정확한 목록은 아래 백업). 지우기 직전에 다시 받아
+  하나하나 main 에 들어 있는지 확인했다. 원격 198 → 63
+- 남긴 것: 열린 PR 19 · main 에 없는 릴리스(1-1-43 ~ 1-1-52 등) · 작업 폴더가 잡고 있는 브랜치 · PR 없는 미병합 5개
+  (`bolt/latest-ui-v1` · `ci/cancel-previous-builds` · `codex/android-private-test-v14` · `codex/ios-review-v49` · `docs/handoff-1-1-33`, 대표 결정 대기)
+- 138 이 아니라 136 인 까닭: `release/android-p0-fixes-v1`(코덱스 `voice-result-ui-fix`) · `release/member-1-1-2`(`member-lesson-rating`)는
+  작업 폴더가 잡고 있어 뺐다
+- **되살리기**: 이름과 커밋 번호를 `C:\Users\ehgud\Desktop\pilateacher\.git\branch-backup-2026-11-15.txt` 에 남겼다 (저장소 밖으로 안 나감).
+  `git push origin <커밋번호>:refs/heads/<브랜치이름>`. PR 로 병합된 것은 GitHub PR 화면의 Restore branch 로도 된다
+- 이 PC 의 로컬 브랜치(245개)는 손대지 않았다
 
 ## 2026-11-15 — 보니따 비포애프터 안정화 · 카드 크게 보기 · 카드 꾸미기 · 탭 순서 (`feat/member-before-after-polish`, #199 위 · `release/1-1-51` 에도 합침)
 

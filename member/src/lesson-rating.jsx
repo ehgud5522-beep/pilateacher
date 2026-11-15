@@ -15,6 +15,7 @@ import { TYPE } from "../../src/features/ui/type-scale.js";
 import { RATING_COPY, RATING_ITEMS, SCORE_RANGE } from "../../functions/shared/lesson-rating.mjs";
 import { ratingFailure } from "./rating-copy.js";
 import { MEMBER_FEATURE, MEMBER_STAGE, recordDiagnostic } from "./diagnostics.js";
+import { useMotionClose } from "../../src/features/ui/use-motion-close.js";
 
 const text = (value) => String(value ?? "").trim();
 const STARS = Array.from({ length: SCORE_RANGE.max - SCORE_RANGE.min + 1 }, (_, index) => SCORE_RANGE.min + index);
@@ -105,16 +106,20 @@ export function LessonRatingCard({ lesson, place, api, onSeen, onStopAsking, ini
     }
   };
 
-  const later = () => {
+  /* 닫을 때 카드가 접히며 사라진다 (motion.css .ratewrap). 부모는 onSeen · onStopAsking 을 받는 순간 이 카드를 걷으므로,
+     그 둘은 접히는 움직임이 끝난 뒤에 부른다. 움직임 줄이기를 켠 기기에서는 바로 부른다 (use-motion-close.js). */
+  const stopping = useRef(false);
+  const { closing, close } = useMotionClose(() => {
     setPhase("hidden");
     onSeen?.(lessonId);
-  };
+    if (stopping.current) onStopAsking?.();
+  });
+  const later = () => close();
   /* 평가가 귀찮은 회원을 위한 끄기 (2026-11-15 대표). 실수로 누르지 않게 한 번 묻는다. 끈 뒤에도 마이페이지에서 다시 켤 수 있다. */
   const stopAsking = () => {
     if (!onStopAsking || !window.confirm("수업 후 평가를 앞으로 묻지 않을까요?\n마이페이지 › 알림 설정에서 다시 켤 수 있어요.")) return;
-    setPhase("hidden");
-    onSeen?.(lessonId);
-    onStopAsking();
+    stopping.current = true;
+    close();
   };
 
   if (phase === "loading" || phase === "hidden") return null;
@@ -130,7 +135,8 @@ export function LessonRatingCard({ lesson, place, api, onSeen, onStopAsking, ini
   }
 
   return (
-    <section className="card ratecard" aria-label={RATING_COPY.TITLE} data-lesson-rating="ready">
+    <div className="ratewrap" data-closing={closing || undefined}><div className="ratewrap-clip">
+    <section className="card ratecard" aria-label={RATING_COPY.TITLE} data-lesson-rating="ready" inert={closing ? "" : undefined}>
       <div className="ratehead">
         <p className="ratecap">{RATING_COPY.CAPTION}</p>
         <span className="ratesec">{RATING_COPY.SECONDS}</span>
@@ -166,5 +172,6 @@ export function LessonRatingCard({ lesson, place, api, onSeen, onStopAsking, ini
       <button type="button" className="btn mt" disabled={phase === "sending"} onClick={later}>{RATING_COPY.LATER}</button>
       {onStopAsking ? <button type="button" className="ratestop" disabled={phase === "sending"} onClick={stopAsking}>앞으로 묻지 않기</button> : null}
     </section>
+    </div></div>
   );
 }

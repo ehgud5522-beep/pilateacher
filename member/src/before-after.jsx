@@ -37,6 +37,8 @@ export default function MemberBeforeAfter({ scope, requestedShare, api = memberP
   const key = scopeKey(scope);
   const seen = lastSeen.get(key);
   const request = useRef(0), retry = useRef({ timer: 0, attempt: 0 }), refreshRef = useRef(() => {});
+  /* 기록을 열면 오른쪽에서 들어오고, 목록으로 돌아오면 왼쪽에서 들어온다 (motion.css). */
+  const cameBack = useRef(false);
   const [shares, setShares] = useState(seen?.shares || []), [selected, setSelected] = useState(null);
   /* 'loading' 은 "아직 모름" 이다 -- 이때 동의 화면을 그리지 않는다. */
   const [consent, setConsent] = useState(() => seen?.consent || readConsent(storage, key) || 'loading');
@@ -127,7 +129,8 @@ export default function MemberBeforeAfter({ scope, requestedShare, api = memberP
 
   if (selected) {
     const days = selected.shareType === 'card' ? daysBetweenDates(selected.dates?.[0], selected.dates?.[1]) : null;
-    return <section className="stack private-member-sharing ba-member" aria-label="비포애프터 기록">
+    cameBack.current = true;
+    return <section className="stack private-member-sharing ba-member member-push" aria-label="비포애프터 기록">
       <div className="ba-member-head"><button type="button" className="ba-back" onClick={() => setSelected(null)} aria-label="목록으로">‹</button>
         <div><h1>{days ? `${days}일의 변화` : '비포애프터'}</h1><p className="muted num">{selected.teacherName ? `${selected.teacherName} 선생님` : '담당 선생님'}{selected.shareType === 'card' ? ` · ${dotDate(selected.dates?.[0])} → ${dotDate(selected.dates?.[1])}` : ''}</p></div></div>
       {status}
@@ -137,7 +140,7 @@ export default function MemberBeforeAfter({ scope, requestedShare, api = memberP
     </section>;
   }
 
-  return <section className="stack private-member-sharing ba-member" aria-label="비포애프터">
+  return <section className={`stack private-member-sharing ba-member${cameBack.current ? ' member-pop' : ''}`} aria-label="비포애프터">
     <div className="ba-member-head"><div><h1>비포애프터</h1><p className="muted">선생님이 남긴 회원님의 변화를 확인해요.</p></div>
       <button type="button" className="ba-refresh" onClick={() => { retry.current.attempt = 0; refresh(); }}>새로고침</button></div>
     {status}

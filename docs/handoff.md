@@ -1,3 +1,14 @@
+## 2026-11-15 — 배포 기록: #208 ~ #214 · #207 병합 · 강사 웹 · 1.1.53 빌드 브랜치 (대표 지시 "병합 웹배포해")
+
+- **병합**: #208 → #209 → #210 → #211 → #212 → #213 → #214 → #207 차례로. main `7a0ba08`
+- **강사 웹**: `deploy-main` 로컬 main 을 origin/main 으로 fast-forward 만(앞선 로컬 커밋 0) 한 뒤 `npm run deploy:web`. 배포 전 테스트 3771 통과 / 0 실패.
+  운영 `version.json` = `mwht99tq-7a0ba08` 확인. 보니따 웹은 member/** 변경이 없어 자동 배포 대상 아님
+- **배포 안 한 것 (지시 없음)**: #213 의 **규칙**(`firestore.foundation.rules`) · **Functions**(sessionUpPass · handoverPass · managePassHold).
+  지금 운영은 화면만 FC 지점 제한(다른 지점 회원권에 버튼 없음)이고 규칙 · 서버는 옛 그대로 -- 더 막는 쪽이라 깨지는 것은 없다.
+  배포 전 FC 4명 `locationIds` 확인
+- **앱 빌드 브랜치 `release/1-1-53`** (대표: "1.1.53으로 새로운 빌드"): release/1-1-52 + main 7a0ba08 합침(충돌 0) + 버전.
+  강사 1.1.53 · versionCode 76 · 허용 브랜치 추가, 보니따 1.1.5. 강사 테스트 3773 · 두 앱 빌드 통과. Codemagic 시작 · 스토어 업로드는 대표
+
 ## 2026-11-15 — FC매니저는 맡은 지점의 회원권만 (#213, 병합 · 배포 전, 규칙 배포 필요)
 
 - 대표: "네, PR까지" (FC 권한 정리에서 찾은 구멍). 규칙 `passInManagerScope` · 서버 `passInManagerScope`(pass-admin.js) ·

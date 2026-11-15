@@ -3984,7 +3984,7 @@ function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatu
       </div>
 
       {/* ─── 하단 고정 업무 요약 ─── */}
-      {db.members.length > 0 && db.schedule.length > 0 && <div className="shrink-0" style={{ padding: "6px 12px 8px", backgroundColor: PAGE }}>
+      {db.members.length > 0 && db.schedule.length > 0 && (organizedQueue.todayCount > 0 || organizedQueue.total > 0 || organizedQueue.dismissedCount > 0 || (memberCancelOn && memberCancelCount > 0) || (inbox && (inboxLabel || inbox.error))) && <div className="shrink-0" style={{ padding: "6px 12px 8px", backgroundColor: PAGE }}>
         {/* 회원 앱에서 회원이 직접 취소한 수업 (2026-11-07, 5차 1단계). 기능이 켜진 강사만,
             오늘부터 앞으로, 아직 [확인] 하지 않은 것만 센다 (member-cancel-view.js). 누르면
             가장 가까운 그 수업을 연다. */}
@@ -4006,19 +4006,31 @@ function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatu
             <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>보기</span>
           </button>
         ) : null}
-        {/* 첫 화면은 "오늘 미처리 N건" 하나로 말한다 (2026-11-07). 지난 것은 아래 줄에 수만. */}
-        <button data-queue-summary onClick={(e) => { if (organizedQueue.total || organizedQueue.dismissedCount) { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); } }} disabled={!organizedQueue.total && !organizedQueue.dismissedCount}
-          className="flex h-14 w-full items-center gap-3 rounded-xl px-3 text-left disabled:opacity-80"
-          style={{ background: organizedQueue.todayCount ? "var(--grad-soft)" : CARD, border: `1px solid ${organizedQueue.todayCount ? RING : LINE}`, boxShadow: "0 1px 4px rgba(28,36,51,.06)" }}>
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: organizedQueue.todayCount ? TINT : GOOD_S }}>
-            {organizedQueue.todayCount ? <Pencil size={14} style={{ color: PRIMARY }} /> : <Check size={14} style={{ color: GOOD }} />}
+        {/* 첫 화면은 "오늘 미처리 N건" 하나로 말한다 (2026-11-07). 지난 것은 아래 줄에 수만.
+            오늘 미처리가 없으면 큰 칸을 걷는다 (2026-11-15 강사 제보: "미처리 없음이면 숨기거나 안 뜨게").
+            지난 · 숨긴 항목이 남아 있으면 얇은 한 줄로만, 그것도 없으면 아무것도 없다 -- 시간표가 그만큼 넓어진다. */}
+        {organizedQueue.todayCount > 0 ? (
+        <button data-queue-summary onClick={(e) => { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); }}
+          className="flex h-14 w-full items-center gap-3 rounded-xl px-3 text-left"
+          style={{ background: "var(--grad-soft)", border: `1px solid ${RING}`, boxShadow: "0 1px 4px rgba(28,36,51,.06)" }}>
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: TINT }}>
+            <Pencil size={14} style={{ color: PRIMARY }} />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-extrabold" style={{ color: INK }}>{organizedQueue.todayCount ? `오늘 미처리 ${organizedQueue.todayCount}건` : "오늘 미처리 없음"}</span>
-            <span className="block truncate text-xs" style={{ color: SUB }}>{queueSummaryDetail || "확인할 수업이 없습니다"}</span>
+            <span className="block text-sm font-extrabold" style={{ color: INK }}>{`오늘 미처리 ${organizedQueue.todayCount}건`}</span>
+            {queueSummaryDetail && <span className="block truncate text-xs" style={{ color: SUB }}>{queueSummaryDetail}</span>}
           </span>
-          {organizedQueue.total > 0 && <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>{organizedQueue.todayCount ? "지금 처리" : "보기"}</span>}
+          <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>지금 처리</span>
         </button>
+        ) : (organizedQueue.total || organizedQueue.dismissedCount) ? (
+        <button data-queue-summary data-queue-summary-compact onClick={(e) => { queueTriggerRef.current = e.currentTarget; setQueueOpen(true); }}
+          className="flex h-9 w-full items-center gap-2 rounded-xl px-3 text-left"
+          style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+          <Check size={13} style={{ color: GOOD }} />
+          <span className="min-w-0 flex-1 truncate text-xs font-bold" style={{ color: SUB }}>{`오늘 미처리 없음 · ${queueSummaryDetail}`}</span>
+          <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>보기</span>
+        </button>
+        ) : null}
       </div>}
 
       {editing && <ScheduleForm memberCancelAcked={isMemberCancelAcked(liveEditing)} draftAccountId={draftAccountId} onAckMemberCancel={() => ackMemberCancel(liveEditing)} draft={liveEditing} members={db.members} schedule={db.schedule} briefingOf={briefingOf} scheduleColors={scheduleColors} returnFocusRef={scheduleTriggerRef} onClose={() => setEditing(null)}
@@ -4287,7 +4299,7 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
     const needsRecord = !pv && !eq && list.some((a) => a.status === "done" && !(memberOf?.(a.memberId)?.notes || []).some((n) => n?.sid === s.id));
     const briefingLine = !pv && !eq && list.some((attendee) => !!selectScheduleBriefing(briefingOf?.(attendee.memberId, s.id)));
     const typeLabel = typeDef.label;
-    return { s, top: topOf(st), h: Math.max(20, topOf(en) - topOf(st) - 2), label, equipText, typeKey,  typeLabel, typeShape: typeDef.shape, briefingLine, done, cancelled: (eq && !!s.groupCancelled) || status === "cancel", memberCancelled: hasMemberCancel(s), noshow: status === "noshow", eq, pv, next: s.id === nextId, needsRecord, groupPeople };
+    return { s, top: topOf(st), h: Math.max(20, topOf(en) - topOf(st) - 2), label, equipText, typeKey,  typeLabel, typeShape: typeDef.shape, briefingLine, done, settled: !pv && isLockedBySettlement(s), cancelled: (eq && !!s.groupCancelled) || status === "cancel", memberCancelled: hasMemberCancel(s), noshow: status === "noshow", eq, pv, next: s.id === nextId, needsRecord, groupPeople };
   }).filter((b) => b.top >= -GRID_ROW && b.top < totalHeight);
 
   return (
@@ -4347,23 +4359,27 @@ function WeekGrid({ days, byDate, nameOf, memberOf, briefingOf, cursor, onOpen, 
                   /* 유형 글자가 화면에서 빠지므로 aria-label 이 읽어 주는
                      유일한 경로가 된다. 도형은 눈으로 보는 쪽이고, 여기서는
                      이름 그대로 말해 준다. */
-                  <button key={b.s.id} data-member-cancelled={b.memberCancelled ? "" : undefined} aria-label={[b.typeLabel, b.label, lessonEquipFullText(b.s), b.memberCancelled ? MEMBER_CANCEL_VIEW_COPY.BADGE : ""].filter(Boolean).join(" · ")} title={[b.typeLabel, b.label, lessonEquipFullText(b.s), b.memberCancelled ? MEMBER_CANCEL_VIEW_COPY.BADGE : ""].filter(Boolean).join(" · ")} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpen(b.s, e.currentTarget); }}
+                  <button key={b.s.id} data-member-cancelled={b.memberCancelled ? "" : undefined} aria-label={[b.typeLabel, b.label, lessonEquipFullText(b.s), b.memberCancelled ? MEMBER_CANCEL_VIEW_COPY.BADGE : "", b.settled ? "확정됨" : ""].filter(Boolean).join(" · ")} data-settled={b.settled ? "" : undefined} title={[b.typeLabel, b.label, lessonEquipFullText(b.s), b.memberCancelled ? MEMBER_CANCEL_VIEW_COPY.BADGE : ""].filter(Boolean).join(" · ")} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onOpen(b.s, e.currentTarget); }}
                     className="absolute left-0.5 right-0.5 flex min-w-0 flex-col justify-center overflow-hidden text-left"
                     style={{ top: b.top + 1, height: Math.max(18, b.h - 1), borderRadius: 4,
-                      background: b.cancelled ? "transparent" : b.noshow ? "var(--bad-s)" : tone.surface,
-                      border: b.next ? "1.5px solid var(--brand)" : b.cancelled ? `1px dashed ${b.memberCancelled ? WARN : "var(--line)"}` : `1px solid ${b.noshow ? "var(--bad-s)" : tone.border}`,
-                      borderLeft: `3px solid ${b.memberCancelled ? WARN : b.cancelled ? "var(--line)" : tone.edge}`,
-                      color: b.noshow ? "var(--bad)" : b.done || b.cancelled ? "var(--ink2)" : "var(--ink)",
+                      /* 확정된 수업은 회색 카드 + 초록 체크 (2026-11-15 강사 제보: "수업 확정된 회원은 회색 처리나
+                         좀 더 구분이 쉽게"). 전에는 확정이 시간표에 전혀 안 보여 출석만 한 수업과 같았다. */
+                      background: b.cancelled ? "transparent" : b.settled ? "var(--canvas)" : b.noshow ? "var(--bad-s)" : tone.surface,
+                      border: b.next ? "1.5px solid var(--brand)" : b.cancelled ? `1px dashed ${b.memberCancelled ? WARN : "var(--line)"}` : `1px solid ${b.settled ? "var(--line)" : b.noshow ? "var(--bad-s)" : tone.border}`,
+                      borderLeft: `3px solid ${b.memberCancelled ? WARN : b.cancelled ? "var(--line)" : b.settled ? "var(--faint)" : tone.edge}`,
+                      color: b.settled ? "var(--sub)" : b.noshow ? "var(--bad)" : b.done || b.cancelled ? "var(--ink2)" : "var(--ink)",
                       padding: "1px 2px 1px 3px", fontSize: labelLen >= 6 ? 8 : labelLen === 5 ? 9 : labelLen === 4 ? 9.5 : 10.5,
                       letterSpacing: labelLen >= 4 ? "-0.35px" : "-0.15px", lineHeight: 1.08, fontWeight: b.next || (focusedMemberId && memberMatch) ? 700 : 600,
-                      opacity: memberMatch ? (b.done ? 0.74 : 1) : 0.22, boxShadow: focusedMemberId && memberMatch ? `0 0 0 2px ${RING}` : "none", transition: "opacity .18s ease, box-shadow .18s ease" }}>
+                      opacity: memberMatch ? (b.done && !b.settled ? 0.74 : 1) : 0.22, boxShadow: focusedMemberId && memberMatch ? `0 0 0 2px ${RING}` : "none", transition: "opacity .18s ease, box-shadow .18s ease" }}>
                     {b.next && <Play size={7} fill={BRAND} className="absolute left-0.5 top-0.5" />}
                     {memberDot && !tall && <span className="absolute" aria-hidden="true" style={{ left: 2, bottom: 2, width: 5, height: 5, borderRadius: 3, backgroundColor: memberDot, opacity: b.done ? .45 : 1 }} />}
                     <span className="flex w-full min-w-0 items-center" style={{ paddingLeft: b.next ? 8 : 0 }}>
                       {/* 유형은 이제 도형 하나다. 이름 앞 한 자리만 쓰므로 이름이
                           그만큼 길게 들어간다. 읽어 주는 것은 버튼의 aria-label 이라
                           여기서는 화면에서 감춘다 -- 같은 말을 두 번 읽지 않는다. */}
-                      <span className="pt-week-type mr-0.5 shrink-0" aria-hidden="true" style={{ color: tone.edge }}>{b.typeShape}</span>
+                      {b.settled
+                        ? <Check size={8} strokeWidth={3.5} className="mr-0.5 shrink-0" aria-hidden="true" style={{ color: "var(--good)" }} />
+                        : <span className="pt-week-type mr-0.5 shrink-0" aria-hidden="true" style={{ color: tone.edge }}>{b.typeShape}</span>}
                       {memberDot && tall && <span className="shrink-0" aria-hidden="true" style={{ width: 3.5, height: 3.5, borderRadius: 2, marginRight: 1.5, backgroundColor: memberDot, opacity: b.done ? .45 : 1 }} />}
                       <span className="min-w-0 flex-1 truncate" style={{ textDecoration: b.cancelled ? "line-through" : "none" }}>{b.label}</span>
                     </span>

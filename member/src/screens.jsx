@@ -14,7 +14,7 @@
 
 import { useMemo, useState } from "react";
 import { TYPE } from "../../src/features/ui/type-scale.js";
-import { PUSH_PERMISSION, PUSH_ROWS, PUSH_SUPPORT } from "./push.js";
+import { PUSH_KIND, PUSH_PERMISSION, PUSH_ROWS, PUSH_SUPPORT } from "./push.js";
 import {
   DELETED_ITEMS, DELETE_STEP, KEPT_ITEMS, deleteFailureMessage,
 } from "./delete-account.js";
@@ -601,10 +601,27 @@ export function MyPage({ view, now = new Date(), onSignOut, onDeleteAccount, pus
  */
 export function PushSettings({ push }) {
   if (push.support !== PUSH_SUPPORT.NATIVE) {
+    /* 웹에서는 알림을 못 받지만, 홈의 평가 카드는 여기서도 끌 수 있어야 한다. */
+    const rating = PUSH_ROWS.find((row) => row.kind === PUSH_KIND.LESSON_RATING);
+    const on = push.prefs?.[rating.kind] !== false;
     return (
       <Card className="push"><div data-push-settings="web">
         <p className="cap">알림 설정</p>
-        <p style={{ fontSize: TYPE.body }}>수업 알림은 보니따 앱에서만 받을 수 있어요.</p></div>
+        <p style={{ fontSize: TYPE.body }}>수업 알림은 보니따 앱에서만 받을 수 있어요.</p>
+        <div className="rowcard mt" data-push-row={rating.kind}>
+          <div>
+            <p style={{ fontSize: TYPE.body, fontWeight: 600 }}>{rating.title}</p>
+            <p className="muted" style={{ fontSize: TYPE.caption }}>끄면 홈의 평가 카드가 더 나오지 않아요</p>
+          </div>
+          <button type="button" role="switch" aria-checked={on} aria-label={`${rating.title} 묻기`}
+            className={`chip${on ? " on" : ""}`} style={{ minHeight: 44, minWidth: 64 }}
+            disabled={!push.onToggle || push.saving === rating.kind}
+            onClick={() => push.onToggle?.(rating.kind, !on)}>
+            {on ? "켜짐" : "꺼짐"}
+          </button>
+        </div>
+        {push.errorCode ? <p className="mt" role="alert" style={{ fontSize: TYPE.caption }}>설정을 저장하지 못했어요. 잠시 후 다시 시도해 주세요. (코드 {push.errorCode})</p> : null}
+      </div>
       </Card>
     );
   }

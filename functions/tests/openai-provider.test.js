@@ -434,3 +434,32 @@ test("audio provider keeps the complete transcription instead of cutting a VAD-e
   assert.equal(result.trimmedMs, 3000);
   assert.equal(result.captureLatencyMs, 90);
 });
+
+/* 2026-11-16 대표 결정 6: 회원 이름 · 연락처는 OpenAI 로 보내지 않는다.
+   ① 음성 인식 힌트에 이름이 없다 ② 음성 경로도 정리 모델에 보내기 전에 이름 · 번호를 지운다. */
+test("audio path sends no member name to speech recognition and scrubs it before structuring", async () => {
+  let sttPrompt = "";
+  let structureInput = "";
+  const spoken = "김지민 회원님 오늘 리포머 진행했고 010-1234-5678 로 연락 주셨어요.";
+  const provider = createOpenAIProvider({
+    client: {
+      audio: { transcriptions: { create: async (params) => {
+        sttPrompt = String(params.prompt || "");
+        return { text: spoken, segments: [{ text: spoken, no_speech_prob: 0.01, avg_logprob: -0.1, compression_ratio: 1.1 }] };
+      } } },
+      responses: { create: async (params) => {
+        structureInput = String(params.input || "");
+        return { status: "completed", output_text: JSON.stringify(operationOutputs[OPERATIONS.STRUCTURE_LESSON_RECORD]) };
+      } },
+    },
+  });
+  await provider.executeAudio({ input: {
+    audio: createM4aFixture(12).toString("base64"), redactName: "김지민", language: "ko",
+    audioMetrics: { intervalMs: 100, amplitudes: Array(50).fill(0.2) },
+  } });
+  assert.ok(sttPrompt.length > 0, "용어 힌트는 그대로 간다");
+  assert.doesNotMatch(sttPrompt, /김지민|회원 이름은/);
+  assert.match(structureInput, /리포머/);
+  assert.doesNotMatch(structureInput, /김지민/);
+  assert.doesNotMatch(structureInput, /010-1234-5678/);
+});

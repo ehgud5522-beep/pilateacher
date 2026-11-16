@@ -129,7 +129,8 @@ function createAIGatewayHandler({
           providerResponse = await provider.executeAudio({
             input: {
               audio: request.input.audio,
-              memberName: authorization.memberName || request.input.memberName,
+              /* 이름은 음성 인식에 쓰지 않고, 전사문에서 지우는 데만 쓴다 (openai-provider.js). */
+              redactName: authorization.memberName || request.input.memberName,
               language: "ko",
               clipId: request.input.clipId,
               audioMetrics: request.input.audioMetrics,

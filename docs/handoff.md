@@ -1,3 +1,17 @@
+## 2026-11-16 — 설계 3~5단계: 브리핑 개편 · 재등록 알림 · 상담 소재 (#230 · #231 · #232, PR 만 · 병합 · 배포 전)
+
+#229 위에 차례로 쌓음 (#230 → #231 → #232). 전부 스위치(scheduleSync)로 꺼진 채.
+- #230 수업 전 브리핑 `lessonBriefingV2`: 시트 위 세 덩어리, 지난 수업은 연 수업보다 앞선 기록만, 같은 문장 한 번. 스크린샷은
+  `docs/screenshots/lesson-briefing-v2/`. 실제 앱 시트 화면은 아직 못 봄
+- #231 재등록 알림 `renewalAlerts` (규칙 계산, AI 아님): `functions/shared/renewal-forecast.mjs` 를 앱 · 서버가 같이 씀.
+  서버 `renewalCandidates` (밤 04:30 · 새 회원권 트리거 · 대표 [지난 6달 채우기]). 운영 데이터 재등록률 대조는 배포 뒤
+- #232 상담 소재 `consultPoints` (AI, 누를 때만): callable `consultTalkingPoints`, 효과 보장 · 가격 말 서버가 버림.
+  설계와 다른 점: 게이트웨이 대신 callable, 목표는 서버 저장 안 하고 누를 때 보냄
+- 강사용 안내 문서: https://claude.ai/artifact/4smYVvnNK8UaeV3Ji4q6HA (공유는 대표가)
+
+남은 것: 동의 문구 법률 검토 → 처리방침 · 버전 올림, 회원 목표 서버 저장(결정 2), 실제 OpenAI 결과 시범 판정(요약 · 상담 소재),
+배포 순서(규칙 → Functions → 웹) 지시 대기.
+
 ## 2026-11-16 — 수업기록 서버 저장 · AI 회원 요약 · 회원 동의 (#222 ~ #229, PR 만 · 병합 · 배포 전)
 
 설계 문서: https://claude.ai/artifact/FmYAG8gfqADfrF4GSmCRmG (대표 "다진행해줘" 로 결정 1~6 추천안 승인).

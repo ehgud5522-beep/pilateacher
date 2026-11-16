@@ -191,7 +191,7 @@ import {
 } from "./features/roster/roster-realtime.js";
 import { readPassesForClients, subscribeClients } from "./data/repositories/client-realtime.js";
 import { markTeacherInboxRead, subscribeTeacherInbox } from "./data/repositories/teacher-inbox-repository.js";
-import { currentPassUsage } from "./features/membership/pass-usage.js";
+import { currentPassUsage, passHistoryRows } from "./features/membership/pass-usage.js";
 import { hideToday as hideDailySentenceToday, isHiddenToday as dailySentenceHiddenToday, pickSentence, readLastSentence, rememberSentence } from "./features/schedule/daily-sentence.js";
 import { INBOX_COPY, inboxFailure, inboxRow, inboxStripLabel, lessonForInboxItem } from "./features/notifications/teacher-inbox.js";
 import {
@@ -7064,7 +7064,7 @@ function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
 }
 
 /* 회원 카드 · 출석 체크의 "지금 회원권" 줄 (2026-11-08). 지금 쓰는 회원권만 -- "20회 중 12회 사용" 과
-   막대 하나. 여정 전체(앱 이전 · 1차 · 2차 …)는 회원 상세의 PassJourneyBar 에 있다.
+   막대 하나. 회원권마다의 이력은 회원 상세의 MemberPassProgress 에 있다.
    글자는 15px(TYPE.body), 넘치면 줄을 바꾼다 -- 칸 밖으로 나가지 않는다. */
 function PassUsageBar({ journey }) {
   const usage = currentPassUsage(journey);
@@ -7091,83 +7091,84 @@ function PassUsageBar({ journey }) {
   );
 }
 
-/* 회원의 여정 줄. 회원권 하나가 아니라 지금까지 온 전부를 한 줄로 잇는다.
+/* 회원 상세 맨 위의 회원권 칸 (2026-11-16 대표: "남은 횟수 그래프가 이해하기 힘듦, 더 직관적이고 쉽게").
 
-   줄이 주인공이고 숫자는 보조다. 큰 막대가 아니라 가는 선이고, 회원권 경계에만
-   옅은 구분선을 둔다 -- 몇 차인지는 알아야 하지만 그것이 줄을 조각내면 여정으로
-   읽히지 않는다.
+   전에는 여정 전체(앱 이전 · 1차 · 2차 …)를 가는 선 하나에 잇고 그 위에 점을 찍었다. 회원권 경계 ·
+   서비스 빗금 · 만료 회색이 한 선에 섞였고, 아래 "누적 11 / 171회 · 4차 진행중" 은 전체 기준이라
+   바로 위 "잔여 160회" 와도 이어지지 않았다.
 
-   서비스 회차는 다른 색이다. 급여가 다르고 회원이 받은 성격도 다르다.
-
-   size="sm" 은 회원 카드와 출석 체크에 들어가는 줄이다. 거기서는 숫자도 줄이지
-   않는다 -- 강사가 "이 회원 얼마나 왔지" 를 세지 않아도 되게 하는 것이 목적이라
-   숫자 한 줄은 남는다. */
-function PassJourneyBar({ journey, size = "md" }) {
+   이제 두 층으로 말한다.
+   1. 지금 회원권: "N회 남음" 을 크게, 그 아래 한 회 = 한 칸(40회 이하) 또는 막대 하나, "사용 · 전체".
+      미리 끊은 다음 회원권은 합치지 않고 "다음 회원권 · N회 대기" 한 줄 (회원 카드의 PassUsageBar 와 같은 판정)
+   2. 등록 이력(접힘): 회원권마다 한 줄 -- "3차 · 32회 (서비스 2) · 18회 남음", 최근 것이 위 (passHistoryRows) */
+const PASS_CELL_LIMIT = 40;
+const PASS_HISTORY_TONE = Object.freeze({
+  using: () => ({ color: BRAND_D, fontWeight: 800 }),
+  waiting: () => ({ color: PRIMARY, fontWeight: 700 }),
+  lapsed: () => ({ color: WARN, fontWeight: 700 }),
+  done: () => ({ color: SUB, fontWeight: 600 }),
+  prior: () => ({ color: SUB, fontWeight: 600 }),
+});
+function MemberPassProgress({ journey }) {
   if (!hasJourney(journey)) return null;
-  const small = size === "sm";
-  const height = small ? 4 : 6;
-  const total = journey.grandTotal;
-  const done = journey.usedTotal;
-  /* 현재 위치. 차감할 때마다 한 칸 오른쪽으로 기어간다 -- 회원이 지금 어디쯤
-     와 있는지가 줄에서 읽혀야 하고, 그것이 이 줄의 요점이다. */
-  const at = total > 0 ? Math.min(100, (done / total) * 100) : 0;
-  const dot = small ? 7 : 9;
+  const usage = currentPassUsage(journey);
+  const history = passHistoryRows(journey);
+  const cells = usage && usage.total > 0 && usage.total <= PASS_CELL_LIMIT;
   return (
-    <div className="min-w-0">
-      <div className="relative" style={{ paddingTop: (dot - height) / 2, paddingBottom: (dot - height) / 2 }}>
-        <div
-          role="img"
-          aria-label={`누적 ${done}회 / 총 ${total}회${journey.currentRound > 0 ? ` · ${journey.currentRound}차 진행중` : ""}`}
-          className="flex w-full overflow-hidden"
-          style={{ height, borderRadius: height, backgroundColor: CANVAS }}>
-          {journey.segments.map((segment, index) => {
-            /* 구간 폭은 회차 수에 비례한다. 1회짜리 회원권도 선에 남아야 하므로
-               최소 폭을 준다 -- 0 이면 경계선만 보이고 구간은 사라진다. */
-            const width = `${Math.max(2, (segment.total / total) * 100)}%`;
-            const filled = segment.total > 0 ? (segment.used / segment.total) * 100 : 0;
-            /* 서비스 구간은 왼쪽 끝이다. 서비스를 먼저 쓰므로(deduction-pricing.js)
-               왼쪽부터 차는 채움과 소진 순서가 맞아떨어진다. 색을 덮는 대신 빗금을
-               얹는다 -- 아직 안 쓴 서비스도 "여기는 서비스" 로 읽혀야 한다. */
-            const servicePart = segment.total > 0 ? (segment.service / segment.total) * 100 : 0;
-            return (
-              <div key={`${segment.kind}-${segment.passId || index}`} className="relative h-full"
-                style={{
-                  width,
-                  /* 회원권 경계. 카드 색으로 얇게 그어 몇 차인지만 보이게 한다.
-                     앱 이전 구간은 회원권이 아니라 통으로 두므로 경계가 없다. */
-                  borderLeft: index === 0 ? "none" : `1px solid ${CARD}`,
-                  backgroundColor: segment.kind === "prior" ? "#C9CEDA" : CANVAS,
-                }}>
-                {segment.kind === "prior" ? null : (
-                  <>
-                    <span className="absolute inset-y-0 left-0" style={{ width: `${filled}%`, backgroundColor: BRAND }} />
-                    {segment.lapsed > 0 ? (
-                      <span className="absolute inset-y-0 right-0"
-                        style={{ width: `${(segment.lapsed / segment.total) * 100}%`, backgroundColor: "#E2E5EC" }} />
-                    ) : null}
-                    {servicePart > 0 ? (
-                      <span className="absolute inset-y-0 left-0" style={{
-                        width: `${servicePart}%`,
-                        backgroundImage: `repeating-linear-gradient(135deg, ${GOOD} 0 2px, transparent 2px 4px)`,
-                        opacity: 0.9,
-                      }} />
-                    ) : null}
-                  </>
-                )}
-              </div>
-            );
-          })}
+    <div className="min-w-0" data-pass-progress>
+      {usage ? (
+        <>
+          <div className="flex min-w-0 items-baseline justify-between gap-2">
+            <span className="min-w-0" style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB, wordBreak: "keep-all" }}>{usage.title}</span>
+            <span className="shrink-0 tabular-nums" data-pass-remaining>
+              <span style={{ fontSize: TYPE.display, lineHeight: 1, fontWeight: 800, color: BRAND_D }}>{usage.remaining}</span>
+              <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK2 }}>회 남음</span>
+            </span>
+          </div>
+          <div role="img" aria-label={`${usage.usage}, ${usage.remaining}회 남음`} className="mt-2 flex w-full min-w-0"
+            style={{ gap: cells ? (usage.total > 24 ? 1.5 : 2.5) : 0 }} data-pass-cells={cells ? usage.total : undefined}>
+            {cells
+              ? Array.from({ length: usage.total }, (_, index) => (
+                <span key={index} aria-hidden="true" className="min-w-0 flex-1"
+                  style={{ height: 12, borderRadius: 3, backgroundColor: index < usage.used ? BRAND : TINT, border: index < usage.used ? "none" : `1px solid ${RING}`, boxSizing: "border-box" }} />
+              ))
+              : (
+                <span aria-hidden="true" className="w-full overflow-hidden" style={{ height: 12, borderRadius: 6, backgroundColor: TINT }}>
+                  <span className="block h-full" style={{ width: `${usage.used > 0 ? Math.max(2, Math.round(usage.ratio * 100)) : 0}%`, borderRadius: 6, backgroundColor: BRAND }} />
+                </span>
+              )}
+          </div>
+          <div className="mt-1 flex justify-between tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+            <span>사용 {usage.used}회</span>
+            <span>전체 {usage.total}회</span>
+          </div>
+          {usage.waiting ? (
+            <p className="mt-1.5 flex min-w-0 items-center gap-2" data-pass-waiting style={{ fontSize: TYPE.caption, fontWeight: 700, color: PRIMARY }}>
+              <span aria-hidden="true" className="shrink-0" style={{ width: 18, height: 8, borderRadius: 3, border: `1.5px dashed ${PRIMARY}`, boxSizing: "border-box" }} />
+              {usage.waiting.label}
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>지금 쓰는 회원권이 없어요</p>
+      )}
+      <details className="mt-2 min-w-0 border-t pt-2" style={{ borderColor: LINE }} open={!usage || undefined} data-pass-history>
+        <summary className="cursor-pointer list-none tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>
+          등록 이력 {history.passCount}번 · 지금까지 {history.usedTotal}회 수업
+        </summary>
+        <div className="mt-1.5 min-w-0">
+          {history.rows.map((row) => (
+            <div key={row.key} className="flex min-w-0 items-center justify-between gap-2 tabular-nums" data-pass-history-row={row.state}
+              style={{ padding: "6px 0", borderTop: `1px solid ${LINE}`, fontSize: TYPE.caption }}>
+              <span className="min-w-0 truncate" style={{ color: INK2, fontWeight: 600 }}>{row.label}</span>
+              <span className="shrink-0" style={PASS_HISTORY_TONE[row.state]()}>{row.detail}</span>
+            </div>
+          ))}
+          {journey.hasPrior && journey.priorIsInstructorScoped ? (
+            <p className="mt-1" style={{ fontSize: TYPE.caption, color: FAINT }}>{JOURNEY_PRIOR_NOTE}</p>
+          ) : null}
         </div>
-        <span aria-hidden="true" className="absolute" style={{
-          top: 0, left: `${at}%`, width: dot, height: dot, marginLeft: -(dot / 2),
-          borderRadius: dot, backgroundColor: BRAND, border: `2px solid ${CARD}`, boxSizing: "border-box",
-        }} />
-      </div>
-      <p className="mt-1 truncate tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-        누적 {done} / {total}회
-        {journey.currentRound > 0 ? ` · ${journey.currentRound}차 진행중` : ""}
-        {journey.hasPrior && !small ? ` · ${JOURNEY_PRIOR_NOTE} ${journey.prior}회` : ""}
-      </p>
+      </details>
     </div>
   );
 }
@@ -7509,7 +7510,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
               ].map(([label, value, strong]) => (
                 <div key={label} className="min-w-0">
                   <p className="text-caption font-bold" style={{ color: SUB }}>{label}</p>
-                  <p className="mt-0.5 truncate font-extrabold tabular-nums" style={{ fontSize: strong ? 18 : 13, lineHeight: 1.25, color: strong ? statusInk : INK }}>{value}</p>
+                  <p className="mt-0.5 truncate font-extrabold tabular-nums" style={{ fontSize: strong ? TYPE.heading : TYPE.body, lineHeight: 1.25, color: strong ? statusInk : INK }}>{value}</p>
                 </div>
               ))}
             </div>
@@ -7522,7 +7523,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
               질문이고, 재등록 상담에서 필요한 것은 그쪽이다. */}
           {hasJourney(journey) ? (
             <section data-member-section="journey" style={sectionStyle}>
-              <PassJourneyBar journey={journey} />
+              <MemberPassProgress journey={journey} />
             </section>
           ) : null}
           <section ref={recentCardRef} data-member-section="next-preparation" aria-label="다음 수업 준비" style={sectionStyle}>

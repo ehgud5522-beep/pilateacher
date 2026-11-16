@@ -1817,30 +1817,32 @@ test("an instructor cannot delete, hold or reprice a centre member", async () =>
   assert.doesNotMatch(personal, /내 목록에서 숨기기/);
 });
 
-/* 회원의 여정 줄과 수업의 예상 단가. 둘 다 "나중에 묻지 않게" 하는 화면이다. */
-test("the journey line shows the whole road, not just this pass", async () => {
+/* 회원 상세의 회원권 칸 (2026-11-16: 여정 선 + 점 → 지금 회원권 칸 + 회원권마다 한 줄). */
+test("the member detail says how many sessions are left, and each pass in one line", async () => {
   const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
   const journey = markupOf("회원 상세 · 여정");
-  /* 20 + 30 + 32 = 82, 그중 쓴 것 64. 이관 기록은 74 − 64 = 10 회.
-     숫자는 보조지만 줄만으로는 "얼마나" 를 읽을 수 없어 한 줄은 남긴다. */
-  assert.match(journey, /누적 74 \/ 92회/);
-  assert.match(journey, /3차 진행중/);
-  // 담당이 바뀐 회원은 이 구간이 실제보다 짧다. 기준을 밝혀야 오해가 없다.
-  assert.match(journey, /앱 이전 기록 \(담당 강사 기준\) 10회/);
+  /* 1차 20 · 2차 30 다 씀, 3차 30+서비스 2 중 18 남음, 이관 기록 74 − 64 = 10 회. */
+  assert.match(journey, /이번 회원권 · 3번째 등록/);
+  assert.match(journey, /data-pass-remaining="[^"]*"><span[^>]*>18<\/span><span[^>]*>회 남음/, "남은 횟수가 크게");
+  assert.match(journey, /data-pass-cells="32"/, "40회 이하는 한 회 = 한 칸");
+  assert.match(journey, /aria-label="32회 중 14회 사용, 18회 남음"/);
+  assert.match(journey, /사용 14회/);
+  assert.match(journey, /전체 32회/);
+  assert.match(journey, /등록 이력 3번 · 지금까지 74회 수업/);
+  const rows = [...journey.matchAll(/data-pass-history-row="([a-z]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(rows, ["using", "done", "done", "prior"], "최근 회원권이 위, 앱 이전 기록이 맨 아래");
+  assert.match(journey, /3차 · 32회 \(서비스 2\)/);
+  assert.match(journey, /다 씀/);
+  assert.match(journey, /앱 이전 기록/);
+  assert.match(journey, /앱 이전 기록 \(담당 강사 기준\)/, "담당이 바뀐 회원은 이전 기록이 실제보다 짧다 -- 기준을 밝힌다");
+  // 옛 선 + 점 그림은 없다.
+  assert.doesNotMatch(journey, /누적 \d+ \/ \d+회|진행중|repeating-linear-gradient/);
 
-  /* 현재 위치를 나타내는 점. 차감할 때마다 한 칸 오른쪽으로 기어간다 -- 회원이
-     지금 어디쯤 와 있는지가 줄에서 읽혀야 하고, 그것이 이 줄의 요점이다. */
-  assert.match(journey, /aria-label="누적 74회 \/ 총 92회 · 3차 진행중"/);
-  assert.match(journey, /left:80\.4\d*%/, "74 / 92 = 80.4%");
-  /* 서비스 구간은 색을 덮는 대신 빗금을 얹는다 -- 아직 쓰지 않은 서비스도
-     "여기는 서비스" 로 읽혀야 한다. 급여도 성격도 다른 회차다. */
-  assert.match(journey, /repeating-linear-gradient/);
-
-  // 회원권이 하나도 없으면 빈 줄을 그리지 않는다.
-  assert.doesNotMatch(markupOf("회원 상세"), /누적 \d+ \/ \d+회/);
+  // 회원권이 하나도 없으면 빈 칸을 그리지 않는다.
+  assert.doesNotMatch(markupOf("회원 상세"), /data-pass-progress/);
 });
 
 test("a lesson says what it will be worth before it is settled", async () => {

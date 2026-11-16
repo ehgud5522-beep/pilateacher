@@ -4711,10 +4711,15 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
                      드러난다 -- A 와 B 는 따로 파는 회원권이다. */
                   if (type.minutes) setF((current) => ({ ...current, dur: type.minutes }));
                 }}
-                  className="flex h-11 items-center justify-center gap-1.5 rounded-lg text-sm font-bold"
+                  className="flex min-h-11 min-w-0 items-center justify-center rounded-lg px-1.5 py-1 text-sm font-bold"
                   style={{ gridColumn: `span ${type.span || 2}`, backgroundColor: active ? tone.surface : CARD, color: active ? tone.ink : SUB, border: `1px solid ${active ? tone.edge : LINE}` }}>
-                  <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: tone.edge, opacity: active ? 1 : 0.55 }} />
-                  {type.label}
+                  {/* 글자를 크게 쓰는 폰에서 "디오사 관리 30분" 이 두 줄이 되면, 글자 덩어리가 칸을
+                      다 차지해 색 점이 칸 왼쪽 끝으로 밀려났다. 점을 글자 줄 안에 넣어 첫 줄과 함께
+                      가운데에 선다. 칸 높이는 글자를 따라 늘어난다(min-h-11). */}
+                  <span className="min-w-0 text-center leading-tight">
+                    <span aria-hidden="true" className="mr-1.5 inline-block align-middle" style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: tone.edge, opacity: active ? 1 : 0.55, marginTop: -2 }} />
+                    {type.label}
+                  </span>
                 </button>
               );
             })}
@@ -4724,9 +4729,14 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
         {isMemberLesson && (
           <div>
             <p className="mb-1.5 text-xs font-bold" style={{ color: SUB }}>회원 {isDuet ? "(두 명 모두 입력)" : "(같은 이름은 기존 회원으로 연결)"}</p>
-            <div className={`grid gap-2 ${isDuet ? "grid-cols-2" : "grid-cols-1"}`}>
+            {/* 듀엣 두 칸은 폰에서 위아래로 선다 (2026-11-16 대표 제보: 안드로이드에서 이름 끝 글자가
+                잘림). 나란히 두면 한 칸에 이름이 들어갈 자리가 360px 폰에서 90px 뿐이고, 안드로이드는
+                기기 글자 크기 설정을 웹뷰 글자에 곱한다 -- 130% 면 넉 자 이름이 그 칸을 넘어 마지막
+                글자가 "…" 로 바뀐다. 이름마다 폭이 달라 다른 회원을 넣으면 다시 다 보였다.
+                넓은 화면(태블릿)에서는 전처럼 나란히. */}
+            <div data-member-slots className={`grid gap-2 ${isDuet ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
               {Array.from({ length: neededSlots }, (_, slot) => (
-                <button type="button" key={slot} onClick={() => setPicker({ type: "member", slot })} className="flex h-11 min-w-0 items-center gap-2 px-3 text-left text-sm font-bold"
+                <button type="button" key={slot} data-member-slot={slot} onClick={() => setPicker({ type: "member", slot })} className="flex h-11 min-w-0 items-center gap-2 px-3 text-left text-sm font-bold"
                   style={{ borderRadius: 9, backgroundColor: CANVAS, border: `1px solid ${LINE}`, color: memberIds[slot] ? INK : FAINT }}>
                   <Users size={14} className="shrink-0" style={{ color: BRAND }} /><span className="min-w-0 flex-1 truncate">{memberNames[slot] || (isDuet ? `회원 ${slot + 1} 선택` : "회원 선택")}</span><ChevronDown size={13} className="shrink-0" style={{ color: SUB }} />
                 </button>
@@ -28572,6 +28582,13 @@ export function createAppScreenSmokeCases() {
     { name: "일정 탭 · 소속 · 2:1 한 명 미표시", element: scheduleWithSettlement(settleLessonOf({
       attendees: [settleAttendee("m-local-1"), { ...settleAttendee("smoke-client-b"), status: "booked" }],
     })) },
+    /* 새 수업 등록 · 회원을 고른 뒤 (2026-11-16 대표 제보: 안드로이드에서 이름 끝 글자가 잘림). */
+    { name: "일정 등록 · 회원 고름", element: scheduleWithSettlement({
+      id: null, memberIds: ["smoke-client-b"], date: todayISO(), start: "10:00", dur: DEFAULT_CLASS_DURATION, type: "개인레슨", instructor: "", room: "", memo: "",
+    }) },
+    { name: "일정 등록 · 듀엣 회원 고름", element: scheduleWithSettlement({
+      id: null, memberIds: ["m-local-1", "smoke-client-b"], date: todayISO(), start: "10:00", dur: DEFAULT_CLASS_DURATION, type: "듀엣", instructor: "", room: "", memo: "",
+    }, { members: smokeRoster.map((item) => (item.id === "m-local-1" ? { ...item, name: "남궁하나" } : item)) }) },
     /* 노쇼 차감 / 미차감을 고른 뒤 (2026-11-06). 고르면 확정 버튼이 열린다. */
     { name: "일정 탭 · 소속 · 1:1 노쇼 차감", element: scheduleWithSettlement(settleLessonOf({
       type: "1:1", attendees: [{ ...settleAttendee("m-local-1"), status: "noshow", noshowFee: true }],

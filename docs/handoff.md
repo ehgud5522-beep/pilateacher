@@ -1,3 +1,16 @@
+## 2026-11-16 저녁 — #222 ~ #234 병합 · 강사 웹 배포됨 (대표 지시 "병합및 웹배포 다진행해줘")
+
+- #222 ~ #233 을 차례로 merge commit 으로 병합 (쌓인 PR 은 main 으로 다시 겨눈 뒤). #233 = 회원 목표 · 주의사항 서버 사본
+  (clients.careNotes, 동의한 회원만) + 재등록 알림 줄의 [상담 소재]
+- 병합 뒤 deploy-main(Windows CRLF 체크아웃)에서 테스트 1건이 LF 를 가정해 실패 → #234 로 테스트만 고쳐 병합
+- `npm run deploy:web` (main f1ec2b4) 성공, 운영 주소가 새 묶음(index-DWtVK_l6.js)을 내보내는 것 확인. 앱 3843 통과
+- **배포하지 않은 것**: 권한 규칙(lessonRecords · lessonRecordParity · memberSummaries · clients.aiConsent/careNotes · renewalCandidates),
+  Functions(aiGateway · updateRuntimeConfig · 요약 3 · 재등록 3 · consultTalkingPoints). 그 전까지 운영 스위치 화면의 새 카드는
+  "읽지 못했어요 (코드)" 로, 새 스위치는 저장이 안 된다. 스위치가 전부 꺼져 있어 강사 화면은 그대로. 폰 앱은 새 빌드가 필요
+- #235 처리방침 개정안 (Draft) -- **법률 검토 뒤 병합**
+- 하주은 강사 "잔여 0" 제보: 서버 회원권은 정상(사용 중 18장 · 잔여 671). 오늘 배포 영향 아님(제보 시점엔 배포 없음).
+  앱이 회원권을 못 읽은 것으로 보임 -- 폰 진단 화면 대기
+
 ## 2026-11-16 — 설계 3~5단계: 브리핑 개편 · 재등록 알림 · 상담 소재 (#230 · #231 · #232, PR 만 · 병합 · 배포 전)
 
 #229 위에 차례로 쌓음 (#230 → #231 → #232). 전부 스위치(scheduleSync)로 꺼진 채.

@@ -33006,8 +33006,8 @@ export default function App() {
      실시간 저장과 겹쳐도 서버에는 한 줄이다. 센터 회원의 기록만(기기에만 있는 회원은 서버가 받지 않는다). */
   useEffect(() => {
     if (!lessonRecordServerOn || !lessonRecordOutbox || !account?.id || !organizationContext.organizationId) return undefined;
-    const clientIds = new Set((rosterMembers || []).map((member) => String(member?.id || "")).filter(Boolean));
-    if (!clientIds.size) return undefined;
+    /* 명부(rosterMembers)는 기기 기록(notes)과 센터 회원 id(orgClientId)를 함께 들고 있다. */
+    if (!(rosterMembers || []).some((member) => member?.orgClientId)) return undefined;
     const stateKey = `pilateacher_lesson_record_migration_v1_${account.id}`;
     const readState = () => { try { return JSON.parse(globalThis.localStorage?.getItem(stateKey) || "{}") || {}; } catch (_error) { return {}; } };
     const step = () => {
@@ -33016,7 +33016,7 @@ export default function App() {
       const room = Math.min(200, lessonRecordOutbox.room());
       if (room <= 0) return;
       const doneIds = new Set(Array.isArray(state.doneIds) ? state.doneIds : []);
-      const batch = migrationRecordsFor({ members: db.members, clientIds, schedule: db.schedule, organizationId: organizationContext.organizationId, uid: account.id, appBuild: APP_BUILD_LABEL, doneIds, limit: room });
+      const batch = migrationRecordsFor({ members: rosterMembers, schedule: db.schedule, organizationId: organizationContext.organizationId, uid: account.id, appBuild: APP_BUILD_LABEL, doneIds, limit: room });
       let queued = 0;
       for (const record of batch.records) {
         if (!lessonRecordOutbox.enqueue({ ...record, organizationId: organizationContext.organizationId })) break;
@@ -33031,7 +33031,7 @@ export default function App() {
     step();
     const timer = window.setInterval(step, 120e3);
     return () => window.clearInterval(timer);
-  }, [lessonRecordServerOn, lessonRecordOutbox, account?.id, organizationContext.organizationId, rosterMembers, db.members, db.schedule]);
+  }, [lessonRecordServerOn, lessonRecordOutbox, account?.id, organizationContext.organizationId, rosterMembers, db.schedule]);
   const saveScheduleComment = async (id, type, sid, body, voiceMeta = null, noteOptions = null) => {
     const text = String(body || "").trim();
     /* 빈 기록은 저장하지 않는다. 말없이 false 만 돌려주면 강사는 버튼이 고장 난 줄

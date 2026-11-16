@@ -87,3 +87,24 @@ test("후크: 기기 회원 id 를 센터 회원 id(orgClientId)로 바꿔 보�
   assert.equal(sent[0].data.clientId, "client-42");
   assert.deepEqual(store.afterDeviceSave({ note: voice({ id: "n2" }), memberId: "device-only" }), { queued: false, reason: "not_centre_member" });
 });
+
+/* 1단계-3 · 기존 기록 이관 (결정 1: 확정 기록만). */
+test("이관 후보: 센터 회원에 이어진 사람의 확정 기록만, 센터 회원 id 로, 실시간 저장과 같은 기록ID", async () => {
+  const { migrationRecordsFor } = await import("../../src/features/lesson-record/record-store.js");
+  const members = [
+    { id: "legacy-7", orgClientId: "client-42", notes: [voice(), { id: "c1", type: "상담", body: "가격 상담" }, voice({ id: "p1", lessonRecord: { stage: "structured_draft", confirmationStatus: "pending" } })] },
+    { id: "device-only", orgClientId: "", notes: [voice({ id: "x1" })] },
+  ];
+  const result = migrationRecordsFor({ members, schedule: [{ id: "L1", date: "2026-11-15", start: "10:00" }], organizationId: "org", uid: "teacher-1" });
+  assert.equal(result.total, 1, "상담 메모 · 확인 대기 · 기기 전용 회원은 빠진다");
+  assert.equal(result.records[0].data.clientId, "client-42");
+  assert.equal(result.records[0].data.source, "migration");
+  assert.equal(result.records[0].data.lessonStart, "10:00");
+  const live = serverRecordFromNote({ note: voice(), memberId: "client-42", organizationId: "org", uid: "teacher-1", lesson: { date: "2026-11-15", start: "10:00" } });
+  assert.equal(result.records[0].recordId, live.recordId, "실시간 저장과 겹쳐도 서버에는 한 줄");
+  assert.equal(migrationRecordsFor({ members, organizationId: "org", uid: "teacher-1", doneIds: [live.recordId] }).total, 0, "이미 넣은 것은 다시 안 넣는다");
+  const many = { id: "m", orgClientId: "c", notes: Array.from({ length: 5 }, (_, i) => voice({ id: `n${i}`, body: `기록 ${i}` })) };
+  const limited = migrationRecordsFor({ members: [many], organizationId: "org", uid: "t", limit: 2 });
+  assert.equal(limited.records.length, 2);
+  assert.equal(limited.remaining, 3);
+});

@@ -92,3 +92,14 @@ test("앱: 스위치(scheduleSync.lessonRecordServer)가 켜졌을 때만 보내
   assert.match(source, /isEnabled: \(\) => lessonRecordServerOnRef\.current && Boolean\(lessonRecordOutbox\)/);
   assert.match(source, /document="lessonRecordServer" title="수업기록 서버 저장"/);
 });
+
+test("넘치면 새로 넣기를 거절할 뿐, 이미 있는 줄은 버리지 않는다", () => {
+  const storage = memoryStorage(); const logs = [];
+  const outbox = createServerOutbox({ storage, key: "k", store: fakeStore(), log: (event, details) => logs.push([event, details]) });
+  for (let i = 0; i < 500; i += 1) assert.equal(outbox.enqueue(record(`t1_n${i}_x`)), true);
+  assert.equal(outbox.room(), 0);
+  assert.equal(outbox.enqueue(record("t1_late_x")), false);
+  assert.equal(outbox.pending().length, 500);
+  assert.equal(outbox.pending()[0].recordId, "t1_n0_x", "가장 오래된 줄이 그대로 있다");
+  assert.equal(logs.at(-1)[1].errorCode, "outbox_full");
+});

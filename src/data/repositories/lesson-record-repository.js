@@ -29,3 +29,21 @@ export function createFirestoreLessonRecordStore() {
     },
   };
 }
+
+/** 비교 결과(숫자만)를 내 칸에. 대표 · 총괄이 강사별로 읽는다 (1단계-4). */
+export async function writeLessonRecordParity(organizationId, userId, row) {
+  const { doc, getFirestore, serverTimestamp, setDoc } = await load();
+  await setDoc(doc(getFirestore(), "organizations", String(organizationId), "lessonRecordParity", String(userId)), {
+    userId: String(userId),
+    device: Number(row.device) | 0, server: Number(row.server) | 0, missing: Number(row.missing) | 0,
+    waiting: Number(row.waiting) | 0, extra: Number(row.extra) | 0,
+    checkedAt: serverTimestamp(), appBuild: String(row.appBuild || "").slice(0, 40),
+  });
+}
+
+/** 대표 화면: 강사별 비교 결과. */
+export async function listLessonRecordParity(organizationId) {
+  const { collection, getDocs, getFirestore } = await load();
+  const snapshot = await getDocs(collection(getFirestore(), "organizations", String(organizationId), "lessonRecordParity"));
+  return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
+}

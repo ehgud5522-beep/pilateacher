@@ -1747,6 +1747,22 @@ service cloud.firestore {
         allow update, delete: if false;
       }
 
+      /* 수업기록 서버 저장 · 비교 검증 (1단계-4). 강사 기기가 "기기 확정 N · 서버 N · 차이 N" 숫자만 자기 칸에 쓰고,
+         대표 · 총괄이 강사별로 읽는다. 기록 내용 · 회원은 없다. */
+      match /lessonRecordParity/{userId} {
+        allow get, list: if hasRole(organizationId, ownerLevel())
+          || (isCentreStaff(organizationId) && request.auth.uid == userId);
+        allow create, update: if request.auth.uid == userId
+          && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"])
+          && request.resource.data.keys().hasOnly(["userId", "device", "server", "missing", "waiting", "extra", "checkedAt", "appBuild"])
+          && request.resource.data.userId == userId
+          && request.resource.data.device is int && request.resource.data.server is int
+          && request.resource.data.missing is int && request.resource.data.waiting is int && request.resource.data.extra is int
+          && request.resource.data.checkedAt == request.time
+          && request.resource.data.appBuild is string && request.resource.data.appBuild.size() <= 40;
+        allow delete: if false;
+      }
+
       match /lessonNotes/{noteId} {
         // See the locations block for why get and list are split. As with
         // clients, a query cannot prove "only the notes about me", so listing

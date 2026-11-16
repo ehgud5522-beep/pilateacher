@@ -1692,6 +1692,61 @@ service cloud.firestore {
         }
       }
 
+      /* ── 수업기록 서버 저장 (설계 문서 1단계, 2026-11-16 대표 승인) ─────────────────
+         강사가 확정한 수업기록을 **고치거나 지울 수 없는 줄**로 쌓는다. 고친 기록은 새 줄(supersedes)이다.
+         쓰기: 수업하는 역할이 **자기 이름으로** 새 줄만 -- 기록ID 는 쓴 사람 uid 로 시작한다.
+         읽기: 대표 · 총괄, 그 줄을 쓴 강사, 그 회원의 담당 강사(clients.instructorIds, 서버 트리거만 쓴다).
+               FC매니저 · 점장 · 직원은 못 읽는다 (설계 문서 결정 5 -- 건강 기록을 보는 사람을 가장 적게).
+         없는 문서를 읽는 것은 거부가 아니다 -- 보낼 줄이 "이미 올라갔나" 를 먼저 묻는다.
+         list 는 질의가 clientId 를 고정할 때만 회원 문서를 읽어 판정할 수 있다 -- 앱은 회원별로 묻는다. */
+      function lessonRecordReader(organizationId, data) {
+        return hasRole(organizationId, ownerLevel())
+          || (
+            hasRole(organizationId, ["manager", "instructor"])
+            && (
+              data.instructorId == request.auth.uid
+              || request.auth.uid in get(/databases/$(database)/documents/organizations/$(organizationId)/clients/$(data.clientId)).data.get("instructorIds", [])
+            )
+          );
+      }
+      match /lessonRecords/{recordId} {
+        allow get: if isCentreStaff(organizationId)
+          && (resource == null || (resource.data.organizationId == organizationId && lessonRecordReader(organizationId, resource.data)));
+        allow list: if isCentreStaff(organizationId) && lessonRecordReader(organizationId, resource.data);
+        allow create: if hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"])
+          && recordId.split("_")[0] == request.auth.uid
+          && request.resource.data.organizationId == organizationId
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.instructorId == request.auth.uid
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.keys().hasOnly([
+            "organizationId", "clientId", "lessonId", "lessonDate", "lessonStart", "instructorId", "createdBy",
+            "kind", "body", "fields", "deviceNoteId", "contentHash", "supersedes", "confirmedAt", "source", "appBuild", "createdAt"
+          ])
+          && request.resource.data.keys().hasAll([
+            "organizationId", "clientId", "lessonId", "lessonDate", "instructorId", "createdBy",
+            "kind", "body", "deviceNoteId", "contentHash", "confirmedAt", "source", "appBuild", "createdAt"
+          ])
+          && request.resource.data.clientId is string && request.resource.data.clientId.size() > 0 && request.resource.data.clientId.size() <= 200
+          && exists(/databases/$(database)/documents/organizations/$(organizationId)/clients/$(request.resource.data.clientId))
+          && request.resource.data.lessonId is string && request.resource.data.lessonId.size() <= 200
+          && request.resource.data.lessonDate is string && request.resource.data.lessonDate.size() <= 10
+          && (!("lessonStart" in request.resource.data) || (request.resource.data.lessonStart is string && request.resource.data.lessonStart.size() <= 5))
+          && request.resource.data.kind in ["voice", "manual", "no_comment"]
+          && request.resource.data.body is string && request.resource.data.body.size() > 0 && request.resource.data.body.size() <= 4000
+          && (!("fields" in request.resource.data) || (
+            request.resource.data.fields is map
+            && request.resource.data.fields.keys().hasOnly(["didToday", "observations", "responses", "nextFocus", "uncertain"])
+          ))
+          && request.resource.data.deviceNoteId is string && request.resource.data.deviceNoteId.size() > 0 && request.resource.data.deviceNoteId.size() <= 200
+          && request.resource.data.contentHash is string && request.resource.data.contentHash.size() <= 16
+          && (!("supersedes" in request.resource.data) || (request.resource.data.supersedes is string && request.resource.data.supersedes.size() <= 300))
+          && request.resource.data.confirmedAt is string && request.resource.data.confirmedAt.size() <= 40
+          && request.resource.data.source in ["app", "migration"]
+          && request.resource.data.appBuild is string && request.resource.data.appBuild.size() <= 40;
+        allow update, delete: if false;
+      }
+
       match /lessonNotes/{noteId} {
         // See the locations block for why get and list are split. As with
         // clients, a query cannot prove "only the notes about me", so listing

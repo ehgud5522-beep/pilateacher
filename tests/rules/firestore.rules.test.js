@@ -6440,3 +6440,70 @@ describe("홀딩 수강권 사용 차단", () => {
     await assertSucceeds(batch.commit());
   });
 });
+
+/* ── 수업기록 서버 저장 (설계 문서 1단계, 2026-11-16) ─────────────────────────
+   고치거나 지울 수 없는 줄. 쓰기는 자기 이름으로 새 줄만, 읽기는 대표 · 총괄 · 쓴 강사 · 담당 강사. */
+describe("수업기록 서버 저장 -- 새 줄만 · 담당만 읽는다", () => {
+  const OTHER = "instructor-b";
+  const recordRef = (userId, recordId) => doc(dbFor(userId), "organizations", ORG_A, "lessonRecords", recordId);
+  const body = (overrides = {}) => ({
+    organizationId: ORG_A, clientId: "client-member", lessonId: "L1", lessonDate: "2026-11-15", lessonStart: "10:00",
+    instructorId: users.instructor, createdBy: users.instructor, kind: "voice", body: "오늘 수업: 브릿지",
+    fields: { didToday: [{ text: "브릿지", origin: "ai" }], observations: [], responses: [], nextFocus: [], uncertain: [] },
+    deviceNoteId: "n1", contentHash: "abcd1234", confirmedAt: "2026-11-15T10:00:00Z", source: "app", appBuild: "1.1.53 (76)",
+    createdAt: serverTimestamp(), ...overrides,
+  });
+  const mine = `${users.instructor}_n1_abcd1234`;
+  beforeEach(async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "memberships", `${ORG_A}_${OTHER}`), { organizationId: ORG_A, userId: OTHER, role: "instructor", status: "active" });
+      // 담당 강사 = instructor-a (서버 트리거가 쓰는 칸)
+      await setDoc(doc(db, "organizations", ORG_A, "clients", "client-member"), { instructorIds: [users.instructor] }, { merge: true });
+    });
+  });
+
+  test("강사는 자기 이름으로 새 줄을 쓰고, 고치거나 지우지 못한다", async () => {
+    await assertSucceeds(setDoc(recordRef(users.instructor, mine), body()));
+    await assertFails(updateDoc(recordRef(users.instructor, mine), { body: "고친 글" }));
+    await assertFails(setDoc(recordRef(users.instructor, mine), body({ body: "덮어쓰기" })));
+    await assertFails(deleteDoc(recordRef(users.instructor, mine)));
+  });
+
+  test("남의 이름 · 남의 ID · 모르는 칸 · 없는 회원 · 잘못된 종류는 거부", async () => {
+    await assertFails(setDoc(recordRef(users.instructor, `${OTHER}_n1_x`), body()), "ID 가 남의 uid");
+    await assertFails(setDoc(recordRef(users.instructor, `${users.instructor}_n2_x`), body({ createdBy: OTHER })), "createdBy");
+    await assertFails(setDoc(recordRef(users.instructor, `${users.instructor}_n3_x`), body({ instructorId: OTHER })), "instructorId");
+    await assertFails(setDoc(recordRef(users.instructor, `${users.instructor}_n4_x`), body({ memberName: "김지민" })), "모르는 칸");
+    await assertFails(setDoc(recordRef(users.instructor, `${users.instructor}_n5_x`), body({ clientId: "no-such-client" })), "없는 회원");
+    await assertFails(setDoc(recordRef(users.instructor, `${users.instructor}_n6_x`), body({ kind: "consult" })), "상담 메모는 아니다");
+    await assertFails(setDoc(recordRef(users.instructor, `${users.instructor}_n7_x`), body({ body: "" })), "빈 본문");
+    await assertFails(setDoc(recordRef(users.staff, `${users.staff}_n8_x`), body({ instructorId: users.staff, createdBy: users.staff })), "직원");
+    await assertFails(setDoc(recordRef(users.member, `${users.member}_n9_x`), body({ instructorId: users.member, createdBy: users.member })), "회원");
+  });
+
+  test("읽기: 쓴 강사 · 담당 강사 · 대표 · 총괄은 되고, 담당 아닌 강사 · FC · 직원 · 다른 센터는 안 된다", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "lessonRecords", `${OTHER}_n1_x`), { ...body({ instructorId: OTHER, createdBy: OTHER }), createdAt: new Date() });
+    });
+    const theirs = `${OTHER}_n1_x`; // 대타 강사(OTHER)가 쓴 줄, 회원 담당은 instructor-a
+    await assertSucceeds(getDoc(recordRef(OTHER, theirs)), "쓴 강사");
+    await assertSucceeds(getDoc(recordRef(users.instructor, theirs)), "담당 강사");
+    await assertSucceeds(getDoc(recordRef(users.owner, theirs)), "대표");
+    await assertSucceeds(getDoc(recordRef(users.area_manager, theirs)), "총괄");
+    await assertFails(getDoc(recordRef(users.manager, theirs)), "FC (결정 5)");
+    await assertFails(getDoc(recordRef(users.staff, theirs)), "직원");
+    await assertFails(getDoc(recordRef(users.outsider, theirs)), "다른 센터");
+    await assertSucceeds(getDoc(recordRef(users.instructor, `${users.instructor}_nothing_x`)), "없는 문서 묻기는 거부가 아니다");
+  });
+
+  test("목록: 회원을 고정한 질의만 -- 담당 강사는 되고, 담당 아닌 강사는 안 된다", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "lessonRecords", mine), { ...body(), createdAt: new Date() });
+    });
+    const byClient = (userId) => getDocs(query(collection(dbFor(userId), "organizations", ORG_A, "lessonRecords"), where("clientId", "==", "client-member")));
+    await assertSucceeds(byClient(users.instructor));
+    await assertSucceeds(byClient(users.owner));
+    await assertFails(byClient(OTHER));
+  });
+});

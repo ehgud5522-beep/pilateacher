@@ -112,9 +112,11 @@ export function createRecordStore({ isEnabled = () => false, enqueue = () => {},
         if (!isEnabled()) return { queued: false, reason: "disabled" };
         /* 기기 회원 id 는 센터 회원 id 와 다를 수 있다 -- 옛 회원은 연락처로 센터 회원에 이어져 있고 그 id 는
            orgClientId 에 있다. 서버 기록은 센터 회원 id 로만 쓴다(규칙 · 담당 판정). 이어지지 않은 회원은 보내지 않는다. */
-        const { resolveClientId, ...rest } = context() || {};
+        const { resolveClientId, consentFor, ...rest } = context() || {};
         const clientId = typeof resolveClientId === "function" ? String(resolveClientId(memberId) || "") : String(memberId || "");
         if (!clientId) return { queued: false, reason: "not_centre_member" };
+        /* 회원 단위 동의가 없으면 서버로 보내지 않는다 (결정 4). 기기 저장은 이미 끝났다 -- 기록은 기기에 남는다. */
+        if (typeof consentFor === "function" && !consentFor(memberId)) return { queued: false, reason: "consent_missing" };
         const record = serverRecordFromNote({ note, memberId: clientId, lesson, ...rest });
         if (!record) return { queued: false, reason: "not_eligible" };
         enqueue(record);
@@ -136,13 +138,13 @@ export function createRecordStore({ isEnabled = () => false, enqueue = () => {},
  *   appBuild?: string, doneIds?: Set<string>|string[], limit?: number }} input
  * @returns {{ records: Array<{ recordId: string, data: any }>, remaining: number, total: number }}
  */
-export function migrationRecordsFor({ members = [], clientIdOf = (member) => member?.orgClientId, schedule = [], organizationId, uid, appBuild = "", doneIds = [], limit = 200 }) {
+export function migrationRecordsFor({ members = [], clientIdOf = (member) => member?.orgClientId, consentOf = () => true, schedule = [], organizationId, uid, appBuild = "", doneIds = [], limit = 200 }) {
   const done = doneIds instanceof Set ? doneIds : new Set(doneIds);
   const lessons = new Map((Array.isArray(schedule) ? schedule : []).filter((lesson) => lesson?.id).map((lesson) => [String(lesson.id), lesson]));
   const all = [];
   for (const member of Array.isArray(members) ? members : []) {
     const clientId = String(clientIdOf(member) || "").trim();
-    if (!clientId) continue;
+    if (!clientId || !consentOf(member)) continue;
     for (const note of Array.isArray(member.notes) ? member.notes : []) {
       const record = serverRecordFromNote({
         note, memberId: clientId, organizationId, uid, appBuild, source: "migration",

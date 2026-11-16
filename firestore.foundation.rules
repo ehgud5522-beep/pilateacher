@@ -275,6 +275,22 @@ service cloud.firestore {
 
     // Each clause passes when the field is absent. See the clients block for
     // why this is a floor and not a fixed set.
+    function memberDataConsentWellFormed(organizationId) {
+      let consent = request.resource.data.aiConsent;
+      return hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"])
+        && consent is map
+        && consent.version is string && consent.version.size() > 0 && consent.version.size() <= 20
+        && consent.method == "instructor_confirmed"
+        && (
+          (consent.status == "granted"
+            && consent.keys().hasOnly(["status", "version", "grantedAt", "grantedBy", "method"])
+            && consent.grantedAt == request.time && consent.grantedBy == request.auth.uid)
+          || (consent.status == "revoked"
+            && consent.keys().hasOnly(["status", "version", "revokedAt", "revokedBy", "method"])
+            && consent.revokedAt == request.time && consent.revokedBy == request.auth.uid)
+        );
+    }
+
     function clientFieldsWellFormed() {
       return (!("name" in request.resource.data)
           || (request.resource.data.name is string && request.resource.data.name.size() > 0))
@@ -681,6 +697,8 @@ service cloud.firestore {
              볼 수 있는가" 이므로, 앱에서 쓸 수 있으면 자기 uid 를 적어 넣어
              남의 회원을 여는 문이 된다. 채우는 것은 트리거뿐이다. */
           && !("instructorIds" in request.resource.data)
+          /* 회원 동의(aiConsent)는 등록 때 넣지 않는다 -- 동의 화면에서 따로 받는다(결정 4). */
+          && !("aiConsent" in request.resource.data)
           && clientFieldsWellFormed();
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
@@ -709,6 +727,9 @@ service cloud.firestore {
              문서를 통째로 다시 보내는 기기 동기화는 막히지 않는다. */
           && immutable(["previousPhones", "reviewDemo", "instructorIds"])
           && (immutable(["photoAccessRevoked"]) || hasRole(organizationId, ["owner", "area_manager", "manager"]))
+          /* 회원 단위 수업기록 서버 보관 · AI 처리 동의 (설계 결정 4, 2026-11-16). 바뀔 때만 본다(affectedKeys) --
+             직원은 못 바꾸고, 쓴 사람 · 서버 시각 · 모양이 맞아야 한다. 서버 저장 · AI 요약이 이 칸 하나를 믿는다. */
+          && (immutable(["aiConsent"]) || memberDataConsentWellFormed(organizationId))
           && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);
         allow delete: if false;
       }

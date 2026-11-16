@@ -410,7 +410,9 @@ import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./fea
 import { createRecordStore, migrationRecordsFor } from "./features/lesson-record/record-store.js";
 import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/server-outbox.js";
 import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
-import { listRecentMemberSummaries, readClientName } from "./data/repositories/member-summary-repository.js";
+import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
+import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js";
+import LessonBriefing from "./features/schedule/LessonBriefing.jsx";
 import { writeMemberDataConsent } from "./data/repositories/member-consent-repository.js";
 import { MEMBER_AI_CONSENT_VERSION, MEMBER_DATA_CONSENT_CONFIRM, MEMBER_DATA_CONSENT_SECTIONS, MEMBER_DATA_CONSENT_TITLE, memberDataConsentGranted, memberDataConsentState } from "./features/consent/member-data-consent.js";
 import { compareRecordSets, parityState } from "./features/lesson-record/record-parity.js";
@@ -508,7 +510,7 @@ const LESSON_RECORD_REVIEW_FLAGS = new Set(["no_speech", "low_confidence", "tail
 const hasLessonRecordReviewFlag = (record) => (record?.reviewFlags || record?.flags || []).some((flag) => LESSON_RECORD_REVIEW_FLAGS.has(flag));
 /* 서버 기록 읽기 (설계 문서 1단계-5). 스위치가 켜진 계정에서 회원을 열 때 그 회원의 서버 기록을 받아 화면에만 더한다.
    기기에는 쓰지 않는다 (features/lesson-record/server-notes.js). 꺼져 있으면 회원 객체를 그대로 돌려준다. */
-const ServerNotesContext = createContext({ enabled: false, recordsFor: () => null, request: () => {}, resolveClientId: () => "", consentOn: false, saveConsent: async () => {} });
+const ServerNotesContext = createContext({ enabled: false, recordsFor: () => null, request: () => {}, resolveClientId: () => "", consentOn: false, saveConsent: async () => {}, briefingV2On: false, summaryFor: () => null, requestSummary: () => {} });
 function useServerMergedMember(member) {
   const context = useContext(ServerNotesContext);
   const clientId = context.enabled && member ? context.resolveClientId(member) : "";
@@ -4604,6 +4606,14 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
   const currentLessonSession = activeLessonSessions.find((session) => session.key === String(draft.id || "")) || null;
   const previousLessonSession = activeLessonSessions.find((session) => session.key !== String(draft.id || "")) || null;
   const lessonSheetBriefing = useMemo(() => selectLessonSheetBriefing({ sessions: previousLessonSession ? [previousLessonSession] : [], briefing: activeBriefing }), [previousLessonSession, activeBriefing]);
+  /* 3단계: 브리핑 개편 (스위치 lessonBriefingV2). 꺼져 있으면 위의 지금 브리핑 그대로. */
+  const briefingContext = useContext(ServerNotesContext);
+  const briefingClientId = briefingContext.briefingV2On && activeMember ? String(activeMember.orgClientId || "") : "";
+  useEffect(() => { if (briefingClientId) briefingContext.requestSummary(briefingClientId); }, [briefingClientId, briefingContext]);
+  const briefingSummary = briefingClientId ? briefingContext.summaryFor(briefingClientId) : null;
+  const lessonBriefingView = useMemo(() => (briefingContext.briefingV2On && activeMember
+    ? selectLessonBriefing({ member: activeMember, lesson: draft, sessions: activeLessonSessions, schedule, summary: briefingSummary })
+    : null), [briefingContext.briefingV2On, activeMember, draft, activeLessonSessions, schedule, briefingSummary]);
   const openedBriefingRef = useRef("");
   useEffect(() => {
     if (!activeMember?.id || !draft.id || !activeBriefing) return;
@@ -4869,7 +4879,8 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
               })}
             </div>
 
-            {activeMember && lessonSheetBriefing && (
+            {lessonBriefingView ? <LessonBriefing view={lessonBriefingView} sessions={activeLessonSessions} /> : null}
+            {!lessonBriefingView && activeMember && lessonSheetBriefing && (
               <section className="min-w-0 rounded-xl p-3" aria-label="지난 수업과 다음 수업 준비" style={{ backgroundColor: LAVENDER_S, border: `1px solid ${RING}` }}>
                 <div className="mb-2 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: BRAND_D }}>{lessonSheetBriefing.source === "lesson_record" ? "지난 수업" : lessonSheetBriefing.source === "posture_fallback" ? "비포애프터 참고" : "이전 기록 참고"}</p>{lessonSheetBriefing.date && <span className="shrink-0 text-caption tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(lessonSheetBriefing.date)}{previousLessonSession ? ` · ${previousLessonSession.type}` : ""}</span>}</div>
                 {previousLessonSession ? <LessonRecordFieldRows session={previousLessonSession} fields={["today", "reaction"]} hideEmpty pastLesson bounded /> : <p className="line-clamp-3 break-words text-xs leading-relaxed" style={{ color: INK2 }}>{lessonSheetBriefing.text || "이전 기록 없음"}</p>}
@@ -28176,6 +28187,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="memberSummary" title="AI 회원 요약"
               description="켜진 강사가 확정한 기록이 서버에 쌓이면, 서버가 그 회원의 요약(꼭 기억할 것 · 최근 흐름 · 계속 확인 중)을 고쳐 씁니다. 회원 이름 · 연락처는 보내지 않고, 회원 AI 동의가 있는 회원만 만듭니다. 위 '수업기록 서버 저장' 이 켜진 강사에게만 의미가 있습니다." />
+            {/* 3단계: 수업 전 브리핑 개편. 켜진 계정의 수업 관리 시트 위쪽에 세 덩어리 브리핑. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="lessonBriefingV2" title="수업 전 브리핑 (새 화면)"
+              description="켜진 계정은 수업 관리 시트 위쪽에 꼭 기억할 것 · 지난 수업 · 최근 흐름이 크게 섭니다. 지난 수업은 연 수업보다 앞선 기록만, 같은 문장은 한 번만. 회원 요약이 있으면 함께 보여 줍니다. 끄면 지금 화면 그대로입니다." />
             <MemberSummaryAdmin organization={organization} />
             {/* 비포애프터 회원 공유 (2026-11-15). 켜면 모든 강사가 비교 카드를 보내고, 동의한 회원이 보니따 앱에서 본다. */}
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
@@ -33218,7 +33234,22 @@ export default function App() {
   const serverRecordFetchedAt = useRef(new Map());
   /* 결정 4: 동의 카드는 서버 저장 · AI 요약 스위치가 켜진 계정에서만 보인다 -- 꺼져 있으면 지금 화면 그대로. */
   const memberConsentOn = Boolean(organizationRoster) && (lessonRecordServerOn || scheduleSyncEnabledFor(scheduleSyncConfig?.memberSummary, account?.id));
+  /* 3단계: 수업 전 브리핑 개편. 켜진 계정은 수업 관리 시트에 세 덩어리 브리핑, 회원 요약(2단계)을 읽어 쓴다. */
+  const lessonBriefingV2On = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.lessonBriefingV2, account?.id);
+  const [summariesByClient, setSummariesByClient] = useState(() => new Map());
+  const summaryFetchedAt = useRef(new Map());
   const serverNotesValue = useMemo(() => ({
+    briefingV2On: lessonBriefingV2On,
+    summaryFor: (clientId) => summariesByClient.get(String(clientId)) || null,
+    requestSummary: (clientId) => {
+      const key = String(clientId || "");
+      if (!key || !organizationContext.organizationId) return;
+      if (Date.now() - (summaryFetchedAt.current.get(key) || 0) < 5 * 60e3) return;
+      summaryFetchedAt.current.set(key, Date.now());
+      readMemberSummary(organizationContext.organizationId, key)
+        .then((row) => setSummariesByClient((current) => new Map(current).set(key, row)))
+        .catch((error) => deviceLog("member_summary_read_failed", { feature: "member_summary", stage: "read", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), correlationId: key.slice(-8), appBuild: APP_BUILD_LABEL }));
+    },
     consentOn: memberConsentOn,
     saveConsent: async (clientId, granted) => {
       try {
@@ -33242,7 +33273,7 @@ export default function App() {
         .then((rows) => setServerRecordsByClient((current) => new Map(current).set(key, rows)))
         .catch((error) => deviceLog("lesson_record_server_read_failed", { feature: "lesson_record", stage: "server_read", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), appBuild: APP_BUILD_LABEL }));
     },
-  }), [lessonRecordServerReadOn, serverRecordsByClient, findRosterMember, organizationContext.organizationId, memberConsentOn, account?.id]);
+  }), [lessonRecordServerReadOn, serverRecordsByClient, findRosterMember, organizationContext.organizationId, memberConsentOn, account?.id, lessonBriefingV2On, summariesByClient]);
   const lessonRecordServerOnRef = useRef(lessonRecordServerOn);
   lessonRecordServerOnRef.current = lessonRecordServerOn;
   const lessonRecordOutbox = useMemo(() => (account?.id ? createServerOutbox({

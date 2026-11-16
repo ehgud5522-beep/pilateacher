@@ -76,3 +76,14 @@ test("앱: 두 저장 경로가 기기 저장 성공 뒤 후크를 부른다 (�
   assert.match(source, /if \(shouldConfirm\) lessonRecordStore\.afterDeviceSave\(\{ note, memberId: id, lesson: linkedLesson \}\);/);
   assert.match(source, /if \(stored === false\) return false;\n    lessonRecordStore\.afterDeviceSave\(\{ note: finalizedWithSession/);
 });
+
+test("후크: 기기 회원 id 를 센터 회원 id(orgClientId)로 바꿔 보내고, 이어지지 않은 회원은 보내지 않는다", () => {
+  const sent = [];
+  const store = createRecordStore({
+    isEnabled: () => true, enqueue: (record) => sent.push(record),
+    context: () => ({ organizationId: "org", uid: "teacher-1", resolveClientId: (id) => (id === "legacy-7" ? "client-42" : "") }),
+  });
+  assert.equal(store.afterDeviceSave({ note: voice(), memberId: "legacy-7" }).queued, true);
+  assert.equal(sent[0].data.clientId, "client-42");
+  assert.deepEqual(store.afterDeviceSave({ note: voice({ id: "n2" }), memberId: "device-only" }), { queued: false, reason: "not_centre_member" });
+});

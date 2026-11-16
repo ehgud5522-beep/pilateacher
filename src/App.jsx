@@ -32981,7 +32981,11 @@ export default function App() {
       lessonRecordOutbox.enqueue({ ...record, organizationId: organizationContext.organizationId });
       Promise.resolve(lessonRecordOutbox.flush()).catch(() => {});
     },
-    context: () => ({ organizationId: organizationContext.organizationId, uid: account?.id || "", appBuild: APP_BUILD_LABEL }),
+    context: () => ({
+      organizationId: organizationContext.organizationId, uid: account?.id || "", appBuild: APP_BUILD_LABEL,
+      /* 기기 회원 -> 센터 회원 id (명부의 orgClientId). 이어지지 않은 기기 전용 회원은 빈 값 = 보내지 않음. */
+      resolveClientId: (memberId) => findRosterMember(memberId)?.orgClientId || "",
+    }),
   }), [lessonRecordOutbox, organizationContext.organizationId, account?.id]);
   /* 보낼 줄 비우기: 켜질 때(멈춘 것도 한 번 더), 다시 연결될 때, 앱이 앞으로 올 때, 1분마다. */
   useEffect(() => {

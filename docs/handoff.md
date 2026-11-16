@@ -1,3 +1,15 @@
+## 2026-11-16 — 긴급: 스스로 계정 삭제한 강사(안혜원) 회원 다시 잇기 (대표 지시)
+
+- 원인: 강사가 앱에서 계정 삭제 → `account-deletion.js` 가 그 사람의 **소속 문서를 지운다**. 회원권 23장(사용 중, 한 지점)의
+  `instructorId` 는 옛 uid 로 남아 담당이 끊김. 대표가 [강사 추가] 로 새 계정을 만들었지만 [계정 교체] 는 옛 소속 문서가 있어야 돈다
+- 조치 (대표 승인 "네, 되살려"): 옛 소속 문서 `memberships/bonita_<옛 uid>` 를 **create 전용**으로 되살림 --
+  role instructor · status revoked · displayName "안혜원 (삭제된 옛 계정)" · 같은 지점 · `restoredReason`. firebase CLI 인증 Firestore REST
+- 대표가 앱 더보기 → 강사 관리 → 옛 계정 → [계정 교체] → 새 안혜원 → 실행. 확인(읽기): 새 계정 회원권 23장 · 담당 회원 19명 · 누적 19명,
+  옛 계정 회원권 0 · 담당 0 · 누적 문서는 0 으로 내려 남김(설계), 옛 소속 status swapped, 새 소속 previousUids = [옛 uid]. 지난 수업 68건은 옛 uid 그대로
+  (급여는 previousUids 로 한 사람으로 센다)
+- **재발 막을 것 (후속)**: 소속된 강사가 스스로 계정을 지우면 소속 문서가 사라져 이 일이 다시 난다. 강사 계정 삭제 때 소속 문서를 지우지 않고
+  `status: deleted` 로 남기거나, 회원권이 걸린 강사는 삭제 전에 대표 인계를 요구하는 쪽을 검토할 것
+
 ## 2026-11-16 — 보니따 강제 업데이트: Android 21 · iOS 26 (대표 지시 "강제 업데이트 켜줘 1.1.5로")
 
 - **iOS 도 켬** (대표: "출시됨, 켜줘"): Remote Config 버전 2 에 `member_ios_min_build = "26"` · `member_ios_latest_build = "26"` 추가.

@@ -74,7 +74,7 @@ test("앱: 두 저장 경로가 기기 저장 성공 뒤 후크를 부른다 (�
   const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
   assert.match(source, /const lessonRecordStore = useMemo\(\(\) => createRecordStore\(\{/);
   assert.match(source, /if \(shouldConfirm\) lessonRecordStore\.afterDeviceSave\(\{ note, memberId: id, lesson: linkedLesson \}\);/);
-  assert.match(source, /if \(stored === false\) return false;\n    lessonRecordStore\.afterDeviceSave\(\{ note: finalizedWithSession/);
+  assert.match(source, /if \(stored === false\) return false;\r?\n    lessonRecordStore\.afterDeviceSave\(\{ note: finalizedWithSession/);
 });
 
 test("후크: 기기 회원 id 를 센터 회원 id(orgClientId)로 바꿔 보내고, 이어지지 않은 회원은 보내지 않는다", () => {

@@ -1768,6 +1768,20 @@ service cloud.firestore {
         allow update, delete: if false;
       }
 
+      /* 재등록 후보 (설계 문서 4단계, 규칙 계산). 서버(Functions)만 쓴다. 읽기는 대표 · 총괄 전부, FC매니저는 맡은
+         지점, 점장(직함)은 자기 지점 -- 재등록률을 지점 · 강사 · 달로 보는 자리. 이름 · 연락처는 없다. */
+      match /renewalCandidates/{passId} {
+        allow read: if hasRole(organizationId, ownerLevel())
+          || (hasRole(organizationId, ["manager"]) && passInManagerScope(organizationId, resource.data))
+          || (
+            hasRole(organizationId, ["instructor"])
+            && membership(organizationId).data.get("title", "") == "branch_manager"
+            && resource.data.get("locationId", "") != ""
+            && resource.data.get("locationId", "") in scopedLocationsOf(membership(organizationId).data)
+          );
+        allow create, update, delete: if false;
+      }
+
       /* AI 회원 요약 (설계 문서 2단계). 서버(Functions)만 쓴다. 읽기는 대표 · 총괄 + 그 회원의 담당 강사(FC매니저 ·
          점장은 담당일 때만) -- 1단계 서버 기록과 같은 범위(설계 결정 5). 앞 판(versions)은 대표 · 총괄만. */
       match /memberSummaries/{clientId} {

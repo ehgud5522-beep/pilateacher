@@ -69,7 +69,7 @@ test("회차 · 경과일은 연 수업보다 앞선 출석만 센다", () => {
 test("시트: 스위치가 켜졌을 때만 새 브리핑, 꺼지면 지금 브리핑 그대로", () => {
   const app = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
   assert.match(app, /scheduleSyncEnabledFor\(scheduleSyncConfig\?\.lessonBriefingV2, account\?\.id\)/);
-  assert.match(app, /\{lessonBriefingView \? <LessonBriefing view=\{lessonBriefingView\} sessions=\{activeLessonSessions\} \/> : null\}/);
+  assert.match(app, /\{lessonBriefingView \? <LessonBriefing view=\{lessonBriefingView\} sessions=\{activeLessonSessions\} footer=\{renewalLineView\} \/> : null\}/);
   assert.match(app, /\{!lessonBriefingView && activeMember && lessonSheetBriefing && \(/);
 });
 

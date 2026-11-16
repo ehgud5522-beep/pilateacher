@@ -1644,3 +1644,83 @@ exports.rebuildMemberSummary = onCall({
   memberSummaryLog("info", "member_summary_rebuilt", { feature: "member_summary", stage: "rebuild", organizationId, targets: targets.length, counts });
   return { targets: targets.length, counts };
 });
+
+/* ── 재등록 후보 기록 (설계 문서 4단계, 규칙 계산) ──────────────────────────
+   renewalCandidates 에 알림 구간에 든 회원권 · 재등록 · 끊김을 남긴다. 스위치 scheduleSync.renewalAlerts 가
+   전부 꺼져 있으면 돌지 않는다. 근거는 renewal-triggers.js 머리말. */
+const { createRenewalService } = require("./renewal-triggers");
+const renewalLog = (level, event, fields) => logger[level](event, fields);
+const renewalService = createRenewalService({ firestore, log: renewalLog });
+const renewalSwitchOn = async () => {
+  const snapshot = await firestore.collection("runtimeConfig").doc("scheduleSync").get();
+  const mode = String(snapshot.exists ? snapshot.data()?.renewalAlerts?.mode || "" : "");
+  return mode === "all" || mode === "listed";
+};
+
+exports.sweepRenewalCandidatesNightly = onSchedule({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  schedule: "every day 04:30",
+  timeZone: "Asia/Seoul",
+  memory: "512MiB",
+  timeoutSeconds: 540,
+}, async () => {
+  if (!(await renewalSwitchOn())) return;
+  const organizations = await firestore.collection("organizations").get();
+  for (const organization of organizations.docs) {
+    try {
+      const counts = await renewalService.sweepOrganization(organization.id);
+      renewalLog("info", "renewal_candidates_swept", { feature: "renewal_alerts", stage: "nightly", organizationId: organization.id, counts });
+    } catch (error) {
+      renewalLog("error", "renewal_candidates_failed", {
+        feature: "renewal_alerts", stage: "nightly", organizationId: organization.id, errorDomain: "firestore",
+        errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+      });
+    }
+  }
+});
+
+exports.markRenewalOnPassCreated = onDocumentCreated({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  document: "organizations/{organizationId}/passes/{passId}",
+  memory: "256MiB",
+  timeoutSeconds: 60,
+  retry: false,
+}, async (event) => {
+  try {
+    if (!(await renewalSwitchOn())) return;
+    await renewalService.onPassCreated(event.params.organizationId, { id: event.params.passId, ...(event.data?.data() || {}) }, new Date(event.time));
+  } catch (error) {
+    renewalLog("error", "renewal_candidates_failed", {
+      feature: "renewal_alerts", stage: "pass_created", organizationId: event.params.organizationId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+  }
+});
+
+/* 다시 채우기 (대표 · 총괄). 지난 6달 동안 끝난 회원권을 한 번 채워 넣는다. 이미 있는 줄은 두지 않는다. */
+exports.backfillRenewalCandidates = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 540,
+  memory: "512MiB",
+  invoker: "public",
+}, async (request) => {
+  const callerUid = request?.auth?.uid;
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId || organizationId.includes("/")) throw new HttpsError("invalid-argument", "organizationId is required.", { reason: "organization_required" });
+  const membership = await firestore.collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  if (!membership.exists || !isOwnerLevel(membership.data())) {
+    throw new HttpsError("permission-denied", "Only the owner can backfill.", { reason: "owner_only" });
+  }
+  try {
+    const result = await renewalService.backfill(organizationId, { months: 6 });
+    renewalLog("info", "renewal_candidates_backfilled", { feature: "renewal_alerts", stage: "backfill", organizationId, ...result });
+    return result;
+  } catch (error) {
+    renewalLog("error", "renewal_candidates_failed", {
+      feature: "renewal_alerts", stage: "backfill", organizationId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+    throw new HttpsError("unavailable", "renewal_backfill_failed", { reason: String(error?.code || "renewal_backfill_failed") });
+  }
+});

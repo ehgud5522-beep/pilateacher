@@ -148,6 +148,8 @@ const WRITERS = Object.freeze({
   memberSummary: scheduleSyncPayload,
   /* 수업 전 브리핑 개편 (3단계). */
   lessonBriefingV2: scheduleSyncPayload,
+  /* 재등록 알림 (4단계, 규칙 계산). */
+  renewalAlerts: scheduleSyncPayload,
   /* 비포애프터 회원 공유 (2026-11-15). 대표 화면은 끔 · 전체만 고른다(allowListed 없음) -- 고른 계정만은 예전 시범 모양
      (mode test · teacherIds · memberIds)을 콘솔에서. 서버(beforeAfterSharing)만 읽는다. */
   beforeAfterSharing: (input) => {
@@ -177,6 +179,7 @@ const FIELD_TARGETS = Object.freeze({
   lessonRecordServerRead: { document: "scheduleSync", field: "lessonRecordServerRead" },
   memberSummary: { document: "scheduleSync", field: "memberSummary" },
   lessonBriefingV2: { document: "scheduleSync", field: "lessonBriefingV2" },
+  renewalAlerts: { document: "scheduleSync", field: "renewalAlerts" },
 });
 
 /**

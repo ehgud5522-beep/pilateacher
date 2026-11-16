@@ -415,7 +415,7 @@ import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js"
 import { RENEWAL_ALERT, livePassesOf, renewalForecast, renewalLine, renewalRates } from "../functions/shared/renewal-forecast.mjs";
 import { listRecentDeductions, listRenewalCandidates } from "./data/repositories/renewal-repository.js";
 import LessonBriefing from "./features/schedule/LessonBriefing.jsx";
-import { writeMemberDataConsent } from "./data/repositories/member-consent-repository.js";
+import { writeMemberCareNotes, writeMemberDataConsent } from "./data/repositories/member-consent-repository.js";
 import { MEMBER_AI_CONSENT_VERSION, MEMBER_DATA_CONSENT_CONFIRM, MEMBER_DATA_CONSENT_SECTIONS, MEMBER_DATA_CONSENT_TITLE, memberDataConsentGranted, memberDataConsentState } from "./features/consent/member-data-consent.js";
 import { compareRecordSets, parityState } from "./features/lesson-record/record-parity.js";
 import { mergeServerNotes } from "./features/lesson-record/server-notes.js";
@@ -512,13 +512,21 @@ const LESSON_RECORD_REVIEW_FLAGS = new Set(["no_speech", "low_confidence", "tail
 const hasLessonRecordReviewFlag = (record) => (record?.reviewFlags || record?.flags || []).some((flag) => LESSON_RECORD_REVIEW_FLAGS.has(flag));
 /* 서버 기록 읽기 (설계 문서 1단계-5). 스위치가 켜진 계정에서 회원을 열 때 그 회원의 서버 기록을 받아 화면에만 더한다.
    기기에는 쓰지 않는다 (features/lesson-record/server-notes.js). 꺼져 있으면 회원 객체를 그대로 돌려준다. */
-const ServerNotesContext = createContext({ enabled: false, recordsFor: () => null, request: () => {}, resolveClientId: () => "", consentOn: false, saveConsent: async () => {}, briefingV2On: false, summaryFor: () => null, requestSummary: () => {}, renewalOn: false, renewalFor: () => null, requestRenewal: () => {}, consultOn: false, organizationId: "" });
+const ServerNotesContext = createContext({ enabled: false, recordsFor: () => null, request: () => {}, resolveClientId: () => "", consentOn: false, saveConsent: async () => {}, briefingV2On: false, summaryFor: () => null, requestSummary: () => {}, renewalOn: false, renewalFor: () => null, requestRenewal: () => {}, consultOn: false, organizationId: "", saveCareNotes: async () => false });
 function useServerMergedMember(member) {
   const context = useContext(ServerNotesContext);
   const clientId = context.enabled && member ? context.resolveClientId(member) : "";
   useEffect(() => { if (clientId) context.request(clientId); }, [clientId, context]);
   const records = clientId ? context.recordsFor(clientId) : null;
-  return useMemo(() => (records ? mergeServerNotes(member, records) : member), [member, records]);
+  return useMemo(() => withServerCareNotes(records ? mergeServerNotes(member, records) : member), [member, records]);
+}
+/* 결정 2: 기기에 목표 · 주의사항이 없으면 서버 사본(명부의 orgCareNotes)을 쓴다 -- 대타 강사 · 새 폰. 기기 값이 있으면 기기 것. */
+function withServerCareNotes(member) {
+  const notes = member?.orgCareNotes;
+  if (!notes) return member;
+  const goal = String(member.goal || "").trim() ? member.goal : String(notes.goal || "");
+  const focus = Array.isArray(member.focus) && member.focus.length ? member.focus : (Array.isArray(notes.focus) ? notes.focus : []);
+  return goal === member.goal && focus === member.focus ? member : { ...member, goal, focus };
 }
 
 const LessonRecordLinkContext = createContext({
@@ -4617,10 +4625,15 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
   const renewalClientId = briefingContext.renewalOn && activeMember ? String(activeMember.orgClientId || "") : "";
   useEffect(() => { if (renewalClientId) briefingContext.requestRenewal(renewalClientId); }, [renewalClientId, briefingContext]);
   const renewal = renewalClientId ? briefingContext.renewalFor(renewalClientId) : null;
+  const consultFromLine = briefingContext.consultOn && renewal?.forecast && [RENEWAL_ALERT.CANNOT_USE_UP, RENEWAL_ALERT.LOW_REMAINING, RENEWAL_ALERT.EXPIRY_SOON].includes(renewal.forecast.alert);
   const renewalLineView = renewal?.line ? (
     <p data-renewal-line={renewal.forecast.alert} className="rounded-lg px-3 py-2 font-bold tabular-nums"
       style={{ fontSize: TYPE.caption, color: [RENEWAL_ALERT.CANNOT_USE_UP, RENEWAL_ALERT.LOW_REMAINING, RENEWAL_ALERT.EXPIRY_SOON].includes(renewal.forecast.alert) ? WARN : INK2, backgroundColor: [RENEWAL_ALERT.CANNOT_USE_UP, RENEWAL_ALERT.LOW_REMAINING, RENEWAL_ALERT.EXPIRY_SOON].includes(renewal.forecast.alert) ? WARN_S : CANVAS }}>
       {renewal.line}
+      {consultFromLine ? (
+        <button type="button" data-renewal-consult onClick={() => onOpenMember?.(activeMember.id, { consult: true })}
+          className="ml-2 underline" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>상담 소재</button>
+      ) : null}
     </p>
   ) : null;
   const lessonBriefingView = useMemo(() => (briefingContext.briefingV2On && activeMember
@@ -7353,6 +7366,10 @@ function MemberDataConsentCard({ member, sectionStyle }) {
     setMessage("");
     try {
       await context.saveConsent(clientId, granted);
+      /* 동의하면 기기의 목표 · 주의사항도 서버로 한 번 (결정 2). */
+      if (granted && (String(member?.goal || "").trim() || (member?.focus || []).length)) {
+        context.saveCareNotes({ ...member, aiConsent: { status: "granted", version: MEMBER_AI_CONSENT_VERSION } }, { goal: member?.goal || "", focus: member?.focus || [] });
+      }
       setOverride(granted ? { status: "granted", version: MEMBER_AI_CONSENT_VERSION, grantedAt: "now" } : { status: "revoked", version: MEMBER_AI_CONSENT_VERSION });
       setOpen(false);
       setChecked(false);
@@ -7408,7 +7425,7 @@ function MemberDataConsentCard({ member, sectionStyle }) {
   );
 }
 
-function ReferenceMemberDetail({ member: deviceMember, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centrePasses = null, centreLessons = null, viewerRole = "", onHandoverPass, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide, cancelGrant = null }) {
+function ReferenceMemberDetail({ openConsultOnMount = false, onConsumeConsultIntent, member: deviceMember, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centrePasses = null, centreLessons = null, viewerRole = "", onHandoverPass, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide, cancelGrant = null }) {
   /* 1단계-5: 서버 기록을 화면에만 더한 회원 (스위치 꺼짐이면 그대로). */
   const member = useServerMergedMember(deviceMember);
   /* 세션업 기간은 **회원권 문서에서** 센다. 카드(passCards)는 회원 앱과 함께
@@ -7578,6 +7595,12 @@ function ReferenceMemberDetail({ member: deviceMember, schedule, photos, setting
       setConsult({ busy: false, points: null, message: messages[reason] || `만들지 못했어요. 잠시 뒤 다시 눌러 주세요 (코드 ${reason})` });
     }
   };
+  useEffect(() => {
+    if (!openConsultOnMount) return;
+    onConsumeConsultIntent?.();
+    if (consultClientId) runConsultPoints();
+    /* 한 번만: 들어오며 생긴 의도를 소비한다. */
+  }, [openConsultOnMount]);
   const consultToMemo = () => {
     const body = ["[상담 소재 초안]", ...(consult.points || []).map((point) => `· ${point.text} (${(point.sources || []).map((source) => ymd(source.date)).join(", ")})`)].join("\n");
     setMemo(body); setMemoMeta(null); setMemoImportant(false); setSaveError(""); setSheet("memo");
@@ -7587,6 +7610,7 @@ function ReferenceMemberDetail({ member: deviceMember, schedule, photos, setting
     try {
       const stored = await onPatch(change);
       if (stored === false) throw new Error("save_failed");
+      if (key === "preparation") consultContext.saveCareNotes(member, change);
       onToast?.({ ok: true, msg: "변경한 영역을 저장했습니다." });
       if (close) setSheet(null);
       return true;
@@ -33379,6 +33403,8 @@ export default function App() {
   /* 결정 4: 동의 카드는 서버 저장 · AI 요약 스위치가 켜진 계정에서만 보인다 -- 꺼져 있으면 지금 화면 그대로. */
   const memberConsentOn = Boolean(organizationRoster) && (lessonRecordServerOn || scheduleSyncEnabledFor(scheduleSyncConfig?.memberSummary, account?.id));
   /* 3단계: 수업 전 브리핑 개편. 켜진 계정은 수업 관리 시트에 세 덩어리 브리핑, 회원 요약(2단계)을 읽어 쓴다. */
+  /* 재등록 알림 줄의 [상담 소재] -> 회원 상세를 열고 상담 소재를 바로 만든다. */
+  const [consultIntentId, setConsultIntentId] = useState(null);
   const lessonBriefingV2On = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.lessonBriefingV2, account?.id);
   const [summariesByClient, setSummariesByClient] = useState(() => new Map());
   const summaryFetchedAt = useRef(new Map());
@@ -33390,6 +33416,18 @@ export default function App() {
   /* 5단계: 재등록 상담 소재 초안 (AI, 누를 때만). */
   const consultPointsOn = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.consultPoints, account?.id);
   const serverNotesValue = useMemo(() => ({
+    /* 결정 2: 목표 · 주의사항 서버 사본. 서버 저장 스위치가 켜진 계정, 동의한 센터 회원만. 실패해도 기기 저장은 이미 끝났다. */
+    saveCareNotes: async (member, { goal, focus }) => {
+      const clientId = String(member?.orgClientId || "");
+      if (!lessonRecordServerOn || !clientId || !memberDataConsentGranted(member) || !organizationContext.organizationId) return false;
+      try {
+        await writeMemberCareNotes(organizationContext.organizationId, clientId, { goal, focus, uid: account?.id || "" });
+        return true;
+      } catch (error) {
+        deviceLog("member_care_notes_failed", { feature: "member_care_notes", stage: "write", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), correlationId: clientId.slice(-8), appBuild: APP_BUILD_LABEL });
+        return false;
+      }
+    },
     consultOn: consultPointsOn,
     organizationId: organizationContext.organizationId || "",
     renewalOn: renewalAlertsOn,
@@ -33445,7 +33483,7 @@ export default function App() {
         .then((rows) => setServerRecordsByClient((current) => new Map(current).set(key, rows)))
         .catch((error) => deviceLog("lesson_record_server_read_failed", { feature: "lesson_record", stage: "server_read", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), appBuild: APP_BUILD_LABEL }));
     },
-  }), [lessonRecordServerReadOn, serverRecordsByClient, findRosterMember, organizationContext.organizationId, memberConsentOn, account?.id, lessonBriefingV2On, summariesByClient, renewalAlertsOn, renewalLedgers, rosterPasses, consultPointsOn]);
+  }), [lessonRecordServerReadOn, serverRecordsByClient, findRosterMember, organizationContext.organizationId, memberConsentOn, account?.id, lessonBriefingV2On, summariesByClient, renewalAlertsOn, renewalLedgers, rosterPasses, consultPointsOn, lessonRecordServerOn]);
   const lessonRecordServerOnRef = useRef(lessonRecordServerOn);
   lessonRecordServerOnRef.current = lessonRecordServerOn;
   const lessonRecordOutbox = useMemo(() => (account?.id ? createServerOutbox({
@@ -35354,11 +35392,11 @@ export default function App() {
         ) : null}
         <div key={tab} className="app-motion-content relative min-h-0 flex-1 overflow-hidden">
           <ServerNotesContext.Provider value={serverNotesValue}><Guard>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} draftAccountId={account?.id} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} draftAccountId={account?.id} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id, options) => { if (options?.consult) setConsultIntentId(id); setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} viewerLocationIds={organizationContext.locationIds || []} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterInMemberTab} centreAccount={centreAccount} onOpenCentreRegistration={canOpenCentreRegistration ? openCentreRegistration : undefined} unlinkedLocal={centreAccount && roster ? roster.unlinkedLocal || [] : []} onUploadUnlinked={canOpenCentreRegistration ? uploadUnlinkedMember : undefined} onLinkUnlinked={linkUnlinkedMember} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
-                <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={allowedPhotoMembers.has(member.id) ? photos[member.id] : {}} settings={db.settings} viewerRole={organizationRoster ? organizationContext.role : ""}
+                <ReferenceMemberDetail key={member.id} openConsultOnMount={consultIntentId === member.id} onConsumeConsultIntent={() => setConsultIntentId(null)} member={member} schedule={db.schedule} photos={allowedPhotoMembers.has(member.id) ? photos[member.id] : {}} settings={db.settings} viewerRole={organizationRoster ? organizationContext.role : ""}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
                   onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, noteOptions?.lessonId || null, body, voiceMeta, noteOptions)}
                   onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} onReactivate={reactivateMember}

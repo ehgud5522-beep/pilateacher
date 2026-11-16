@@ -62,3 +62,18 @@ test("동의 카드는 서버 저장 · AI 요약 스위치가 켜진 계정에�
   assert.match(app, /기록하지 못했어요\. 연결을 확인하고 다시 눌러 주세요 \(코드 /);
   assert.match(app, /consentFor: \(memberId\) => memberDataConsentGranted\(findRosterMemberRef\.current\(memberId\)\)/);
 });
+
+test("결정 2: 목표 · 주의사항 서버 사본 -- 동의 문구에 적고, 명부가 싣고, 기기 값이 없을 때만 쓴다", () => {
+  const app = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
+  const bridge = readFileSync(new URL("../../src/features/roster/roster-bridge.js", import.meta.url), "utf8");
+  assert.match(MEMBER_DATA_CONSENT_SECTIONS[0].body, /운동 목표 · 통증 · 주의사항/);
+  assert.match(bridge, /orgCareNotes: client\.careNotes/);
+  assert.match(app, /if \(key === "preparation"\) consultContext\.saveCareNotes\(member, change\);/);
+  assert.match(app, /if \(!lessonRecordServerOn \|\| !clientId \|\| !memberDataConsentGranted\(member\)/);
+});
+
+test("재등록 알림 줄의 상담 소재 -> 회원 상세를 열고 바로 만든다", () => {
+  const app = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
+  assert.match(app, /onOpenMember\?\.\(activeMember\.id, \{ consult: true \}\)/);
+  assert.match(app, /openConsultOnMount=\{consultIntentId === member\.id\}/);
+});

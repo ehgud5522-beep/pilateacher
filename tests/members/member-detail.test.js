@@ -87,6 +87,6 @@ test("schedule lesson summaries bound long structured values behind details", ()
   assert.match(source, /text\.length > 120/);
   assert.match(source, /line-clamp-3/);
   assert.match(source, />상세 보기</);
-  assert.match(source, /previousLessonSession[^\n]*bounded/);
+  assert.match(source, /lessonSheetBriefing = useMemo\(\(\) => selectLessonSheetBriefing\(\{ sessions: previousLessonSession/);
   assert.match(source, /currentLessonSession[^\n]*bounded/);
 });

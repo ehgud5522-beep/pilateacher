@@ -38,8 +38,9 @@ const markupOf = async (name) => {
 test.after(async () => { if (vite) await vite.close(); });
 
 const slotsContainer = (html) => html.match(/<div data-member-slots="[^"]*" class="([^"]*)"/)?.[1] ?? null;
+/* 2026-11-17 개편: 칸 안에 이름 아래 잔여 줄 · [바꾸기] 가 함께 선다. 이름 줄(data-member-slot-name)만 읽는다. */
 const slotButtons = (html) => [...html.matchAll(/<button[^>]*data-member-slot="(\d)"[^>]*>([\s\S]*?)<\/button>/g)]
-  .map((match) => ({ slot: Number(match[1]), text: match[2].replace(/<[^>]+>/g, "") }));
+  .map((match) => ({ slot: Number(match[1]), text: (match[2].match(/data-member-slot-name[^>]*>([^<]*)</)?.[1] || "") }));
 
 test("듀엣 -- 두 이름이 그대로 다 그려지고, 폰에서는 두 칸이 위아래로 선다", async () => {
   const html = await markupOf("일정 등록 · 듀엣 회원 고름");

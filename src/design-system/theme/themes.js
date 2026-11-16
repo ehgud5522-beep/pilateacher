@@ -32,6 +32,9 @@ export let WARN_S;
 export let MINT;
 export let LAVENDER;
 export let LAVENDER_S;
+export let AI_INK;
+export let AI_SURFACE;
+export let AI_LINE;
 export let SAND;
 export let SHADOW;
 export let GRAD;
@@ -54,6 +57,7 @@ export function applyTheme(mode) {
   PRIMARY = p.primary; BRAND = p.brand; BRAND_D = p.primaryDark; TINT = p.tint; RING = p.ring; TOAST = p.toast; PHOTO = p.photo || "#000";
   GOOD = p.good; GOOD_S = p.goodS; BAD = p.bad; BAD_S = p.badS;
   WARN = p.warn; WARN_S = p.warnS; MINT = p.mint; LAVENDER = p.lavender; LAVENDER_S = p.lavenderS; SAND = p.sand;
+  AI_INK = p.aiInk; AI_SURFACE = p.aiSurface; AI_LINE = p.aiLine;
   SHADOW = p.shadow; GRAD = p.grad; GRAD_SOFT = p.gradSoft;
   SPLASH_BG = p.splash; GLOW = p.glow; SCRIM = p.scrim; ON_BRAND = p.onBrand;
 }

@@ -406,7 +406,7 @@ test("member and lesson-sheet source use one card, past labels, and exact lesson
   const scheduleForm = source.slice(source.indexOf("function ScheduleForm"), source.indexOf("function ScheduleQueueSheet"));
   assert.match(scheduleForm, /\+ 목표 추가/);
   assert.doesNotMatch(scheduleForm, /목표 미입력/);
-  assert.equal((scheduleForm.match(/\{m\?\.name \|\| "삭제된 회원"\}/g) || []).length, 1);
+  assert.equal((scheduleForm.match(/\{member\?\.name \|\| "삭제된 회원"\}/g) || []).length, 1);
   assert.match(source, /pastLesson && key === "today" \? "수업 내용" : label/);
   assert.match(source, /selectUnresolvedLessonRows\(\{ pendingSessions: pendingLessonSummary\.sessions \}\)/);
   assert.match(source, /onOpenSheet=\{\(item\) => onOpenLesson\?\.\(item\.lesson\?\.id \|\| item\.key\)\}/);

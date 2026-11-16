@@ -168,7 +168,7 @@ test("saving a lesson journal keeps the feedback draft and settlement in the sam
   }
 });
 
-test("duet attendance uses one bulk action from either member, while no-show remains individual", async () => {
+test("duet attendance: '전체 출석' is one bulk action, a per-member choice stays with that member", async () => {
   const { createAppScreenSmokeCases } = await screenModule();
   const dom = new JSDOM("<div id='root'></div>", { url: "http://localhost", pretendToBeVisual: true });
   dom.window.scrollTo = () => {};
@@ -194,15 +194,17 @@ test("duet attendance uses one bulk action from either member, while no-show rem
       onStatusAll: (...args) => calls.push(["all", ...args]),
     })))));
     const buttons = () => [...container.querySelectorAll("button")];
-    assert.equal(buttons().some((button) => button.textContent.trim() === "출석"), false);
-    const attendance = buttons().filter((button) => button.textContent.trim() === "둘 다 출석");
-    assert.equal(attendance.length, 1, "듀엣 동시 출석 버튼은 하나만 표시한다");
-    for (const button of attendance) await act(async () => button.click());
-    assert.equal(calls.length, attendance.length);
-    assert.ok(calls.every(([kind, , status]) => kind === "all" && status === "done"));
-    await act(async () => buttons().find((button) => button.textContent.trim() === "노쇼").click());
+    /* 2026-11-17 개편: 상태 바꾸기는 [상태 변경] 아래에. 회원 한 명의 출석 · 노쇼 · 취소와 전원 버튼이 함께 있다. */
+    const all = buttons().find((button) => button.textContent.trim() === "전체 출석");
+    assert.ok(all, "전체 출석");
+    await act(async () => all.click());
+    assert.deepEqual(calls.at(-1).slice(0, 3), ["all", calls.at(-1)[1], "done"]);
+    const noshow = buttons().find((button) => button.getAttribute("data-attendance-choice") === "noshow");
+    await act(async () => noshow.click());
     assert.equal(calls.at(-1)[0], "individual");
     assert.equal(calls.at(-1)[2], "noshow");
+    // 한 사람의 [출석] 은 그 사람만 -- 짝이 고른 것을 덮지 않는다.
+    assert.deepEqual(calls.at(-1)[4], { single: true });
   } finally {
     if (root) await act(async () => root.unmount());
     dom.window.close();
@@ -259,6 +261,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 상세 · 만료일 순서 경고",
     "회원 상세 · 소속",
     "회원 상세 · 강사",
+    "회원 상세 · AI 요약",
+    "회원 상세 · AI 요약 · 동의 없음",
+    "회원 상세 · AI 요약 · 아직 없음",
     "회원 상세 · 대표",
     "회원 목록 · 강사",
     "회원 목록 · 만료",
@@ -957,23 +962,23 @@ test("the schedule settles the lesson, and says what that will cost before it do
   assert.match(before, /확정하면 회원권이 차감되고, 되돌리려면 대표 확인이 필요합니다/);
   // 확정 전에는 출석 · 노쇼 · 취소를 자유롭게 바꿀 수 있다.
   assert.doesNotMatch(before, /disabled=""[^<]*>출석</, "확정 전에는 잠기지 않는다");
-  assert.match(before, /둘 다 출석/, "듀엣은 한 버튼으로 두 명 모두 출석 처리한다");
-  assert.doesNotMatch(before, /전체 출석|전체 노쇼|전체 취소/, "듀엣의 중복 일괄 버튼은 표시하지 않는다");
+  assert.match(before, /전체 출석/, "여러 명은 전원을 정한 뒤 한 번에 확정한다");
 
   /* 확정 후에는 버튼이 잠긴다. 상태를 바꿔도 이미 나간 차감은 따라오지 않고,
      둘이 어긋나면 어느 것이 맞는지 알 수 없다. */
   const after = markupOf("일정 탭 · 소속 · 확정됨");
+  assert.match(after, /data-lesson-done/);
   assert.match(after, /확정됨 · 회원권 차감 완료/);
   assert.match(after, /회원권 1회 차감됨/);
-  assert.doesNotMatch(after, /수업 확정/);
-  assert.match(after, /disabled=""[^<]*>둘 다 출석</, "확정 후에는 출석을 바꿀 수 없다");
+  assert.doesNotMatch(after, /수업 확정 ·/);
+  // 확정 뒤에는 출석을 바꾸는 자리가 아예 없다 (완료 화면).
+  assert.doesNotMatch(after, /data-attendance-choice/, "확정 후에는 출석을 바꿀 수 없다");
   assert.doesNotMatch(after, /전체 출석/);
 
   /* 되돌리기는 대표만 본다. 강사가 방금 누른 것을 스스로 지울 수 있으면
-     확정이라는 문턱이 의미를 잃는다. 이름도 출석 상태를 되돌리는 버튼과
-     구분한다 -- 무게가 다르다. */
-  assert.doesNotMatch(after, /차감 되돌리기/);
-  assert.match(markupOf("일정 탭 · 소속 · 확정됨 · 대표"), /차감 되돌리기/);
+     확정이라는 문턱이 의미를 잃는다. 가장 작은 링크로 둔다 (2026-11-17 지시서). */
+  assert.doesNotMatch(after, /data-undo-settle/);
+  assert.match(markupOf("일정 탭 · 소속 · 확정됨 · 대표"), /data-undo-settle[^>]*>처리 되돌리기/);
 
   /* 전원 성공 · 일부 성공 · 차감할 것 없음이 서로 다른 문구여야 한다. "0명
      차감"에도 "차감 완료"가 나오면 강사는 끝난 줄 알고 넘어가고, 그 회차는
@@ -2226,8 +2231,8 @@ test("the member-facing note sits beside the lesson record, not inside it", asyn
   const markupOf = await issueScreens(t);
   const sheet = markupOf("일정 탭 · 소속 · 회원에게 보낼 말");
   // 강사가 자기를 위해 쓰는 기록도 그 자리에 그대로 있다 -- 회원 피드백 선택과 상관없다.
-  assert.match(sheet, /기록하기/);
-  assert.match(sheet, /직접입력/);
+  assert.match(sheet, /음성으로 기록하기/);
+  assert.match(sheet, /직접 입력/);
   assert.match(sheet, /data-member-note/);
 });
 
@@ -2471,35 +2476,38 @@ test("the session up history line says what grew and who did it", async (t) => {
    번호는 회원의 정체다. 고치는 것과 보는 것은 다른 일이라, 고치는 창에서도
    전체 번호를 보여 주지 않는다. */
 
-test("a no-show lesson still offers the confirm button, asks 차감/미차감, and locks until chosen", async (t) => {
+test("a no-show lesson still offers the confirm button, with 1회 차감 as the default choice", async (t) => {
   /* 2026-10-04 에 대표가 본 증상: 노쇼로 표시하면 확정할 자리가 사라졌다.
      진짜 원인은 큐(needsSettlement)였지만, 화면 쪽도 함께 고정해 둔다 --
      확정 버튼이 사라지는 회귀가 나면 큐 테스트만으로는 안 잡힌다.
 
-     2026-11-06 대표: 노쇼는 확정할 때 "노쇼 차감 / 노쇼 미차감" 을 고른다.
-     고르기 전에는 버튼이 **있되 잠기고** 이유를 말한다. */
+     2026-11-06 대표: 노쇼는 확정할 때 차감 / 미차감을 고른다.
+     2026-11-17 대표 개편: 고르지 않았으면 기본 1회 차감으로 보이고, 버튼이 그 값을 말한다
+     ("노쇼 처리 · 1회 차감"). [노쇼 처리] 를 누르면 차감을 먼저 적고 확정한다 -- 잠그지 않는다. */
   const markupOf = await issueScreens(t);
-  const settleButton = (markup) => markup.match(/<button[^>]*>(?:수업 확정|다시 확정)[^<]*<\/button>/)?.[0] || "";
-  for (const name of ["일정 탭 · 소속 · 1:1 노쇼", "일정 탭 · 소속 · 2:1 둘 다 노쇼", "일정 탭 · 소속 · 2:1 노쇼 한 명만 고름"]) {
+  const settleButton = (markup) => markup.match(/<button[^>]*data-lesson-confirm[^>]*>[\s\S]*?<\/button>/)?.[0] || "";
+  for (const name of ["일정 탭 · 소속 · 1:1 노쇼", "일정 탭 · 소속 · 2:1 둘 다 노쇼"]) {
     const markup = markupOf(name);
-    assert.match(markup, /수업 확정/, name);
-    assert.match(markup, />노쇼 차감</, name);
-    assert.match(markup, />노쇼 미차감</, name);
-    assert.match(markup, /data-settle-block-reason/, `${name}: 왜 잠겼는지 말한다`);
-    assert.match(settleButton(markup), /disabled=""/, `${name}: 고르기 전에는 확정이 잠긴다`);
-    // 예전의 "언제나 차감" 안내는 사라졌다.
+    assert.match(settleButton(markup), /노쇼 처리 · (1회|2명) 차감/, name);
+    assert.doesNotMatch(settleButton(markup), /disabled=""/, `${name}: 잠기지 않는다`);
+    assert.match(markup, />1회 차감</, name);
+    assert.match(markup, />차감 안 함</, name);
+    assert.match(markup, /aria-pressed="true"[^>]*>1회 차감</, `${name}: 기본은 1회 차감`);
     assert.doesNotMatch(markup, /노쇼도 1회 차감됩니다/, name);
   }
+  const one = markupOf("일정 탭 · 소속 · 2:1 노쇼 한 명만 고름");
+  assert.match(settleButton(one), /(수업 확정|노쇼 처리) · /);
+  assert.doesNotMatch(settleButton(one), /disabled=""/);
+
   const charged = markupOf("일정 탭 · 소속 · 1:1 노쇼 차감");
-  assert.doesNotMatch(charged, /data-settle-block-reason/);
   assert.doesNotMatch(settleButton(charged), /disabled=""/);
   assert.match(charged, /출석과 같은 단가로 급여에 잡힙니다/);
-  assert.match(settleButton(charged), /1명 차감/, "노쇼 차감은 차감 인원에 든다");
+  assert.match(settleButton(charged), /노쇼 처리 · 1회 차감/, "노쇼 차감은 차감에 든다");
 
   const waived = markupOf("일정 탭 · 소속 · 1:1 노쇼 미차감");
   assert.doesNotMatch(settleButton(waived), /disabled=""/);
   assert.match(waived, /차감과 급여 없이 노쇼로만 남습니다/);
-  assert.doesNotMatch(settleButton(waived), /명 차감/, "노쇼 미차감은 차감 인원에 들지 않는다");
+  assert.match(settleButton(waived), /노쇼 처리 · 차감 없음/, "노쇼 미차감은 차감에 들지 않는다");
 });
 
 test("an add-on care lesson shows both rate lines and the picker", async (t) => {

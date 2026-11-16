@@ -1,3 +1,15 @@
+## 2026-11-16 — 보니따 강제 업데이트: Android 만 켬 (대표 지시 "강제 업데이트 켜줘 1.1.5로")
+
+- Firebase Remote Config(프로젝트 pilateacher)에 처음으로 값을 넣었다 -- 전에는 템플릿이 비어 있었다. 버전 1:
+  `member_force_update_enabled = "true"` · `member_android_min_build = "21"` · `member_android_latest_build = "21"` (1.1.5 의 Play versionCode 21)
+- **iOS 는 넣지 않았다.** 대표 화면 캡처에서 iOS 빌드 26(1.1.5)이 App Store Connect "제출 준비 완료" -- 아직 심사 · 출시 전이다.
+  지금 iOS 최소를 26 으로 두면 앱스토어에 1.1.4 만 있는 동안 아이폰 회원이 업데이트 화면에 갇힌다(iOS 에는 Android 의
+  store_behind_minimum 같은 안전장치가 없다). **iOS 1.1.5 출시 뒤** `member_ios_min_build = "26"` · `member_ios_latest_build = "26"` 을 더한다
+- 값 넣기: firebase CLI 로그인 계정으로 Remote Config REST(GET 으로 ETag → PUT If-Match). 판정 모의: Android 20 → required,
+  21 → none, 스토어 확인 실패 → 권유만, iOS → 스토어에 새 버전 있을 때 권유만
+- 되돌리기: Firebase 콘솔 → Remote Config → 버전 기록에서 이전(빈 템플릿)으로, 또는 `member_force_update_enabled` 를 "false"
+- 운영 설정은 앱이 최소 10분 간격으로 새로 받는다. 강제 화면은 업데이트 플러그인이 들어간 설치본에서만 뜬다
+
 ## 2026-11-15 — 배포 기록: #208 ~ #214 · #207 병합 · 강사 웹 · 1.1.53 빌드 브랜치 (대표 지시 "병합 웹배포해")
 
 - **병합**: #208 → #209 → #210 → #211 → #212 → #213 → #214 → #207 차례로. main `7a0ba08`

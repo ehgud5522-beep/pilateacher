@@ -12,6 +12,7 @@ const { GatewayError } = require("./errors");
 const { OPERATIONS, OUTPUT_NAMES, OUTPUT_SCHEMAS, validateOperationOutput } = require("./operation-contracts");
 const { getPrompt } = require("./prompts");
 const { PILATES_TRANSCRIPTION_TERMS, buildTranscriptionPrompt, correctPilatesTranscription } = require("./transcription-config");
+const { prepareProviderInput } = require("./privacy");
 const { filterSttHallucinations } = require("./stt-quality");
 
 const DEFAULT_MODEL = "gpt-5-mini";
@@ -229,8 +230,8 @@ function createOpenAIProvider({
       }
   }
 
-  async function transcribe(buffer, metadata, memberName, _energy) {
-    const prompt = buildTranscriptionPrompt(memberName);
+  async function transcribe(buffer, metadata, _energy) {
+    const prompt = buildTranscriptionPrompt();
     let primaryError = null;
     for (const transcriptionModel of [PRIMARY_TRANSCRIPTION_MODEL, FALLBACK_TRANSCRIPTION_MODEL]) {
       const startedAt = Date.now();
@@ -356,7 +357,7 @@ function createOpenAIProvider({
             flags: ["no_speech", "silent_energy"],
             confidenceDiagnostic: { reason: energy.reason },
           }
-          : await transcribe(buffer, metadata, input?.memberName, energy);
+          : await transcribe(buffer, metadata, energy);
       } catch (error) {
         emitDiagnostic("AUDIO_STT_FAILED", { code: String(error?.code || "stt_failed").slice(0, 80), elapsedMs: Math.max(0, Date.now() - sttStartedAt) });
         throw error;
@@ -472,11 +473,13 @@ function createOpenAIProvider({
       try {
         structured = await execute({
           operation: OPERATIONS.STRUCTURE_LESSON_RECORD,
-          input: {
+          /* 정리 모델에 보내기 전에 이름 · 연락처를 지운다 -- 글 경로(prepareProviderInput)와 같은 처리.
+             전에는 음성 경로만 전사문을 그대로 보냈다 (2026-11-16 대표 결정 6). 강사 화면의 전사문은 그대로다. */
+          input: prepareProviderInput({
             rawTranscript: transcription.transcript,
             language: "ko-KR",
             termMap: { version: 1, mapped: [], uncertain: [] },
-          },
+          }, { memberName: input?.redactName || input?.memberName || "" }),
           safetyIdentifier,
         });
       } catch (error) {

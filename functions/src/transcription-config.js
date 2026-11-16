@@ -7,8 +7,10 @@ const PILATES_TRANSCRIPTION_TERMS = Object.freeze([
   "경추", "고관절", "지난주", "낮췄다", "올렸다",
 ]);
 
-function buildTranscriptionPrompt(memberName = "") {
-  const name = String(memberName || "").trim().slice(0, 160);
+/* 회원 이름은 넣지 않는다 (2026-11-16 대표 결정 6). 전에는 "회원 이름은 X일 수 있습니다" 로 실제 이름을
+   OpenAI 음성 인식에 보냈다 -- "이름 · 연락처는 OpenAI 로 보내지 않는다" 는 원칙과 어긋났다. 이름을 말했을 때
+   철자가 틀릴 수 있지만, 기록에는 이름이 남지 않는 편이 낫다. 인자는 옛 호출을 깨지 않으려고 받기만 한다. */
+function buildTranscriptionPrompt(_ignoredMemberName = "") {
   return [
     `필라테스 수업 직후 강사의 짧은 한국어 기록입니다. ${PILATES_TRANSCRIPTION_TERMS.join("·")} 같은 용어가 나올 수 있습니다.`,
     "리포머·캐딜락·체어·바렐·바디포머·스파인 코렉터는 필라테스 기구명입니다. 문맥과 발음이 명확할 때만 해당 표준 명칭으로 전사하세요.",
@@ -16,7 +18,6 @@ function buildTranscriptionPrompt(memberName = "") {
     "게릴락·캐딜라처럼 들리는 불완전한 발음도 문맥상 캐딜락이 명확할 때만 캐딜락으로 적고, 확실하지 않으면 들리는 표현을 유지하세요.",
     "운동은 필라테스 기록에서 자주 쓰입니다. 음봉·응동·은근처럼 들려도 문장 문맥과 조사가 운동을 명확히 뜻할 때만 운동으로 적고, 은근 등 실제 일반어일 가능성이 있으면 들리는 표현을 유지하세요.",
     "특히 흉추·요추·경추·견갑·고관절, 지난주, 강도를 낮췄다·올렸다 같은 표현을 들리는 그대로 구분합니다.",
-    name ? `회원 이름은 ${name}일 수 있습니다.` : "",
     "실제로 들리는 말만 원문 의미 그대로 전사하고, 들리지 않는 내용은 만들지 마세요.",
   ].filter(Boolean).join("\n");
 }

@@ -115,3 +115,52 @@ export function voiceNoteRestoreState(note) {
     confirmed: text(record.confirmationStatus) === "confirmed" || text(record.stage) === "confirmed_record",
   };
 }
+
+/**
+ * 수업 없이 저장된 기록을 그 수업에 잇는다 (2026-11-16 하주은 강사 제보: "AI 말하기로 기록했는데
+ * 계속 미기록 알림"). "기록" 화면은 기록을 수업과 잇는 칸이 없어 언제나 sid 없이 저장했고, 그 수업은
+ * 영영 "미기록" 이었다. 화면은 고쳤고, 이미 쌓인 기록은 이것이 잇는다 -- 앱을 열 때(normalizeDb).
+ *
+ * **틀리게 잇느니 잇지 않는다.** 한 회원 · 한 날짜에
+ *   sid 없는 기록(상담 메모 제외)이 정확히 하나이고,
+ *   그 회원이 출석(done)한, 아직 그 회원 기록이 없는 수업도 정확히 하나일 때만 잇는다.
+ * 둘 이상이면 어느 것이 어느 것인지 모르므로 그대로 둔다.
+ *
+ * @param {{ members?: Array<any>, schedule?: Array<any> }} db
+ * @returns {{ members: Array<any>, linked: number }} 바뀐 회원만 새 객체
+ */
+export function linkOrphanLessonNotes({ members = [], schedule = [] } = {}) {
+  const lessonsByMemberDate = new Map();
+  for (const lesson of Array.isArray(schedule) ? schedule : []) {
+    if (!lesson || lesson.personal || lesson.deletedAt || lesson.isSample) continue;
+    for (const attendee of Array.isArray(lesson.attendees) ? lesson.attendees : []) {
+      if (text(attendee?.status) !== "done") continue;
+      const key = `${text(attendee.memberId)}|${text(lesson.date)}`;
+      if (!lessonsByMemberDate.has(key)) lessonsByMemberDate.set(key, []);
+      lessonsByMemberDate.get(key).push(lesson);
+    }
+  }
+  let linked = 0;
+  const next = (Array.isArray(members) ? members : []).map((member) => {
+    const notes = Array.isArray(member?.notes) ? member.notes : [];
+    if (!notes.length) return member;
+    const recorded = new Set(notes.map((note) => text(note?.sid)).filter(Boolean));
+    const orphansByDate = new Map();
+    notes.forEach((note, index) => {
+      if (!note || text(note.sid) || text(note.type) === "상담" || !text(note.date)) return;
+      if (!orphansByDate.has(note.date)) orphansByDate.set(note.date, []);
+      orphansByDate.get(note.date).push(index);
+    });
+    let patched = null;
+    for (const [date, indexes] of orphansByDate) {
+      if (indexes.length !== 1) continue;
+      const open = (lessonsByMemberDate.get(`${text(member.id)}|${date}`) || []).filter((lesson) => !recorded.has(text(lesson.id)));
+      if (open.length !== 1) continue;
+      patched = patched || notes.slice();
+      patched[indexes[0]] = { ...notes[indexes[0]], sid: text(open[0].id) };
+      linked += 1;
+    }
+    return patched ? { ...member, notes: patched } : member;
+  });
+  return { members: next, linked };
+}

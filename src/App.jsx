@@ -360,7 +360,7 @@ import {
 } from "./features/lesson-record/draft-queue.js";
 import { evaluateLessonRecordLink, linkScheduleToMember, upsertLessonRecordNote } from "./features/lesson-record/link-context.js";
 import {
-  defaultLinkLesson, linkableLessonsFor, manualNoteFor, voiceNoteFor, voiceNoteRestoreState,
+  defaultLinkLesson, linkOrphanLessonNotes, linkableLessonsFor, manualNoteFor, voiceNoteFor, voiceNoteRestoreState,
 } from "./features/lesson-record/note-edit.js";
 import {
   formatMemberLessonDate, formatMemberLessonHeader, isMeaningfulLessonSession, lessonSessionRepresentative, pendingLessonState,
@@ -830,7 +830,7 @@ const timeOf = (stamp) => {
 const uid = () => Math.random().toString(36).slice(2, 9);
 const DEVICE_LOG_FIELDS = new Set([
   "reasonCode", "photoIdPrefix", "hasOrganizationId", "hasClientId", "category", "retryable",
-  "memberId", "assessmentId", "lessonId", "view", "storage", "operation",
+  "memberId", "assessmentId", "lessonId", "hasLessonLink", "view", "storage", "operation",
   "platform", "lifecycleState",
   "permission", "state", "source", "code", "message", "count", "provider",
   "stage", "kind", "firebaseCode", "nativeCode", "nativeMessage", "credentialState",
@@ -1675,6 +1675,14 @@ const sampleDb = (center, staff) => ({
   ],
 });
 function normalizeDb(data, staff) {
+  const normalized = normalizeDbShape(data, staff);
+  /* 수업 없이 저장된 기록을 그 수업에 잇는다 -- 틀릴 수 없는 경우만 (note-edit.js linkOrphanLessonNotes).
+     "기록" 화면이 오래 sid 없이 저장해 그 수업이 계속 "미기록" 이던 것 (2026-11-16 하주은 강사 제보). */
+  const { members, linked } = linkOrphanLessonNotes(normalized);
+  if (linked > 0) deviceLog("lesson_note_relinked", { count: linked, appBuild: APP_BUILD_LABEL });
+  return linked > 0 ? { ...normalized, members } : normalized;
+}
+function normalizeDbShape(data, staff) {
   const d = data && typeof data === "object" ? data : {};
   return {
     settings: { center: d.settings?.center ?? "", staff: d.settings?.staff ?? (staff || ""), payRate: Number(d.settings?.payRate) || DEF_RATE, groupRate: Number(d.settings?.groupRate) || DEF_GROUP_RATE, templates: Array.isArray(d.settings?.templates) ? d.settings.templates : [], scheduleColors: normalizeScheduleColors(d.settings?.scheduleColors), hiddenClientIds: Array.isArray(d.settings?.hiddenClientIds) ? d.settings.hiddenClientIds.filter((value) => typeof value === "string" && value) : [] },
@@ -15891,11 +15899,37 @@ function NoteForm({ member, schedule, onSave, settings, onSettings, backHint, vo
     setNewTpl(""); setAdding(false); setGroup("내 문구");
   };
   const delTpl = (t) => onSettings && onSettings({ ...settings, templates: mine.filter((x) => x !== t) });
+  /* 어느 수업의 기록인가 (2026-11-16 하주은 강사 제보: "AI 말하기로 기록했는데 계속 미기록 알림").
+     이 화면은 기록을 수업과 잇는 칸이 없었다 -- 저장이 sid 를 noteSid 에서 읽는데 아무도 그 값을 넣지
+     않아, 여기서 쓴 기록은 언제나 수업 없이 저장됐고 그 수업은 영영 "미기록" 이었다. 회원 상세의
+     "수업 기록" 과 같은 칸 · 같은 기본값(오늘 · 최근의 기록 없는 수업)을 쓴다 (note-edit.js). */
+  const linkableLessons = useMemo(
+    () => linkableLessonsFor({ memberId: member?.id, notes: member?.notes, schedule, today: todayISO() }),
+    [member, schedule],
+  );
+  const [linkLessonId, setLinkLessonId] = useState(() => defaultLinkLesson(linkableLessons, todayISO()));
+  const linkedLesson = linkableLessons.find((lesson) => lesson.id === linkLessonId) || null;
+  useEffect(() => {
+    // 고른 수업의 날짜를 수업일 칸에도 -- 두 칸이 다른 날을 말하지 않게.
+    if (linkedLesson?.date) setN((x) => (x.date === linkedLesson.date ? x : { ...x, date: linkedLesson.date }));
+  }, [linkedLesson?.date]);
   return (
     <Card className="p-5">
       <h3 className="font-extrabold" style={{ color: INK }}>수업 코멘트 작성</h3>
       <Sub>기록만 남습니다. 수강권 차감은 스케줄에서 '출석'을 누를 때만 이뤄집니다</Sub>
       <div className="mt-4 space-y-3">
+        {linkableLessons.length > 0 && (
+          <label className="block" data-record-lesson-link>
+            <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>어느 수업의 기록인가요</span>
+            <select value={linkLessonId} onChange={(event) => setLinkLessonId(event.target.value)} className={`${inputCls} mt-1`}>
+              <option value="">수업과 잇지 않음</option>
+              {linkableLessons.map((lesson) => (
+                <option key={lesson.id} value={lesson.id}>{`${md(lesson.date)} ${lesson.start} · ${lesson.type || "수업"}${lesson.hasRecord ? " · 기록 있음" : ""}`}</option>
+              ))}
+            </select>
+            {!linkLessonId && <span className="mt-1 block" style={{ fontSize: TYPE.caption, color: WARN }}>수업과 잇지 않으면 그 수업은 일정에서 계속 "미기록" 으로 남아요.</span>}
+          </label>
+        )}
         <div className="grid grid-cols-2 gap-2">
           <Field label="수업일"><input type="date" value={n.date} onChange={(e) => setN({ ...n, date: e.target.value })} className={inputCls} /></Field>
           <Field label="수업 종류">
@@ -15958,6 +15992,7 @@ function NoteForm({ member, schedule, onSave, settings, onSettings, backHint, vo
             id: uid(), date: n.date, type: n.type, instructor: member.instructor, body: n.body.trim(),
             tags: n.tags.split(",").map((t) => t.trim()).filter(Boolean),
             ...(voiceMeta || {}),
+            ...(linkLessonId ? { sid: linkLessonId } : {}),
           });
           if (stored === false) return;
           setN({ ...n, body: "", tags: "" });
@@ -33824,7 +33859,11 @@ export default function App() {
         audioBlobId: undefined,
       },
     } : note;
-    const finalizedWithSession = { ...finalized, sid: noteSid || undefined };
+    /* 기록 화면이 고른 수업(note.sid)이 먼저, 없으면 일정에서 들어온 수업(noteSid). 둘 다 없으면 칸을
+       아예 두지 않는다 -- undefined 값은 클라우드 백업 쓰기를 invalid-argument 로 떨어뜨린다. */
+    const linkedSid = String(note.sid || noteSid || "").trim();
+    const { sid: _droppedSid, ...finalizedWithoutSid } = finalized;
+    const finalizedWithSession = linkedSid ? { ...finalizedWithoutSid, sid: linkedSid } : finalizedWithoutSid;
     const nextNotes = [finalizedWithSession, ...(t.notes || [])];
     const memoryResult = buildMemberMemorySafely({ memberId: id, notes: nextNotes, existingMemory: t.aiMemory || [], schedule: db.schedule });
     const stored = await patch(id, { notes: nextNotes, aiMemory: memoryResult.memories, memoryRebuildNeeded: memoryResult.failed });
@@ -33840,7 +33879,7 @@ export default function App() {
     trackMemberMemoryUsage("memory_candidates", { count: memoryResult.stats.candidateCount });
     trackMemberMemoryUsage("memory_merged", { count: memoryResult.stats.mergedCount });
     trackMemberMemoryUsage("patterns", { count: memoryResult.stats.patternCount });
-    deviceLog("member_note_saved", { memberId: id, lessonId: noteSid, storage: "localStorage", source: note.voiceSource || "direct_input" });
+    deviceLog("member_note_saved", { memberId: id, lessonId: linkedSid || null, hasLessonLink: Boolean(linkedSid), storage: "localStorage", source: note.voiceSource || "direct_input" });
     setNoteSid(null);
     /* 저장이 끝나고 미기록 큐에서도 빠진 뒤에 묻는다. 그래야 화면이 말하는 상태가
        실제 저장된 상태와 같다. */

@@ -110,7 +110,12 @@ export function createRecordStore({ isEnabled = () => false, enqueue = () => {},
     afterDeviceSave({ note, memberId, lesson = null }) {
       try {
         if (!isEnabled()) return { queued: false, reason: "disabled" };
-        const record = serverRecordFromNote({ note, memberId, lesson, ...context() });
+        /* 기기 회원 id 는 센터 회원 id 와 다를 수 있다 -- 옛 회원은 연락처로 센터 회원에 이어져 있고 그 id 는
+           orgClientId 에 있다. 서버 기록은 센터 회원 id 로만 쓴다(규칙 · 담당 판정). 이어지지 않은 회원은 보내지 않는다. */
+        const { resolveClientId, ...rest } = context() || {};
+        const clientId = typeof resolveClientId === "function" ? String(resolveClientId(memberId) || "") : String(memberId || "");
+        if (!clientId) return { queued: false, reason: "not_centre_member" };
+        const record = serverRecordFromNote({ note, memberId: clientId, lesson, ...rest });
         if (!record) return { queued: false, reason: "not_eligible" };
         enqueue(record);
         return { queued: true, recordId: record.recordId };

@@ -1560,3 +1560,87 @@ exports.eraseDeletedMemberShares = onDocumentWritten({ document: "memberLinks/{u
     await eraseMemberShares(firestore, event.params.uid, getStorage().bucket());
   }
 });
+
+/* ── AI 회원 요약 (설계 문서 2단계, 2026-11-16) ─────────────────────────────
+   서버 기록(lessonRecords)이 새로 생기면 그 회원 요약을 고쳐 쓴다. 화면은 저장된 요약만 읽는다 --
+   화면을 열 때 AI 를 부르지 않는다. 스위치 runtimeConfig/scheduleSync.memberSummary (처음에는 꺼짐),
+   회원 단위 AI 동의(clients.aiConsent)가 없으면 부르지 않는다. 근거는 member-summary.js 머리말. */
+const { onDocumentCreated } = require("firebase-functions/v2/firestore");
+const { createMemberSummaryService } = require("./member-summary");
+const memberSummaryLog = (level, event, fields) => logger[level](event, fields);
+const memberSummaryService = createMemberSummaryService({
+  firestore,
+  getProvider: () => {
+    if (!openAIProvider) {
+      openAIProvider = createOpenAIProvider({ apiKey: OPENAI_API_KEY.value(), model: process.env.AI_MODEL || DEFAULT_MODEL });
+    }
+    return openAIProvider;
+  },
+  log: memberSummaryLog,
+});
+
+exports.refreshMemberSummaryOnRecord = onDocumentCreated({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  document: "organizations/{organizationId}/lessonRecords/{recordId}",
+  secrets: [OPENAI_API_KEY],
+  timeoutSeconds: 120,
+  memory: "256MiB",
+  retry: false,
+}, async (event) => {
+  const data = event.data?.data() || {};
+  try {
+    await memberSummaryService.refresh({
+      organizationId: event.params.organizationId, clientId: String(data.clientId || ""),
+      triggerUid: String(data.createdBy || ""), reason: "record",
+    });
+  } catch (error) {
+    memberSummaryLog("error", "member_summary_trigger_failed", {
+      feature: "member_summary", stage: "trigger", organizationId: event.params.organizationId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+  }
+});
+
+exports.sweepMemberSummaries = onSchedule({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  schedule: "every 15 minutes",
+  timeZone: "Asia/Seoul",
+  secrets: [OPENAI_API_KEY],
+  timeoutSeconds: 300,
+  memory: "256MiB",
+}, async () => {
+  const results = await memberSummaryService.sweep();
+  if (results.length) memberSummaryLog("info", "member_summary_sweep", { feature: "member_summary", stage: "sweep", count: results.length });
+});
+
+/* 다시 만들기 (대표 · 총괄만). clientId 하나, 또는 요약이 있는 회원 전부(최대 200). 앞 요약을 쓰지 않고 원본 기록에서 처음부터. */
+exports.rebuildMemberSummary = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  secrets: [OPENAI_API_KEY],
+  timeoutSeconds: 540,
+  memory: "256MiB",
+  invoker: "public",
+}, async (request) => {
+  const callerUid = request?.auth?.uid;
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const clientId = String(request?.data?.clientId || "").trim();
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId || organizationId.includes("/")) throw new HttpsError("invalid-argument", "organizationId is required.", { reason: "organization_required" });
+  const membership = await firestore.collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  if (!membership.exists || !isOwnerLevel(membership.data())) {
+    throw new HttpsError("permission-denied", "Only the owner can rebuild summaries.", { reason: "owner_only" });
+  }
+  let targets = [clientId];
+  if (!clientId) {
+    const snapshot = await firestore.collection(`organizations/${organizationId}/memberSummaries`).limit(200).get();
+    targets = snapshot.docs.map((document) => document.id);
+  }
+  const counts = {};
+  for (const target of targets) {
+    const result = await memberSummaryService.refresh({ organizationId, clientId: target, reason: "rebuild", fromScratch: true });
+    const key = result.code ? `${result.outcome}:${result.code}` : result.outcome;
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  memberSummaryLog("info", "member_summary_rebuilt", { feature: "member_summary", stage: "rebuild", organizationId, targets: targets.length, counts });
+  return { targets: targets.length, counts };
+});

@@ -6531,3 +6531,41 @@ describe("수업기록 비교 검증 숫자 -- 강사는 자기 칸만 쓰고, �
     await assertFails(getDocs(collection(dbFor(users.instructor), "organizations", ORG_A, "lessonRecordParity")));
   });
 });
+
+/* ── AI 회원 요약 (설계 문서 2단계) ── 서버만 쓰고, 대표 · 총괄 + 담당 강사만 읽는다. */
+describe("AI 회원 요약 -- 서버만 쓰고 담당만 읽는다", () => {
+  const OTHER = "instructor-b";
+  const ref = (userId, clientId = "client-member") => doc(dbFor(userId), "organizations", ORG_A, "memberSummaries", clientId);
+  const summary = { organizationId: ORG_A, clientId: "client-member", status: "ready", summary: { mustRemember: [], recentTrend: [], openQuestions: [] } };
+  beforeEach(async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "memberships", `${ORG_A}_${OTHER}`), { organizationId: ORG_A, userId: OTHER, role: "instructor", status: "active" });
+      await setDoc(doc(db, "organizations", ORG_A, "clients", "client-member"), { instructorIds: [users.instructor] }, { merge: true });
+      await setDoc(doc(db, "organizations", ORG_A, "memberSummaries", "client-member"), summary);
+      await setDoc(doc(db, "organizations", ORG_A, "memberSummaries", "client-member", "versions", "1"), { summary: summary.summary });
+    });
+  });
+  test("읽기: 담당 강사 · 대표 · 총괄은 되고, 담당 아닌 강사 · FC · 직원 · 다른 센터는 안 된다", async () => {
+    await assertSucceeds(getDoc(ref(users.instructor)));
+    await assertSucceeds(getDoc(ref(users.owner)));
+    await assertSucceeds(getDoc(ref(users.area_manager)));
+    await assertFails(getDoc(ref(OTHER)), "담당 아님");
+    await assertFails(getDoc(ref(users.manager)), "FC (결정 5)");
+    await assertFails(getDoc(ref(users.staff)));
+    await assertFails(getDoc(ref(users.outsider)));
+  });
+  test("쓰기는 누구도 못 한다 -- 서버만", async () => {
+    for (const userId of [users.owner, users.instructor, users.manager]) {
+      await assertFails(setDoc(ref(userId), summary));
+      await assertFails(updateDoc(ref(userId), { status: "failed" }));
+      await assertFails(deleteDoc(ref(userId)));
+    }
+  });
+  test("목록 · 앞 판은 대표 · 총괄만", async () => {
+    await assertSucceeds(getDocs(collection(dbFor(users.owner), "organizations", ORG_A, "memberSummaries")));
+    await assertFails(getDocs(collection(dbFor(users.instructor), "organizations", ORG_A, "memberSummaries")));
+    await assertSucceeds(getDoc(doc(dbFor(users.owner), "organizations", ORG_A, "memberSummaries", "client-member", "versions", "1")));
+    await assertFails(getDoc(doc(dbFor(users.instructor), "organizations", ORG_A, "memberSummaries", "client-member", "versions", "1")));
+  });
+});

@@ -32,8 +32,10 @@ export function isVoiceRecordNote(note) {
 export function manualNoteFor(notes, lessonId) {
   const sid = text(lessonId);
   if (!sid) return null;
+  /* 서버에서 화면에만 더한 기록(serverOnly, 1단계-5)은 고치기 대상이 아니다 -- 다른 강사 · 다른 기기의 기록을
+     내 기기 기록으로 덮어쓰면 안 된다. */
   return (Array.isArray(notes) ? notes : [])
-    .find((note) => text(note?.sid) === sid && !isVoiceRecordNote(note)) || null;
+    .find((note) => text(note?.sid) === sid && !note?.serverOnly && !isVoiceRecordNote(note)) || null;
 }
 
 /** 그 수업의 음성 기록 (가장 최근 것). 없으면 null. */
@@ -41,7 +43,7 @@ export function voiceNoteFor(notes, lessonId) {
   const sid = text(lessonId);
   if (!sid) return null;
   return (Array.isArray(notes) ? notes : [])
-    .find((note) => text(note?.sid) === sid && isVoiceRecordNote(note)) || null;
+    .find((note) => text(note?.sid) === sid && !note?.serverOnly && isVoiceRecordNote(note)) || null;
 }
 
 const attends = (lesson, memberId) => {

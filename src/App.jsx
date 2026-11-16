@@ -4778,7 +4778,7 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
       onToast?.(`처리하지 못했어요. 다시 눌러 주세요. (코드 confirm_${step.type}_stalled)`);
     }, 6000);
     return () => globalThis.clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- draft 가 저장될 때마다 다음 걸음
+    /* 의존성은 confirming · draft 둘뿐: draft 가 저장될 때마다 다음 걸음을 간다. */
   }, [confirming, draft]);
   const pressConfirmBar = () => {
     if (confirmBar.action === "advance") { goStage(LESSON_STAGE.POST); return; }

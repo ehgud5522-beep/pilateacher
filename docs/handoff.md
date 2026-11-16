@@ -1,3 +1,25 @@
+## 2026-11-16 — 수업기록 서버 저장 · AI 회원 요약 · 회원 동의 (#222 ~ #229, PR 만 · 병합 · 배포 전)
+
+설계 문서: https://claude.ai/artifact/FmYAG8gfqADfrF4GSmCRmG (대표 "다진행해줘" 로 결정 1~6 추천안 승인).
+PR 은 앞 PR 위에 차례로 쌓았다 -- **#222 은 main 기준, #223 → #224 → … → #229 는 앞 PR 브랜치 기준**. 병합도 그 순서.
+
+- #222 AI 로 회원 이름이 가던 두 곳 막음 (STT 힌트 · 음성 경로 이름 지우기). 배포: aiGateway
+- #223 저장 계층 한 곳으로 (1-1, 동작 없음)
+- #224 기기 · 서버 동시 저장, 스위치 `scheduleSync.lessonRecordServer`, 보낼 줄(outbox) -- 서버가 받기 전엔 안 지움
+- #225 기존 확정 기록 이관 (상담 · 인바디 제외)
+- #226 비교 검증 (6시간, 차이는 다시 보냄) + 대표 카드
+- #227 서버 기록 읽기, 스위치 `lessonRecordServerRead`. 서버 기록은 화면에만, 고치기 대상 아님
+- #228 AI 회원 요약 (2단계): 트리거 `refreshMemberSummaryOnRecord` · 15분 `sweepMemberSummaries` · `rebuildMemberSummary`,
+  스위치 `memberSummary`, 대표 "AI 회원 요약 점검" 카드. 문장마다 근거, 서버가 진단 말 · 좌우 · 기구 이름 검사
+- #229 회원 단위 동의 `clients.aiConsent` (결정 4). 동의 없는 회원은 서버로 안 보냄. **문구는 초안 -- 법률 검토 필요**
+  (`docs/member-data-consent-draft.md`), 처리방침(`public/privacy.html`)은 아직 안 바꿈. #224 의 빈 명부 붙잡기 버그도 여기서 고침
+
+배포할 것(지시 시): 규칙(lessonRecords · lessonRecordParity · memberSummaries · clients.aiConsent),
+Functions(aiGateway · updateRuntimeConfig · 요약 3개), 웹. 스위치는 전부 꺼진 채로 나간다.
+켜는 순서: 동의 문구 확정 → 서버 저장(강사 1~2명) → 비교 '일치' 확인 → 서버 읽기 → AI 요약(시범 회원 20명 대표 판정).
+
+남은 단계: 3 브리핑 개편 · 4 재등록 알림 · 5 상담 소재 · 끝나면 직원용 변경 요약 시트.
+
 ## 2026-11-16 — 수업 별점 메뉴 따로 · 월별 · 누적 · 점장은 자기 지점 강사만 (#221 병합 · Functions · 강사 웹 · 보니따 웹 배포됨)
 
 - **배포 (대표 지시 "모두 진행해줘")**: 병합 main `a42ab49` → deploy-main fast-forward → Functions `lessonRatingStats` 갱신(`--config firebase.ai-gateway.json`,

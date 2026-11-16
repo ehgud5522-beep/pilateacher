@@ -37,16 +37,18 @@ export const RATING_ITEMS = Object.freeze([
 export const RATING_ITEM_IDS = Object.freeze(RATING_ITEMS.map((item) => /** @type {string} */ (item.id)));
 export const SCORE_RANGE = Object.freeze({ min: 1, max: 5 });
 
-/** 화면 문구. 대표 요청: "강사님에게는 공개되지 않습니다 · 추후 피드백" 뜻을 한 줄로. */
+/** 화면 문구. 대표 요청: "강사님에게는 공개되지 않습니다 · 추후 피드백" 뜻을 한 줄로.
+    2026-11-16: 점장(직함은 점장, 역할은 강사)이 자기 지점 강사의 집계를 본다 -- "강사님에게는" 은 더는 사실이
+    아니다. 사실대로: **담당** 선생님에게는 공개되지 않고(점장도 본인 점수는 못 봄), 센터 관리자가 본다. */
 export const RATING_COPY = Object.freeze({
   CAPTION: "BONITA VIP · 수업 완료",
   TITLE: "오늘 수업은 어떠셨나요?",
   SECONDS: "10초",
-  PRIVACY: "강사님에게는 공개되지 않아요 · 더 좋은 수업을 위한 피드백으로만 쓰여요",
+  PRIVACY: "담당 선생님에게는 공개되지 않아요 · 센터 관리자만 더 좋은 수업을 위해 확인해요",
   SUBMIT: "보내기",
   LATER: "다음에 할게요",
   THANKS: "소중한 의견 고마워요",
-  THANKS_NOTE: "강사님에게는 공개되지 않아요.",
+  THANKS_NOTE: "담당 선생님에게는 공개되지 않아요.",
 });
 
 /** 수업이 끝나고 며칠 안에 평가할 수 있는가. 서버 · 화면이 같은 값을 쓴다. */
@@ -239,4 +241,89 @@ export function pickRatingCandidate(history, { now = new Date(), skip = [] } = {
     .filter(({ at }) => at && at.getTime() <= now.getTime() && now.getTime() - at.getTime() <= RATING_WINDOW_DAYS * MS_DAY)
     .sort((left, right) => right.at.getTime() - left.at.getTime());
   return rows.length ? rows[0].row : null;
+}
+
+/* ── 월별 집계 · 누가 무엇을 보는가 (2026-11-16 대표: "별점 항목을 따로 빼고, 점장이 자기 지점 강사들
+   몇 점 받는지 확인 · 한 달 단위로 누적 체크") ─────────────────────────────────────────────── */
+
+/** 이번 달 "YYYY-MM" (한국 시간). */
+export function currentRatingMonth(now = new Date()) {
+  const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  return `${kst.getUTCFullYear()}-${String(kst.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * 그 달(한국 시간)의 [시작, 다음 달 시작). 수업 시각(lessonStartsAt)으로 가른다 -- 11월 30일 수업을
+ * 12월 1일에 평가해도 11월 수업의 평가다. 잘못된 값이면 null.
+ * @param {string} month "YYYY-MM"
+ */
+export function ratingMonthRange(month) {
+  const match = /^(\d{4})-(\d{2})$/.exec(text(month));
+  if (!match) return null;
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  if (monthIndex < 0 || monthIndex > 11 || year < 2020 || year > 2100) return null;
+  const offset = 9 * 60 * 60 * 1000;
+  return {
+    from: new Date(Date.UTC(year, monthIndex, 1) - offset),
+    to: new Date(Date.UTC(year, monthIndex + 1, 1) - offset),
+  };
+}
+
+/**
+ * 개별 평가 문서들을 강사별 집계 모양으로. 개별 점수는 여기서 합쳐지고 밖으로 나가지 않는다.
+ * @param {Array<{ instructorId?: string, scores?: Record<string, number> }>} ratings
+ */
+export function statsFromRatings(ratings) {
+  const byInstructor = new Map();
+  for (const rating of Array.isArray(ratings) ? ratings : []) {
+    const instructorId = text(rating?.instructorId);
+    if (!instructorId || !rating?.scores || typeof rating.scores !== "object") continue;
+    const scores = Object.fromEntries(Object.entries(rating.scores)
+      .filter(([id, score]) => RATING_ITEM_IDS.includes(id) && Number.isFinite(Number(score)))
+      .map(([id, score]) => [id, Number(score)]));
+    if (!Object.keys(scores).length) continue;
+    byInstructor.set(instructorId, addToStats(byInstructor.get(instructorId) || null, scores));
+  }
+  return [...byInstructor.entries()].map(([instructorId, stats]) => ({ instructorId, ...stats }));
+}
+
+const scopedLocations = (membership) => {
+  const many = Array.isArray(membership?.locationIds) ? membership.locationIds.map(text).filter(Boolean) : [];
+  if (many.length) return many;
+  const one = text(membership?.locationId);
+  return one ? [one] : [];
+};
+
+/** 점장인가 -- 역할은 강사이고 직함이 점장. 직함은 대표 · 총괄만 바꾼다 (규칙). */
+export const isBranchManagerMembership = (membership) => Boolean(membership)
+  && text(membership.status) === "active"
+  && text(membership.role) === "instructor"
+  && text(membership.title) === "branch_manager";
+
+/**
+ * 누가 어느 강사의 별점을 보는가.
+ *  - 대표 · 총괄매니저: 전부
+ *  - 점장: 자기 지점(겹치는 지점이 하나라도 있는) 강사만, **본인은 빼고** -- 회원에게 "담당 선생님에게는
+ *    공개되지 않아요" 라고 말했다. 점장 본인의 점수는 대표 · 총괄만 본다. 점장 지점이 비어 있으면 아무도.
+ *  - 그 밖: 볼 수 없음
+ * @param {any} viewer 부르는 사람의 소속 문서
+ * @param {string} viewerUid
+ * @param {{ isOwnerLevel?: (membership: any) => boolean }} [options]
+ * @returns {{ allowed: boolean, scope: "all"|"branch"|"none", visible: (instructorId: string, membership?: any) => boolean }}
+ */
+export function ratingViewerScope(viewer, viewerUid, options = {}) {
+  const isOwnerLevel = typeof options.isOwnerLevel === "function" ? options.isOwnerLevel : () => false;
+  if (isOwnerLevel(viewer)) return { allowed: true, scope: "all", visible: () => true };
+  if (isBranchManagerMembership(viewer)) {
+    const mine = scopedLocations(viewer);
+    return {
+      allowed: true,
+      scope: "branch",
+      visible: (instructorId, membership) => text(instructorId) !== text(viewerUid)
+        && mine.length > 0
+        && scopedLocations(membership).some((location) => mine.includes(location)),
+    };
+  }
+  return { allowed: false, scope: "none", visible: () => false };
 }

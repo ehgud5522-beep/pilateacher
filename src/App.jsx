@@ -270,6 +270,7 @@ import {
   blockingNotice, duetIssueNotices, duetSummaryLine, reviewNotices,
 } from "./features/passes/duet-issue.js";
 import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "../functions/shared/pass-journey.mjs";
+import { currentRatingMonth } from "../functions/shared/lesson-rating.mjs";
 import {
   SESSION_UP_ERROR_LABEL, SESSION_UP_REASON_MAX, canOverrideSessionUpWindow,
   planSessionUp, sessionUpError, sessionUpLabel, sessionUpNumbersError,
@@ -25556,45 +25557,69 @@ function ScheduleSyncAdmin({
  * 문서는 규칙이 아무에게도 열지 않아, 이 화면은 서버 함수(lessonRatingStats)로만 읽는다.
  * 항목 문구는 functions/shared/lesson-rating.mjs 한 곳 -- 서버가 함께 돌려준다.
  */
-function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, initialState = null }) {
-  const [state, setState] = useState(() => initialState || { rows: null, items: [], error: "" });
+/* 별점 화면의 달 옮기기. "YYYY-MM" ± n 달. */
+const shiftRatingMonth = (month, delta) => {
+  const [y, m] = String(month).split("-").map(Number);
+  const at = new Date(Date.UTC(y, m - 1 + delta, 1));
+  return `${at.getUTCFullYear()}-${String(at.getUTCMonth() + 1).padStart(2, "0")}`;
+};
+const ratingMonthLabel = (month) => (month === "all" ? "지금까지 누적" : `${Number(String(month).slice(0, 4))}년 ${Number(String(month).slice(5, 7))}월`);
+
+function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, initialState = null, initialMonth = null }) {
+  /* 2026-11-16 대표: "별점 항목을 따로 빼고, 점장이 자기 지점 강사들 몇 점 받는지 · 한 달 단위로 누적 체크".
+     달마다(수업 시각 기준) 또는 지금까지 누적. 누가 무엇을 보는지는 서버가 정한다(lesson-rating.mjs
+     ratingViewerScope) -- 대표 · 총괄은 전부, 점장은 자기 지점 강사만 · 본인 제외. */
+  const thisMonth = currentRatingMonth();
+  const [month, setMonth] = useState(initialMonth || thisMonth);
+  const [state, setState] = useState(() => initialState || { rows: null, items: [], scope: "", error: "" });
   const organizationId = organization?.organizationId || "";
   const load = useCallback(async () => {
     if (!organizationId) return;
     setState((current) => ({ ...current, error: "", rows: null }));
     try {
-      const result = await onLoad({ organizationId });
-      setState({ rows: Array.isArray(result?.rows) ? result.rows : [], items: Array.isArray(result?.items) ? result.items : [], error: "" });
+      const result = await onLoad({ organizationId, month });
+      setState({ rows: Array.isArray(result?.rows) ? result.rows : [], items: Array.isArray(result?.items) ? result.items : [], scope: String(result?.scope || ""), error: "" });
     } catch (thrown) {
       const code = String(thrown?.details?.reason || thrown?.code || "unknown").replace(/^functions\//, "");
-      setState({ rows: [], items: [], error: `평가 집계를 읽지 못했어요 (코드 ${code})` });
+      setState({ rows: [], items: [], scope: "", error: `평가 집계를 읽지 못했어요 (코드 ${code})` });
       deviceLog("lesson_rating_stats_failed", {
         feature: "lesson_rating", stage: "stats_read", errorDomain: "functions_callable",
         errorCode: String(thrown?.code || "unknown"), message: thrown?.message,
         role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
       });
     }
-  }, [organizationId, onLoad, organization?.role]);
+  }, [organizationId, onLoad, organization?.role, month]);
   useEffect(() => { if (!initialState) load(); }, [load, initialState]);
   const questionOf = (id) => state.items.find((item) => item.id === id)?.question || id;
+  const branchOnly = state.scope === "branch" || (!state.scope && organization?.title === "branch_manager" && !isOwnerLevelRole(organization?.role));
+  const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-lesson-rating-stats>
       <div className="flex items-center justify-between">
-        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>수업 후 별점 · 강사별 집계</h2>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{branchOnly ? "우리 지점 강사 별점" : "수업 후 별점 · 강사별"}</h2>
         <button type="button" onClick={load} className="h-9 px-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
       </div>
-      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        회원이 보니따 앱에서 수업 뒤에 남긴 별점(1~5)의 누적 평균과 응답 수입니다. 강사에게는 공개되지 않고, 회원 이름 · 개별 응답은 대표님도 볼 수 없습니다.
+      <div className="mt-2 flex items-center gap-2" data-rating-month={month}>
+        <button type="button" aria-label="이전 달" disabled={month === "all"} onClick={() => setMonth((current) => shiftRatingMonth(current, -1))} className="flex items-center justify-center disabled:opacity-30" style={navButton}><ChevronLeft size={16} /></button>
+        <span className="min-w-0 flex-1 text-center font-extrabold tabular-nums" style={{ fontSize: TYPE.body, color: INK }}>{ratingMonthLabel(month)}</span>
+        <button type="button" aria-label="다음 달" disabled={month === "all" || month >= thisMonth} onClick={() => setMonth((current) => shiftRatingMonth(current, 1))} className="flex items-center justify-center disabled:opacity-30" style={navButton}><ChevronRight size={16} /></button>
+        <button type="button" onClick={() => setMonth((current) => (current === "all" ? thisMonth : "all"))} className="h-9 shrink-0 px-2.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 8, backgroundColor: month === "all" ? BRAND : CANVAS, color: month === "all" ? "#fff" : INK2 }}>{month === "all" ? "이번 달로" : "누적"}</button>
+      </div>
+      <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        {month === "all" ? "지금까지 받은 모든 별점(1~5)의 평균과 응답 수입니다." : "이 달에 한 수업에 회원이 남긴 별점(1~5)의 평균과 응답 수입니다."}
+        {branchOnly
+          ? " 맡은 지점 강사만 보이고, 본인 점수는 보이지 않습니다. 회원 이름 · 개별 응답은 볼 수 없습니다."
+          : " 담당 강사 본인에게는 공개되지 않고, 회원 이름 · 개별 응답은 대표님도 볼 수 없습니다."}
       </p>
       {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
       {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
-      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>아직 받은 평가가 없습니다.</p> : null}
+      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>{month === "all" ? "아직 받은 평가가 없습니다." : "이 달에 받은 평가가 없습니다."}</p> : null}
       <div className="mt-3 space-y-2">
         {(state.rows || []).map((row) => (
           <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-rating-row>
             <div className="flex items-center justify-between gap-2">
               <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>{row.instructorName || "이름 모름"}</span>
-              <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>누적 {row.count}건</span>
+              <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{month === "all" ? "누적" : "이 달"} {row.count}건</span>
             </div>
             {(row.items || []).map((item) => (
               <div key={item.id} className="mt-1 flex items-center justify-between gap-2">
@@ -26987,6 +27012,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   const showAudit = organization.ready
     && !organization.isLegacy
     && isOwnerLevelRole(organization.role);
+  /* 수업 별점 (2026-11-16 대표: "별점 항목을 따로 빼고, 점장이 자기 지점 강사들 몇 점 받는지"). 운영 스위치
+     화면 안에 있던 집계를 따로 뺐다. 대표 · 총괄은 전부, 점장(직함)은 자기 지점 강사만 -- 서버가 다시 거른다. */
+  const showRatings = organization.ready
+    && !organization.isLegacy
+    && (isOwnerLevelRole(organization.role) || (organization.role === ROLES.INSTRUCTOR && organization.title === "branch_manager"));
+  const ratingsItem = { key: "lesson-ratings", title: "수업 별점", description: isOwnerLevelRole(organization.role) ? "강사별 회원 별점 · 월별 · 누적" : "우리 지점 강사 별점 · 월별 · 누적", Icon: Star };
   /* ── 앱 업데이트 안내는 대표만 ──────────────────────────────────────────
      총괄매니저는 다른 자리에서 전부 대표와 같지만 여기만은 아니다
      (2026-10-10 결정). settlement 최소 빌드를 올리면 **센터 전체의 수업
@@ -27287,6 +27318,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
          둘의 차이다 -- 이쪽은 회원권 원장, 그쪽은 기기에 저장된 일정이다. */
       ...(showClients ? [{ key: "group-payroll", title: "그룹 급여 정산", description: "지점별 강사 풀방 · 빈방 횟수 입력", Icon: ClipboardList }] : []),
       ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 그룹 급여 포함", Icon: ArrowUpRight }] : []),
+      ...(showRatings && isOwnerLevelRole(organization.role) ? [ratingsItem] : []),
       /* 담당 강사. 강사가 보는 회원의 범위가 여기서 정해진다 -- 점검이 아니라
          강사를 다루는 일이라 이 묶음이다. */
       ...(showAudit ? [{ key: "instructor-scope", title: "담당 강사", description: "강사별 담당 회원 · 재계산", Icon: Users }] : []),
@@ -27387,7 +27419,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       hint: "강사 계정에서 보이는 항목입니다. 대표 업무에는 필요 없어 접어 두었어요.",
       items: [scheduleItem, recordsItem, reportItem, assessmentItem, scheduleColorsItem, onboardingItem, lessonExamplesItem, knowledgeItem] },
   ].filter((group) => group.items.length > 0) : [
-    { label: "업무", items: [scheduleItem, recordsItem, reportItem, ...expiryItems, ...noticeItems] },
+    { label: "업무", items: [scheduleItem, recordsItem, reportItem, ...(showRatings ? [ratingsItem] : []), ...expiryItems, ...noticeItems] },
     ...centreGroups,
     { label: "내 설정", items: [assessmentItem, ...centerItems, scheduleColorsItem, themeItem, dataItem, backupItem] },
     { label: "기타", items: [onboardingItem, permissionsItem, lessonExamplesItem, knowledgeItem, accountItem, appItem] },
@@ -27796,6 +27828,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
           <ExpiryOrderReview organization={organization} passStore={passStore} clientStore={clientStore}
             onOpenClient={onOpenClient} onRetryOrganization={onRetryOrganization} />
         )}
+        {view === "lesson-ratings" && showRatings && <LessonRatingStatsAdmin organization={organization} />}
         {(view === "clients" || view === "branch-overview") && showClients && (
           <ClientDirectory key={view} overview={view === "branch-overview"} organization={organization} currentUserId={account?.id || ""}
             clientStore={clientStore} locationStore={locationStore} onOpenClient={onOpenClient}
@@ -27883,8 +27916,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="memberRating" title="회원 앱 수업 후 별점"
-              description="켜진 강사의 수업이 끝나면 회원 앱 홈에 별점 카드(항목 3개, 1~5점)가 3일 동안 뜹니다. 평가는 강사에게 공개되지 않고, 아래 집계에서 강사별 평균 · 응답 수만 볼 수 있습니다. 강사 한 명씩 켜세요." />
-            <LessonRatingStatsAdmin organization={organization} />
+              description="켜진 강사의 수업이 끝나면 회원 앱 홈에 별점 카드(항목 3개, 1~5점)가 3일 동안 뜹니다. 평가는 담당 강사 본인에게 공개되지 않고, 더보기 → 수업 별점에서 강사별 평균 · 응답 수만 볼 수 있습니다(점장은 자기 지점 강사만). 강사 한 명씩 켜세요." />
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }} data-rating-moved>강사별 별점 집계는 더보기 → <b style={{ color: INK }}>수업 별점</b> 에서 월별 · 누적으로 봅니다.</p>
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="rosterRealtime" title="회원 명단 실시간"
@@ -29133,12 +29166,20 @@ export function createAppScreenSmokeCases() {
       <MemberCancelAdmin organization={readyOrganizationContext(smokeOwner)} onLoadConfig={() => Promise.resolve(null)} onSaveConfig={noop} />
     )) },
     { name: "운영 설정 · 수업 후 별점 집계", element: providerWith(smokeOwner, (
-      <LessonRatingStatsAdmin organization={readyOrganizationContext(smokeOwner)} onLoad={() => Promise.resolve(null)}
+      <LessonRatingStatsAdmin organization={readyOrganizationContext(smokeOwner)} onLoad={() => Promise.resolve(null)} initialMonth="all"
         initialState={{ error: "", items: [{ id: "body", question: "항목 1 (스모크 예시)" }], rows: [
           { instructorId: "u1", instructorName: "정예진", count: 12, items: [{ id: "body", average: 4.6, count: 12 }] },
           { instructorId: "u2", instructorName: "", count: 1, items: [{ id: "body", average: null, count: 0 }] },
         ] }} />
     )) },
+    /* 점장(직함) 화면 -- 이 달, 자기 지점 강사만 (2026-11-16). 서버가 거른 결과라 줄은 그대로 그린다. */
+    { name: "수업 별점 · 점장 · 이 달", element: providerWith({ ...smokeOwner, role: "instructor", title: "branch_manager" }, (
+      <LessonRatingStatsAdmin organization={readyOrganizationContext({ ...smokeOwner, role: "instructor", title: "branch_manager" })} onLoad={() => Promise.resolve(null)} initialMonth="2026-11"
+        initialState={{ error: "", scope: "branch", items: [{ id: "care", question: "항목 2 (스모크 예시)" }], rows: [
+          { instructorId: "u3", instructorName: "김지점", count: 4, items: [{ id: "care", average: 4.8, count: 4 }] },
+        ] }} />
+    )) },
+    { name: "더보기 탭 · 점장", element: settingsTab({ ...smokeOwner, role: "instructor", title: "branch_manager" }) },
     { name: "운영 설정 · 수업 후 별점 집계 · 읽지 못함", element: providerWith(smokeOwner, (
       <LessonRatingStatsAdmin organization={readyOrganizationContext(smokeOwner)} onLoad={() => Promise.resolve(null)}
         initialState={{ error: "평가 집계를 읽지 못했어요 (코드 not_owner)", items: [], rows: [] }} />

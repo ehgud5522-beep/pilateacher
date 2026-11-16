@@ -33,7 +33,9 @@ test("항목은 한 곳에서 -- id 가 겹치지 않고, 문구 · 양 끝 설�
     assert.match(item.id, /^[a-z_]+$/, "id 는 저장 열쇠 -- 영문 소문자만");
   }
   assert.deepEqual(RATING_ITEMS[0], { id: "body", question: "오늘 수업 후 몸 상태는 어떠세요?", low: "매우 불편함", high: "매우 좋음" });
-  assert.match(RATING_COPY.PRIVACY, /강사님에게는 공개되지 않아요/);
+  assert.match(RATING_COPY.PRIVACY, /담당 선생님에게는 공개되지 않아요/);
+  assert.match(RATING_COPY.PRIVACY, /센터 관리자/, "점장 · 대표가 본다는 사실을 숨기지 않는다 (2026-11-16)");
+  assert.doesNotMatch(RATING_COPY.PRIVACY, /^강사님에게는/, "점장도 강사다 -- 그 말은 더는 사실이 아니다");
   assert.equal(RATING_COPY.TITLE, "오늘 수업은 어떠셨나요?");
 });
 
@@ -167,7 +169,7 @@ test("카드 화면: 안내 한 줄 · 항목마다 별 5개 · 다 고르기 �
   assert.match(fresh, /오늘 수업은 어떠셨나요\?/);
   assert.match(fresh, /BONITA VIP · 수업 완료/);
   assert.match(fresh, /10초/);
-  assert.match(fresh, /강사님에게는 공개되지 않아요/);
+  assert.match(fresh, /담당 선생님에게는 공개되지 않아요/);
   assert.match(fresh, /① 오늘 수업 후 몸 상태는 어떠세요\?/);
   assert.match(fresh, /1 = 매우 불편함 · 5 = 매우 좋음/);
   assert.equal((fresh.match(/role="radio"/g) || []).length, RATING_ITEMS.length * 5);

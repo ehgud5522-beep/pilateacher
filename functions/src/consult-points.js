@@ -55,7 +55,7 @@ function createConsultPointsService({ firestore, getProvider, membershipId, isOw
     const rows = recordsSnapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
     const memberName = text(clientData.name);
     const { recent, input } = shared.buildConsultInput({
-      goal, hasBeforeAfter, records: rows,
+      goal: text(goal) || text(clientData.careNotes?.goal), hasBeforeAfter, records: rows,
       summary: summarySnapshot.exists ? summarySnapshot.data() : null,
       redact: (value) => redactText(value, memberName),
     });

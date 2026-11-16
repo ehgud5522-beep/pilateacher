@@ -6626,3 +6626,25 @@ describe("재등록 후보 -- 서버만 쓰고 지점 범위로 읽는다", () =
     }
   });
 });
+
+/* ── 회원 목표 · 주의사항 서버 사본 (설계 결정 2) ── 동의한 회원만, 강사 이상이 자기 이름 · 서버 시각으로. */
+describe("회원 목표 · 주의사항(careNotes) -- 동의한 회원만", () => {
+  const ref = (userId) => doc(dbFor(userId), "organizations", ORG_A, "clients", "client-member");
+  const notes = (userId, extra = {}) => ({ careNotes: { goal: "허리 편하게", focus: ["왼쪽 무릎"], updatedAt: serverTimestamp(), updatedBy: userId, ...extra } });
+  const consentWith = async (status) => testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "organizations", ORG_A, "clients", "client-member"), { aiConsent: { status, version: "2026-11-16" } }, { merge: true });
+  });
+  test("동의한 회원은 강사가 자기 이름으로 쓴다", async () => {
+    await consentWith("granted");
+    await assertSucceeds(updateDoc(ref(users.instructor), notes(users.instructor)));
+  });
+  test("동의 없음 · 직원 · 남의 이름 · 기기 시각 · 모르는 칸은 거부", async () => {
+    await consentWith("revoked");
+    await assertFails(updateDoc(ref(users.instructor), notes(users.instructor)), "동의 없음");
+    await consentWith("granted");
+    await assertFails(updateDoc(ref(users.staff), notes(users.staff)), "직원");
+    await assertFails(updateDoc(ref(users.instructor), notes(users.owner)), "남의 이름");
+    await assertFails(updateDoc(ref(users.instructor), notes(users.instructor, { updatedAt: new Date() })), "기기 시각");
+    await assertFails(updateDoc(ref(users.instructor), notes(users.instructor, { phone: "010" })), "모르는 칸");
+  });
+});

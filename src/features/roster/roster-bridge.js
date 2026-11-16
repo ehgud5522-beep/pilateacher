@@ -210,6 +210,8 @@ export function mergeRoster(input = {}) {
       orgLocationId: text(client.locationId),
       /* 회원 단위 수업기록 서버 보관 · AI 처리 동의 (결정 4). 서버 저장 · AI 요약이 이것을 본다. */
       orgAiConsent: client.aiConsent && typeof client.aiConsent === "object" ? client.aiConsent : null,
+      /* 회원 목표 · 통증 · 주의사항의 서버 사본 (결정 2). 기기에 없을 때만 화면이 쓴다 -- 대타 강사 · 새 폰. */
+      orgCareNotes: client.careNotes && typeof client.careNotes === "object" ? client.careNotes : null,
       orgExpired: facts.expired,
       orgExpiryReason: facts.expiryReason,
       orgExpiryLabel: facts.expiryLabel,

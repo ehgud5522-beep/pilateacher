@@ -291,6 +291,18 @@ service cloud.firestore {
         );
     }
 
+    function memberCareNotesWellFormed(organizationId) {
+      let notes = request.resource.data.careNotes;
+      return hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"])
+        && request.resource.data.get("aiConsent", {}).get("status", "") == "granted"
+        && notes is map
+        && notes.keys().hasOnly(["goal", "focus", "updatedAt", "updatedBy"])
+        && notes.goal is string && notes.goal.size() <= 500
+        && notes.focus is list && notes.focus.size() <= 10
+        && notes.updatedAt == request.time
+        && notes.updatedBy == request.auth.uid;
+    }
+
     function clientFieldsWellFormed() {
       return (!("name" in request.resource.data)
           || (request.resource.data.name is string && request.resource.data.name.size() > 0))
@@ -699,6 +711,7 @@ service cloud.firestore {
           && !("instructorIds" in request.resource.data)
           /* 회원 동의(aiConsent)는 등록 때 넣지 않는다 -- 동의 화면에서 따로 받는다(결정 4). */
           && !("aiConsent" in request.resource.data)
+          && !("careNotes" in request.resource.data)
           && clientFieldsWellFormed();
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
@@ -730,6 +743,8 @@ service cloud.firestore {
           /* 회원 단위 수업기록 서버 보관 · AI 처리 동의 (설계 결정 4, 2026-11-16). 바뀔 때만 본다(affectedKeys) --
              직원은 못 바꾸고, 쓴 사람 · 서버 시각 · 모양이 맞아야 한다. 서버 저장 · AI 요약이 이 칸 하나를 믿는다. */
           && (immutable(["aiConsent"]) || memberDataConsentWellFormed(organizationId))
+          /* 회원 목표 · 통증 · 주의사항 (설계 결정 2). 동의한 회원만, 강사 이상이 자기 이름 · 서버 시각으로. */
+          && (immutable(["careNotes"]) || memberCareNotesWellFormed(organizationId))
           && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);
         allow delete: if false;
       }

@@ -11,7 +11,7 @@
  *  - 효과 보장: 나아집니다 · 완치 · 확실히 · 보장 · "N회면 …"
  *  - 환불 · 가격 · 할인
  */
-import { checkSourcedItems, droppedCounts, recentRecords } from "./member-summary.mjs";
+import { checkSourcedItems, droppedCounts, recentRecords, recordAlias } from "./member-summary.mjs";
 
 export const CONSULT_POINTS_PROMPT_VERSION = "consult_points_v1";
 export const MAX_TALKING_POINTS = 3;
@@ -36,8 +36,8 @@ export function buildConsultInput({ goal = "", summary = null, records, hasBefor
       subject: "이 회원",
       goal: redact(text(goal).slice(0, 300)),
       summary: Object.fromEntries(["mustRemember", "recentTrend", "openQuestions"].map((block) => [block, (Array.isArray(blocks[block]) ? blocks[block] : []).map((item) => redact(text(item?.text))).filter(Boolean)])),
-      records: recent.map((record) => ({
-        recordId: text(record.id),
+      records: recent.map((record, index) => ({
+        recordId: recordAlias(index),
         date: text(record.lessonDate),
         changes: CHANGE_FIELDS.flatMap((field) => (Array.isArray(record.fields?.[field]) ? record.fields[field] : []).map((item) => redact(text(typeof item === "string" ? item : item?.text)))).filter(Boolean),
         ...(record.fields ? {} : { body: redact(text(record.body).slice(0, 600)) }),

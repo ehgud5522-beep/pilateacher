@@ -86,6 +86,23 @@ const fieldTexts = (fields) => Object.fromEntries(RECORD_FIELDS
   .map((field) => [field, (Array.isArray(fields?.[field]) ? fields[field] : []).map((item) => text(typeof item === "string" ? item : item?.text)).filter(Boolean)])
   .filter(([, items]) => items.length));
 
+/**
+ * AI 에 보내는 기록 번호. 서버 기록ID 는 강사 계정 번호로 시작한다 -- 사람을 가리키는 값이라 그대로 보내지 않는다.
+ * 보내는 순서대로 "r1", "r2" ... 를 붙이고, 받은 근거는 restoreSourceIds 로 진짜 ID 로 되돌린다.
+ */
+export const recordAlias = (index) => `r${index + 1}`;
+
+/** 받은 결과의 근거(sources.recordId)를 임시 번호 -> 진짜 기록ID 로. 모르는 번호는 그대로 둔다(검사에서 "없는 기록" 으로 빠진다). */
+export function restoreSourceIds(output, records) {
+  const byAlias = new Map(records.map((record, index) => [recordAlias(index), text(record.id)]));
+  const restore = (items) => (Array.isArray(items) ? items : []).map((item) => ({
+    ...item,
+    sources: (Array.isArray(item?.sources) ? item.sources : []).map((source) => ({ ...source, recordId: byAlias.get(text(source?.recordId)) || `unknown:${text(source?.recordId)}` })),
+  }));
+  if (!output || typeof output !== "object") return output;
+  return Object.fromEntries(Object.entries(output).map(([key, value]) => [key, Array.isArray(value) ? restore(value) : value]));
+}
+
 /** 기록 하나가 담은 글 전부 (검사용). */
 const recordText = (record) => [text(record.body), ...Object.values(fieldTexts(record.fields)).flat()].join("\n");
 
@@ -100,8 +117,8 @@ export function buildSummaryInput({ previousSummary = null, records, redact = (v
   return {
     subject: "이 회원",
     previousSummary: previous,
-    records: records.map((record) => ({
-      recordId: text(record.id),
+    records: records.map((record, index) => ({
+      recordId: recordAlias(index),
       date: text(record.lessonDate),
       ...(Object.keys(fieldTexts(record.fields)).length
         ? { fields: Object.fromEntries(Object.entries(fieldTexts(record.fields)).map(([field, items]) => [field, items.map((item) => redact(item))])) }

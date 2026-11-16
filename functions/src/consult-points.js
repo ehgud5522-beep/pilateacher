@@ -68,7 +68,7 @@ function createConsultPointsService({ firestore, getProvider, membershipId, isOw
       validate: shared.validateConsultShape,
       input,
     });
-    const checked = shared.checkConsultPoints(result.output, recent);
+    const checked = shared.checkConsultPoints(summaryModule.restoreSourceIds(result.output, recent), recent);
     return {
       ...checked,
       promptVersion: shared.CONSULT_POINTS_PROMPT_VERSION,

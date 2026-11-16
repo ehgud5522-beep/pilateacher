@@ -125,3 +125,31 @@ export function createRecordStore({ isEnabled = () => false, enqueue = () => {},
     },
   };
 }
+
+/**
+ * 기존 기록 이관 후보 (설계 문서 1단계-3, 결정 1: **확정 기록만**). 명부(members)에서 센터 회원에 이어진
+ * 사람의 기록만 -- 서버에는 센터 회원 id(clientIdOf, 기본 orgClientId)로 쓴다. 기기에만 있는 회원은 서버
+ * 규칙이 받지 않는다(회원 문서가 있어야 함). 이미 보낸 기록ID(doneIds)는 뺀다.
+ * 기록ID 는 내용 지문이라 앱의 실시간 저장과 겹쳐도 서버에는 한 줄이다.
+ *
+ * @param {{ members: any[], clientIds: Set<string>|string[], schedule?: any[], organizationId: string, uid: string,
+ *   appBuild?: string, doneIds?: Set<string>|string[], limit?: number }} input
+ * @returns {{ records: Array<{ recordId: string, data: any }>, remaining: number, total: number }}
+ */
+export function migrationRecordsFor({ members = [], clientIdOf = (member) => member?.orgClientId, schedule = [], organizationId, uid, appBuild = "", doneIds = [], limit = 200 }) {
+  const done = doneIds instanceof Set ? doneIds : new Set(doneIds);
+  const lessons = new Map((Array.isArray(schedule) ? schedule : []).filter((lesson) => lesson?.id).map((lesson) => [String(lesson.id), lesson]));
+  const all = [];
+  for (const member of Array.isArray(members) ? members : []) {
+    const clientId = String(clientIdOf(member) || "").trim();
+    if (!clientId) continue;
+    for (const note of Array.isArray(member.notes) ? member.notes : []) {
+      const record = serverRecordFromNote({
+        note, memberId: clientId, organizationId, uid, appBuild, source: "migration",
+        lesson: note?.sid ? lessons.get(String(note.sid)) || null : null,
+      });
+      if (record && !done.has(record.recordId)) all.push(record);
+    }
+  }
+  return { records: all.slice(0, Math.max(0, limit)), remaining: Math.max(0, all.length - limit), total: all.length };
+}

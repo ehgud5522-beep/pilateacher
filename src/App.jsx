@@ -409,7 +409,8 @@ import { describeLessonRecordFailure, failureCauseDetail, LESSON_RECORD_FAILURE_
 import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./features/lesson-record/pipeline-diagnostics.js";
 import { createRecordStore, migrationRecordsFor } from "./features/lesson-record/record-store.js";
 import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/server-outbox.js";
-import { createFirestoreLessonRecordStore } from "./data/repositories/lesson-record-repository.js";
+import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
+import { compareRecordSets, parityState } from "./features/lesson-record/record-parity.js";
 import { buildRemoteDiagnosticReport } from "./features/diagnostics/remote-diagnostics.js";
 import { aiRecordingAvailable, AI_RECORDING_STATUS, readAIRecordingStatus, writeAIRecordingStatus } from "./features/lesson-record/ai-recording-status.js";
 import { runLessonRecordRetryCycle, scheduleLessonRecordRetry } from "./features/lesson-record/retry-queue.js";
@@ -25476,6 +25477,45 @@ function InstructorNameConfirm({ organization, onPreview, onConfirm, onToast, in
  * 옛 폰은 일정을 서버에 보내지 않아, 켜도 그 폰의 일정은 따라오지 않는다. 대표만
  * 바꾼다 (updateRuntimeConfig).
  */
+/* 수업기록 서버 저장 · 비교 검증 (1단계-4). 강사 기기가 남긴 숫자(기기 확정 · 서버 · 차이)를 강사별로. */
+function LessonRecordParityAdmin({ organization, instructorStore, onLoad = listLessonRecordParity }) {
+  const [state, setState] = useState({ rows: null, names: new Map(), error: "" });
+  const organizationId = organization?.organizationId || "";
+  useEffect(() => {
+    if (!organizationId) return undefined;
+    let alive = true;
+    Promise.all([onLoad(organizationId), listInstructors(organizationId, { store: instructorStore }).catch(() => [])])
+      .then(([rows, instructors]) => {
+        if (!alive) return;
+        const names = new Map((instructors || []).map((item) => [String(item.userId || item.id || ""), String(item.displayName || item.name || "")]));
+        setState({ rows: Array.isArray(rows) ? rows : [], names, error: "" });
+      })
+      .catch((error) => { if (alive) setState({ rows: [], names: new Map(), error: `비교 결과를 읽지 못했어요 (코드 ${String(error?.code || "unknown").replace(/^firestore\//, "")})` }); });
+    return () => { alive = false; };
+  }, [organizationId, instructorStore, onLoad]);
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-lesson-record-parity>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>수업기록 서버 저장 · 비교</h2>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>켜진 강사의 기기가 하루 한 번 “기기에 확정된 기록 수 · 서버에 올라간 수” 를 맞춰 남깁니다. 차이는 보낼 줄이 다시 채웁니다.</p>
+      {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
+      {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
+      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>아직 비교한 기기가 없습니다.</p> : null}
+      <div className="mt-2 space-y-1.5">
+        {(state.rows || []).map((row) => {
+          const status = parityState(row);
+          return (
+            <div key={row.id} className="flex items-center justify-between gap-2 px-3 py-2 tabular-nums" style={{ borderRadius: 10, backgroundColor: CANVAS, fontSize: TYPE.caption }} data-parity-row={status.key}>
+              <span className="min-w-0 flex-1 truncate font-bold" style={{ color: INK }}>{state.names.get(row.id) || "이름 모름"}</span>
+              <span style={{ color: SUB }}>기기 {row.device} · 서버 {row.server}</span>
+              <span className="font-bold" style={{ color: status.key === "check" ? WARN : status.key === "sending" ? PRIMARY : GOOD }}>{status.label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function ScheduleSyncAdmin({
   organization, instructorStore, onLoadConfig, onSaveConfig,
   /* 같은 카드로 두 스위치를 다룬다: 센터 수업(scheduleSync)과 본인 일정(privateSync, 3단계). */
@@ -27932,6 +27972,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="lessonRecordServer" title="수업기록 서버 저장"
               description="켜진 강사가 확정한 수업기록이 기기에 저장된 뒤 센터 서버에도 쌓입니다. 고치거나 지울 수 없는 줄로 남고, 대표 · 총괄 · 쓴 강사 · 담당 강사만 읽습니다. 꺼도 기기 저장은 그대로입니다. 강사 한 명씩 켜세요." />
+            <LessonRecordParityAdmin organization={organization} instructorStore={instructorStore} />
             {/* 비포애프터 회원 공유 (2026-11-15). 켜면 모든 강사가 비교 카드를 보내고, 동의한 회원이 보니따 앱에서 본다. */}
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
@@ -33031,6 +33072,49 @@ export default function App() {
     step();
     const timer = window.setInterval(step, 120e3);
     return () => window.clearInterval(timer);
+  }, [lessonRecordServerOn, lessonRecordOutbox, account?.id, organizationContext.organizationId, rosterMembers, db.schedule]);
+  /* 1단계-4: 비교 검증. 6시간에 한 번, 기기의 확정 기록(서버로 갈 것)과 서버의 내 줄을 회원별로 맞춘다.
+     기기에만 있는 것은 보낼 줄에 다시 넣고(스스로 메움), 숫자만 서버에 남겨 대표가 강사별로 본다. */
+  useEffect(() => {
+    if (!lessonRecordServerOn || !lessonRecordOutbox || !account?.id || !organizationContext.organizationId) return undefined;
+    const lastKey = `pilateacher_lesson_record_parity_at_v1_${account.id}`;
+    let alive = true;
+    const run = async () => {
+      const last = Number(globalThis.localStorage?.getItem(lastKey) || 0);
+      if (Date.now() - last < 6 * 60 * 60e3) return;
+      const all = migrationRecordsFor({ members: rosterMembers, schedule: db.schedule, organizationId: organizationContext.organizationId, uid: account.id, appBuild: APP_BUILD_LABEL, limit: Number.MAX_SAFE_INTEGER });
+      if (!all.records.length) return;
+      const store = createFirestoreLessonRecordStore();
+      const clientIds = [...new Set(all.records.map((record) => record.data.clientId))];
+      const serverRecords = [];
+      try {
+        for (const clientId of clientIds) {
+          if (!alive) return;
+          serverRecords.push(...await store.listForClient(organizationContext.organizationId, clientId));
+        }
+      } catch (error) {
+        deviceLog("lesson_record_parity_failed", { feature: "lesson_record", stage: "server_read", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), appBuild: APP_BUILD_LABEL });
+        return;
+      }
+      const queuedIds = lessonRecordOutbox.pending().map((item) => item.recordId);
+      const result = compareRecordSets({ deviceRecords: all.records, serverRecords, uid: account.id, queuedIds });
+      const byId = new Map(all.records.map((record) => [record.recordId, record]));
+      for (const id of result.missingNotQueued) {
+        const record = byId.get(id);
+        if (record && !lessonRecordOutbox.enqueue({ ...record, organizationId: organizationContext.organizationId })) break;
+      }
+      if (result.missingNotQueued.length) Promise.resolve(lessonRecordOutbox.flush()).catch(() => {});
+      deviceLog("lesson_record_parity", { count: result.device, sent: result.server, blocked: result.missing, retryLater: result.waiting, appBuild: APP_BUILD_LABEL });
+      try {
+        await writeLessonRecordParity(organizationContext.organizationId, account.id, { ...result, appBuild: APP_BUILD_LABEL });
+        globalThis.localStorage?.setItem(lastKey, String(Date.now()));
+      } catch (error) {
+        deviceLog("lesson_record_parity_failed", { feature: "lesson_record", stage: "parity_write", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), appBuild: APP_BUILD_LABEL });
+      }
+    };
+    run();
+    const timer = window.setInterval(run, 30 * 60e3);
+    return () => { alive = false; window.clearInterval(timer); };
   }, [lessonRecordServerOn, lessonRecordOutbox, account?.id, organizationContext.organizationId, rosterMembers, db.schedule]);
   const saveScheduleComment = async (id, type, sid, body, voiceMeta = null, noteOptions = null) => {
     const text = String(body || "").trim();

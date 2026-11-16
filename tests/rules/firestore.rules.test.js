@@ -6507,3 +6507,27 @@ describe("수업기록 서버 저장 -- 새 줄만 · 담당만 읽는다", () =
     await assertFails(byClient(OTHER));
   });
 });
+
+describe("수업기록 비교 검증 숫자 -- 강사는 자기 칸만 쓰고, 대표 · 총괄이 읽는다", () => {
+  const ref = (userId, target) => doc(dbFor(userId), "organizations", ORG_A, "lessonRecordParity", target);
+  const row = (userId, extra = {}) => ({ userId, device: 10, server: 9, missing: 1, waiting: 1, extra: 0, checkedAt: serverTimestamp(), appBuild: "1.1.53 (76)", ...extra });
+  test("자기 칸 쓰기 · 고치기, 남의 칸 · 모르는 칸 · 회원 이름은 거부", async () => {
+    await assertSucceeds(setDoc(ref(users.instructor, users.instructor), row(users.instructor)));
+    await assertSucceeds(setDoc(ref(users.instructor, users.instructor), row(users.instructor, { server: 10, missing: 0, waiting: 0 })));
+    await assertFails(setDoc(ref(users.instructor, users.manager), row(users.manager)));
+    await assertFails(setDoc(ref(users.instructor, users.instructor), row(users.instructor, { memberName: "김지민" })));
+    await assertFails(setDoc(ref(users.staff, users.staff), row(users.staff)));
+    await assertFails(deleteDoc(ref(users.instructor, users.instructor)));
+  });
+  test("읽기: 대표 · 총괄은 전부, 강사는 자기 것만", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "lessonRecordParity", users.instructor), { ...row(users.instructor), checkedAt: new Date() });
+    });
+    await assertSucceeds(getDoc(ref(users.owner, users.instructor)));
+    await assertSucceeds(getDoc(ref(users.area_manager, users.instructor)));
+    await assertSucceeds(getDoc(ref(users.instructor, users.instructor)));
+    await assertFails(getDoc(ref(users.manager, users.instructor)));
+    await assertSucceeds(getDocs(collection(dbFor(users.owner), "organizations", ORG_A, "lessonRecordParity")));
+    await assertFails(getDocs(collection(dbFor(users.instructor), "organizations", ORG_A, "lessonRecordParity")));
+  });
+});

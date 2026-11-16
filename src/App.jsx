@@ -49,7 +49,7 @@ import {
   fbLoadAppUpdateConfig,
   fbSwapInstructorAccount,
   fbConfirmInstructorNames,
-  fbGrantMemberCancel, fbLessonRatingStats, fbManageGroupPayroll, fbManageNotice, fbUpdateRuntimeConfig,
+  fbGrantMemberCancel, fbLessonRatingStats, fbRebuildMemberSummary, fbBackfillRenewalCandidates, fbConsultTalkingPoints, fbManageGroupPayroll, fbManageNotice, fbUpdateRuntimeConfig,
   fbHandoverPass,
   fbSessionUpPass, fbManagePassHold,
   fbResetMigratedData,
@@ -191,7 +191,7 @@ import {
 } from "./features/roster/roster-realtime.js";
 import { readPassesForClients, subscribeClients } from "./data/repositories/client-realtime.js";
 import { markTeacherInboxRead, subscribeTeacherInbox } from "./data/repositories/teacher-inbox-repository.js";
-import { currentPassUsage } from "./features/membership/pass-usage.js";
+import { currentPassUsage, passHistoryRows } from "./features/membership/pass-usage.js";
 import { hideToday as hideDailySentenceToday, isHiddenToday as dailySentenceHiddenToday, pickSentence, readLastSentence, rememberSentence } from "./features/schedule/daily-sentence.js";
 import { INBOX_COPY, inboxFailure, inboxRow, inboxStripLabel, lessonForInboxItem } from "./features/notifications/teacher-inbox.js";
 import {
@@ -270,6 +270,7 @@ import {
   blockingNotice, duetIssueNotices, duetSummaryLine, reviewNotices,
 } from "./features/passes/duet-issue.js";
 import { JOURNEY_PRIOR_NOTE, buildPassJourney, hasJourney } from "../functions/shared/pass-journey.mjs";
+import { currentRatingMonth } from "../functions/shared/lesson-rating.mjs";
 import {
   SESSION_UP_ERROR_LABEL, SESSION_UP_REASON_MAX, canOverrideSessionUpWindow,
   planSessionUp, sessionUpError, sessionUpLabel, sessionUpNumbersError,
@@ -360,7 +361,7 @@ import {
 } from "./features/lesson-record/draft-queue.js";
 import { evaluateLessonRecordLink, linkScheduleToMember, upsertLessonRecordNote } from "./features/lesson-record/link-context.js";
 import {
-  defaultLinkLesson, linkableLessonsFor, manualNoteFor, voiceNoteFor, voiceNoteRestoreState,
+  defaultLinkLesson, linkOrphanLessonNotes, linkableLessonsFor, manualNoteFor, voiceNoteFor, voiceNoteRestoreState,
 } from "./features/lesson-record/note-edit.js";
 import {
   formatMemberLessonDate, formatMemberLessonHeader, isMeaningfulLessonSession, lessonSessionRepresentative, pendingLessonState,
@@ -406,6 +407,18 @@ import { connectAuthInitLog } from "./features/auth/auth-init-log.js";
 import { runAuthPreflight } from "./features/auth/connectivity-probe.js";
 import { describeLessonRecordFailure, failureCauseDetail, LESSON_RECORD_FAILURE_CATEGORY, lessonRecordProvenanceSource, takeLessonRecordDebugFailure } from "./features/lesson-record/failure-diagnostics.js";
 import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./features/lesson-record/pipeline-diagnostics.js";
+import { createRecordStore, migrationRecordsFor } from "./features/lesson-record/record-store.js";
+import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/server-outbox.js";
+import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
+import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
+import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js";
+import { RENEWAL_ALERT, livePassesOf, renewalForecast, renewalLine, renewalRates } from "../functions/shared/renewal-forecast.mjs";
+import { listRecentDeductions, listRenewalCandidates } from "./data/repositories/renewal-repository.js";
+import LessonBriefing from "./features/schedule/LessonBriefing.jsx";
+import { writeMemberCareNotes, writeMemberDataConsent } from "./data/repositories/member-consent-repository.js";
+import { MEMBER_AI_CONSENT_VERSION, MEMBER_DATA_CONSENT_CONFIRM, MEMBER_DATA_CONSENT_SECTIONS, MEMBER_DATA_CONSENT_TITLE, memberDataConsentGranted, memberDataConsentState } from "./features/consent/member-data-consent.js";
+import { compareRecordSets, parityState } from "./features/lesson-record/record-parity.js";
+import { mergeServerNotes } from "./features/lesson-record/server-notes.js";
 import { buildRemoteDiagnosticReport } from "./features/diagnostics/remote-diagnostics.js";
 import { aiRecordingAvailable, AI_RECORDING_STATUS, readAIRecordingStatus, writeAIRecordingStatus } from "./features/lesson-record/ai-recording-status.js";
 import { runLessonRecordRetryCycle, scheduleLessonRecordRetry } from "./features/lesson-record/retry-queue.js";
@@ -497,6 +510,25 @@ const UPDATE_DISMISSED_KEY = "pilateacher_app_update_dismissed_build_v1";
 const STARTUP_CHECK_KEY = "pilateacher_startup_check_day_v1";
 const LESSON_RECORD_REVIEW_FLAGS = new Set(["no_speech", "low_confidence", "tail_dropped"]);
 const hasLessonRecordReviewFlag = (record) => (record?.reviewFlags || record?.flags || []).some((flag) => LESSON_RECORD_REVIEW_FLAGS.has(flag));
+/* 서버 기록 읽기 (설계 문서 1단계-5). 스위치가 켜진 계정에서 회원을 열 때 그 회원의 서버 기록을 받아 화면에만 더한다.
+   기기에는 쓰지 않는다 (features/lesson-record/server-notes.js). 꺼져 있으면 회원 객체를 그대로 돌려준다. */
+const ServerNotesContext = createContext({ enabled: false, recordsFor: () => null, request: () => {}, resolveClientId: () => "", consentOn: false, saveConsent: async () => {}, briefingV2On: false, summaryFor: () => null, requestSummary: () => {}, renewalOn: false, renewalFor: () => null, requestRenewal: () => {}, consultOn: false, organizationId: "", saveCareNotes: async () => false });
+function useServerMergedMember(member) {
+  const context = useContext(ServerNotesContext);
+  const clientId = context.enabled && member ? context.resolveClientId(member) : "";
+  useEffect(() => { if (clientId) context.request(clientId); }, [clientId, context]);
+  const records = clientId ? context.recordsFor(clientId) : null;
+  return useMemo(() => withServerCareNotes(records ? mergeServerNotes(member, records) : member), [member, records]);
+}
+/* 결정 2: 기기에 목표 · 주의사항이 없으면 서버 사본(명부의 orgCareNotes)을 쓴다 -- 대타 강사 · 새 폰. 기기 값이 있으면 기기 것. */
+function withServerCareNotes(member) {
+  const notes = member?.orgCareNotes;
+  if (!notes) return member;
+  const goal = String(member.goal || "").trim() ? member.goal : String(notes.goal || "");
+  const focus = Array.isArray(member.focus) && member.focus.length ? member.focus : (Array.isArray(notes.focus) ? notes.focus : []);
+  return goal === member.goal && focus === member.focus ? member : { ...member, goal, focus };
+}
+
 const LessonRecordLinkContext = createContext({
   prepare: async () => ({ state: "pending", reason: "unavailable" }),
   resolve: async () => ({ state: "link_review_required", reason: "unavailable" }),
@@ -688,7 +720,10 @@ const APP_VERSION_REPORT_KEY = "pilateacher_app_version_report_v1";
 /* 더보기에서 펼쳐 둔 묶음. 접힘이 기본이고, 편 것만 적는다. */
 const SETTINGS_GROUPS_KEY = "pilateacher_settings_groups_v1";
 /* 접는 묶음 전부를 편 상태. 스모크 하네스가 접힌 항목을 보는 데 쓴다. */
-const ALL_MENU_GROUPS_OPEN = Object.freeze({ "점검": true, "대표 설정": true });
+/* 대표 · 총괄매니저의 더보기 맨 아래에 접혀 있는 강사 항목 묶음. 이 문자열이
+   펼침 기억(SETTINGS_GROUPS_KEY)의 열쇠라, 바꾸면 펴 둔 사람의 상태가 풀린다. */
+const INSTRUCTOR_MENU_GROUP = "강사 메뉴 · 강사 화면에 보이는 항목";
+const ALL_MENU_GROUPS_OPEN = Object.freeze({ "점검": true, "대표 설정": true, [INSTRUCTOR_MENU_GROUP]: true });
 /* 회원 범위 잠금(3단계 규칙)을 켜려면 강사 전원이 이 번호 이상이어야 한다.
    이 빌드에 담긴 번호다 -- 여기 담긴 앱만이 좁혀진 질의를 보내고, 그보다
    낮은 앱은 규칙 아래서 회원 목록을 통째로 못 읽는다.
@@ -826,8 +861,10 @@ const timeOf = (stamp) => {
 };
 const uid = () => Math.random().toString(36).slice(2, 9);
 const DEVICE_LOG_FIELDS = new Set([
+  /* 수업기록 서버 저장 보낼 줄 (1단계-2): 몇 번째 시도인지 · 일시 오류인지 · 어느 줄인지(기록ID 끝 8자). */
+  "attempts", "transient", "correlationId", "sent", "alreadyThere", "retryLater", "blocked",
   "reasonCode", "photoIdPrefix", "hasOrganizationId", "hasClientId", "category", "retryable",
-  "memberId", "assessmentId", "lessonId", "view", "storage", "operation",
+  "memberId", "assessmentId", "lessonId", "hasLessonLink", "view", "storage", "operation",
   "platform", "lifecycleState",
   "permission", "state", "source", "code", "message", "count", "provider",
   "stage", "kind", "firebaseCode", "nativeCode", "nativeMessage", "credentialState",
@@ -1672,6 +1709,14 @@ const sampleDb = (center, staff) => ({
   ],
 });
 function normalizeDb(data, staff) {
+  const normalized = normalizeDbShape(data, staff);
+  /* 수업 없이 저장된 기록을 그 수업에 잇는다 -- 틀릴 수 없는 경우만 (note-edit.js linkOrphanLessonNotes).
+     "기록" 화면이 오래 sid 없이 저장해 그 수업이 계속 "미기록" 이던 것 (2026-11-16 하주은 강사 제보). */
+  const { members, linked } = linkOrphanLessonNotes(normalized);
+  if (linked > 0) deviceLog("lesson_note_relinked", { count: linked, appBuild: APP_BUILD_LABEL });
+  return linked > 0 ? { ...normalized, members } : normalized;
+}
+function normalizeDbShape(data, staff) {
   const d = data && typeof data === "object" ? data : {};
   return {
     settings: { center: d.settings?.center ?? "", staff: d.settings?.staff ?? (staff || ""), payRate: Number(d.settings?.payRate) || DEF_RATE, groupRate: Number(d.settings?.groupRate) || DEF_GROUP_RATE, templates: Array.isArray(d.settings?.templates) ? d.settings.templates : [], scheduleColors: normalizeScheduleColors(d.settings?.scheduleColors), hiddenClientIds: Array.isArray(d.settings?.hiddenClientIds) ? d.settings.hiddenClientIds.filter((value) => typeof value === "string" && value) : [] },
@@ -4545,7 +4590,8 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
      디오사만 끊은 회원(PT 회원권 없음)은 그래서 아예 처리할 수 없었다. */
   const isCareLesson = isCareLessonKey(lessonTypeByFormKind(kind).key);
   const isMemberLesson = kind === "solo" || isDuet || isCareLesson;
-  const activeMember = members.find((m) => m.id === activeMemberId) || null;
+  /* 1단계-5: 지난 수업 · 브리핑에 서버 기록도 (스위치 꺼짐이면 그대로). 고치기 대상은 기기 기록만 (note-edit.js). */
+  const activeMember = useServerMergedMember(members.find((m) => m.id === activeMemberId) || null);
   /* 이 수업에 이미 손으로 쓴 기록. 있으면 직접입력이 그 글을 불러와 같은 기록을 고친다
      (2026-11-07). 전에는 늘 빈 칸에서 시작해 저장할 때마다 기록이 하나씩 늘었다. */
   const editingNote = manualNoteFor(activeMember?.notes, draft?.id);
@@ -4570,6 +4616,29 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
   const currentLessonSession = activeLessonSessions.find((session) => session.key === String(draft.id || "")) || null;
   const previousLessonSession = activeLessonSessions.find((session) => session.key !== String(draft.id || "")) || null;
   const lessonSheetBriefing = useMemo(() => selectLessonSheetBriefing({ sessions: previousLessonSession ? [previousLessonSession] : [], briefing: activeBriefing }), [previousLessonSession, activeBriefing]);
+  /* 3단계: 브리핑 개편 (스위치 lessonBriefingV2). 꺼져 있으면 위의 지금 브리핑 그대로. */
+  const briefingContext = useContext(ServerNotesContext);
+  const briefingClientId = briefingContext.briefingV2On && activeMember ? String(activeMember.orgClientId || "") : "";
+  useEffect(() => { if (briefingClientId) briefingContext.requestSummary(briefingClientId); }, [briefingClientId, briefingContext]);
+  const briefingSummary = briefingClientId ? briefingContext.summaryFor(briefingClientId) : null;
+  /* 4단계: 재등록 알림 한 줄 (스위치 renewalAlerts). */
+  const renewalClientId = briefingContext.renewalOn && activeMember ? String(activeMember.orgClientId || "") : "";
+  useEffect(() => { if (renewalClientId) briefingContext.requestRenewal(renewalClientId); }, [renewalClientId, briefingContext]);
+  const renewal = renewalClientId ? briefingContext.renewalFor(renewalClientId) : null;
+  const consultFromLine = briefingContext.consultOn && renewal?.forecast && [RENEWAL_ALERT.CANNOT_USE_UP, RENEWAL_ALERT.LOW_REMAINING, RENEWAL_ALERT.EXPIRY_SOON].includes(renewal.forecast.alert);
+  const renewalLineView = renewal?.line ? (
+    <p data-renewal-line={renewal.forecast.alert} className="rounded-lg px-3 py-2 font-bold tabular-nums"
+      style={{ fontSize: TYPE.caption, color: [RENEWAL_ALERT.CANNOT_USE_UP, RENEWAL_ALERT.LOW_REMAINING, RENEWAL_ALERT.EXPIRY_SOON].includes(renewal.forecast.alert) ? WARN : INK2, backgroundColor: [RENEWAL_ALERT.CANNOT_USE_UP, RENEWAL_ALERT.LOW_REMAINING, RENEWAL_ALERT.EXPIRY_SOON].includes(renewal.forecast.alert) ? WARN_S : CANVAS }}>
+      {renewal.line}
+      {consultFromLine ? (
+        <button type="button" data-renewal-consult onClick={() => onOpenMember?.(activeMember.id, { consult: true })}
+          className="ml-2 underline" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>상담 소재</button>
+      ) : null}
+    </p>
+  ) : null;
+  const lessonBriefingView = useMemo(() => (briefingContext.briefingV2On && activeMember
+    ? selectLessonBriefing({ member: activeMember, lesson: draft, sessions: activeLessonSessions, schedule, summary: briefingSummary })
+    : null), [briefingContext.briefingV2On, activeMember, draft, activeLessonSessions, schedule, briefingSummary]);
   const openedBriefingRef = useRef("");
   useEffect(() => {
     if (!activeMember?.id || !draft.id || !activeBriefing) return;
@@ -4711,10 +4780,15 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
                      드러난다 -- A 와 B 는 따로 파는 회원권이다. */
                   if (type.minutes) setF((current) => ({ ...current, dur: type.minutes }));
                 }}
-                  className="flex h-11 items-center justify-center gap-1.5 rounded-lg text-sm font-bold"
+                  className="flex min-h-11 min-w-0 items-center justify-center rounded-lg px-1.5 py-1 text-sm font-bold"
                   style={{ gridColumn: `span ${type.span || 2}`, backgroundColor: active ? tone.surface : CARD, color: active ? tone.ink : SUB, border: `1px solid ${active ? tone.edge : LINE}` }}>
-                  <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: tone.edge, opacity: active ? 1 : 0.55 }} />
-                  {type.label}
+                  {/* 글자를 크게 쓰는 폰에서 "디오사 관리 30분" 이 두 줄이 되면, 글자 덩어리가 칸을
+                      다 차지해 색 점이 칸 왼쪽 끝으로 밀려났다. 점을 글자 줄 안에 넣어 첫 줄과 함께
+                      가운데에 선다. 칸 높이는 글자를 따라 늘어난다(min-h-11). */}
+                  <span className="min-w-0 text-center leading-tight">
+                    <span aria-hidden="true" className="mr-1.5 inline-block align-middle" style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: tone.edge, opacity: active ? 1 : 0.55, marginTop: -2 }} />
+                    {type.label}
+                  </span>
                 </button>
               );
             })}
@@ -4724,9 +4798,14 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
         {isMemberLesson && (
           <div>
             <p className="mb-1.5 text-xs font-bold" style={{ color: SUB }}>회원 {isDuet ? "(두 명 모두 입력)" : "(같은 이름은 기존 회원으로 연결)"}</p>
-            <div className={`grid gap-2 ${isDuet ? "grid-cols-2" : "grid-cols-1"}`}>
+            {/* 듀엣 두 칸은 폰에서 위아래로 선다 (2026-11-16 대표 제보: 안드로이드에서 이름 끝 글자가
+                잘림). 나란히 두면 한 칸에 이름이 들어갈 자리가 360px 폰에서 90px 뿐이고, 안드로이드는
+                기기 글자 크기 설정을 웹뷰 글자에 곱한다 -- 130% 면 넉 자 이름이 그 칸을 넘어 마지막
+                글자가 "…" 로 바뀐다. 이름마다 폭이 달라 다른 회원을 넣으면 다시 다 보였다.
+                넓은 화면(태블릿)에서는 전처럼 나란히. */}
+            <div data-member-slots className={`grid gap-2 ${isDuet ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
               {Array.from({ length: neededSlots }, (_, slot) => (
-                <button type="button" key={slot} onClick={() => setPicker({ type: "member", slot })} className="flex h-11 min-w-0 items-center gap-2 px-3 text-left text-sm font-bold"
+                <button type="button" key={slot} data-member-slot={slot} onClick={() => setPicker({ type: "member", slot })} className="flex h-11 min-w-0 items-center gap-2 px-3 text-left text-sm font-bold"
                   style={{ borderRadius: 9, backgroundColor: CANVAS, border: `1px solid ${LINE}`, color: memberIds[slot] ? INK : FAINT }}>
                   <Users size={14} className="shrink-0" style={{ color: BRAND }} /><span className="min-w-0 flex-1 truncate">{memberNames[slot] || (isDuet ? `회원 ${slot + 1} 선택` : "회원 선택")}</span><ChevronDown size={13} className="shrink-0" style={{ color: SUB }} />
                 </button>
@@ -4825,7 +4904,9 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
               })}
             </div>
 
-            {activeMember && lessonSheetBriefing && (
+            {lessonBriefingView ? <LessonBriefing view={lessonBriefingView} sessions={activeLessonSessions} footer={renewalLineView} /> : null}
+            {!lessonBriefingView ? renewalLineView : null}
+            {!lessonBriefingView && activeMember && lessonSheetBriefing && (
               <section className="min-w-0 rounded-xl p-3" aria-label="지난 수업과 다음 수업 준비" style={{ backgroundColor: LAVENDER_S, border: `1px solid ${RING}` }}>
                 <div className="mb-2 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: BRAND_D }}>{lessonSheetBriefing.source === "lesson_record" ? "지난 수업" : lessonSheetBriefing.source === "posture_fallback" ? "비포애프터 참고" : "이전 기록 참고"}</p>{lessonSheetBriefing.date && <span className="shrink-0 text-caption tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(lessonSheetBriefing.date)}{previousLessonSession ? ` · ${previousLessonSession.type}` : ""}</span>}</div>
                 {previousLessonSession ? <LessonRecordFieldRows session={previousLessonSession} fields={["today", "reaction"]} hideEmpty pastLesson bounded /> : <p className="line-clamp-3 break-words text-xs leading-relaxed" style={{ color: INK2 }}>{lessonSheetBriefing.text || "이전 기록 없음"}</p>}
@@ -7047,7 +7128,7 @@ function MemberRegisterSheet({ members, onOpenExisting, onClose, onCreate }) {
 }
 
 /* 회원 카드 · 출석 체크의 "지금 회원권" 줄 (2026-11-08). 지금 쓰는 회원권만 -- "20회 중 12회 사용" 과
-   막대 하나. 여정 전체(앱 이전 · 1차 · 2차 …)는 회원 상세의 PassJourneyBar 에 있다.
+   막대 하나. 회원권마다의 이력은 회원 상세의 MemberPassProgress 에 있다.
    글자는 15px(TYPE.body), 넘치면 줄을 바꾼다 -- 칸 밖으로 나가지 않는다. */
 function PassUsageBar({ journey }) {
   const usage = currentPassUsage(journey);
@@ -7074,83 +7155,84 @@ function PassUsageBar({ journey }) {
   );
 }
 
-/* 회원의 여정 줄. 회원권 하나가 아니라 지금까지 온 전부를 한 줄로 잇는다.
+/* 회원 상세 맨 위의 회원권 칸 (2026-11-16 대표: "남은 횟수 그래프가 이해하기 힘듦, 더 직관적이고 쉽게").
 
-   줄이 주인공이고 숫자는 보조다. 큰 막대가 아니라 가는 선이고, 회원권 경계에만
-   옅은 구분선을 둔다 -- 몇 차인지는 알아야 하지만 그것이 줄을 조각내면 여정으로
-   읽히지 않는다.
+   전에는 여정 전체(앱 이전 · 1차 · 2차 …)를 가는 선 하나에 잇고 그 위에 점을 찍었다. 회원권 경계 ·
+   서비스 빗금 · 만료 회색이 한 선에 섞였고, 아래 "누적 11 / 171회 · 4차 진행중" 은 전체 기준이라
+   바로 위 "잔여 160회" 와도 이어지지 않았다.
 
-   서비스 회차는 다른 색이다. 급여가 다르고 회원이 받은 성격도 다르다.
-
-   size="sm" 은 회원 카드와 출석 체크에 들어가는 줄이다. 거기서는 숫자도 줄이지
-   않는다 -- 강사가 "이 회원 얼마나 왔지" 를 세지 않아도 되게 하는 것이 목적이라
-   숫자 한 줄은 남는다. */
-function PassJourneyBar({ journey, size = "md" }) {
+   이제 두 층으로 말한다.
+   1. 지금 회원권: "N회 남음" 을 크게, 그 아래 한 회 = 한 칸(40회 이하) 또는 막대 하나, "사용 · 전체".
+      미리 끊은 다음 회원권은 합치지 않고 "다음 회원권 · N회 대기" 한 줄 (회원 카드의 PassUsageBar 와 같은 판정)
+   2. 등록 이력(접힘): 회원권마다 한 줄 -- "3차 · 32회 (서비스 2) · 18회 남음", 최근 것이 위 (passHistoryRows) */
+const PASS_CELL_LIMIT = 40;
+const PASS_HISTORY_TONE = Object.freeze({
+  using: () => ({ color: BRAND_D, fontWeight: 800 }),
+  waiting: () => ({ color: PRIMARY, fontWeight: 700 }),
+  lapsed: () => ({ color: WARN, fontWeight: 700 }),
+  done: () => ({ color: SUB, fontWeight: 600 }),
+  prior: () => ({ color: SUB, fontWeight: 600 }),
+});
+function MemberPassProgress({ journey }) {
   if (!hasJourney(journey)) return null;
-  const small = size === "sm";
-  const height = small ? 4 : 6;
-  const total = journey.grandTotal;
-  const done = journey.usedTotal;
-  /* 현재 위치. 차감할 때마다 한 칸 오른쪽으로 기어간다 -- 회원이 지금 어디쯤
-     와 있는지가 줄에서 읽혀야 하고, 그것이 이 줄의 요점이다. */
-  const at = total > 0 ? Math.min(100, (done / total) * 100) : 0;
-  const dot = small ? 7 : 9;
+  const usage = currentPassUsage(journey);
+  const history = passHistoryRows(journey);
+  const cells = usage && usage.total > 0 && usage.total <= PASS_CELL_LIMIT;
   return (
-    <div className="min-w-0">
-      <div className="relative" style={{ paddingTop: (dot - height) / 2, paddingBottom: (dot - height) / 2 }}>
-        <div
-          role="img"
-          aria-label={`누적 ${done}회 / 총 ${total}회${journey.currentRound > 0 ? ` · ${journey.currentRound}차 진행중` : ""}`}
-          className="flex w-full overflow-hidden"
-          style={{ height, borderRadius: height, backgroundColor: CANVAS }}>
-          {journey.segments.map((segment, index) => {
-            /* 구간 폭은 회차 수에 비례한다. 1회짜리 회원권도 선에 남아야 하므로
-               최소 폭을 준다 -- 0 이면 경계선만 보이고 구간은 사라진다. */
-            const width = `${Math.max(2, (segment.total / total) * 100)}%`;
-            const filled = segment.total > 0 ? (segment.used / segment.total) * 100 : 0;
-            /* 서비스 구간은 왼쪽 끝이다. 서비스를 먼저 쓰므로(deduction-pricing.js)
-               왼쪽부터 차는 채움과 소진 순서가 맞아떨어진다. 색을 덮는 대신 빗금을
-               얹는다 -- 아직 안 쓴 서비스도 "여기는 서비스" 로 읽혀야 한다. */
-            const servicePart = segment.total > 0 ? (segment.service / segment.total) * 100 : 0;
-            return (
-              <div key={`${segment.kind}-${segment.passId || index}`} className="relative h-full"
-                style={{
-                  width,
-                  /* 회원권 경계. 카드 색으로 얇게 그어 몇 차인지만 보이게 한다.
-                     앱 이전 구간은 회원권이 아니라 통으로 두므로 경계가 없다. */
-                  borderLeft: index === 0 ? "none" : `1px solid ${CARD}`,
-                  backgroundColor: segment.kind === "prior" ? "#C9CEDA" : CANVAS,
-                }}>
-                {segment.kind === "prior" ? null : (
-                  <>
-                    <span className="absolute inset-y-0 left-0" style={{ width: `${filled}%`, backgroundColor: BRAND }} />
-                    {segment.lapsed > 0 ? (
-                      <span className="absolute inset-y-0 right-0"
-                        style={{ width: `${(segment.lapsed / segment.total) * 100}%`, backgroundColor: "#E2E5EC" }} />
-                    ) : null}
-                    {servicePart > 0 ? (
-                      <span className="absolute inset-y-0 left-0" style={{
-                        width: `${servicePart}%`,
-                        backgroundImage: `repeating-linear-gradient(135deg, ${GOOD} 0 2px, transparent 2px 4px)`,
-                        opacity: 0.9,
-                      }} />
-                    ) : null}
-                  </>
-                )}
-              </div>
-            );
-          })}
+    <div className="min-w-0" data-pass-progress>
+      {usage ? (
+        <>
+          <div className="flex min-w-0 items-baseline justify-between gap-2">
+            <span className="min-w-0" style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB, wordBreak: "keep-all" }}>{usage.title}</span>
+            <span className="shrink-0 tabular-nums" data-pass-remaining>
+              <span style={{ fontSize: TYPE.display, lineHeight: 1, fontWeight: 800, color: BRAND_D }}>{usage.remaining}</span>
+              <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK2 }}>회 남음</span>
+            </span>
+          </div>
+          <div role="img" aria-label={`${usage.usage}, ${usage.remaining}회 남음`} className="mt-2 flex w-full min-w-0"
+            style={{ gap: cells ? (usage.total > 24 ? 1.5 : 2.5) : 0 }} data-pass-cells={cells ? usage.total : undefined}>
+            {cells
+              ? Array.from({ length: usage.total }, (_, index) => (
+                <span key={index} aria-hidden="true" className="min-w-0 flex-1"
+                  style={{ height: 12, borderRadius: 3, backgroundColor: index < usage.used ? BRAND : TINT, border: index < usage.used ? "none" : `1px solid ${RING}`, boxSizing: "border-box" }} />
+              ))
+              : (
+                <span aria-hidden="true" className="w-full overflow-hidden" style={{ height: 12, borderRadius: 6, backgroundColor: TINT }}>
+                  <span className="block h-full" style={{ width: `${usage.used > 0 ? Math.max(2, Math.round(usage.ratio * 100)) : 0}%`, borderRadius: 6, backgroundColor: BRAND }} />
+                </span>
+              )}
+          </div>
+          <div className="mt-1 flex justify-between tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+            <span>사용 {usage.used}회</span>
+            <span>전체 {usage.total}회</span>
+          </div>
+          {usage.waiting ? (
+            <p className="mt-1.5 flex min-w-0 items-center gap-2" data-pass-waiting style={{ fontSize: TYPE.caption, fontWeight: 700, color: PRIMARY }}>
+              <span aria-hidden="true" className="shrink-0" style={{ width: 18, height: 8, borderRadius: 3, border: `1.5px dashed ${PRIMARY}`, boxSizing: "border-box" }} />
+              {usage.waiting.label}
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>지금 쓰는 회원권이 없어요</p>
+      )}
+      <details className="mt-2 min-w-0 border-t pt-2" style={{ borderColor: LINE }} open={!usage || undefined} data-pass-history>
+        <summary className="cursor-pointer list-none tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>
+          등록 이력 {history.passCount}번 · 지금까지 {history.usedTotal}회 수업
+        </summary>
+        <div className="mt-1.5 min-w-0">
+          {history.rows.map((row) => (
+            <div key={row.key} className="flex min-w-0 items-center justify-between gap-2 tabular-nums" data-pass-history-row={row.state}
+              style={{ padding: "6px 0", borderTop: `1px solid ${LINE}`, fontSize: TYPE.caption }}>
+              <span className="min-w-0 truncate" style={{ color: INK2, fontWeight: 600 }}>{row.label}</span>
+              <span className="shrink-0" style={PASS_HISTORY_TONE[row.state]()}>{row.detail}</span>
+            </div>
+          ))}
+          {journey.hasPrior && journey.priorIsInstructorScoped ? (
+            <p className="mt-1" style={{ fontSize: TYPE.caption, color: FAINT }}>{JOURNEY_PRIOR_NOTE}</p>
+          ) : null}
         </div>
-        <span aria-hidden="true" className="absolute" style={{
-          top: 0, left: `${at}%`, width: dot, height: dot, marginLeft: -(dot / 2),
-          borderRadius: dot, backgroundColor: BRAND, border: `2px solid ${CARD}`, boxSizing: "border-box",
-        }} />
-      </div>
-      <p className="mt-1 truncate tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-        누적 {done} / {total}회
-        {journey.currentRound > 0 ? ` · ${journey.currentRound}차 진행중` : ""}
-        {journey.hasPrior && !small ? ` · ${JOURNEY_PRIOR_NOTE} ${journey.prior}회` : ""}
-      </p>
+      </details>
     </div>
   );
 }
@@ -7255,7 +7337,93 @@ function PassCard({ card, onEdit, sessionUpWindow = null }) {
   );
 }
 
-function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centrePasses = null, centreLessons = null, viewerRole = "", onHandoverPass, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide, cancelGrant = null }) {
+/* 회원 상세의 "체형 변화" 카드 (2026-11-16 대표: "체형변화 빼주고 더 깔끔하게"). 지우지 않고 끈다 --
+   360° 바디뷰(posture-model.js BODY_VIEW_ENABLED)와 같은 방식이다. 되살릴 때는 이 값 하나만 true 로.
+   사진 · 분석 기록은 그대로이고, 비포애프터 탭과 "기록" 화면에서 계속 쓴다. */
+const MEMBER_DETAIL_BODY_CARD = false;
+
+/* 회원 단위 수업기록 서버 보관 · AI 처리 동의 (설계 결정 4). 서버 저장 · AI 요약 스위치가 켜진 계정에서만 보인다.
+   강사가 회원에게 문구를 보여 주고 동의를 받은 뒤 확인을 눌러 기록한다. 동의가 없으면 그 회원 기록은 기기에만 남는다. */
+function MemberDataConsentCard({ member, sectionStyle }) {
+  const context = useContext(ServerNotesContext);
+  const [open, setOpen] = useState(false);
+  const [checked, setChecked] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [override, setOverride] = useState(null);
+  const clientId = String(member?.orgClientId || "");
+  useEffect(() => { setOverride(null); setOpen(false); setChecked(false); setMessage(""); }, [clientId]);
+  if (!context.consentOn || !clientId) return null;
+  const state = memberDataConsentState(override ? { aiConsent: override } : member);
+  const save = async (granted) => {
+    if (granted && !checked) return;
+    if (!granted && typeof window !== "undefined" && !window.confirm("동의를 철회할까요? 그 뒤 기록은 서버로 보내지 않습니다. 이미 서버에 있는 기록은 남습니다.")) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      await context.saveConsent(clientId, granted);
+      /* 동의하면 기기의 목표 · 주의사항도 서버로 한 번 (결정 2). */
+      if (granted && (String(member?.goal || "").trim() || (member?.focus || []).length)) {
+        context.saveCareNotes({ ...member, aiConsent: { status: "granted", version: MEMBER_AI_CONSENT_VERSION } }, { goal: member?.goal || "", focus: member?.focus || [] });
+      }
+      setOverride(granted ? { status: "granted", version: MEMBER_AI_CONSENT_VERSION, grantedAt: "now" } : { status: "revoked", version: MEMBER_AI_CONSENT_VERSION });
+      setOpen(false);
+      setChecked(false);
+      setMessage(granted ? "동의를 기록했어요." : "철회를 기록했어요.");
+    } catch (error) {
+      const code = String(error?.code || "unknown").replace("firestore/", "");
+      setMessage(code === "permission-denied" ? `이 계정은 동의를 기록할 수 없어요 (코드 ${code})` : `기록하지 못했어요. 연결을 확인하고 다시 눌러 주세요 (코드 ${code})`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section data-member-section="data-consent" data-consent-state={state.key} style={sectionStyle}>
+      <div className="flex items-center gap-2">
+        <h2 className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{MEMBER_DATA_CONSENT_TITLE}</h2>
+        <span className="font-bold" style={{ fontSize: TYPE.caption, color: state.key === "granted" ? GOOD : WARN }}>{state.label}</span>
+      </div>
+      {state.key !== "granted" ? (
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>동의가 없으면 이 회원의 수업기록은 이 기기에만 남고, 서버 보관 · AI 요약을 쓰지 않습니다.</p>
+      ) : null}
+      {message ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }} data-consent-message>{message}</p> : null}
+      {open ? (
+        <div className="mt-2 space-y-2" data-consent-text>
+          {MEMBER_DATA_CONSENT_SECTIONS.map((section) => (
+            <div key={section.heading}>
+              <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{section.heading}</p>
+              <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK }}>{section.body}</p>
+            </div>
+          ))}
+          <label className="flex items-start gap-2" style={{ fontSize: TYPE.caption, color: INK }}>
+            <input type="checkbox" checked={checked} onChange={(event) => setChecked(event.target.checked)} />
+            <span>{MEMBER_DATA_CONSENT_CONFIRM}</span>
+          </label>
+          <div className="flex gap-2">
+            <button type="button" disabled={!checked || busy} onClick={() => save(true)} className="flex-1 py-2 font-bold"
+              style={{ borderRadius: 10, fontSize: TYPE.caption, color: "#fff", backgroundColor: PRIMARY, opacity: !checked || busy ? 0.5 : 1 }}>
+              {busy ? "기록 중…" : "동의 기록"}
+            </button>
+            <button type="button" disabled={busy} onClick={() => { setOpen(false); setChecked(false); }} className="px-4 py-2 font-bold"
+              style={{ borderRadius: 10, fontSize: TYPE.caption, color: SUB, border: `1px solid ${LINE}` }}>닫기</button>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-2 flex gap-2">
+          {state.key !== "granted" ? (
+            <button type="button" onClick={() => setOpen(true)} className="px-3 py-1.5 font-bold" style={{ borderRadius: 8, fontSize: TYPE.caption, color: PRIMARY, border: `1px solid ${LINE}` }}>동의 받기</button>
+          ) : (
+            <button type="button" disabled={busy} onClick={() => save(false)} className="px-3 py-1.5 font-bold" style={{ borderRadius: 8, fontSize: TYPE.caption, color: SUB, border: `1px solid ${LINE}` }}>동의 철회</button>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ReferenceMemberDetail({ openConsultOnMount = false, onConsumeConsultIntent, member: deviceMember, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centrePasses = null, centreLessons = null, viewerRole = "", onHandoverPass, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide, cancelGrant = null }) {
+  /* 1단계-5: 서버 기록을 화면에만 더한 회원 (스위치 꺼짐이면 그대로). */
+  const member = useServerMergedMember(deviceMember);
   /* 세션업 기간은 **회원권 문서에서** 센다. 카드(passCards)는 회원 앱과 함께
      쓰는 모양이라 그 칸이 없다 -- pass-cards.js 머리말의 "회원에게 가지 않는
      것은 여기서도 만들지 않는다". 그래서 여기서 짝지어 넘긴다. */
@@ -7399,11 +7567,46 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
   const openMembership = () => { setPass({ name: member.passName || "", regular: String(num(member.regular)), service: String(num(member.service)), total: String(num(member.total)), end: member.contractEnd || "" }); setPassConfirm(false); setSaveError(""); setSheet("membership"); };
   const openRate = () => { setRateEdit(String(Number(member.payRate) > 0 ? Number(member.payRate) : settlementUnit)); setRateConfirm(false); setSaveError(""); setSheet("rate"); };
   const openMemo = () => { setMemo(""); setMemoMeta(null); setMemoImportant(false); setSaveError(""); setSheet("memo"); };
+  /* 5단계: 재등록 상담 소재 초안. 누를 때만 서버(AI)를 부르고, 결과는 초안 -- 강사가 고쳐 상담 메모로 저장한다. */
+  const consultContext = useContext(ServerNotesContext);
+  const consultClientId = consultContext.consultOn ? String(member?.orgClientId || "") : "";
+  const [consult, setConsult] = useState({ busy: false, points: null, message: "" });
+  const runConsultPoints = async () => {
+    setSheet("consult-points");
+    setConsult({ busy: true, points: null, message: "" });
+    try {
+      const result = await fbConsultTalkingPoints({
+        organizationId: consultContext.organizationId, clientId: consultClientId,
+        goal: String(member?.goal || ""), hasBeforeAfter: Array.isArray(photos) ? photos.length >= 2 : Object.keys(photos || {}).length >= 2,
+      });
+      const points = Array.isArray(result?.talkingPoints) ? result.talkingPoints : [];
+      setConsult({ busy: false, points, message: points.length ? "" : result?.reason === "no_records" ? "서버에 저장된 수업기록이 아직 없어요." : "기록에서 꺼낼 이야기를 찾지 못했어요." });
+    } catch (error) {
+      const reason = String(error?.details?.reason || error?.message || error?.code || "unknown").replace("functions/", "");
+      const messages = {
+        consent_missing: "이 회원의 수업기록 서버 보관 · AI 처리 동의가 없어요. 회원 상세 위쪽 동의 카드에서 먼저 받아 주세요.",
+        not_assigned: "담당 회원만 만들 수 있어요.",
+        feature_off: "이 계정은 아직 상담 소재가 켜져 있지 않아요.",
+      };
+      setConsult({ busy: false, points: null, message: messages[reason] || `만들지 못했어요. 잠시 뒤 다시 눌러 주세요 (코드 ${reason})` });
+    }
+  };
+  useEffect(() => {
+    if (!openConsultOnMount) return;
+    onConsumeConsultIntent?.();
+    if (consultClientId) runConsultPoints();
+    /* 한 번만: 들어오며 생긴 의도를 소비한다. */
+  }, [openConsultOnMount]);
+  const consultToMemo = () => {
+    const body = ["[상담 소재 초안]", ...(consult.points || []).map((point) => `· ${point.text} (${(point.sources || []).map((source) => ymd(source.date)).join(", ")})`)].join("\n");
+    setMemo(body); setMemoMeta(null); setMemoImportant(false); setSaveError(""); setSheet("memo");
+  };
   const commitPatch = async (key, change, close = true) => {
     setSaving(key); setSaveError("");
     try {
       const stored = await onPatch(change);
       if (stored === false) throw new Error("save_failed");
+      if (key === "preparation") consultContext.saveCareNotes(member, change);
       onToast?.({ ok: true, msg: "변경한 영역을 저장했습니다." });
       if (close) setSheet(null);
       return true;
@@ -7477,17 +7680,31 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
       </header>
       <main ref={scrollContainerRef} data-member-detail-scroll className="pt-scroll min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden" style={{ padding: "8px 12px calc(18px + max(env(safe-area-inset-bottom, 0px), 12px))" }}>
         <div data-member-detail-content className="min-w-0 max-w-full space-y-2">
-          <section ref={firstSummaryRef} data-member-section="status" style={{ ...sectionStyle, backgroundColor: statusSurface, borderColor: statusInk }}>
-            <div className="flex min-w-0 items-center gap-3"><span className="min-w-0 flex-1 break-words text-xs font-extrabold tabular-nums" style={{ color: statusInk }}>잔여 {detailStatus.remaining}회 · 다음 예약 {detailStatus.nextLesson ? formatMemberLessonDate(detailStatus.nextLesson.date) : "없음"} · {detailStatus.expiry ? `${formatMemberLessonDate(detailStatus.expiry)} 만료` : "만료일 없음"}</span>{pendingSessionCount > 0 && <span className="shrink-0 rounded-full px-2 py-1 text-caption font-extrabold" style={{ backgroundColor: CARD, color: WARN }}>확인 {pendingSessionCount}</span>}</div>
-            {detailStatus.risk !== "normal" && bodyPhotoSurface.latest && bodyPhotoSurface.daysSinceLatest !== null && <p className="mt-1.5 text-caption font-medium tabular-nums" style={{ color: INK2, opacity: 0.78 }}>최근 체형사진 · {bodyPhotoSurface.daysSinceLatest}일 전</p>}
+          {/* 한눈에 셋 (2026-11-16). 전에는 "잔여 · 다음 예약 · 만료" 를 한 줄로 이어 써서 폰에서 두세 줄로 접혔다. */}
+          <section ref={firstSummaryRef} data-member-section="status" style={{ ...sectionStyle, padding: "10px 12px", backgroundColor: statusSurface, borderColor: statusInk }}>
+            <div className="grid min-w-0 grid-cols-3 gap-2">
+              {[
+                ["잔여", `${detailStatus.remaining}회`, true],
+                ["다음 예약", detailStatus.nextLesson ? formatMemberLessonDate(detailStatus.nextLesson.date) : "없음", false],
+                ["만료", detailStatus.expiry ? formatMemberLessonDate(detailStatus.expiry) : "없음", false],
+              ].map(([label, value, strong]) => (
+                <div key={label} className="min-w-0">
+                  <p className="text-caption font-bold" style={{ color: SUB }}>{label}</p>
+                  <p className="mt-0.5 truncate font-extrabold tabular-nums" style={{ fontSize: strong ? TYPE.heading : TYPE.body, lineHeight: 1.25, color: strong ? statusInk : INK }}>{value}</p>
+                </div>
+              ))}
+            </div>
+            {pendingSessionCount > 0 && <p className="mt-2 text-caption font-extrabold" style={{ color: WARN }}>확인할 수업 기록 {pendingSessionCount}건</p>}
+            {MEMBER_DETAIL_BODY_CARD && detailStatus.risk !== "normal" && bodyPhotoSurface.latest && bodyPhotoSurface.daysSinceLatest !== null && <p className="mt-1.5 text-caption font-medium tabular-nums" style={{ color: INK2, opacity: 0.78 }}>최근 체형사진 · {bodyPhotoSurface.daysSinceLatest}일 전</p>}
           </section>
           {/* 회원 앱 취소 횟수 · 추가 (2026-11-07). 센터 회원 상세와 같은 줄이다. */}
           {cancelGrant ? <section data-member-section="cancel-grant" style={sectionStyle}>{cancelGrant}</section> : null}
+          <MemberDataConsentCard member={member} sectionStyle={sectionStyle} />
           {/* 이 회원이 우리와 얼마나 왔는가. 이번 회원권만으로는 답할 수 없는
               질문이고, 재등록 상담에서 필요한 것은 그쪽이다. */}
           {hasJourney(journey) ? (
             <section data-member-section="journey" style={sectionStyle}>
-              <PassJourneyBar journey={journey} />
+              <MemberPassProgress journey={journey} />
             </section>
           ) : null}
           <section ref={recentCardRef} data-member-section="next-preparation" aria-label="다음 수업 준비" style={sectionStyle}>
@@ -7565,7 +7782,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
               </details>
             ) : null}
           </section>
-          <section data-member-management-card="posture" data-member-section="posture" className="min-w-0 max-w-full" style={{ ...sectionStyle, overflow: "hidden", backgroundColor: CARD }}>
+          {MEMBER_DETAIL_BODY_CARD && <section data-member-management-card="posture" data-member-section="posture" className="min-w-0 max-w-full" style={{ ...sectionStyle, overflow: "hidden", backgroundColor: CARD }}>
             <div className="flex min-w-0 items-center gap-2"><h2 className="min-w-0 flex-1 text-sm font-extrabold" style={{ color: INK }}>체형 변화</h2>{bodyPhotoSurface.assessmentCount > 0 && <><span className="shrink-0 text-caption tabular-nums" style={{ color: SUB }}>체형기록 {bodyPhotoSurface.assessmentCount}회 · 최근 {formatMemberLessonDate(bodyPhotoSurface.latestDate)}</span><button type="button" onClick={() => onAssess?.({ mode: "history" })} className="shrink-0 text-caption font-bold" style={{ color: BRAND_D }}>전체 보기</button></>}</div>
             {bodyPhotoSurface.state === "empty" ? <div className="mt-3 rounded-xl p-3 text-center" style={{ backgroundColor: CANVAS }}><span className="mx-auto flex h-16 w-16 items-center justify-center rounded-xl" style={{ backgroundColor: CARD, color: BRAND }}><Camera size={22} /></span><p className="mt-2 text-xs font-bold" style={{ color: INK }}>지금 찍어두면 나중에 변화를 보여줄 수 있습니다.</p><p className="mt-1 text-caption" style={{ color: INK2 }}>첫 수업 전에 사진 한 장 남겨두면 나중에 변화를 비교할 수 있습니다.</p><button type="button" onClick={() => onAssess?.({ mode: "new" })} className="mt-3 h-10 w-full text-xs font-extrabold text-white" style={{ borderRadius: 9, backgroundColor: BRAND }}>첫 사진 촬영</button></div> : bodyPhotoSurface.state === "comparison" ? <>
               <div data-body-photo-pair-view={bodyPhotoSurface.view} className="mt-3 grid min-w-0 grid-cols-2 gap-2 overflow-hidden">
@@ -7575,11 +7792,12 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
               <button type="button" onClick={openBodyPhotoCard} className="mt-3 h-10 w-full text-xs font-extrabold text-white" style={{ borderRadius: 9, backgroundColor: BRAND }}>비교 카드 만들어 보내기</button>
             </> : <div className="mt-3"><div className="grid min-w-0 grid-cols-2 gap-2 overflow-hidden"><div className="min-w-0"><div className="aspect-[3/4] w-full overflow-hidden rounded-xl" style={{ backgroundColor: PHOTO }}>{bodyPhotoSurface.latest?.src ? <img src={bodyPhotoSurface.latest.src} alt={`${postureViewLabel(bodyPhotoSurface.view)} 현재 사진`} className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center" style={{ color: FAINT }}><Camera size={20} /></span>}</div><p className="mt-1 truncate text-center text-caption font-bold tabular-nums" style={{ color: INK2 }}>{formatMemberLessonDate(bodyPhotoSurface.latestDate)}</p></div><button type="button" onClick={() => onAssess?.({ mode: "new" })} className="flex aspect-[3/4] min-w-0 flex-col items-center justify-center rounded-xl" style={{ border: `1px dashed ${LINE}`, backgroundColor: CANVAS, color: BRAND_D }}><Plus size={20} /><span className="mt-1 text-xs font-bold">다음 촬영</span></button></div><p className="mt-2 break-words text-center text-caption leading-relaxed" style={{ color: INK2 }}>{bodyPhotoSurface.sameDayOnly ? "같은 날 촬영한 기록만 있습니다. 다른 날짜에 한 번 더 촬영하면 변화를 비교할 수 있습니다." : "한두 달 뒤 같은 자세로 한 번 더 촬영하면 변화를 비교할 수 있습니다."}</p><p className="mt-1 text-center text-caption tabular-nums" style={{ color: SUB }}>체형기록 {bodyPhotoSurface.assessmentCount}회 · 사진 {bodyPhotoSurface.photoCount}장</p></div>}
             {resumableAssessment && <button type="button" onClick={() => onAssess?.({ mode: "resume", assessmentId: resumableAssessment.id })} className="mt-2 h-10 w-full text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: BRAND_D }}>진행 중 분석 이어가기</button>}
-          </section>
+          </section>}
           <details data-member-management-card="membership" style={{ ...sectionStyle, padding: 0, overflow: "hidden", backgroundColor: TINT, borderColor: "#D5D1EB" }}>
             <summary aria-label="이용권·결제 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>이용권·결제</span><span className="mt-0.5 block truncate text-caption" style={{ color: SUB }}>{passCards ? passCards.summary : `${member.passName || "이용권 없음"} · 잔여 ${left(member)}회 (정규 ${num(member.regular)} · 서비스 ${num(member.service)}) · ${member.contractEnd ? ymd(member.contractEnd) : "만료일 미설정"}`}</span></span><ChevronDown size={16} style={{ color: SUB }} /></summary>
             <div data-member-management-content="membership" style={{ padding: "0 12px 12px" }}>
-          <section data-member-section="membership" style={{ ...sectionStyle, backgroundColor: TINT, borderColor: "#D5D1EB" }}>
+          {/* 바깥 카드가 이미 같은 색의 틀이다 -- 안에서 다시 테두리를 두르면 상자 속 상자가 된다. */}
+          <section data-member-section="membership" style={{ padding: "2px 2px 4px" }}>
             {/* ── 회원권 한 장 = 카드 한 개 ─────────────────────────────
                 합계를 지웠다. 잔여와 누적은 더하고 상품명·만료일·회당 금액은
                 그중 한 장의 것만 쓰던 화면이었다 -- 1:1 두 장과 2:1 두 장을
@@ -7642,7 +7860,8 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
               </>
             )}
             {canViewSettlement && !organizationMode && <div className="mt-2 flex items-center gap-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: TYPE.caption, color: SUB }}>강사 정산 단가</span><span className="block text-xs font-bold tabular-nums" style={{ color: INK }}>₩{won(settlementUnit)}{Number(member.payRate) > 0 ? "" : " · 센터 기본"}</span></span><button type="button" onClick={openRate} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>단가 수정</button></div>}
-            <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: SUB }}>회원 회당 금액은 총 결제액을 정규 유료 횟수로 나눕니다. 할인은 결제액에 반영하고 서비스 횟수는 제외합니다.</p>
+            {/* 회당 금액 설명은 기기 이용권(개인 모드) 화면에만 -- 센터 회원권 카드에는 그 숫자가 없다. */}
+            {!passCards && <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: SUB }}>회원 회당 금액은 총 결제액을 정규 유료 횟수로 나눕니다. 할인은 결제액에 반영하고 서비스 횟수는 제외합니다.</p>}
             {/* 센터 소속이면 이 버튼을 내지 않는다.
 
                 이 카드의 잔여·만료일·이용권 이름은 **센터 회원권에서 온다**
@@ -7661,14 +7880,16 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
               <button type="button" onClick={openMembership} className="mt-2 h-10 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: BRAND, color: "#fff" }}>이용권 수정</button>
             )}
           </section>
-          <Section title="이용권 변경 이력 및 상세 설정" action={organizationMode ? null : <button type="button" onClick={openMembership} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>관리</button>}>
+          {/* 센터 소속이면 이 칸의 값(기기 결제 · 홀딩 · 담당 이력)이 대개 비어 있다 -- 센터 이력은 더보기 → 회원 관리의
+              회원 상세가 원장으로 보여 준다. 빈 칸만 세우지 않는다. 정보 수정은 아래 "기본정보" 에도 있다. */}
+          {(!organizationMode || (member.payments || []).length > 0 || holdHistory.length > 0 || (member.instructorHistory || []).length > 0 || isInactive(member) || isHold(member)) && <Section title={organizationMode ? "이 기기의 변경 이력" : "이용권 변경 이력 및 상세 설정"} action={organizationMode ? null : <button type="button" onClick={openMembership} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>관리</button>}>
             {(member.payments || []).length ? member.payments.slice(0, 4).map((p) => <div key={p.id || `${p.date}-${p.amount}`} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span className="min-w-0 flex-1"><span className="block truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(p.date)} · {p.name || p.passName || "이용권"}</span>{p.kind === "adjustment" && <span className="block truncate" style={{ fontSize: TYPE.caption, color: SUB }}>잔여 {p.before?.remaining}회 → {p.after?.remaining}회 · 총 {p.before?.total}회 → {p.after?.total}회</span>}</span><span className="tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{p.kind === "adjustment" ? "수정" : `${num(p.count || p.sessions)}회`}</span></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>저장된 변경 이력이 없습니다</p>}
             {holdHistory.slice(0, 4).map((h) => <div key={h.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, backgroundColor: CANVAS }}><span style={{ padding: "2px 6px", borderRadius: 5, color: INK2, fontSize: TYPE.caption, fontWeight: 600 }}>홀딩</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(h.startDate)} ~ {ymd(h.releasedAt || h.endDate)}{h.extendDays ? ` · 만료 +${h.extendDays}일` : ""}</span></div>)}
             {(member.instructorHistory || []).slice(0, 3).map((entry) => <div key={entry.id || entry.date} className="flex gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span style={{ fontSize: TYPE.caption, color: SUB }}>담당 변경</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(entry.date)} · {entry.before || "미지정"} → {entry.after || "미지정"}</span></div>)}
             {isHold(member) && <div className="mt-2 flex items-start gap-2" style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: CANVAS }}><AlertCircle size={14} className="mt-0.5 shrink-0" style={{ color: SUB }} /><p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{ymd(member.holdFrom)} ~ {ymd(member.holdUntil)}{member.holdReason ? ` · ${member.holdReason}` : ""}</p></div>}
             {isInactive(member) && <button type="button" onClick={async () => { const saved = await onReactivate?.(member.id); if (saved !== false) onBack?.(); }} className="mt-2 h-11 w-full rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>활성으로 되돌리기</button>}
             <div className="mt-2 flex gap-2"><button type="button" onClick={openEdit} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: INK2, fontSize: TYPE.caption, fontWeight: 600 }}>정보 수정</button>{organizationMode ? null : isHold(member) ? <button type="button" onClick={() => { if (!releaseArmed) { setReleaseArmed(true); return; } const releasedAt = todayISO(); onPatch({ status: "active", holdFrom: "", holdUntil: "", holdReason: "", holdHistory: [{ id: uid(), startDate: member.holdFrom, endDate: member.holdUntil, releasedAt, reason: member.holdReason, extendDays: num(member.holdExtendDays), createdAt: releasedAt }, ...holdHistory] }); setReleaseArmed(false); }} style={{ flex: 1.35, height: 42, borderRadius: 8, border: `1px solid ${releaseArmed ? BRAND : LINE}`, backgroundColor: releaseArmed ? TINT : CARD, color: BRAND_D, fontSize: TYPE.caption, fontWeight: 600 }}>{releaseArmed ? "한 번 더 눌러 홀딩 해제" : "홀딩 해제"}</button> : <button type="button" onClick={() => { setHold({ start: todayISO(), end: shift(todayISO(), 14), reason: "", extend: true }); setSheet("hold"); }} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: BRAND_D, fontSize: TYPE.caption, fontWeight: 600 }}>홀딩 설정</button>}</div>
-          </Section>
+          </Section>}
             </div>
           </details>
           <details data-member-management-card="basic-and-memos" style={{ ...sectionStyle, padding: 0, overflow: "hidden" }}>
@@ -7680,7 +7901,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
           <Section title="회원 기본정보" action={<button type="button" onClick={openEdit} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}><Pencil size={12} className="inline" /> 정보 수정</button>}>
             <div className="grid grid-cols-2 gap-x-3 gap-y-2">{[["이름", member.name || "-"], ["회원 상태", isHold(member) ? "홀딩" : isEnded(member) ? "종료" : "활성"], ...(!singleInstructorMode ? [["담당 강사", member.instructor || "미지정"]] : []), ["연락처", member.phone ? phoneShown(member.phone) : "번호 추가"], ["수업 유형", member.lessonType === "duet" ? "듀엣" : member.lessonType === "group" ? "그룹" : "개인"], ["기본 수업시간", `${lessonDurationOf(member)}분`], ["생년월일 · 나이", maskedBirth(member.birth, ageOf(member))]].map(([k,v]) => <div key={k} className={k === "생년월일 · 나이" ? "col-span-2" : ""}><p style={{ fontSize: TYPE.caption, color: SUB }}>{k}</p><p className="mt-0.5 truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{v}</p></div>)}</div>
           </Section>
-          <Section title="상담 및 중요 메모" action={<div className="flex gap-3"><button type="button" onClick={() => setSheet("memos-all")} style={{ fontSize: TYPE.caption, fontWeight: 600, color: SUB }}>전체 보기</button><button type="button" onClick={openMemo} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>메모 추가</button></div>}>
+          <Section title="상담 및 중요 메모" action={<div className="flex gap-3">{consultClientId ? <button type="button" data-consult-points-open onClick={runConsultPoints} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>상담 소재</button> : null}<button type="button" onClick={() => setSheet("memos-all")} style={{ fontSize: TYPE.caption, fontWeight: 600, color: SUB }}>전체 보기</button><button type="button" onClick={openMemo} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>메모 추가</button></div>}>
             {consultationNotes.length ? consultationNotes.slice(0, 3).map((note) => <div key={note.id} className="flex items-start gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><button type="button" aria-label={note.important ? "중요 메모 고정 해제" : "중요 메모로 고정"} onClick={() => commitPatch("pin", { notes: (member.notes || []).map((item) => item.id === note.id ? { ...item, important: !item.important } : item) }, false)} className="mt-0.5 shrink-0" style={{ color: note.important ? WARN : FAINT }}><Star size={14} fill={note.important ? "currentColor" : "none"} /></button><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: TYPE.caption, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요" : ""}</span><span className="mt-0.5 block line-clamp-2" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: INK2 }}>{note.body}</span></span></div>) : <button type="button" onClick={openMemo} className="flex h-9 w-full items-center justify-between px-2 text-left" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>등록된 상담 메모가 없습니다<span style={{ color: BRAND }}>추가하기</span></button>}
           </Section>
             </div>
@@ -7750,6 +7971,19 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
         </label>
       )}{sheet === "record" && <VoiceNote key={lessonRecordSessionKey(member.id, linkLessonId || null)} memberId={member.id} memberName={member.name || "회원"} duetPartner={duetPartnerOf(member)} lessonId={linkLessonId || undefined} savedNote={linkLessonId ? voiceNoteFor(member.notes, linkLessonId) : null} onClose={() => setSheet(null)} onDeferred={() => setSheet(null)} onDraftChange={(text, meta, options) => onSaveNote("개인레슨", text, meta, { ...(options || {}), lessonId: linkLessonId || null })} onApply={(text, meta) => onSaveNote("개인레슨", text, meta, { confirmed: true, upsert: true, lessonId: linkLessonId || null })} />}{sheet === "memo" && <><button type="button" aria-pressed={memoImportant} onClick={() => setMemoImportant((value) => !value)} className="flex h-10 w-full items-center gap-2 px-3" style={{ borderRadius: 8, backgroundColor: memoImportant ? WARN_S : CANVAS, color: memoImportant ? WARN : SUB, fontSize: TYPE.caption, fontWeight: 700 }}><Star size={14} fill={memoImportant ? "currentColor" : "none"} />중요 메모로 상단 고정</button><textarea autoFocus rows={5} value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="내용을 입력하세요" className={`${inputCls} h-auto resize-none py-3`} />{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<button type="button" aria-busy={saving === sheet} disabled={!memo.trim() || saving === sheet} onClick={commitNote} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>{saving === sheet ? "저장 중…" : "저장"}</button></>}</div></Sheet>}
       {sheet === "record-review" && reviewDraft && <Sheet title="AI 수업기록 확인" sub="확인은 선택입니다. 정리된 기록은 이미 저장되어 있어요." onClose={() => setSheet(null)}><div className="space-y-3"><div className="grid grid-cols-2 gap-2">{[{ k: "didToday", l: "오늘 수업" }, { k: "observations", l: "변화" }, { k: "responses", l: "회원 반응" }, { k: "nextFocus", l: "다음 확인" }].map((field) => <div key={field.k} className="rounded-xl p-3" style={{ backgroundColor: CANVAS }}><p className="text-caption font-extrabold" style={{ color: SUB }}>{field.l}</p>{reviewEditing ? <textarea rows={2} aria-label={`${field.l} 수정`} value={structuredFieldText(reviewDraft, field.k)} onChange={(event) => setReviewDraft((current) => editStructuredField(current, field.k, event.target.value))} className={`${inputCls} mt-1 h-auto resize-none py-2 text-xs`} /> : <p className="mt-1 text-xs font-bold leading-relaxed" style={{ color: INK2 }}>{prepText(reviewDraft[field.k], "기록 없음")}</p>}</div>)}</div><div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setReviewEditing((value) => !value)} className="h-12 rounded-xl text-sm font-extrabold" style={{ backgroundColor: CANVAS, color: BRAND_D }}>{reviewEditing ? "수정 닫기" : "수정"}</button><button type="button" onClick={confirmRecordReview} className="h-12 rounded-xl text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>확인</button></div></div></Sheet>}
+      {sheet === "consult-points" && <Sheet title="상담 때 꺼낼 이야기 · 초안" onClose={() => setSheet(null)}><div className="space-y-2" data-consult-points>
+        <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>기록된 사실로만 만든 초안입니다. 효과를 약속하거나 가격 이야기는 넣지 않습니다. 고쳐서 상담 메모로 저장하세요.</p>
+        {consult.busy ? <p style={{ fontSize: TYPE.caption, color: SUB }}>만드는 중…</p> : null}
+        {consult.message ? <p role="status" style={{ fontSize: TYPE.caption, color: WARN }}>{consult.message}</p> : null}
+        {(consult.points || []).map((point, index) => (
+          <div key={index} style={{ padding: 10, borderRadius: 8, backgroundColor: CANVAS }}>
+            <p style={{ fontSize: TYPE.body, lineHeight: 1.5, color: INK }}>{point.text}</p>
+            <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>근거 {(point.sources || []).map((source) => ymd(source.date)).join(", ")}</p>
+          </div>
+        ))}
+        {consult.points?.length ? <button type="button" onClick={consultToMemo} className="h-11 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>상담 메모로 옮겨 고치기</button> : null}
+        {!consult.busy && !consult.points?.length ? <button type="button" onClick={runConsultPoints} className="h-11 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB }}>다시 만들기</button> : null}
+      </div></Sheet>}
       {sheet === "memos-all" && <Sheet title="상담 메모 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2"><DeviceOnlyNote />{consultationNotes.length ? consultationNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: note.important ? WARN_S : CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요 메모" : ""}</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 상담 메모가 없습니다</p>}<button type="button" onClick={openMemo} className="h-11 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>메모 추가</button></div></Sheet>}
       {sheet === "records-all" && <Sheet title="수업 기록 전체 보기" onClose={() => setSheet(null)}><div className="min-w-0 space-y-2">{lessonSessions.length ? lessonSessions.map((session) => <div key={session.key} className="min-w-0" style={{ padding: 10, borderRadius: 8, backgroundColor: CANVAS }}><p className="mb-2 text-caption tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(session.date, { weekday: true })} · {session.type}</p><LessonRecordFieldRows session={session} />{session.warning && <p className="mt-2 text-caption" style={{ color: SUB }}>{session.warning}</p>}</div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div></Sheet>}
       {sheet === "membership" && <Sheet title="현재 이용권 수정" onClose={() => setSheet(null)}><div className="space-y-3">{!passConfirm ? <><Field label="이용권 이름"><input value={pass.name} onChange={(e) => setPass({ ...pass, name: e.target.value })} className={inputCls} /></Field><div className="grid grid-cols-3 gap-2"><Field label="정규 잔여"><input inputMode="numeric" value={pass.regular} onChange={(e) => setPass({ ...pass, regular: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field><Field label="서비스 잔여"><input inputMode="numeric" value={pass.service} onChange={(e) => setPass({ ...pass, service: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field><Field label="누적 등록"><input inputMode="numeric" value={pass.total} onChange={(e) => setPass({ ...pass, total: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field></div><Field label="만료일"><input type="date" value={pass.end} onChange={(e) => setPass({ ...pass, end: e.target.value })} className={inputCls} /></Field><button type="button" onClick={() => setPassConfirm(true)} className="h-12 w-full text-sm font-bold text-white" style={{ borderRadius: 8, backgroundColor: BRAND }}>변경 내용 확인</button></> : <><div style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}><p className="mb-2 text-xs font-bold" style={{ color: INK }}>변경 전후를 확인해 주세요</p>{[["총 잔여", `${left(member)}회`, `${num(pass.regular) + num(pass.service)}회`], ["누적 등록", `${num(member.total)}회`, `${num(pass.total)}회`], ["만료일", member.contractEnd ? ymd(member.contractEnd) : "미설정", pass.end ? ymd(pass.end) : "미설정"]].map(([label,before,after]) => <div key={label} className="flex items-center gap-2 py-1"><span className="w-16 text-caption" style={{ color: SUB }}>{label}</span><span className="min-w-0 flex-1 text-right text-xs line-through" style={{ color: SUB }}>{before}</span><ChevronRight size={12} style={{ color: FAINT }} /><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: BRAND_D }}>{after}</span></div>)}</div>{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setPassConfirm(false)} className="h-12 text-sm font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2 }}>다시 수정</button><button type="button" disabled={saving === "membership"} onClick={() => { const regular = num(pass.regular), service = num(pass.service), total = num(pass.total); commitPatch("membership", { passName: pass.name.trim(), regular, service, total, contractEnd: pass.end, payments: [{ id: uid(), date: todayISO(), kind: "adjustment", name: "이용권 수정", before: { remaining: left(member), total: num(member.total), end: member.contractEnd || "" }, after: { remaining: regular + service, total, end: pass.end } }, ...(member.payments || [])] }); }} className="h-12 text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "membership" ? "저장 중…" : "확인 후 저장"}</button></div></>}</div></Sheet>}
@@ -15851,11 +16085,37 @@ function NoteForm({ member, schedule, onSave, settings, onSettings, backHint, vo
     setNewTpl(""); setAdding(false); setGroup("내 문구");
   };
   const delTpl = (t) => onSettings && onSettings({ ...settings, templates: mine.filter((x) => x !== t) });
+  /* 어느 수업의 기록인가 (2026-11-16 하주은 강사 제보: "AI 말하기로 기록했는데 계속 미기록 알림").
+     이 화면은 기록을 수업과 잇는 칸이 없었다 -- 저장이 sid 를 noteSid 에서 읽는데 아무도 그 값을 넣지
+     않아, 여기서 쓴 기록은 언제나 수업 없이 저장됐고 그 수업은 영영 "미기록" 이었다. 회원 상세의
+     "수업 기록" 과 같은 칸 · 같은 기본값(오늘 · 최근의 기록 없는 수업)을 쓴다 (note-edit.js). */
+  const linkableLessons = useMemo(
+    () => linkableLessonsFor({ memberId: member?.id, notes: member?.notes, schedule, today: todayISO() }),
+    [member, schedule],
+  );
+  const [linkLessonId, setLinkLessonId] = useState(() => defaultLinkLesson(linkableLessons, todayISO()));
+  const linkedLesson = linkableLessons.find((lesson) => lesson.id === linkLessonId) || null;
+  useEffect(() => {
+    // 고른 수업의 날짜를 수업일 칸에도 -- 두 칸이 다른 날을 말하지 않게.
+    if (linkedLesson?.date) setN((x) => (x.date === linkedLesson.date ? x : { ...x, date: linkedLesson.date }));
+  }, [linkedLesson?.date]);
   return (
     <Card className="p-5">
       <h3 className="font-extrabold" style={{ color: INK }}>수업 코멘트 작성</h3>
       <Sub>기록만 남습니다. 수강권 차감은 스케줄에서 '출석'을 누를 때만 이뤄집니다</Sub>
       <div className="mt-4 space-y-3">
+        {linkableLessons.length > 0 && (
+          <label className="block" data-record-lesson-link>
+            <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>어느 수업의 기록인가요</span>
+            <select value={linkLessonId} onChange={(event) => setLinkLessonId(event.target.value)} className={`${inputCls} mt-1`}>
+              <option value="">수업과 잇지 않음</option>
+              {linkableLessons.map((lesson) => (
+                <option key={lesson.id} value={lesson.id}>{`${md(lesson.date)} ${lesson.start} · ${lesson.type || "수업"}${lesson.hasRecord ? " · 기록 있음" : ""}`}</option>
+              ))}
+            </select>
+            {!linkLessonId && <span className="mt-1 block" style={{ fontSize: TYPE.caption, color: WARN }}>수업과 잇지 않으면 그 수업은 일정에서 계속 "미기록" 으로 남아요.</span>}
+          </label>
+        )}
         <div className="grid grid-cols-2 gap-2">
           <Field label="수업일"><input type="date" value={n.date} onChange={(e) => setN({ ...n, date: e.target.value })} className={inputCls} /></Field>
           <Field label="수업 종류">
@@ -15918,6 +16178,7 @@ function NoteForm({ member, schedule, onSave, settings, onSettings, backHint, vo
             id: uid(), date: n.date, type: n.type, instructor: member.instructor, body: n.body.trim(),
             tags: n.tags.split(",").map((t) => t.trim()).filter(Boolean),
             ...(voiceMeta || {}),
+            ...(linkLessonId ? { sid: linkLessonId } : {}),
           });
           if (stored === false) return;
           setN({ ...n, body: "", tags: "" });
@@ -24405,6 +24666,24 @@ function ExpiryReportScreen({
   const [period, setPeriod] = useState(initialState?.period || EXPIRY_PERIOD.THIS_MONTH);
   const [state, setState] = useState(initialState?.state || { stage: "idle" });
   const [instructors, setInstructors] = useState(initialState?.instructors || []);
+  /* 4단계 재등록 알림 (스위치 renewalAlerts). "다 못 쓸 회원" 묶음과 재등록률 표. 꺼져 있으면 지금 화면 그대로. */
+  const renewalOn = useContext(ServerNotesContext).renewalOn;
+  const [renewal, setRenewal] = useState(initialState?.renewal || { entries: null, candidates: null, error: "" });
+  const [backfill, setBackfill] = useState({ busy: false, message: "" });
+  const renewalRole = organization?.role || "";
+  const seesBranchRates = isOwnerLevelRole(renewalRole) || renewalRole === "manager" || (renewalRole === "instructor" && organization?.title === "branch_manager");
+  const loadRenewal = useCallback(() => {
+    if (!renewalOn || locked || initialState?.renewal) return;
+    const wideDeductions = isOwnerLevelRole(renewalRole) || renewalRole === "manager";
+    const branchIds = isOwnerLevelRole(renewalRole) ? [] : [...(organization?.locationIds || []), organization?.locationId || ""].filter(Boolean);
+    Promise.all([
+      listRecentDeductions({ organizationId, instructorId: wideDeductions ? "" : currentUserId, now: now() }),
+      seesBranchRates ? listRenewalCandidates(organizationId, { locationIds: branchIds }) : Promise.resolve(null),
+      seesBranchRates ? listLocations(organizationId).catch(() => []) : Promise.resolve([]),
+    ]).then(([entries, candidates, locations]) => setRenewal({ entries, candidates, locationNames: new Map((locations || []).map((item) => [String(item.id), String(item.name || "")])), error: "" }))
+      .catch((error) => setRenewal({ entries: [], candidates: null, error: String(error?.code || "unknown").replace("firestore/", "") }));
+  }, [renewalOn, locked, initialState, renewalRole, organization, organizationId, currentUserId, now, seesBranchRates]);
+  useEffect(() => { loadRenewal(); }, [loadRenewal]);
 
   useEffect(() => {
     if (locked || initialState) return;
@@ -24465,6 +24744,25 @@ function ExpiryReportScreen({
   const report = expiryReport(rows, {
     period, now: at, instructorId: ownerView ? "" : currentUserId,
   });
+  /* 다 못 쓸 회원: 지금 속도로 만료 전에 다 쓰지 못할 회원 (홀딩 · 연장 상담용). 계산은 브리핑 아래 한 줄과 같다. */
+  const cannotUseUp = renewalOn && renewal.entries
+    ? rows.map((row) => ({ row, forecast: renewalForecast({ clientId: row.clientId, passes: row.passes, entries: renewal.entries, now: at }) }))
+      .filter((item) => item.forecast?.alert === RENEWAL_ALERT.CANNOT_USE_UP)
+      .sort((left, right) => (left.forecast.daysToExpiry ?? 9999) - (right.forecast.daysToExpiry ?? 9999))
+    : [];
+  const instructorName = (id) => instructors.find((item) => String(item.userId || "") === id)?.displayName || "";
+  const ratesByLocation = renewalOn && renewal.candidates ? renewalRates(renewal.candidates, (row) => row.locationId || "지점 없음").filter((row) => row.month !== "pending").slice(0, 18) : [];
+  const ratesByInstructor = renewalOn && renewal.candidates ? renewalRates(renewal.candidates, (row) => row.instructorId).filter((row) => row.month !== "pending").slice(0, 30) : [];
+  const runBackfill = async () => {
+    setBackfill({ busy: true, message: "" });
+    try {
+      const result = await fbBackfillRenewalCandidates({ organizationId });
+      setBackfill({ busy: false, message: `채워 넣었어요 -- ${result?.written ?? 0}건` });
+      loadRenewal();
+    } catch (error) {
+      setBackfill({ busy: false, message: `채우지 못했어요 (코드 ${String(error?.details?.reason || error?.code || "unknown").replace("functions/", "")})` });
+    }
+  };
   const byInstructor = ownerView
     ? instructors.map((item) => ({
       userId: String(item.userId || ""),
@@ -24539,6 +24837,54 @@ function ExpiryReportScreen({
               </div>
             ))}
           </div>
+        </section>
+      ) : null}
+
+      {renewalOn && renewal.error ? (
+        <p style={{ fontSize: TYPE.caption, color: BAD }} data-renewal-error>재등록 알림 자료를 읽지 못했어요 (코드 {renewal.error})</p>
+      ) : null}
+      {renewalOn && renewal.entries ? (
+        <section style={sectionStyle} data-cannot-use-up>
+          <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>다 못 쓸 회원</h2>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>최근 4주 출석 속도로 보면 만료 전에 다 쓰지 못할 회원입니다. 홀딩 · 연장 상담에 쓰세요.</p>
+          {cannotUseUp.length ? (
+            <div className="mt-2">
+              {cannotUseUp.map(({ row, forecast }) => (
+                <div key={row.clientId} className="flex items-center gap-2" style={{ padding: "9px 0", borderTop: `1px solid ${LINE}` }}>
+                  <p className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{row.name || "(이름 없음)"}</p>
+                  <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: WARN }}>{renewalLine(forecast, at)}</p>
+                </div>
+              ))}
+            </div>
+          ) : <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>없음</p>}
+        </section>
+      ) : null}
+      {renewalOn && renewal.candidates ? (
+        <section style={sectionStyle} data-renewal-rates>
+          <div className="flex items-center gap-2">
+            <h2 className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>재등록률 (알림 받은 회원 기준)</h2>
+            {ownerView ? (
+              <button type="button" disabled={backfill.busy} onClick={runBackfill} className="shrink-0 px-3 py-1.5 font-bold"
+                style={{ borderRadius: 8, fontSize: TYPE.caption, color: BRAND, border: `1px solid ${LINE}`, opacity: backfill.busy ? 0.5 : 1 }}>
+                {backfill.busy ? "채우는 중…" : "지난 6달 채우기"}
+              </button>
+            ) : null}
+          </div>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>재등록 ÷ (재등록 + 끊김). 회원권이 끝나고 30일 안에 새 회원권이 나가면 재등록 (다른 강사여도), 30일이 지나도 없으면 끊김. 결정된 달로 셉니다.</p>
+          {backfill.message ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }} data-renewal-backfill>{backfill.message}</p> : null}
+          {[["지점별", ratesByLocation, (key) => renewal.locationNames?.get(key) || key], ["강사별", ratesByInstructor, (key) => instructorName(key) || "이름 모름"]].map(([label, list, nameOf]) => (
+            <div key={label} className="mt-2">
+              <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>{label}</p>
+              {list.length ? list.map((row) => (
+                <div key={`${row.key}|${row.month}`} className="flex items-center gap-2 tabular-nums" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, fontSize: TYPE.caption }}>
+                  <span className="shrink-0" style={{ color: SUB }}>{row.month}</span>
+                  <span className="min-w-0 flex-1 truncate" style={{ fontWeight: 600, color: INK }}>{nameOf(row.key)}</span>
+                  <span className="shrink-0" style={{ color: SUB }}>재등록 {row.renewed} · 끊김 {row.lapsed}</span>
+                  <span className="shrink-0 font-bold" style={{ color: INK }}>{row.rate === null ? "-" : `${Math.round(row.rate * 100)}%`}</span>
+                </div>
+              )) : <p style={{ fontSize: TYPE.caption, color: SUB }}>아직 결정된 줄이 없습니다</p>}
+            </div>
+          ))}
         </section>
       ) : null}
 
@@ -25395,6 +25741,144 @@ function InstructorNameConfirm({ organization, onPreview, onConfirm, onToast, in
  * 옛 폰은 일정을 서버에 보내지 않아, 켜도 그 폰의 일정은 따라오지 않는다. 대표만
  * 바꾼다 (updateRuntimeConfig).
  */
+/* 수업기록 서버 저장 · 비교 검증 (1단계-4). 강사 기기가 남긴 숫자(기기 확정 · 서버 · 차이)를 강사별로. */
+function LessonRecordParityAdmin({ organization, instructorStore, onLoad = listLessonRecordParity }) {
+  const [state, setState] = useState({ rows: null, names: new Map(), error: "" });
+  const organizationId = organization?.organizationId || "";
+  useEffect(() => {
+    if (!organizationId) return undefined;
+    let alive = true;
+    Promise.all([onLoad(organizationId), listInstructors(organizationId, { store: instructorStore }).catch(() => [])])
+      .then(([rows, instructors]) => {
+        if (!alive) return;
+        const names = new Map((instructors || []).map((item) => [String(item.userId || item.id || ""), String(item.displayName || item.name || "")]));
+        setState({ rows: Array.isArray(rows) ? rows : [], names, error: "" });
+      })
+      .catch((error) => { if (alive) setState({ rows: [], names: new Map(), error: `비교 결과를 읽지 못했어요 (코드 ${String(error?.code || "unknown").replace(/^firestore\//, "")})` }); });
+    return () => { alive = false; };
+  }, [organizationId, instructorStore, onLoad]);
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-lesson-record-parity>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>수업기록 서버 저장 · 비교</h2>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>켜진 강사의 기기가 하루 한 번 “기기에 확정된 기록 수 · 서버에 올라간 수” 를 맞춰 남깁니다. 차이는 보낼 줄이 다시 채웁니다.</p>
+      {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
+      {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
+      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>아직 비교한 기기가 없습니다.</p> : null}
+      <div className="mt-2 space-y-1.5">
+        {(state.rows || []).map((row) => {
+          const status = parityState(row);
+          return (
+            <div key={row.id} className="flex items-center justify-between gap-2 px-3 py-2 tabular-nums" style={{ borderRadius: 10, backgroundColor: CANVAS, fontSize: TYPE.caption }} data-parity-row={status.key}>
+              <span className="min-w-0 flex-1 truncate font-bold" style={{ color: INK }}>{state.names.get(row.id) || "이름 모름"}</span>
+              <span style={{ color: SUB }}>기기 {row.device} · 서버 {row.server}</span>
+              <span className="font-bold" style={{ color: status.key === "check" ? WARN : status.key === "sending" ? PRIMARY : GOOD }}>{status.label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/* AI 회원 요약 점검 (설계 문서 2단계). 대표 · 총괄이 최근 요약을 직접 읽고 판정한다 -- 문장마다 근거 기록 날짜,
+   서버가 버린 문장 수(이유별). [다시 만들기] 는 앞 요약을 쓰지 않고 원본 기록에서 처음부터. */
+const SUMMARY_BLOCK_LABELS = [["mustRemember", "꼭 기억할 것"], ["recentTrend", "최근 흐름"], ["openQuestions", "계속 확인 중"]];
+const SUMMARY_DROP_LABELS = { no_source: "근거 없음", unknown_source: "없는 기록", date_mismatch: "날짜 어긋남", forbidden_word: "진단 · 처방 말", side_mismatch: "좌우 어긋남", term_not_in_source: "기구 이름", empty: "빈 문장" };
+function memberSummaryStatusLabel(row) {
+  if (row?.status === "ready") return { key: "ready", label: "준비됨" };
+  if (row?.status === "empty") return { key: "empty", label: "기록 없음" };
+  if (row?.status === "failed") return { key: "failed", label: `갱신 실패 (코드 ${row.statusCode || "unknown"})` };
+  return { key: "pending", label: "만드는 중" };
+}
+function MemberSummaryAdmin({ organization, onLoad = listRecentMemberSummaries, onName = readClientName, onRebuild = fbRebuildMemberSummary }) {
+  const [state, setState] = useState({ rows: null, names: new Map(), error: "" });
+  const [open, setOpen] = useState("");
+  const [busy, setBusy] = useState("");
+  const [message, setMessage] = useState("");
+  const organizationId = organization?.organizationId || "";
+  const load = useCallback(() => {
+    if (!organizationId) return;
+    onLoad(organizationId)
+      .then(async (rows) => {
+        const list = Array.isArray(rows) ? rows : [];
+        const names = new Map(await Promise.all(list.map(async (row) => [row.id, await onName(organizationId, row.id).catch(() => "")])));
+        setState({ rows: list, names, error: "" });
+      })
+      .catch((error) => setState({ rows: [], names: new Map(), error: `요약을 읽지 못했어요 (코드 ${String(error?.code || "unknown").replace("firestore/", "")})` }));
+  }, [organizationId, onLoad, onName]);
+  useEffect(() => { load(); }, [load]);
+  const rebuild = async (clientId = "") => {
+    setBusy(clientId || "all");
+    setMessage("");
+    try {
+      const result = await onRebuild({ organizationId, ...(clientId ? { clientId } : {}) });
+      setMessage(`다시 만들었어요 -- ${result?.targets ?? 0}명`);
+      load();
+    } catch (error) {
+      setMessage(`다시 만들지 못했어요 (코드 ${String(error?.details?.reason || error?.code || "unknown").replace("functions/", "")})`);
+    } finally {
+      setBusy("");
+    }
+  };
+  const dateOf = (value) => {
+    const ms = typeof value?.toMillis === "function" ? value.toMillis() : typeof value?.seconds === "number" ? value.seconds * 1000 : 0;
+    return ms ? new Date(ms).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+  };
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-member-summary-admin>
+      <div className="flex items-center justify-between gap-2">
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>AI 회원 요약 점검</h2>
+        <button type="button" disabled={Boolean(busy) || !state.rows?.length} onClick={() => rebuild("")}
+          className="px-3 py-1.5 font-bold" style={{ borderRadius: 8, fontSize: TYPE.caption, color: PRIMARY, border: `1px solid ${LINE}`, opacity: busy ? 0.5 : 1 }}>
+          {busy === "all" ? "만드는 중…" : "전체 다시 만들기"}
+        </button>
+      </div>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>기록이 서버에 쌓일 때마다 요약이 고쳐 쓰입니다. 문장마다 근거 수업 날짜가 붙고, 근거가 맞지 않거나 진단 · 처방 말이 섞인 문장은 서버가 버립니다. 회원 AI 동의가 있는 회원만 만듭니다.</p>
+      {message ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }} data-member-summary-message>{message}</p> : null}
+      {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
+      {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
+      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>아직 만든 요약이 없습니다.</p> : null}
+      <div className="mt-2 space-y-1.5">
+        {(state.rows || []).map((row) => {
+          const status = memberSummaryStatusLabel(row);
+          const dropped = Object.entries(row.dropped || {}).filter(([, count]) => count > 0);
+          return (
+            <div key={row.id} style={{ borderRadius: 10, backgroundColor: CANVAS }} data-member-summary-row={status.key}>
+              <button type="button" onClick={() => setOpen(open === row.id ? "" : row.id)} className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left" style={{ fontSize: TYPE.caption }}>
+                <span className="min-w-0 flex-1 truncate font-bold" style={{ color: INK }}>{state.names.get(row.id) || "이름 모름"}</span>
+                <span style={{ color: SUB }}>{dateOf(row.updatedAt)}</span>
+                <span className="font-bold" style={{ color: status.key === "failed" ? WARN : status.key === "ready" ? GOOD : SUB }}>{status.label}</span>
+              </button>
+              {open === row.id ? (
+                <div className="px-3 pb-3" style={{ fontSize: TYPE.caption, lineHeight: 1.5 }}>
+                  {SUMMARY_BLOCK_LABELS.map(([block, label]) => (
+                    <div key={block} className="mt-2">
+                      <p className="font-bold" style={{ color: INK }}>{label}</p>
+                      {(row.summary?.[block] || []).length
+                        ? row.summary[block].map((item, index) => (
+                          <p key={index} style={{ color: INK }}>· {item.text} <span style={{ color: SUB }}>({(item.sources || []).map((source) => source.date).join(", ")})</span></p>
+                        ))
+                        : <p style={{ color: SUB }}>기록 없음</p>}
+                    </div>
+                  ))}
+                  <p className="mt-2" style={{ color: SUB }}>
+                    {dropped.length ? `버린 문장: ${dropped.map(([reason, count]) => `${SUMMARY_DROP_LABELS[reason] || reason} ${count}`).join(" · ")}` : "버린 문장 없음"}
+                    {row.promptVersion ? ` · ${row.promptVersion}` : ""}
+                  </p>
+                  <button type="button" disabled={Boolean(busy)} onClick={() => rebuild(row.id)} className="mt-2 px-3 py-1.5 font-bold"
+                    style={{ borderRadius: 8, fontSize: TYPE.caption, color: PRIMARY, border: `1px solid ${LINE}`, opacity: busy ? 0.5 : 1 }}>
+                    {busy === row.id ? "만드는 중…" : "이 회원 다시 만들기"}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function ScheduleSyncAdmin({
   organization, instructorStore, onLoadConfig, onSaveConfig,
   /* 같은 카드로 두 스위치를 다룬다: 센터 수업(scheduleSync)과 본인 일정(privateSync, 3단계). */
@@ -25481,45 +25965,69 @@ function ScheduleSyncAdmin({
  * 문서는 규칙이 아무에게도 열지 않아, 이 화면은 서버 함수(lessonRatingStats)로만 읽는다.
  * 항목 문구는 functions/shared/lesson-rating.mjs 한 곳 -- 서버가 함께 돌려준다.
  */
-function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, initialState = null }) {
-  const [state, setState] = useState(() => initialState || { rows: null, items: [], error: "" });
+/* 별점 화면의 달 옮기기. "YYYY-MM" ± n 달. */
+const shiftRatingMonth = (month, delta) => {
+  const [y, m] = String(month).split("-").map(Number);
+  const at = new Date(Date.UTC(y, m - 1 + delta, 1));
+  return `${at.getUTCFullYear()}-${String(at.getUTCMonth() + 1).padStart(2, "0")}`;
+};
+const ratingMonthLabel = (month) => (month === "all" ? "지금까지 누적" : `${Number(String(month).slice(0, 4))}년 ${Number(String(month).slice(5, 7))}월`);
+
+function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, initialState = null, initialMonth = null }) {
+  /* 2026-11-16 대표: "별점 항목을 따로 빼고, 점장이 자기 지점 강사들 몇 점 받는지 · 한 달 단위로 누적 체크".
+     달마다(수업 시각 기준) 또는 지금까지 누적. 누가 무엇을 보는지는 서버가 정한다(lesson-rating.mjs
+     ratingViewerScope) -- 대표 · 총괄은 전부, 점장은 자기 지점 강사만 · 본인 제외. */
+  const thisMonth = currentRatingMonth();
+  const [month, setMonth] = useState(initialMonth || thisMonth);
+  const [state, setState] = useState(() => initialState || { rows: null, items: [], scope: "", error: "" });
   const organizationId = organization?.organizationId || "";
   const load = useCallback(async () => {
     if (!organizationId) return;
     setState((current) => ({ ...current, error: "", rows: null }));
     try {
-      const result = await onLoad({ organizationId });
-      setState({ rows: Array.isArray(result?.rows) ? result.rows : [], items: Array.isArray(result?.items) ? result.items : [], error: "" });
+      const result = await onLoad({ organizationId, month });
+      setState({ rows: Array.isArray(result?.rows) ? result.rows : [], items: Array.isArray(result?.items) ? result.items : [], scope: String(result?.scope || ""), error: "" });
     } catch (thrown) {
       const code = String(thrown?.details?.reason || thrown?.code || "unknown").replace(/^functions\//, "");
-      setState({ rows: [], items: [], error: `평가 집계를 읽지 못했어요 (코드 ${code})` });
+      setState({ rows: [], items: [], scope: "", error: `평가 집계를 읽지 못했어요 (코드 ${code})` });
       deviceLog("lesson_rating_stats_failed", {
         feature: "lesson_rating", stage: "stats_read", errorDomain: "functions_callable",
         errorCode: String(thrown?.code || "unknown"), message: thrown?.message,
         role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
       });
     }
-  }, [organizationId, onLoad, organization?.role]);
+  }, [organizationId, onLoad, organization?.role, month]);
   useEffect(() => { if (!initialState) load(); }, [load, initialState]);
   const questionOf = (id) => state.items.find((item) => item.id === id)?.question || id;
+  const branchOnly = state.scope === "branch" || (!state.scope && organization?.title === "branch_manager" && !isOwnerLevelRole(organization?.role));
+  const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-lesson-rating-stats>
       <div className="flex items-center justify-between">
-        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>수업 후 별점 · 강사별 집계</h2>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{branchOnly ? "우리 지점 강사 별점" : "수업 후 별점 · 강사별"}</h2>
         <button type="button" onClick={load} className="h-9 px-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
       </div>
-      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        회원이 보니따 앱에서 수업 뒤에 남긴 별점(1~5)의 누적 평균과 응답 수입니다. 강사에게는 공개되지 않고, 회원 이름 · 개별 응답은 대표님도 볼 수 없습니다.
+      <div className="mt-2 flex items-center gap-2" data-rating-month={month}>
+        <button type="button" aria-label="이전 달" disabled={month === "all"} onClick={() => setMonth((current) => shiftRatingMonth(current, -1))} className="flex items-center justify-center disabled:opacity-30" style={navButton}><ChevronLeft size={16} /></button>
+        <span className="min-w-0 flex-1 text-center font-extrabold tabular-nums" style={{ fontSize: TYPE.body, color: INK }}>{ratingMonthLabel(month)}</span>
+        <button type="button" aria-label="다음 달" disabled={month === "all" || month >= thisMonth} onClick={() => setMonth((current) => shiftRatingMonth(current, 1))} className="flex items-center justify-center disabled:opacity-30" style={navButton}><ChevronRight size={16} /></button>
+        <button type="button" onClick={() => setMonth((current) => (current === "all" ? thisMonth : "all"))} className="h-9 shrink-0 px-2.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 8, backgroundColor: month === "all" ? BRAND : CANVAS, color: month === "all" ? "#fff" : INK2 }}>{month === "all" ? "이번 달로" : "누적"}</button>
+      </div>
+      <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        {month === "all" ? "지금까지 받은 모든 별점(1~5)의 평균과 응답 수입니다." : "이 달에 한 수업에 회원이 남긴 별점(1~5)의 평균과 응답 수입니다."}
+        {branchOnly
+          ? " 맡은 지점 강사만 보이고, 본인 점수는 보이지 않습니다. 회원 이름 · 개별 응답은 볼 수 없습니다."
+          : " 담당 강사 본인에게는 공개되지 않고, 회원 이름 · 개별 응답은 대표님도 볼 수 없습니다."}
       </p>
       {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
       {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
-      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>아직 받은 평가가 없습니다.</p> : null}
+      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>{month === "all" ? "아직 받은 평가가 없습니다." : "이 달에 받은 평가가 없습니다."}</p> : null}
       <div className="mt-3 space-y-2">
         {(state.rows || []).map((row) => (
           <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-rating-row>
             <div className="flex items-center justify-between gap-2">
               <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>{row.instructorName || "이름 모름"}</span>
-              <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>누적 {row.count}건</span>
+              <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{month === "all" ? "누적" : "이 달"} {row.count}건</span>
             </div>
             {(row.items || []).map((item) => (
               <div key={item.id} className="mt-1 flex items-center justify-between gap-2">
@@ -26912,6 +27420,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   const showAudit = organization.ready
     && !organization.isLegacy
     && isOwnerLevelRole(organization.role);
+  /* 수업 별점 (2026-11-16 대표: "별점 항목을 따로 빼고, 점장이 자기 지점 강사들 몇 점 받는지"). 운영 스위치
+     화면 안에 있던 집계를 따로 뺐다. 대표 · 총괄은 전부, 점장(직함)은 자기 지점 강사만 -- 서버가 다시 거른다. */
+  const showRatings = organization.ready
+    && !organization.isLegacy
+    && (isOwnerLevelRole(organization.role) || (organization.role === ROLES.INSTRUCTOR && organization.title === "branch_manager"));
+  const ratingsItem = { key: "lesson-ratings", title: "수업 별점", description: isOwnerLevelRole(organization.role) ? "강사별 회원 별점 · 월별 · 누적" : "우리 지점 강사 별점 · 월별 · 누적", Icon: Star };
   /* ── 앱 업데이트 안내는 대표만 ──────────────────────────────────────────
      총괄매니저는 다른 자리에서 전부 대표와 같지만 여기만은 아니다
      (2026-10-10 결정). settlement 최소 빌드를 올리면 **센터 전체의 수업
@@ -27212,6 +27726,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
          둘의 차이다 -- 이쪽은 회원권 원장, 그쪽은 기기에 저장된 일정이다. */
       ...(showClients ? [{ key: "group-payroll", title: "그룹 급여 정산", description: "지점별 강사 풀방 · 빈방 횟수 입력", Icon: ClipboardList }] : []),
       ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 그룹 급여 포함", Icon: ArrowUpRight }] : []),
+      ...(showRatings && isOwnerLevelRole(organization.role) ? [ratingsItem] : []),
       /* 담당 강사. 강사가 보는 회원의 범위가 여기서 정해진다 -- 점검이 아니라
          강사를 다루는 일이라 이 묶음이다. */
       ...(showAudit ? [{ key: "instructor-scope", title: "담당 강사", description: "강사별 담당 회원 · 재계산", Icon: Users }] : []),
@@ -27241,54 +27756,81 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     ] },
   ].filter((group) => group.items.length > 0);
 
-  const menuGroups = [
-    { label: "업무", items: [
-      { key: "schedule", title: "일정 등록", description: "새 수업 · 상담 · 휴무 추가", Icon: Plus, action: onOpenSchedule },
-      { key: "records", title: "기록", description: "회원별 수업 · 비포애프터", Icon: ClipboardList, action: onOpenRecords },
-      /* 소속 센터에서는 이 화면과 급여 집계가 서로 다른 것을 센다. 이름이 비슷해
-         헷갈리므로 무엇을 세는지로 가른다 -- 화면 안에도 같은 설명이 있다. */
-      /* 소속 강사에게는 더 이상 금액 화면이 아니다. 금액은 일정 탭의 급여
-         카드 하나로 모았고, 여기는 "이번 달 나는 무엇을 했나" 를 답한다. */
-      { key: "report", title: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", description: inOrganization ? "수업 수 · 출석 · 챙길 회원" : "이달 수업 · 성과 · 예상 급여", Icon: ArrowUpRight },
-      /* 만료는 조용히 일어난다. 회원권이 끝나도 알림이 없고, 강사는 그 회원이
-         안 온다는 것을 몇 주 뒤에 안다 -- 그때는 늦다. 개인 모드에는 회원권이
-         없어 셀 것이 없다. */
-      ...(inOrganization ? [{ key: "expiry", title: "만료 회원", description: "이번 달 · 지난달 · 재등록률", Icon: Users }] : []),
-      /* 공지는 **모두가 본다.** 쓰는 사람에게만 보이는 자리에 두면 강사는
-         넘긴 공지를 다시 볼 길이 없다 -- 한 번 뜨고 끝나는 창이기 때문이다. */
-      ...(inOrganization ? [{ key: "notices", title: "공지사항", description: "센터에서 알리는 글 · 다시 보기", Icon: Bell }] : []),
-    ] },
+  /* ── 항목은 한 번만 적는다 ─────────────────────────────────────────────
+     같은 항목이 두 배치(강사 · 대표)에 다른 문구로 서면, 한쪽만 고쳐지는 날이
+     온다. 배치는 아래에서 고르고, 항목의 얼굴은 여기 하나다. */
+  const scheduleItem = { key: "schedule", title: "일정 등록", description: "새 수업 · 상담 · 휴무 추가", Icon: Plus, action: onOpenSchedule };
+  const recordsItem = { key: "records", title: "기록", description: "회원별 수업 · 비포애프터", Icon: ClipboardList, action: onOpenRecords };
+  /* 소속 센터에서는 이 화면과 급여 집계가 서로 다른 것을 센다. 이름이 비슷해
+     헷갈리므로 무엇을 세는지로 가른다 -- 화면 안에도 같은 설명이 있다. */
+  /* 소속 강사에게는 더 이상 금액 화면이 아니다. 금액은 일정 탭의 급여
+     카드 하나로 모았고, 여기는 "이번 달 나는 무엇을 했나" 를 답한다. */
+  const reportItem = { key: "report", title: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", description: inOrganization ? "수업 수 · 출석 · 챙길 회원" : "이달 수업 · 성과 · 예상 급여", Icon: ArrowUpRight };
+  /* 만료는 조용히 일어난다. 회원권이 끝나도 알림이 없고, 강사는 그 회원이
+     안 온다는 것을 몇 주 뒤에 안다 -- 그때는 늦다. 개인 모드에는 회원권이
+     없어 셀 것이 없다. */
+  const expiryItems = inOrganization ? [{ key: "expiry", title: "만료 회원", description: "이번 달 · 지난달 · 재등록률", Icon: Users }] : [];
+  /* 공지는 **모두가 본다.** 쓰는 사람에게만 보이는 자리에 두면 강사는
+     넘긴 공지를 다시 볼 길이 없다 -- 한 번 뜨고 끝나는 창이기 때문이다. */
+  const noticeItems = inOrganization ? [{ key: "notices", title: "공지사항", description: "센터에서 알리는 글 · 다시 보기", Icon: Bell }] : [];
+  const assessmentItem = { key: "assessment", title: "비포애프터 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity };
+  /* 이름은 "센터"지만 센터의 설정이 아니다. 이 세 값은 기기에 저장되고 이
+     기기의 일정과 레거시 급여 추정에만 쓰인다 -- 소속 센터의 이름도 단가도
+     여기서 오지 않는다.
+
+     ── 소속 센터에서는 대표에게만 보인다 ──
+     강사에게 이 화면은 아무것도 바꾸지 못하는 칸 셋이다. 센터명을 고쳐도
+     센터가 바뀌지 않고, 그룹 단가를 고쳐도 급여가 바뀌지 않는다(그쪽은
+     회원권 원장이 정한다). 바꿀 수 있는 것처럼 보이는 자리가 실은
+     아무것도 아닌 것이 제일 나쁘다 -- 강사는 고쳤다고 믿고, 숫자는 그대로다.
+
+     미소속 개인 강사에게는 그대로 보인다. 그 사람에게는 이 세 값이
+     유일한 설정이고, 월간 리포트가 실제로 그것으로 계산한다. */
+  const centerItems = !inOrganization || isOwnerLevelRole(organization.role)
+    ? [{ key: "center", title: "센터 정보", description: inOrganization ? "이 기기의 센터명 · 담당자 · 그룹 단가" : "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon }]
+    : [];
+  const scheduleColorsItem = { key: "schedule-colors", title: "일정 색상", description: "개인 · 듀엣 · 그룹 · 상담 · 휴무 카드 색", Icon: Palette };
+  const themeItem = { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone };
+  const dataItem = { key: "data", title: "데이터 상태", description: "기기 저장 · 로그인 상태", Icon: Check };
+  const backupItem = { key: "backup", title: "데이터 이관 · 백업", description: "자동 클라우드 백업 · 회원 인계 · 백업 파일", Icon: Download };
+  const onboardingItem = { key: "onboarding", title: "사용법 다시 보기", description: "기록 → 기억 → 다음 수업 흐름 다시 보기", Icon: Play, action: onOpenOnboarding };
+  const permissionsItem = { key: "permissions", title: "접근권한 안내", description: "기능별 선택 권한과 현재 상태", Icon: Check };
+  const lessonExamplesItem = { key: "lesson-examples", title: "AI 수업기록 예시", description: "10~20초 말하기 예시 다시 보기", Icon: MessageSquare, action: onOpenLessonExamples };
+  const knowledgeItem = { key: "knowledge", title: "오늘의 지식", description: "해부학 · 영양학 모아보기", Icon: Star };
+  const accountItem = { key: "account", title: "계정", description: "프로필 사진 · 이메일 계정 · 로그아웃", Icon: Users };
+  const appItem = { key: "app", title: "앱 정보", description: "앱 버전 확인", Icon: AlertCircle };
+
+  /* ── 대표 · 총괄매니저의 더보기는 대표 일이 위다 (2026-11-16 대표) ─────
+     강사 배치 그대로 두면 맨 위가 일정 등록 · 기록 · 이번 달 내 수업 활동이고,
+     대표가 매일 여는 발급 · 회원 관리는 그 아래에 묻혀 있었다. 대표는 그
+     위쪽을 거의 쓰지 않는다.
+
+     순서: 센터 운영 묶음 → 업무(만료 · 공지) → 대표 설정 → 내 설정 → 계정 · 앱
+     → 점검 → **강사 메뉴(접힘)**.
+
+     강사 항목을 지우지 않고 접어 두는 이유: 대표도 가끔 일정을 넣고, 강사가
+     무엇을 보는지 확인할 자리가 있어야 한다. 머리글이 "강사 화면에 보이는
+     항목" 이라고 말하므로 빈 자리로 읽히지 않는다.
+
+     계정(로그아웃)은 접힌 묶음 안에 넣지 않는다 -- 찾을 수 없으면 나갈 수 없다.
+
+     개인 모드는 역할이 "owner" 여도 강사 한 사람이다. inOrganization 으로 거른다. */
+  const ownerLayout = inOrganization && isOwnerLevelRole(organization.role);
+  const menuGroups = ownerLayout ? [
+    ...centreGroups.filter((group) => group.label !== "점검" && group.label !== "대표 설정"),
+    { label: "업무", items: [...expiryItems, ...noticeItems] },
+    ...centreGroups.filter((group) => group.label === "대표 설정"),
+    { label: "내 설정", items: [...centerItems, themeItem, dataItem, backupItem] },
+    { label: "계정 · 앱", items: [accountItem, permissionsItem, appItem] },
+    ...centreGroups.filter((group) => group.label === "점검"),
+    { label: INSTRUCTOR_MENU_GROUP, collapsible: true,
+      hint: "강사 계정에서 보이는 항목입니다. 대표 업무에는 필요 없어 접어 두었어요.",
+      items: [scheduleItem, recordsItem, reportItem, assessmentItem, scheduleColorsItem, onboardingItem, lessonExamplesItem, knowledgeItem] },
+  ].filter((group) => group.items.length > 0) : [
+    { label: "업무", items: [scheduleItem, recordsItem, reportItem, ...(showRatings ? [ratingsItem] : []), ...expiryItems, ...noticeItems] },
     ...centreGroups,
-    { label: "내 설정", items: [
-      { key: "assessment", title: "비포애프터 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity },
-      /* 이름은 "센터"지만 센터의 설정이 아니다. 이 세 값은 기기에 저장되고 이
-         기기의 일정과 레거시 급여 추정에만 쓰인다 -- 소속 센터의 이름도 단가도
-         여기서 오지 않는다.
-
-         ── 소속 센터에서는 대표에게만 보인다 ──
-         강사에게 이 화면은 아무것도 바꾸지 못하는 칸 셋이다. 센터명을 고쳐도
-         센터가 바뀌지 않고, 그룹 단가를 고쳐도 급여가 바뀌지 않는다(그쪽은
-         회원권 원장이 정한다). 바꿀 수 있는 것처럼 보이는 자리가 실은
-         아무것도 아닌 것이 제일 나쁘다 -- 강사는 고쳤다고 믿고, 숫자는 그대로다.
-
-         미소속 개인 강사에게는 그대로 보인다. 그 사람에게는 이 세 값이
-         유일한 설정이고, 월간 리포트가 실제로 그것으로 계산한다. */
-      ...(!inOrganization || isOwnerLevelRole(organization.role)
-        ? [{ key: "center", title: "센터 정보", description: inOrganization ? "이 기기의 센터명 · 담당자 · 그룹 단가" : "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon }]
-        : []),
-      { key: "schedule-colors", title: "일정 색상", description: "개인 · 듀엣 · 그룹 · 상담 · 휴무 카드 색", Icon: Palette },
-      { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone },
-      { key: "data", title: "데이터 상태", description: "기기 저장 · 로그인 상태", Icon: Check },
-      { key: "backup", title: "데이터 이관 · 백업", description: "자동 클라우드 백업 · 회원 인계 · 백업 파일", Icon: Download },
-    ] },
-    { label: "기타", items: [
-      { key: "onboarding", title: "사용법 다시 보기", description: "기록 → 기억 → 다음 수업 흐름 다시 보기", Icon: Play, action: onOpenOnboarding },
-      { key: "permissions", title: "접근권한 안내", description: "기능별 선택 권한과 현재 상태", Icon: Check },
-      { key: "lesson-examples", title: "AI 수업기록 예시", description: "10~20초 말하기 예시 다시 보기", Icon: MessageSquare, action: onOpenLessonExamples },
-      { key: "knowledge", title: "오늘의 지식", description: "해부학 · 영양학 모아보기", Icon: Star },
-      { key: "account", title: "계정", description: "프로필 사진 · 이메일 계정 · 로그아웃", Icon: Users },
-      { key: "app", title: "앱 정보", description: "앱 버전 확인", Icon: AlertCircle },
-    ] },
+    { label: "내 설정", items: [assessmentItem, ...centerItems, scheduleColorsItem, themeItem, dataItem, backupItem] },
+    { label: "기타", items: [onboardingItem, permissionsItem, lessonExamplesItem, knowledgeItem, accountItem, appItem] },
   ];
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: "14px" };
   const openMenu = (item) => {
@@ -27358,6 +27900,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
                 </button>
               ) : (
                 <h2 style={{ margin: "0 4px 7px", fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>{group.label}</h2>
+              )}
+              {group.hint && (
+                <p style={{ margin: "-3px 4px 7px", fontSize: TYPE.caption, lineHeight: 1.4, color: FAINT }}>{group.hint}</p>
               )}
               {group.collapsible && openMenuGroups[group.label] !== true ? null : (
               <div style={{ overflow: "hidden", borderRadius: 12, border: `1px solid ${LINE}`, backgroundColor: CARD }}>
@@ -27691,6 +28236,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
           <ExpiryOrderReview organization={organization} passStore={passStore} clientStore={clientStore}
             onOpenClient={onOpenClient} onRetryOrganization={onRetryOrganization} />
         )}
+        {view === "lesson-ratings" && showRatings && <LessonRatingStatsAdmin organization={organization} />}
         {(view === "clients" || view === "branch-overview") && showClients && (
           <ClientDirectory key={view} overview={view === "branch-overview"} organization={organization} currentUserId={account?.id || ""}
             clientStore={clientStore} locationStore={locationStore} onOpenClient={onOpenClient}
@@ -27778,12 +28324,39 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="memberRating" title="회원 앱 수업 후 별점"
-              description="켜진 강사의 수업이 끝나면 회원 앱 홈에 별점 카드(항목 3개, 1~5점)가 3일 동안 뜹니다. 평가는 강사에게 공개되지 않고, 아래 집계에서 강사별 평균 · 응답 수만 볼 수 있습니다. 강사 한 명씩 켜세요." />
-            <LessonRatingStatsAdmin organization={organization} />
+              description="켜진 강사의 수업이 끝나면 회원 앱 홈에 별점 카드(항목 3개, 1~5점)가 3일 동안 뜹니다. 평가는 담당 강사 본인에게 공개되지 않고, 더보기 → 수업 별점에서 강사별 평균 · 응답 수만 볼 수 있습니다(점장은 자기 지점 강사만). 강사 한 명씩 켜세요." />
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }} data-rating-moved>강사별 별점 집계는 더보기 → <b style={{ color: INK }}>수업 별점</b> 에서 월별 · 누적으로 봅니다.</p>
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="rosterRealtime" title="회원 명단 실시간"
               description="켜진 계정은 센터 회원 명단을 실시간으로 받습니다. 강사는 본인 담당 회원만, FC매니저 · 매니저 · 대표는 회원 목록에서 고른 지점을 받습니다 (대표 · 총괄매니저가 '전체'를 고르면 받지 않고 새로고침으로 맞춥니다). 대표 → 강사 한 명 → 전체 순서로 켜세요. 읽은 횟수는 진단에 남습니다." />
+            {/* 수업기록 서버 저장 (설계 문서 1단계-2, 2026-11-16). 강사 한 명씩 켜는 시범부터. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="lessonRecordServer" title="수업기록 서버 저장"
+              description="켜진 강사가 확정한 수업기록이 기기에 저장된 뒤 센터 서버에도 쌓입니다. 고치거나 지울 수 없는 줄로 남고, 대표 · 총괄 · 쓴 강사 · 담당 강사만 읽습니다. 꺼도 기기 저장은 그대로입니다. 강사 한 명씩 켜세요." />
+            <LessonRecordParityAdmin organization={organization} instructorStore={instructorStore} />
+            {/* 1단계-5: 서버 기록 읽기. 비교가 "일치" 인 강사부터 켠다. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="lessonRecordServerRead" title="수업기록 서버에서 읽기"
+              description="켜진 계정은 회원 상세 · 수업 관리의 지난 수업에 서버의 기록도 함께 보여 줍니다 -- 다른 기기 · 대타 강사가 쓴 기록, 새 폰에서도. 서버 기록은 보기만 하고 고치지 않습니다. 위 비교가 '일치' 인 강사부터 켜세요." />
+            {/* 2단계: AI 회원 요약. 켜진 강사가 확정한 기록이 서버에 쌓이면 그 회원 요약을 서버가 고쳐 쓴다. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="memberSummary" title="AI 회원 요약"
+              description="켜진 강사가 확정한 기록이 서버에 쌓이면, 서버가 그 회원의 요약(꼭 기억할 것 · 최근 흐름 · 계속 확인 중)을 고쳐 씁니다. 회원 이름 · 연락처는 보내지 않고, 회원 AI 동의가 있는 회원만 만듭니다. 위 '수업기록 서버 저장' 이 켜진 강사에게만 의미가 있습니다." />
+            {/* 3단계: 수업 전 브리핑 개편. 켜진 계정의 수업 관리 시트 위쪽에 세 덩어리 브리핑. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="lessonBriefingV2" title="수업 전 브리핑 (새 화면)"
+              description="켜진 계정은 수업 관리 시트 위쪽에 꼭 기억할 것 · 지난 수업 · 최근 흐름이 크게 섭니다. 지난 수업은 연 수업보다 앞선 기록만, 같은 문장은 한 번만. 회원 요약이 있으면 함께 보여 줍니다. 끄면 지금 화면 그대로입니다." />
+            {/* 4단계: 재등록 알림 (규칙 계산). */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="renewalAlerts" title="재등록 알림"
+              description="켜진 계정은 수업 관리 시트 브리핑 아래에 잔여 · 만료 · 소진 예상 한 줄이 섭니다 (최근 4주 출석 속도로 계산). 만료 회원 화면에 '다 못 쓸 회원' 묶음이 생깁니다." />
+            <MemberSummaryAdmin organization={organization} />
             {/* 비포애프터 회원 공유 (2026-11-15). 켜면 모든 강사가 비교 카드를 보내고, 동의한 회원이 보니따 앱에서 본다. */}
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
@@ -28568,6 +29141,13 @@ export function createAppScreenSmokeCases() {
     { name: "일정 탭 · 소속 · 2:1 한 명 미표시", element: scheduleWithSettlement(settleLessonOf({
       attendees: [settleAttendee("m-local-1"), { ...settleAttendee("smoke-client-b"), status: "booked" }],
     })) },
+    /* 새 수업 등록 · 회원을 고른 뒤 (2026-11-16 대표 제보: 안드로이드에서 이름 끝 글자가 잘림). */
+    { name: "일정 등록 · 회원 고름", element: scheduleWithSettlement({
+      id: null, memberIds: ["smoke-client-b"], date: todayISO(), start: "10:00", dur: DEFAULT_CLASS_DURATION, type: "개인레슨", instructor: "", room: "", memo: "",
+    }) },
+    { name: "일정 등록 · 듀엣 회원 고름", element: scheduleWithSettlement({
+      id: null, memberIds: ["m-local-1", "smoke-client-b"], date: todayISO(), start: "10:00", dur: DEFAULT_CLASS_DURATION, type: "듀엣", instructor: "", room: "", memo: "",
+    }, { members: smokeRoster.map((item) => (item.id === "m-local-1" ? { ...item, name: "남궁하나" } : item)) }) },
     /* 노쇼 차감 / 미차감을 고른 뒤 (2026-11-06). 고르면 확정 버튼이 열린다. */
     { name: "일정 탭 · 소속 · 1:1 노쇼 차감", element: scheduleWithSettlement(settleLessonOf({
       type: "1:1", attendees: [{ ...settleAttendee("m-local-1"), status: "noshow", noshowFee: true }],
@@ -29021,12 +29601,20 @@ export function createAppScreenSmokeCases() {
       <MemberCancelAdmin organization={readyOrganizationContext(smokeOwner)} onLoadConfig={() => Promise.resolve(null)} onSaveConfig={noop} />
     )) },
     { name: "운영 설정 · 수업 후 별점 집계", element: providerWith(smokeOwner, (
-      <LessonRatingStatsAdmin organization={readyOrganizationContext(smokeOwner)} onLoad={() => Promise.resolve(null)}
+      <LessonRatingStatsAdmin organization={readyOrganizationContext(smokeOwner)} onLoad={() => Promise.resolve(null)} initialMonth="all"
         initialState={{ error: "", items: [{ id: "body", question: "항목 1 (스모크 예시)" }], rows: [
           { instructorId: "u1", instructorName: "정예진", count: 12, items: [{ id: "body", average: 4.6, count: 12 }] },
           { instructorId: "u2", instructorName: "", count: 1, items: [{ id: "body", average: null, count: 0 }] },
         ] }} />
     )) },
+    /* 점장(직함) 화면 -- 이 달, 자기 지점 강사만 (2026-11-16). 서버가 거른 결과라 줄은 그대로 그린다. */
+    { name: "수업 별점 · 점장 · 이 달", element: providerWith({ ...smokeOwner, role: "instructor", title: "branch_manager" }, (
+      <LessonRatingStatsAdmin organization={readyOrganizationContext({ ...smokeOwner, role: "instructor", title: "branch_manager" })} onLoad={() => Promise.resolve(null)} initialMonth="2026-11"
+        initialState={{ error: "", scope: "branch", items: [{ id: "care", question: "항목 2 (스모크 예시)" }], rows: [
+          { instructorId: "u3", instructorName: "김지점", count: 4, items: [{ id: "care", average: 4.8, count: 4 }] },
+        ] }} />
+    )) },
+    { name: "더보기 탭 · 점장", element: settingsTab({ ...smokeOwner, role: "instructor", title: "branch_manager" }) },
     { name: "운영 설정 · 수업 후 별점 집계 · 읽지 못함", element: providerWith(smokeOwner, (
       <LessonRatingStatsAdmin organization={readyOrganizationContext(smokeOwner)} onLoad={() => Promise.resolve(null)}
         initialState={{ error: "평가 집계를 읽지 못했어요 (코드 not_owner)", items: [], rows: [] }} />
@@ -32800,6 +33388,210 @@ export default function App() {
     setTab("schedule");
   };
   const savedLessonRecordToastKeysRef = useRef(new Set());
+  /* 수업기록 저장을 한 곳으로 (설계 문서 1단계-1). 기기 저장이 끝난 뒤 부른다. 지금은 꺼져 있다 --
+     1-2 단계가 서버 "보낼 줄" 을 여기에 붙인다 (features/lesson-record/record-store.js). */
+  /* 1단계-2: 기기 · 서버 동시 저장. 스위치는 scheduleSync 문서의 lessonRecordServer 칸(운영 스위치 화면) --
+     꺼져 있으면 지금과 똑같다. 켜지면 확정 기록이 기기 저장 뒤 "보낼 줄" 에 들어가고 연결되면 서버로 간다. */
+  const lessonRecordServerOn = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.lessonRecordServer, account?.id);
+  const lessonRecordServerReadOn = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.lessonRecordServerRead, account?.id);
+  const [serverRecordsByClient, setServerRecordsByClient] = useState(() => new Map());
+  const serverRecordFetchedAt = useRef(new Map());
+  /* 결정 4: 동의 카드는 서버 저장 · AI 요약 스위치가 켜진 계정에서만 보인다 -- 꺼져 있으면 지금 화면 그대로. */
+  const memberConsentOn = Boolean(organizationRoster) && (lessonRecordServerOn || scheduleSyncEnabledFor(scheduleSyncConfig?.memberSummary, account?.id));
+  /* 3단계: 수업 전 브리핑 개편. 켜진 계정은 수업 관리 시트에 세 덩어리 브리핑, 회원 요약(2단계)을 읽어 쓴다. */
+  /* 재등록 알림 줄의 [상담 소재] -> 회원 상세를 열고 상담 소재를 바로 만든다. */
+  const [consultIntentId, setConsultIntentId] = useState(null);
+  const lessonBriefingV2On = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.lessonBriefingV2, account?.id);
+  const [summariesByClient, setSummariesByClient] = useState(() => new Map());
+  const summaryFetchedAt = useRef(new Map());
+  /* 4단계: 재등록 알림 (규칙 계산). 수업 관리 시트 브리핑 아래 한 줄. 회원권은 명부가 이미 들고 있고(rosterPasses),
+     출석 속도는 그 회원의 쓰는 회원권 원장을 열 때 한 번 읽는다(5분). */
+  const renewalAlertsOn = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.renewalAlerts, account?.id);
+  const [renewalLedgers, setRenewalLedgers] = useState(() => new Map());
+  const renewalFetchedAt = useRef(new Map());
+  /* 5단계: 재등록 상담 소재 초안 (AI, 누를 때만). */
+  const consultPointsOn = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.consultPoints, account?.id);
+  const serverNotesValue = useMemo(() => ({
+    /* 결정 2: 목표 · 주의사항 서버 사본. 서버 저장 스위치가 켜진 계정, 동의한 센터 회원만. 실패해도 기기 저장은 이미 끝났다. */
+    saveCareNotes: async (member, { goal, focus }) => {
+      const clientId = String(member?.orgClientId || "");
+      if (!lessonRecordServerOn || !clientId || !memberDataConsentGranted(member) || !organizationContext.organizationId) return false;
+      try {
+        await writeMemberCareNotes(organizationContext.organizationId, clientId, { goal, focus, uid: account?.id || "" });
+        return true;
+      } catch (error) {
+        deviceLog("member_care_notes_failed", { feature: "member_care_notes", stage: "write", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), correlationId: clientId.slice(-8), appBuild: APP_BUILD_LABEL });
+        return false;
+      }
+    },
+    consultOn: consultPointsOn,
+    organizationId: organizationContext.organizationId || "",
+    renewalOn: renewalAlertsOn,
+    renewalFor: (clientId) => {
+      const key = String(clientId || "");
+      const entries = renewalLedgers.get(key);
+      if (!key || !entries) return null;
+      const now = new Date();
+      const forecast = renewalForecast({ clientId: key, passes: rosterPasses, entries, now });
+      return forecast ? { forecast, line: renewalLine(forecast, now) } : null;
+    },
+    requestRenewal: (clientId) => {
+      const key = String(clientId || "");
+      if (!key || !organizationContext.organizationId) return;
+      if (Date.now() - (renewalFetchedAt.current.get(key) || 0) < 5 * 60e3) return;
+      renewalFetchedAt.current.set(key, Date.now());
+      const live = livePassesOf(rosterPasses, key, new Date());
+      Promise.all(live.map((pass) => listPassLedger(organizationContext.organizationId, pass.id)))
+        .then((lists) => setRenewalLedgers((current) => new Map(current).set(key, lists.flat())))
+        .catch((error) => deviceLog("renewal_forecast_failed", { feature: "renewal_alerts", stage: "ledger_read", errorDomain: "firestore", errorCode: String(error?.code || error?.cause?.code || "unknown"), correlationId: key.slice(-8), appBuild: APP_BUILD_LABEL }));
+    },
+    briefingV2On: lessonBriefingV2On,
+    summaryFor: (clientId) => summariesByClient.get(String(clientId)) || null,
+    requestSummary: (clientId) => {
+      const key = String(clientId || "");
+      if (!key || !organizationContext.organizationId) return;
+      if (Date.now() - (summaryFetchedAt.current.get(key) || 0) < 5 * 60e3) return;
+      summaryFetchedAt.current.set(key, Date.now());
+      readMemberSummary(organizationContext.organizationId, key)
+        .then((row) => setSummariesByClient((current) => new Map(current).set(key, row)))
+        .catch((error) => deviceLog("member_summary_read_failed", { feature: "member_summary", stage: "read", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), correlationId: key.slice(-8), appBuild: APP_BUILD_LABEL }));
+    },
+    consentOn: memberConsentOn,
+    saveConsent: async (clientId, granted) => {
+      try {
+        await writeMemberDataConsent(organizationContext.organizationId, clientId, { granted, uid: account?.id || "", version: MEMBER_AI_CONSENT_VERSION });
+        deviceLog("member_data_consent_saved", { feature: "member_data_consent", stage: granted ? "grant" : "revoke", correlationId: String(clientId).slice(-8), appBuild: APP_BUILD_LABEL });
+      } catch (error) {
+        deviceLog("member_data_consent_failed", { feature: "member_data_consent", stage: granted ? "grant" : "revoke", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), correlationId: String(clientId).slice(-8), appBuild: APP_BUILD_LABEL });
+        throw error;
+      }
+    },
+    enabled: lessonRecordServerReadOn,
+    recordsFor: (clientId) => serverRecordsByClient.get(String(clientId)) || null,
+    resolveClientId: (member) => String(member?.orgClientId || findRosterMember(member?.id)?.orgClientId || ""),
+    request: (clientId) => {
+      const key = String(clientId);
+      if (!key || !organizationContext.organizationId) return;
+      const last = serverRecordFetchedAt.current.get(key) || 0;
+      if (Date.now() - last < 5 * 60e3) return;
+      serverRecordFetchedAt.current.set(key, Date.now());
+      createFirestoreLessonRecordStore().listForClient(organizationContext.organizationId, key)
+        .then((rows) => setServerRecordsByClient((current) => new Map(current).set(key, rows)))
+        .catch((error) => deviceLog("lesson_record_server_read_failed", { feature: "lesson_record", stage: "server_read", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), appBuild: APP_BUILD_LABEL }));
+    },
+  }), [lessonRecordServerReadOn, serverRecordsByClient, findRosterMember, organizationContext.organizationId, memberConsentOn, account?.id, lessonBriefingV2On, summariesByClient, renewalAlertsOn, renewalLedgers, rosterPasses, consultPointsOn, lessonRecordServerOn]);
+  const lessonRecordServerOnRef = useRef(lessonRecordServerOn);
+  lessonRecordServerOnRef.current = lessonRecordServerOn;
+  const lessonRecordOutbox = useMemo(() => (account?.id ? createServerOutbox({
+    key: outboxKeyFor(account.id),
+    store: createFirestoreLessonRecordStore(),
+    log: (event, details) => deviceLog(event, { ...details, appBuild: APP_BUILD_LABEL }),
+  }) : null), [account?.id]);
+  /* 명부는 나중에 채워진다. 저장 후크가 처음 그린 때의 (빈) 명부를 붙잡지 않게 늘 최신 것을 본다. */
+  const findRosterMemberRef = useRef(findRosterMember);
+  findRosterMemberRef.current = findRosterMember;
+  const lessonRecordStore = useMemo(() => createRecordStore({
+    isEnabled: () => lessonRecordServerOnRef.current && Boolean(lessonRecordOutbox),
+    enqueue: (record) => {
+      lessonRecordOutbox.enqueue({ ...record, organizationId: organizationContext.organizationId });
+      Promise.resolve(lessonRecordOutbox.flush()).catch(() => {});
+    },
+    context: () => ({
+      organizationId: organizationContext.organizationId, uid: account?.id || "", appBuild: APP_BUILD_LABEL,
+      /* 기기 회원 -> 센터 회원 id (명부의 orgClientId). 이어지지 않은 기기 전용 회원은 빈 값 = 보내지 않음. */
+      resolveClientId: (memberId) => findRosterMemberRef.current(memberId)?.orgClientId || "",
+      /* 결정 4: 회원 단위 동의가 있는 회원만 서버로. */
+      consentFor: (memberId) => memberDataConsentGranted(findRosterMemberRef.current(memberId)),
+    }),
+  }), [lessonRecordOutbox, organizationContext.organizationId, account?.id]);
+  /* 보낼 줄 비우기: 켜질 때(멈춘 것도 한 번 더), 다시 연결될 때, 앱이 앞으로 올 때, 1분마다. */
+  useEffect(() => {
+    if (!lessonRecordServerOn || !lessonRecordOutbox) return undefined;
+    const flush = (includeBlocked = false) => Promise.resolve(lessonRecordOutbox.flush({ includeBlocked }))
+      .then((summary) => { if (summary.sent || summary.blocked) deviceLog("lesson_record_outbox_flushed", { ...summary, appBuild: APP_BUILD_LABEL }); })
+      .catch(() => {});
+    flush(true);
+    const onOnline = () => flush();
+    const onVisible = () => { if (document.visibilityState === "visible") flush(); };
+    window.addEventListener("online", onOnline);
+    document.addEventListener("visibilitychange", onVisible);
+    const timer = window.setInterval(() => { if (lessonRecordOutbox.pending().length) flush(); }, 60e3);
+    return () => { window.removeEventListener("online", onOnline); document.removeEventListener("visibilitychange", onVisible); window.clearInterval(timer); };
+  }, [lessonRecordServerOn, lessonRecordOutbox]);
+  /* 1단계-3: 기존 확정 기록 이관 (결정 1: 확정 기록만, 상담 메모 제외). 스위치가 켜진 기기에서 한 번 --
+     보낼 줄에 들어갈 만큼씩(최대 200) 넣고, 넣은 기록ID 를 기억해 다음 번에 이어 간다. 기록ID 는 내용 지문이라
+     실시간 저장과 겹쳐도 서버에는 한 줄이다. 센터 회원의 기록만(기기에만 있는 회원은 서버가 받지 않는다). */
+  useEffect(() => {
+    if (!lessonRecordServerOn || !lessonRecordOutbox || !account?.id || !organizationContext.organizationId) return undefined;
+    /* 명부(rosterMembers)는 기기 기록(notes)과 센터 회원 id(orgClientId)를 함께 들고 있다. */
+    if (!(rosterMembers || []).some((member) => member?.orgClientId)) return undefined;
+    const stateKey = `pilateacher_lesson_record_migration_v1_${account.id}`;
+    const readState = () => { try { return JSON.parse(globalThis.localStorage?.getItem(stateKey) || "{}") || {}; } catch (_error) { return {}; } };
+    const step = () => {
+      const state = readState();
+      if (state.finishedAt) return;
+      const room = Math.min(200, lessonRecordOutbox.room());
+      if (room <= 0) return;
+      const doneIds = new Set(Array.isArray(state.doneIds) ? state.doneIds : []);
+      const batch = migrationRecordsFor({ members: rosterMembers, consentOf: memberDataConsentGranted, schedule: db.schedule, organizationId: organizationContext.organizationId, uid: account.id, appBuild: APP_BUILD_LABEL, doneIds, limit: room });
+      let queued = 0;
+      for (const record of batch.records) {
+        if (!lessonRecordOutbox.enqueue({ ...record, organizationId: organizationContext.organizationId })) break;
+        doneIds.add(record.recordId);
+        queued += 1;
+      }
+      const finished = batch.remaining === 0 && queued === batch.records.length;
+      try { globalThis.localStorage?.setItem(stateKey, JSON.stringify({ doneIds: [...doneIds], ...(finished ? { finishedAt: new Date().toISOString() } : {}) })); } catch (_error) { /* 다음 번에 다시 센다 -- 서버는 같은 줄을 두 번 만들지 않는다 */ }
+      if (queued || finished) deviceLog("lesson_record_migration_progress", { count: queued, blocked: batch.remaining, state: finished ? "done" : "partial", appBuild: APP_BUILD_LABEL });
+      if (queued) Promise.resolve(lessonRecordOutbox.flush()).catch(() => {});
+    };
+    step();
+    const timer = window.setInterval(step, 120e3);
+    return () => window.clearInterval(timer);
+  }, [lessonRecordServerOn, lessonRecordOutbox, account?.id, organizationContext.organizationId, rosterMembers, db.schedule]);
+  /* 1단계-4: 비교 검증. 6시간에 한 번, 기기의 확정 기록(서버로 갈 것)과 서버의 내 줄을 회원별로 맞춘다.
+     기기에만 있는 것은 보낼 줄에 다시 넣고(스스로 메움), 숫자만 서버에 남겨 대표가 강사별로 본다. */
+  useEffect(() => {
+    if (!lessonRecordServerOn || !lessonRecordOutbox || !account?.id || !organizationContext.organizationId) return undefined;
+    const lastKey = `pilateacher_lesson_record_parity_at_v1_${account.id}`;
+    let alive = true;
+    const run = async () => {
+      const last = Number(globalThis.localStorage?.getItem(lastKey) || 0);
+      if (Date.now() - last < 6 * 60 * 60e3) return;
+      const all = migrationRecordsFor({ members: rosterMembers, consentOf: memberDataConsentGranted, schedule: db.schedule, organizationId: organizationContext.organizationId, uid: account.id, appBuild: APP_BUILD_LABEL, limit: Number.MAX_SAFE_INTEGER });
+      if (!all.records.length) return;
+      const store = createFirestoreLessonRecordStore();
+      const clientIds = [...new Set(all.records.map((record) => record.data.clientId))];
+      const serverRecords = [];
+      try {
+        for (const clientId of clientIds) {
+          if (!alive) return;
+          serverRecords.push(...await store.listForClient(organizationContext.organizationId, clientId));
+        }
+      } catch (error) {
+        deviceLog("lesson_record_parity_failed", { feature: "lesson_record", stage: "server_read", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), appBuild: APP_BUILD_LABEL });
+        return;
+      }
+      const queuedIds = lessonRecordOutbox.pending().map((item) => item.recordId);
+      const result = compareRecordSets({ deviceRecords: all.records, serverRecords, uid: account.id, queuedIds });
+      const byId = new Map(all.records.map((record) => [record.recordId, record]));
+      for (const id of result.missingNotQueued) {
+        const record = byId.get(id);
+        if (record && !lessonRecordOutbox.enqueue({ ...record, organizationId: organizationContext.organizationId })) break;
+      }
+      if (result.missingNotQueued.length) Promise.resolve(lessonRecordOutbox.flush()).catch(() => {});
+      deviceLog("lesson_record_parity", { count: result.device, sent: result.server, blocked: result.missing, retryLater: result.waiting, appBuild: APP_BUILD_LABEL });
+      try {
+        await writeLessonRecordParity(organizationContext.organizationId, account.id, { ...result, appBuild: APP_BUILD_LABEL });
+        globalThis.localStorage?.setItem(lastKey, String(Date.now()));
+      } catch (error) {
+        deviceLog("lesson_record_parity_failed", { feature: "lesson_record", stage: "parity_write", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), appBuild: APP_BUILD_LABEL });
+      }
+    };
+    run();
+    const timer = window.setInterval(run, 30 * 60e3);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [lessonRecordServerOn, lessonRecordOutbox, account?.id, organizationContext.organizationId, rosterMembers, db.schedule]);
   const saveScheduleComment = async (id, type, sid, body, voiceMeta = null, noteOptions = null) => {
     const text = String(body || "").trim();
     /* 빈 기록은 저장하지 않는다. 말없이 false 만 돌려주면 강사는 버튼이 고장 난 줄
@@ -32950,6 +33742,7 @@ export default function App() {
       setToast({ ok: false, msg: "로그인이 풀려 기록을 저장하지 못했어요. 다시 로그인한 뒤 저장해 주세요. 입력한 내용은 그대로 있어요. (코드 no_account)" });
       return false;
     }
+    if (shouldConfirm) lessonRecordStore.afterDeviceSave({ note, memberId: id, lesson: linkedLesson });
     if (voiceMeta?.aiMeta?.requestId) {
       Promise.resolve(fbWritePilotMetricAttempt({
         requestId: voiceMeta.aiMeta.requestId,
@@ -33747,11 +34540,16 @@ export default function App() {
         audioBlobId: undefined,
       },
     } : note;
-    const finalizedWithSession = { ...finalized, sid: noteSid || undefined };
+    /* 기록 화면이 고른 수업(note.sid)이 먼저, 없으면 일정에서 들어온 수업(noteSid). 둘 다 없으면 칸을
+       아예 두지 않는다 -- undefined 값은 클라우드 백업 쓰기를 invalid-argument 로 떨어뜨린다. */
+    const linkedSid = String(note.sid || noteSid || "").trim();
+    const { sid: _droppedSid, ...finalizedWithoutSid } = finalized;
+    const finalizedWithSession = linkedSid ? { ...finalizedWithoutSid, sid: linkedSid } : finalizedWithoutSid;
     const nextNotes = [finalizedWithSession, ...(t.notes || [])];
     const memoryResult = buildMemberMemorySafely({ memberId: id, notes: nextNotes, existingMemory: t.aiMemory || [], schedule: db.schedule });
     const stored = await patch(id, { notes: nextNotes, aiMemory: memoryResult.memories, memoryRebuildNeeded: memoryResult.failed });
     if (stored === false) return false;
+    lessonRecordStore.afterDeviceSave({ note: finalizedWithSession, memberId: id, lesson: linkedSid ? db.schedule.find((lesson) => lesson?.id === linkedSid) || null : null });
     if (audioBlobId) {
       try { dropUrl(audioBlobId); await blobDel(audioBlobId); }
       catch (error) { deviceLog("voice_record_delete_retry_required", { memberId: id, lessonId: noteSid, storage: "indexedDB", ...deviceError(error) }); }
@@ -33763,7 +34561,7 @@ export default function App() {
     trackMemberMemoryUsage("memory_candidates", { count: memoryResult.stats.candidateCount });
     trackMemberMemoryUsage("memory_merged", { count: memoryResult.stats.mergedCount });
     trackMemberMemoryUsage("patterns", { count: memoryResult.stats.patternCount });
-    deviceLog("member_note_saved", { memberId: id, lessonId: noteSid, storage: "localStorage", source: note.voiceSource || "direct_input" });
+    deviceLog("member_note_saved", { memberId: id, lessonId: linkedSid || null, hasLessonLink: Boolean(linkedSid), storage: "localStorage", source: note.voiceSource || "direct_input" });
     setNoteSid(null);
     /* 저장이 끝나고 미기록 큐에서도 빠진 뒤에 묻는다. 그래야 화면이 말하는 상태가
        실제 저장된 상태와 같다. */
@@ -34589,12 +35387,12 @@ export default function App() {
           </div>
         ) : null}
         <div key={tab} className="app-motion-content relative min-h-0 flex-1 overflow-hidden">
-          <Guard>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} draftAccountId={account?.id} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+          <ServerNotesContext.Provider value={serverNotesValue}><Guard>
+            {tab === "schedule" && <ScheduleManager db={rosterDb} draftAccountId={account?.id} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id, options) => { if (options?.consult) setConsultIntentId(id); setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} viewerLocationIds={organizationContext.locationIds || []} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterInMemberTab} centreAccount={centreAccount} onOpenCentreRegistration={canOpenCentreRegistration ? openCentreRegistration : undefined} unlinkedLocal={centreAccount && roster ? roster.unlinkedLocal || [] : []} onUploadUnlinked={canOpenCentreRegistration ? uploadUnlinkedMember : undefined} onLinkUnlinked={linkUnlinkedMember} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
-                <ReferenceMemberDetail key={member.id} member={member} schedule={db.schedule} photos={allowedPhotoMembers.has(member.id) ? photos[member.id] : {}} settings={db.settings} viewerRole={organizationRoster ? organizationContext.role : ""}
+                <ReferenceMemberDetail key={member.id} openConsultOnMount={consultIntentId === member.id} onConsumeConsultIntent={() => setConsultIntentId(null)} member={member} schedule={db.schedule} photos={allowedPhotoMembers.has(member.id) ? photos[member.id] : {}} settings={db.settings} viewerRole={organizationRoster ? organizationContext.role : ""}
                   canViewSettlement={!account?.role || ["owner", "manager", "admin", "director"].includes(String(account.role).toLowerCase())} onBack={() => setMobileView("list")}
                   onPatch={(change) => patch(member.id, change)} onSaveNote={(type, body, voiceMeta, noteOptions) => saveScheduleComment(member.id, type, noteOptions?.lessonId || null, body, voiceMeta, noteOptions)}
                   onSchedule={() => { setScheduleMemberId(member.id); setTab("schedule"); }} onOpenLesson={(lessonId) => { setScheduleOpenLessonId(lessonId); setTab("schedule"); }} onAssess={(entry = {}) => { setAnalysisRecordId(entry.poseId || null); setAnalysisAssessmentId(entry.assessmentId || null); setAnalysisEntryMode(entry.mode || "home"); setAnalysisComparisonEntry(entry.beforeAssessmentId && entry.afterAssessmentId ? { beforeAssessmentId: entry.beforeAssessmentId, afterAssessmentId: entry.afterAssessmentId, compareView: entry.compareView || "front" } : null); setAnalysisMemberId(member.id); setTab("analysis"); }} onToast={setToast} onDelete={removeMember} onDeactivate={deactivateMember} onReactivate={reactivateMember}
@@ -34644,7 +35442,7 @@ export default function App() {
               currentUserId={account?.id || ""} rosterClients={rosterClients} rosterPasses={rosterPasses}
               onOpenPay={canSeeOwnPay ? () => setPayOpen(true) : undefined} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
               onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={() => openPreviousPhoneRestore()} onSnapshotBackup={takeMigrationSnapshot} snapshotBusy={snapshotBusy} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onSwapInstructorAccount={swapInstructorAccount} onPreviewInstructorNames={previewInstructorNames} onConfirmInstructorNames={confirmInstructorNames} noticeStore={noticeStore} onManageNotice={fbManageNotice} noticeWho={noticeWho} onOwnerMessageSaved={setOwnerMessage} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
-          </Guard>
+          </Guard></ServerNotesContext.Provider>
         </div>
         {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서
             수업이 끝난 자리에서 바로 열리게 하기 위해서다. */}

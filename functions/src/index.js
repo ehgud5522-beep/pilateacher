@@ -1067,7 +1067,8 @@ exports.manageGroupPayroll = onCall({
   }
 });
 
-/* 대표 화면: 강사별 누적 응답 수 · 항목별 평균. 대표만. 개별 응답은 읽지 않는다. */
+/* 별점 화면: 강사별 응답 수 · 항목별 평균. 대표 · 총괄은 전부, 점장은 자기 지점 강사만(본인 제외).
+   월별(수업 시각 기준) 또는 누적. 개별 응답 · 회원은 돌려주지 않는다 (lesson-rating.js). */
 exports.lessonRatingStats = onCall({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",
   timeoutSeconds: 30,
@@ -1076,9 +1077,9 @@ exports.lessonRatingStats = onCall({
   const organizationId = String(request?.data?.organizationId || "").trim();
   try {
     const result = await lessonRatingStats(firestore, {
-      callerUid: request?.auth?.uid, organizationId,
-    }, { membershipId, isActiveOwner });
-    lessonRatingLog("info", "lesson_rating_stats_read", { stage: "stats", organizationId, instructors: result.rows.length });
+      callerUid: request?.auth?.uid, organizationId, month: String(request?.data?.month || "").trim(),
+    }, { membershipId, isActiveOwner, isOwnerLevel });
+    lessonRatingLog("info", "lesson_rating_stats_read", { stage: "stats", organizationId, instructors: result.rows.length, month: result.month, scope: result.scope });
     return result;
   } catch (error) {
     if (error?.httpsCode) {
@@ -1557,5 +1558,212 @@ exports.eraseDeletedMemberShares = onDocumentWritten({ document: "memberLinks/{u
   if (event.data?.before.exists && !event.data?.after.exists) {
     const { eraseMemberShares } = require("./before-after-notifications");
     await eraseMemberShares(firestore, event.params.uid, getStorage().bucket());
+  }
+});
+
+/* ── AI 회원 요약 (설계 문서 2단계, 2026-11-16) ─────────────────────────────
+   서버 기록(lessonRecords)이 새로 생기면 그 회원 요약을 고쳐 쓴다. 화면은 저장된 요약만 읽는다 --
+   화면을 열 때 AI 를 부르지 않는다. 스위치 runtimeConfig/scheduleSync.memberSummary (처음에는 꺼짐),
+   회원 단위 AI 동의(clients.aiConsent)가 없으면 부르지 않는다. 근거는 member-summary.js 머리말. */
+const { onDocumentCreated } = require("firebase-functions/v2/firestore");
+const { createMemberSummaryService } = require("./member-summary");
+const memberSummaryLog = (level, event, fields) => logger[level](event, fields);
+const memberSummaryService = createMemberSummaryService({
+  firestore,
+  getProvider: () => {
+    if (!openAIProvider) {
+      openAIProvider = createOpenAIProvider({ apiKey: OPENAI_API_KEY.value(), model: process.env.AI_MODEL || DEFAULT_MODEL });
+    }
+    return openAIProvider;
+  },
+  log: memberSummaryLog,
+});
+
+exports.refreshMemberSummaryOnRecord = onDocumentCreated({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  document: "organizations/{organizationId}/lessonRecords/{recordId}",
+  secrets: [OPENAI_API_KEY],
+  timeoutSeconds: 120,
+  memory: "256MiB",
+  retry: false,
+}, async (event) => {
+  const data = event.data?.data() || {};
+  try {
+    await memberSummaryService.refresh({
+      organizationId: event.params.organizationId, clientId: String(data.clientId || ""),
+      triggerUid: String(data.createdBy || ""), reason: "record",
+    });
+  } catch (error) {
+    memberSummaryLog("error", "member_summary_trigger_failed", {
+      feature: "member_summary", stage: "trigger", organizationId: event.params.organizationId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+  }
+});
+
+exports.sweepMemberSummaries = onSchedule({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  schedule: "every 15 minutes",
+  timeZone: "Asia/Seoul",
+  secrets: [OPENAI_API_KEY],
+  timeoutSeconds: 300,
+  memory: "256MiB",
+}, async () => {
+  const results = await memberSummaryService.sweep();
+  if (results.length) memberSummaryLog("info", "member_summary_sweep", { feature: "member_summary", stage: "sweep", count: results.length });
+});
+
+/* 다시 만들기 (대표 · 총괄만). clientId 하나, 또는 요약이 있는 회원 전부(최대 200). 앞 요약을 쓰지 않고 원본 기록에서 처음부터. */
+exports.rebuildMemberSummary = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  secrets: [OPENAI_API_KEY],
+  timeoutSeconds: 540,
+  memory: "256MiB",
+  invoker: "public",
+}, async (request) => {
+  const callerUid = request?.auth?.uid;
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const clientId = String(request?.data?.clientId || "").trim();
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId || organizationId.includes("/")) throw new HttpsError("invalid-argument", "organizationId is required.", { reason: "organization_required" });
+  const membership = await firestore.collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  if (!membership.exists || !isOwnerLevel(membership.data())) {
+    throw new HttpsError("permission-denied", "Only the owner can rebuild summaries.", { reason: "owner_only" });
+  }
+  let targets = [clientId];
+  if (!clientId) {
+    const snapshot = await firestore.collection(`organizations/${organizationId}/memberSummaries`).limit(200).get();
+    targets = snapshot.docs.map((document) => document.id);
+  }
+  const counts = {};
+  for (const target of targets) {
+    const result = await memberSummaryService.refresh({ organizationId, clientId: target, reason: "rebuild", fromScratch: true });
+    const key = result.code ? `${result.outcome}:${result.code}` : result.outcome;
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  memberSummaryLog("info", "member_summary_rebuilt", { feature: "member_summary", stage: "rebuild", organizationId, targets: targets.length, counts });
+  return { targets: targets.length, counts };
+});
+
+/* ── 재등록 후보 기록 (설계 문서 4단계, 규칙 계산) ──────────────────────────
+   renewalCandidates 에 알림 구간에 든 회원권 · 재등록 · 끊김을 남긴다. 스위치 scheduleSync.renewalAlerts 가
+   전부 꺼져 있으면 돌지 않는다. 근거는 renewal-triggers.js 머리말. */
+const { createRenewalService } = require("./renewal-triggers");
+const renewalLog = (level, event, fields) => logger[level](event, fields);
+const renewalService = createRenewalService({ firestore, log: renewalLog });
+const renewalSwitchOn = async () => {
+  const snapshot = await firestore.collection("runtimeConfig").doc("scheduleSync").get();
+  const mode = String(snapshot.exists ? snapshot.data()?.renewalAlerts?.mode || "" : "");
+  return mode === "all" || mode === "listed";
+};
+
+exports.sweepRenewalCandidatesNightly = onSchedule({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  schedule: "every day 04:30",
+  timeZone: "Asia/Seoul",
+  memory: "512MiB",
+  timeoutSeconds: 540,
+}, async () => {
+  if (!(await renewalSwitchOn())) return;
+  const organizations = await firestore.collection("organizations").get();
+  for (const organization of organizations.docs) {
+    try {
+      const counts = await renewalService.sweepOrganization(organization.id);
+      renewalLog("info", "renewal_candidates_swept", { feature: "renewal_alerts", stage: "nightly", organizationId: organization.id, counts });
+    } catch (error) {
+      renewalLog("error", "renewal_candidates_failed", {
+        feature: "renewal_alerts", stage: "nightly", organizationId: organization.id, errorDomain: "firestore",
+        errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+      });
+    }
+  }
+});
+
+exports.markRenewalOnPassCreated = onDocumentCreated({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  document: "organizations/{organizationId}/passes/{passId}",
+  memory: "256MiB",
+  timeoutSeconds: 60,
+  retry: false,
+}, async (event) => {
+  try {
+    if (!(await renewalSwitchOn())) return;
+    await renewalService.onPassCreated(event.params.organizationId, { id: event.params.passId, ...(event.data?.data() || {}) }, new Date(event.time));
+  } catch (error) {
+    renewalLog("error", "renewal_candidates_failed", {
+      feature: "renewal_alerts", stage: "pass_created", organizationId: event.params.organizationId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+  }
+});
+
+/* 다시 채우기 (대표 · 총괄). 지난 6달 동안 끝난 회원권을 한 번 채워 넣는다. 이미 있는 줄은 두지 않는다. */
+exports.backfillRenewalCandidates = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 540,
+  memory: "512MiB",
+  invoker: "public",
+}, async (request) => {
+  const callerUid = request?.auth?.uid;
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  if (!callerUid) throw new HttpsError("unauthenticated", "Please sign in again.");
+  if (!organizationId || organizationId.includes("/")) throw new HttpsError("invalid-argument", "organizationId is required.", { reason: "organization_required" });
+  const membership = await firestore.collection("memberships").doc(membershipId(organizationId, callerUid)).get();
+  if (!membership.exists || !isOwnerLevel(membership.data())) {
+    throw new HttpsError("permission-denied", "Only the owner can backfill.", { reason: "owner_only" });
+  }
+  try {
+    const result = await renewalService.backfill(organizationId, { months: 6 });
+    renewalLog("info", "renewal_candidates_backfilled", { feature: "renewal_alerts", stage: "backfill", organizationId, ...result });
+    return result;
+  } catch (error) {
+    renewalLog("error", "renewal_candidates_failed", {
+      feature: "renewal_alerts", stage: "backfill", organizationId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+    throw new HttpsError("unavailable", "renewal_backfill_failed", { reason: String(error?.code || "renewal_backfill_failed") });
+  }
+});
+
+/* ── 재등록 상담 소재 초안 (설계 문서 5단계) ────────────────────────────────
+   강사가 누를 때만 부른다. 스위치 scheduleSync.consultPoints (처음엔 꺼짐), 회원 AI 동의 필요. 결과는 저장하지
+   않는다. 근거는 consult-points.js 머리말. */
+const { createConsultPointsService } = require("./consult-points");
+const consultPointsService = createConsultPointsService({
+  firestore, membershipId, isOwnerLevel,
+  getProvider: () => {
+    if (!openAIProvider) openAIProvider = createOpenAIProvider({ apiKey: OPENAI_API_KEY.value(), model: process.env.AI_MODEL || DEFAULT_MODEL });
+    return openAIProvider;
+  },
+});
+exports.consultTalkingPoints = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  secrets: [OPENAI_API_KEY],
+  timeoutSeconds: 60,
+  memory: "256MiB",
+  invoker: "public",
+}, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const clientId = String(request?.data?.clientId || "").trim();
+  const fields = { feature: "consult_points", organizationId, correlationId: clientId.slice(-8) };
+  try {
+    const result = await consultPointsService.generate({
+      callerUid: request?.auth?.uid, organizationId, clientId,
+      goal: String(request?.data?.goal || ""), hasBeforeAfter: request?.data?.hasBeforeAfter === true,
+    });
+    logger.info("consult_points_done", { ...fields, stage: "done", points: result.talkingPoints.length, dropped: result.dropped, usage: result.usage || null });
+    return { talkingPoints: result.talkingPoints, dropped: result.dropped, promptVersion: result.promptVersion, reason: result.reason || "" };
+  } catch (error) {
+    if (error?.httpsCode) {
+      logger.warn("consult_points_refused", { ...fields, stage: "authorize", errorDomain: "consult_points", errorCode: error.reason });
+      throw new HttpsError(error.httpsCode, error.reason, { reason: error.reason });
+    }
+    const code = String(error?.code || "unknown");
+    const transient = ["timeout", "provider_unavailable", "provider_incomplete"].includes(code);
+    logger.error("consult_points_failed", {
+      ...fields, stage: "provider", errorDomain: "openai", errorCode: code, transient,
+      providerRequestId: String(error?.diagnostic?.providerRequestId || "").slice(0, 160),
+    });
+    throw new HttpsError(transient ? "unavailable" : "internal", code, { reason: code });
   }
 });

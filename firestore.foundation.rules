@@ -275,6 +275,34 @@ service cloud.firestore {
 
     // Each clause passes when the field is absent. See the clients block for
     // why this is a floor and not a fixed set.
+    function memberDataConsentWellFormed(organizationId) {
+      let consent = request.resource.data.aiConsent;
+      return hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"])
+        && consent is map
+        && consent.version is string && consent.version.size() > 0 && consent.version.size() <= 20
+        && consent.method == "instructor_confirmed"
+        && (
+          (consent.status == "granted"
+            && consent.keys().hasOnly(["status", "version", "grantedAt", "grantedBy", "method"])
+            && consent.grantedAt == request.time && consent.grantedBy == request.auth.uid)
+          || (consent.status == "revoked"
+            && consent.keys().hasOnly(["status", "version", "revokedAt", "revokedBy", "method"])
+            && consent.revokedAt == request.time && consent.revokedBy == request.auth.uid)
+        );
+    }
+
+    function memberCareNotesWellFormed(organizationId) {
+      let notes = request.resource.data.careNotes;
+      return hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"])
+        && request.resource.data.get("aiConsent", {}).get("status", "") == "granted"
+        && notes is map
+        && notes.keys().hasOnly(["goal", "focus", "updatedAt", "updatedBy"])
+        && notes.goal is string && notes.goal.size() <= 500
+        && notes.focus is list && notes.focus.size() <= 10
+        && notes.updatedAt == request.time
+        && notes.updatedBy == request.auth.uid;
+    }
+
     function clientFieldsWellFormed() {
       return (!("name" in request.resource.data)
           || (request.resource.data.name is string && request.resource.data.name.size() > 0))
@@ -681,6 +709,9 @@ service cloud.firestore {
              볼 수 있는가" 이므로, 앱에서 쓸 수 있으면 자기 uid 를 적어 넣어
              남의 회원을 여는 문이 된다. 채우는 것은 트리거뿐이다. */
           && !("instructorIds" in request.resource.data)
+          /* 회원 동의(aiConsent)는 등록 때 넣지 않는다 -- 동의 화면에서 따로 받는다(결정 4). */
+          && !("aiConsent" in request.resource.data)
+          && !("careNotes" in request.resource.data)
           && clientFieldsWellFormed();
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
@@ -709,6 +740,11 @@ service cloud.firestore {
              문서를 통째로 다시 보내는 기기 동기화는 막히지 않는다. */
           && immutable(["previousPhones", "reviewDemo", "instructorIds"])
           && (immutable(["photoAccessRevoked"]) || hasRole(organizationId, ["owner", "area_manager", "manager"]))
+          /* 회원 단위 수업기록 서버 보관 · AI 처리 동의 (설계 결정 4, 2026-11-16). 바뀔 때만 본다(affectedKeys) --
+             직원은 못 바꾸고, 쓴 사람 · 서버 시각 · 모양이 맞아야 한다. 서버 저장 · AI 요약이 이 칸 하나를 믿는다. */
+          && (immutable(["aiConsent"]) || memberDataConsentWellFormed(organizationId))
+          /* 회원 목표 · 통증 · 주의사항 (설계 결정 2). 동의한 회원만, 강사 이상이 자기 이름 · 서버 시각으로. */
+          && (immutable(["careNotes"]) || memberCareNotesWellFormed(organizationId))
           && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor", "staff"]);
         allow delete: if false;
       }
@@ -1690,6 +1726,110 @@ service cloud.firestore {
             );
           allow update, delete: if false;
         }
+      }
+
+      /* ── 수업기록 서버 저장 (설계 문서 1단계, 2026-11-16 대표 승인) ─────────────────
+         강사가 확정한 수업기록을 **고치거나 지울 수 없는 줄**로 쌓는다. 고친 기록은 새 줄(supersedes)이다.
+         쓰기: 수업하는 역할이 **자기 이름으로** 새 줄만 -- 기록ID 는 쓴 사람 uid 로 시작한다.
+         읽기: 대표 · 총괄, 그 줄을 쓴 강사, 그 회원의 담당 강사(clients.instructorIds, 서버 트리거만 쓴다).
+               FC매니저 · 점장 · 직원은 못 읽는다 (설계 문서 결정 5 -- 건강 기록을 보는 사람을 가장 적게).
+         없는 문서를 읽는 것은 거부가 아니다 -- 보낼 줄이 "이미 올라갔나" 를 먼저 묻는다.
+         list 는 질의가 clientId 를 고정할 때만 회원 문서를 읽어 판정할 수 있다 -- 앱은 회원별로 묻는다. */
+      function lessonRecordReader(organizationId, data) {
+        return hasRole(organizationId, ownerLevel())
+          || (
+            hasRole(organizationId, ["manager", "instructor"])
+            && (
+              data.instructorId == request.auth.uid
+              || request.auth.uid in get(/databases/$(database)/documents/organizations/$(organizationId)/clients/$(data.clientId)).data.get("instructorIds", [])
+            )
+          );
+      }
+      match /lessonRecords/{recordId} {
+        allow get: if isCentreStaff(organizationId)
+          && (resource == null || (resource.data.organizationId == organizationId && lessonRecordReader(organizationId, resource.data)));
+        allow list: if isCentreStaff(organizationId) && lessonRecordReader(organizationId, resource.data);
+        allow create: if hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"])
+          && recordId.split("_")[0] == request.auth.uid
+          && request.resource.data.organizationId == organizationId
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.instructorId == request.auth.uid
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.keys().hasOnly([
+            "organizationId", "clientId", "lessonId", "lessonDate", "lessonStart", "instructorId", "createdBy",
+            "kind", "body", "fields", "deviceNoteId", "contentHash", "supersedes", "confirmedAt", "source", "appBuild", "createdAt"
+          ])
+          && request.resource.data.keys().hasAll([
+            "organizationId", "clientId", "lessonId", "lessonDate", "instructorId", "createdBy",
+            "kind", "body", "deviceNoteId", "contentHash", "confirmedAt", "source", "appBuild", "createdAt"
+          ])
+          && request.resource.data.clientId is string && request.resource.data.clientId.size() > 0 && request.resource.data.clientId.size() <= 200
+          && exists(/databases/$(database)/documents/organizations/$(organizationId)/clients/$(request.resource.data.clientId))
+          && request.resource.data.lessonId is string && request.resource.data.lessonId.size() <= 200
+          && request.resource.data.lessonDate is string && request.resource.data.lessonDate.size() <= 10
+          && (!("lessonStart" in request.resource.data) || (request.resource.data.lessonStart is string && request.resource.data.lessonStart.size() <= 5))
+          && request.resource.data.kind in ["voice", "manual", "no_comment"]
+          && request.resource.data.body is string && request.resource.data.body.size() > 0 && request.resource.data.body.size() <= 4000
+          && (!("fields" in request.resource.data) || (
+            request.resource.data.fields is map
+            && request.resource.data.fields.keys().hasOnly(["didToday", "observations", "responses", "nextFocus", "uncertain"])
+          ))
+          && request.resource.data.deviceNoteId is string && request.resource.data.deviceNoteId.size() > 0 && request.resource.data.deviceNoteId.size() <= 200
+          && request.resource.data.contentHash is string && request.resource.data.contentHash.size() <= 16
+          && (!("supersedes" in request.resource.data) || (request.resource.data.supersedes is string && request.resource.data.supersedes.size() <= 300))
+          && request.resource.data.confirmedAt is string && request.resource.data.confirmedAt.size() <= 40
+          && request.resource.data.source in ["app", "migration"]
+          && request.resource.data.appBuild is string && request.resource.data.appBuild.size() <= 40;
+        allow update, delete: if false;
+      }
+
+      /* 재등록 후보 (설계 문서 4단계, 규칙 계산). 서버(Functions)만 쓴다. 읽기는 대표 · 총괄 전부, FC매니저는 맡은
+         지점, 점장(직함)은 자기 지점 -- 재등록률을 지점 · 강사 · 달로 보는 자리. 이름 · 연락처는 없다. */
+      match /renewalCandidates/{passId} {
+        allow read: if hasRole(organizationId, ownerLevel())
+          || (hasRole(organizationId, ["manager"]) && passInManagerScope(organizationId, resource.data))
+          || (
+            hasRole(organizationId, ["instructor"])
+            && membership(organizationId).data.get("title", "") == "branch_manager"
+            && resource.data.get("locationId", "") != ""
+            && resource.data.get("locationId", "") in scopedLocationsOf(membership(organizationId).data)
+          );
+        allow create, update, delete: if false;
+      }
+
+      /* AI 회원 요약 (설계 문서 2단계). 서버(Functions)만 쓴다. 읽기는 대표 · 총괄 + 그 회원의 담당 강사(FC매니저 ·
+         점장은 담당일 때만) -- 1단계 서버 기록과 같은 범위(설계 결정 5). 앞 판(versions)은 대표 · 총괄만. */
+      match /memberSummaries/{clientId} {
+        allow get: if isCentreStaff(organizationId)
+          && (
+            hasRole(organizationId, ownerLevel())
+            || (
+              hasRole(organizationId, ["manager", "instructor"])
+              && request.auth.uid in get(/databases/$(database)/documents/organizations/$(organizationId)/clients/$(clientId)).data.get("instructorIds", [])
+            )
+          );
+        allow list: if hasRole(organizationId, ownerLevel());
+        allow create, update, delete: if false;
+        match /versions/{versionId} {
+          allow get, list: if hasRole(organizationId, ownerLevel());
+          allow create, update, delete: if false;
+        }
+      }
+
+      /* 수업기록 서버 저장 · 비교 검증 (1단계-4). 강사 기기가 "기기 확정 N · 서버 N · 차이 N" 숫자만 자기 칸에 쓰고,
+         대표 · 총괄이 강사별로 읽는다. 기록 내용 · 회원은 없다. */
+      match /lessonRecordParity/{userId} {
+        allow get, list: if hasRole(organizationId, ownerLevel())
+          || (isCentreStaff(organizationId) && request.auth.uid == userId);
+        allow create, update: if request.auth.uid == userId
+          && hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"])
+          && request.resource.data.keys().hasOnly(["userId", "device", "server", "missing", "waiting", "extra", "checkedAt", "appBuild"])
+          && request.resource.data.userId == userId
+          && request.resource.data.device is int && request.resource.data.server is int
+          && request.resource.data.missing is int && request.resource.data.waiting is int && request.resource.data.extra is int
+          && request.resource.data.checkedAt == request.time
+          && request.resource.data.appBuild is string && request.resource.data.appBuild.size() <= 40;
+        allow delete: if false;
       }
 
       match /lessonNotes/{noteId} {

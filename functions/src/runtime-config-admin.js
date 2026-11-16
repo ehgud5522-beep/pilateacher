@@ -139,6 +139,19 @@ const WRITERS = Object.freeze({
   /* 수업 후 별점 평가 (2026-11-09). listed 의 userIds 는 **강사** 계정 uid -- 그 강사의 수업에만
      평가를 받는다. 서버(memberLessonRating)만 읽는다. 없으면 꺼짐. scheduleSync 문서의 칸. */
   memberRating: scheduleSyncPayload,
+  /* 수업기록 서버 저장 (설계 문서 1단계-2, 2026-11-16). listed 의 userIds 는 **강사** 계정 uid -- 그 강사의
+     확정 기록이 기기 저장 뒤 서버(lessonRecords)에도 쌓인다. 강사 앱이 scheduleSync 문서에서 읽는다. */
+  lessonRecordServer: scheduleSyncPayload,
+  /* 서버 기록 읽기 (1단계-5). 켜진 계정은 회원 화면에 서버의 기록도 함께 본다. */
+  lessonRecordServerRead: scheduleSyncPayload,
+  /* AI 회원 요약 (2단계). 켜진 강사의 기록이 쌓이면 서버가 회원 요약을 고쳐 쓴다. */
+  memberSummary: scheduleSyncPayload,
+  /* 수업 전 브리핑 개편 (3단계). */
+  lessonBriefingV2: scheduleSyncPayload,
+  /* 재등록 알림 (4단계, 규칙 계산). */
+  renewalAlerts: scheduleSyncPayload,
+  /* 재등록 상담 소재 초안 (5단계, AI). */
+  consultPoints: scheduleSyncPayload,
   /* 비포애프터 회원 공유 (2026-11-15). 대표 화면은 끔 · 전체만 고른다(allowListed 없음) -- 고른 계정만은 예전 시범 모양
      (mode test · teacherIds · memberIds)을 콘솔에서. 서버(beforeAfterSharing)만 읽는다. */
   beforeAfterSharing: (input) => {
@@ -163,6 +176,13 @@ const FIELD_TARGETS = Object.freeze({
   memberCancel: { document: "scheduleSync", field: "memberCancel" },
   /* 별점 평가 스위치. 새 문서를 만들면 규칙 배포가 필요해 이미 있는 문서에 얹는다. */
   memberRating: { document: "scheduleSync", field: "memberRating" },
+  /* 같은 이유(규칙 배포 없이 켜고 끈다)로 scheduleSync 에 얹는다. 강사 앱은 이 문서를 이미 읽는다. */
+  lessonRecordServer: { document: "scheduleSync", field: "lessonRecordServer" },
+  lessonRecordServerRead: { document: "scheduleSync", field: "lessonRecordServerRead" },
+  memberSummary: { document: "scheduleSync", field: "memberSummary" },
+  lessonBriefingV2: { document: "scheduleSync", field: "lessonBriefingV2" },
+  renewalAlerts: { document: "scheduleSync", field: "renewalAlerts" },
+  consultPoints: { document: "scheduleSync", field: "consultPoints" },
 });
 
 /**

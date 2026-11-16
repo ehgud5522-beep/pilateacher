@@ -227,6 +227,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "일정 탭 · 소속 · 1:1 노쇼",
     "일정 탭 · 소속 · 2:1 둘 다 노쇼",
     "일정 탭 · 소속 · 2:1 한 명 미표시",
+    "일정 등록 · 회원 고름",
+    "일정 등록 · 듀엣 회원 고름",
     "일정 탭 · 소속 · 1:1 노쇼 차감",
     "일정 탭 · 소속 · 1:1 노쇼 미차감",
     "일정 탭 · 소속 · 2:1 노쇼 한 명만 고름",
@@ -319,6 +321,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "강사 알림함 시트 · 열지 못함",
     "운영 설정 · 회원 앱 수업 취소",
     "운영 설정 · 수업 후 별점 집계",
+    "수업 별점 · 점장 · 이 달",
+    "더보기 탭 · 점장",
     "운영 설정 · 수업 후 별점 집계 · 읽지 못함",
     "센터 회원 상세 · 보관 가능",
     "센터 회원 상세 · 보관 확인",
@@ -1325,7 +1329,8 @@ test("the monthly report and the payroll roll-up do not read alike", async () =>
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
-  const owner = markupOf("더보기 탭");
+  /* 대표에게 이 항목은 맨 아래 접힌 "강사 메뉴" 안에 있다 (2026-11-16). */
+  const owner = markupOf("더보기 탭 · 묶음 펼침");
   assert.match(owner, /이번 달 내 수업 활동/);
   assert.match(owner, /수업 수 · 출석 · 챙길 회원/);
   assert.match(owner, /강사별 수업료 · 그룹 급여 포함/);
@@ -1815,30 +1820,32 @@ test("an instructor cannot delete, hold or reprice a centre member", async () =>
   assert.doesNotMatch(personal, /내 목록에서 숨기기/);
 });
 
-/* 회원의 여정 줄과 수업의 예상 단가. 둘 다 "나중에 묻지 않게" 하는 화면이다. */
-test("the journey line shows the whole road, not just this pass", async () => {
+/* 회원 상세의 회원권 칸 (2026-11-16: 여정 선 + 점 → 지금 회원권 칸 + 회원권마다 한 줄). */
+test("the member detail says how many sessions are left, and each pass in one line", async () => {
   const { createAppScreenSmokeCases } = await screenModule();
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
   const journey = markupOf("회원 상세 · 여정");
-  /* 20 + 30 + 32 = 82, 그중 쓴 것 64. 이관 기록은 74 − 64 = 10 회.
-     숫자는 보조지만 줄만으로는 "얼마나" 를 읽을 수 없어 한 줄은 남긴다. */
-  assert.match(journey, /누적 74 \/ 92회/);
-  assert.match(journey, /3차 진행중/);
-  // 담당이 바뀐 회원은 이 구간이 실제보다 짧다. 기준을 밝혀야 오해가 없다.
-  assert.match(journey, /앱 이전 기록 \(담당 강사 기준\) 10회/);
+  /* 1차 20 · 2차 30 다 씀, 3차 30+서비스 2 중 18 남음, 이관 기록 74 − 64 = 10 회. */
+  assert.match(journey, /이번 회원권 · 3번째 등록/);
+  assert.match(journey, /data-pass-remaining="[^"]*"><span[^>]*>18<\/span><span[^>]*>회 남음/, "남은 횟수가 크게");
+  assert.match(journey, /data-pass-cells="32"/, "40회 이하는 한 회 = 한 칸");
+  assert.match(journey, /aria-label="32회 중 14회 사용, 18회 남음"/);
+  assert.match(journey, /사용 14회/);
+  assert.match(journey, /전체 32회/);
+  assert.match(journey, /등록 이력 3번 · 지금까지 74회 수업/);
+  const rows = [...journey.matchAll(/data-pass-history-row="([a-z]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(rows, ["using", "done", "done", "prior"], "최근 회원권이 위, 앱 이전 기록이 맨 아래");
+  assert.match(journey, /3차 · 32회 \(서비스 2\)/);
+  assert.match(journey, /다 씀/);
+  assert.match(journey, /앱 이전 기록/);
+  assert.match(journey, /앱 이전 기록 \(담당 강사 기준\)/, "담당이 바뀐 회원은 이전 기록이 실제보다 짧다 -- 기준을 밝힌다");
+  // 옛 선 + 점 그림은 없다.
+  assert.doesNotMatch(journey, /누적 \d+ \/ \d+회|진행중|repeating-linear-gradient/);
 
-  /* 현재 위치를 나타내는 점. 차감할 때마다 한 칸 오른쪽으로 기어간다 -- 회원이
-     지금 어디쯤 와 있는지가 줄에서 읽혀야 하고, 그것이 이 줄의 요점이다. */
-  assert.match(journey, /aria-label="누적 74회 \/ 총 92회 · 3차 진행중"/);
-  assert.match(journey, /left:80\.4\d*%/, "74 / 92 = 80.4%");
-  /* 서비스 구간은 색을 덮는 대신 빗금을 얹는다 -- 아직 쓰지 않은 서비스도
-     "여기는 서비스" 로 읽혀야 한다. 급여도 성격도 다른 회차다. */
-  assert.match(journey, /repeating-linear-gradient/);
-
-  // 회원권이 하나도 없으면 빈 줄을 그리지 않는다.
-  assert.doesNotMatch(markupOf("회원 상세"), /누적 \d+ \/ \d+회/);
+  // 회원권이 하나도 없으면 빈 칸을 그리지 않는다.
+  assert.doesNotMatch(markupOf("회원 상세"), /data-pass-progress/);
 });
 
 test("a lesson says what it will be worth before it is settled", async () => {
@@ -2788,6 +2795,56 @@ test("the settings hub groups the centre work, and folds the dangerous half", as
   assert.match(hub, /aria-expanded="false"/);
 });
 
+/* ── 대표 · 총괄매니저의 더보기는 대표 일이 위다 (2026-11-16 대표) ─────────
+   "대표가 안 쓰는 강사 항목이 맨 위라 어수선하다." 대표 일 → 점검 → 접힌
+   강사 메뉴 순서로 서고, 강사 · FC매니저 · 개인 모드는 **그대로**다. */
+const orderOf = (markup, needles) => needles.map((needle) => {
+  const at = markup.indexOf(needle);
+  assert.ok(at >= 0, `${needle} 이(가) 보여야 한다`);
+  return at;
+});
+const assertInOrder = (markup, needles, label) => {
+  const at = orderOf(markup, needles);
+  for (let index = 1; index < at.length; index += 1) {
+    assert.ok(at[index - 1] < at[index], `${label}: ${needles[index - 1]} 이(가) ${needles[index]} 보다 위`);
+  }
+};
+
+test("owner-level hub puts owner work first, then 점검, then the folded instructor menu", async (t) => {
+  const markupOf = await issueScreens(t);
+  for (const [folded, open] of [["더보기 탭", "더보기 탭 · 묶음 펼침"], ["더보기 탭 · 총괄매니저", "더보기 탭 · 묶음 펼침 · 총괄매니저"]]) {
+    const hub = markupOf(folded);
+    // 강사 메뉴는 접힌 채로 시작한다 -- 머리글과 설명만 보이고 항목은 그려지지 않는다.
+    assert.match(hub, /강사 메뉴 · 강사 화면에 보이는 항목/, folded);
+    assert.match(hub, /강사 계정에서 보이는 항목입니다/, folded);
+    for (const hidden of ["새 수업 · 상담 · 휴무 추가", "회원별 수업 · 비포애프터", "이번 달 내 수업 활동", "비포애프터 설정", "일정 색상", "사용법 다시 보기", "AI 수업기록 예시", "오늘의 지식"]) {
+      assert.equal(hub.includes(hidden), false, `${folded}: ${hidden} 은(는) 접혀 있다`);
+    }
+    // 로그아웃은 접힌 묶음 안에 묻히지 않는다.
+    assert.match(hub, /프로필 사진 · 이메일 계정 · 로그아웃/, folded);
+    assertInOrder(hub, ["회원권 발급", "강사 · 급여", "만료 회원", "공지사항", "화면 설정", "프로필 사진 · 이메일 계정 · 로그아웃", "앱 정보", ">점검<", "강사 메뉴 · 강사 화면에 보이는 항목"], folded);
+
+    const expanded = markupOf(open);
+    assertInOrder(expanded, [
+      "회원권 발급", "만료 회원", "대표 설정", "내 설정", "화면 설정", "데이터 이관 · 백업", "프로필 사진 · 이메일 계정 · 로그아웃",
+      "감사 로그", "강사 메뉴 · 강사 화면에 보이는 항목",
+      "새 수업 · 상담 · 휴무 추가", "회원별 수업 · 비포애프터", "이번 달 내 수업 활동", "비포애프터 설정", "일정 색상", "사용법 다시 보기", "AI 수업기록 예시", "오늘의 지식",
+    ], open);
+  }
+});
+
+test("instructor, FC manager and personal hubs keep today's order", async (t) => {
+  const markupOf = await issueScreens(t);
+  const head = ["새 수업 · 상담 · 휴무 추가", "회원별 수업 · 비포애프터"];
+  const tail = ["비포애프터 설정", "일정 색상", "화면 설정", "데이터 상태", "데이터 이관 · 백업", "사용법 다시 보기", "접근권한 안내", "AI 수업기록 예시", "오늘의 지식", "프로필 사진 · 이메일 계정 · 로그아웃", "앱 정보"];
+  assertInOrder(markupOf("더보기 탭 · 강사"), [...head, "이번 달 내 수업 활동", "만료 회원", "공지사항", ...tail], "강사");
+  assertInOrder(markupOf("더보기 탭 · 매니저"), [...head, "이번 달 내 수업 활동", "만료 회원", "공지사항", "회원권 발급", "그룹 급여 정산", ...tail], "FC매니저");
+  assertInOrder(markupOf("더보기 탭 · 개인 모드"), [...head, "월간 리포트", tail[0], "센터명 · 담당자 · 그룹 단가", ...tail.slice(1)], "개인 모드");
+  for (const name of ["더보기 탭 · 강사", "더보기 탭 · 매니저", "더보기 탭 · 개인 모드"]) {
+    assert.equal(markupOf(name).includes("강사 메뉴"), false, `${name}: 강사 메뉴 묶음은 대표 배치에만`);
+  }
+});
+
 test("a role that sees none of a group never sees its heading", async (t) => {
   /* 빈 머리글만 남기면 "여기 뭔가 있어야 하는데 안 보인다" 가 되고, 그것은
      권한이 없다는 말보다 나쁘다. */
@@ -3555,7 +3612,8 @@ test("lesson ratings: the owner sees per-instructor counts and averages only, fa
   const markup = await screenMarkup();
   const stats = markup("운영 설정 · 수업 후 별점 집계");
   assert.match(stats, /data-lesson-rating-stats/);
-  assert.match(stats, /강사에게는 공개되지 않고/);
+  assert.match(stats, /담당 강사 본인에게는 공개되지 않고/);
+  assert.match(stats, /지금까지 누적/);
   assert.match(stats, /정예진/);
   assert.match(stats, /누적 12건/);
   assert.match(stats, /★ 4\.6/);
@@ -3563,6 +3621,21 @@ test("lesson ratings: the owner sees per-instructor counts and averages only, fa
   assert.match(stats, /—/, "응답 없는 항목은 평균 대신 줄표");
   const failed = markup("운영 설정 · 수업 후 별점 집계 · 읽지 못함");
   assert.match(failed, /평가 집계를 읽지 못했어요 \(코드 not_owner\)/);
+});
+
+/* 2026-11-16 대표: "별점 항목을 따로 빼고, 점장이 자기 지점 강사들 몇 점 받는지 · 한 달 단위로". */
+test("lesson ratings: its own menu, monthly, and the branch manager sees only the branch, never self", async () => {
+  const markup = await screenMarkup();
+  const manager = markup("수업 별점 · 점장 · 이 달");
+  assert.match(manager, /우리 지점 강사 별점/);
+  assert.match(manager, /2026년 11월/);
+  assert.match(manager, /aria-label="이전 달"/);
+  assert.match(manager, /이 달 4건/);
+  assert.match(manager, /본인 점수는 보이지 않습니다/);
+  assert.match(markup("더보기 탭"), /수업 별점/, "대표 더보기에 따로 선다");
+  assert.match(markup("더보기 탭 · 점장"), /수업 별점/, "점장 더보기에도");
+  assert.match(markup("더보기 탭 · 점장"), /우리 지점 강사 별점 · 월별 · 누적/);
+  assert.doesNotMatch(markup("더보기 탭 · 강사"), /수업 별점/, "일반 강사에게는 없다");
 });
 
 test("owner message: one line at the top of the schedule tab, the owner writes it in owner settings", async () => {

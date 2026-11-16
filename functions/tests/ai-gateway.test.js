@@ -321,7 +321,7 @@ test("successful request logs the actual response model with its request id", as
   }
 });
 
-test("audio operation uses the authorized member name and never logs audio or transcript content", async () => {
+test("audio operation passes the authorized member name only for redaction and never logs audio or transcript content", async () => {
   let providerInput;
   const logs = [];
   const originalInfo = globalThis.console.info;
@@ -360,8 +360,9 @@ test("audio operation uses the authorized member name and never logs audio or tr
     });
     const response = await invoke(handler, audioGatewayRequest());
     assert.equal(response.statusCode, 200);
-    assert.deepEqual(Object.keys(providerInput).sort(), ["audio", "audioMetrics", "clipId", "language", "memberName"]);
-    assert.equal(providerInput.memberName, "김지민");
+    assert.deepEqual(Object.keys(providerInput).sort(), ["audio", "audioMetrics", "clipId", "language", "redactName"]);
+    assert.equal(providerInput.redactName, "김지민", "이름은 지우는 데만 -- 음성 인식 힌트로는 안 간다 (openai-provider)");
+    assert.equal("memberName" in providerInput, false);
     assert.equal(providerInput.language, "ko");
     const logText = JSON.stringify(logs);
     assert.equal(logText.includes("민감한 전사 원문"), false);

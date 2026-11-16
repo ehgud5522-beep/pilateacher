@@ -39,6 +39,8 @@ const HTTPS_CODE_BY_REASON = Object.freeze({
   rating_expired: "failed-precondition",
   scores_invalid: "invalid-argument",
   not_owner: "permission-denied",
+  not_allowed: "permission-denied",
+  month_invalid: "invalid-argument",
 });
 
 const refusal = (reason, message = reason, extra = {}) => Object.assign(new Error(message), {
@@ -151,8 +153,13 @@ async function submitLessonRating(firestore, input, deps = {}) {
 }
 
 /**
- * 대표 화면: 강사별 누적 응답 수 · 항목별 평균. **대표만** (요청: "대표(owner) 화면").
- * 개별 응답 문서는 읽지 않는다 -- 집계 문서만.
+ * 별점 화면: 강사별 응답 수 · 항목별 평균. **개별 응답 · 회원은 돌려주지 않는다.**
+ *
+ * 2026-11-16 대표: "별점 항목을 따로 빼고, 점장이 자기 지점 강사들 몇 점 받는지 · 한 달 단위로 누적".
+ *  - 누가: 대표 · 총괄매니저는 전부, 점장(직함)은 자기 지점 강사만 · 본인 제외 (ratingViewerScope).
+ *    전에는 대표만이었다 -- 총괄매니저도 대표와 같은 자리인데 막혀 있었다
+ *  - 언제: input.month = "YYYY-MM" 이면 그 달 수업의 평가만 개별 문서에서 모아 센다(수업 시각 기준),
+ *    "all" 이면 지금까지의 누적(lessonRatingStats). 없으면 이번 달
  */
 async function lessonRatingStats(firestore, input, deps) {
   const policy = await loadPolicy();
@@ -162,19 +169,38 @@ async function lessonRatingStats(firestore, input, deps) {
   if (!organizationId || organizationId.includes("/")) throw requestError("invalid-argument", "organizationId is required.", "missing_fields");
   const membershipSnapshot = await firestore.collection("memberships").doc(deps.membershipId(organizationId, callerUid)).get();
   const membership = membershipSnapshot.exists ? membershipSnapshot.data() || {} : null;
-  if (!deps.isActiveOwner(membership)) throw refusal("not_owner", "not_owner", { role: text(membership?.role) || "none" });
+  const viewer = policy.ratingViewerScope(membership, callerUid, { isOwnerLevel: deps.isOwnerLevel || deps.isActiveOwner });
+  if (!viewer.allowed) throw refusal("not_allowed", "not_allowed", { role: text(membership?.role) || "none" });
+
+  const requested = text(input?.month);
+  const month = requested === "all" ? "all" : (requested || policy.currentRatingMonth(deps.now ? deps.now() : new Date()));
+  const range = month === "all" ? null : policy.ratingMonthRange(month);
+  if (month !== "all" && !range) throw refusal("month_invalid", "month_invalid", { month: requested });
 
   const org = firestore.collection("organizations").doc(organizationId);
-  const page = await org.collection("lessonRatingStats").get();
-  const statsDocs = page.docs.map((snapshot) => ({ instructorId: snapshot.id, ...snapshot.data() }));
-  const names = new Map();
+  let statsDocs;
+  if (range) {
+    const page = await org.collection("lessonRatings")
+      .where("lessonStartsAt", ">=", range.from)
+      .where("lessonStartsAt", "<", range.to)
+      .get();
+    statsDocs = policy.statsFromRatings(page.docs.map((snapshot) => snapshot.data() || {}));
+  } else {
+    const page = await org.collection("lessonRatingStats").get();
+    statsDocs = page.docs.map((snapshot) => ({ instructorId: snapshot.id, ...snapshot.data() }));
+  }
+
+  const memberships = new Map();
   await Promise.all(statsDocs.map(async (doc) => {
     const snapshot = await firestore.collection("memberships").doc(deps.membershipId(organizationId, doc.instructorId)).get();
-    names.set(doc.instructorId, snapshot.exists ? text(snapshot.data()?.displayName) : "");
+    memberships.set(doc.instructorId, snapshot.exists ? snapshot.data() || {} : null);
   }));
+  const visibleDocs = statsDocs.filter((doc) => viewer.visible(doc.instructorId, memberships.get(doc.instructorId)));
   return {
+    month,
+    scope: viewer.scope,
     items: policy.RATING_ITEMS.map((item) => ({ id: item.id, question: item.question })),
-    rows: policy.summarizeStats(statsDocs, (id) => names.get(id) || ""),
+    rows: policy.summarizeStats(visibleDocs, (id) => text(memberships.get(id)?.displayName)),
   };
 }
 

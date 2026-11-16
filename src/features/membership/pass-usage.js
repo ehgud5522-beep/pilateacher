@@ -7,7 +7,7 @@
  * 오른쪽 위 "잔여 48회" 와 이어지지 않았다.
  *
  * 카드는 이제 **지금 쓰는 회원권만** 말한다: "이번 회원권 · 5번째 등록" · "20회 중 12회 사용" · 막대 하나.
- * 여정 전체는 회원 상세(PassJourneyBar md)에 그대로 있다.
+ * 회원권마다의 이력은 회원 상세(MemberPassProgress · passHistoryRows)에 있다.
  *
  * ── 미리 끊은 다음 회원권 (대표: "기존 수강권에 보통 미리 끊는 경우가 많음, 구분해서 표시") ──
  * 쓰는 중인 회원권 뒤에 아직 한 번도 안 쓴 회원권이 있으면 그것은 "다음 회원권 · 대기" 다. 합치지
@@ -60,5 +60,52 @@ export function currentPassUsage(journey) {
     title,
     usage: `${total}회 중 ${used}회 사용`,
     waiting,
+  };
+}
+
+/**
+ * 회원 상세의 "등록 이력" 줄 (2026-11-16 대표: "남은 횟수 그래프가 이해하기 힘듦, 더 직관적이고 쉽게").
+ *
+ * 전에는 여정 전체를 가는 선 하나에 이어 그리고 그 위에 점을 찍었다 -- 회원권 경계 · 서비스 빗금 ·
+ * 만료 회색이 한 선에 섞여, "누적 11 / 171회 · 4차 진행중" 을 읽어야 무엇인지 알 수 있었다.
+ * 이제는 회원권마다 한 줄로 말한다: "4차 · 20회 · 9회 남음 (사용 중)". 최근 것이 위.
+ *
+ * @param {any} journey buildPassJourney 의 결과
+ * @returns {{ rows: Array<{ key: string, label: string, detail: string, state: "using"|"waiting"|"done"|"lapsed"|"prior" }>,
+ *   usedTotal: number, passCount: number }}
+ */
+export function passHistoryRows(journey) {
+  const segments = Array.isArray(journey?.segments) ? journey.segments : [];
+  /* "대기" 는 currentPassUsage 와 같은 판정: 사용 중인 회원권을 발급 순서로 놓고, 마지막으로 쓴 것(없으면
+     맨 앞 하나)까지가 지금, 그 뒤의 안 쓴 것이 미리 끊어 둔 대기다. */
+  const active = segments.filter((segment) => segment?.kind === "pass" && segment.active && count(segment.total) > 0);
+  let lastUsed = -1;
+  active.forEach((segment, index) => { if (count(segment.used) > 0) lastUsed = index; });
+  const waiting = new Set(active.slice(Math.max(0, lastUsed) + 1));
+  const rows = segments.map((segment, index) => {
+    if (segment?.kind === "prior") {
+      return { key: "prior", label: "앱 이전 기록", detail: `${count(segment.total)}회 수업`, state: "prior" };
+    }
+    const total = count(segment?.total);
+    const used = Math.min(count(segment?.used), total);
+    const left = Math.max(0, total - used);
+    const round = count(segment?.round) || index + 1;
+    const service = count(segment?.service);
+    const key = String(segment?.passId || index);
+    const label = `${round}차 · ${total}회${service ? ` (서비스 ${service})` : ""}`;
+    if (segment?.active) {
+      return waiting.has(segment)
+        ? { key, label, detail: `대기 · ${left}회`, state: "waiting" }
+        : { key, label, detail: `${left}회 남음`, state: "using" };
+    }
+    const lapsed = count(segment?.lapsed);
+    return lapsed > 0
+      ? { key: String(segment.passId || index), label, detail: `끝남 · ${lapsed}회 못 씀`, state: "lapsed" }
+      : { key: String(segment.passId || index), label, detail: "다 씀", state: "done" };
+  });
+  return {
+    rows: rows.reverse(),
+    usedTotal: count(journey?.usedTotal),
+    passCount: segments.filter((segment) => segment?.kind === "pass").length,
   };
 }

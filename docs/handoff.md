@@ -1,3 +1,14 @@
+## 2026-11-16 저녁 — 권한 규칙 · 서버 함수 배포됨 (대표 지시 "규칙서버함수도배포")
+
+- main `f1ec2b4`, deploy-main 에서 `npm run test:rules` 449 통과 뒤 규칙 배포 (10:38:30Z 릴리스)
+- Functions 9개 성공: aiGateway · updateRuntimeConfig (update), 회원 요약 3 · 재등록 3 · consultTalkingPoints (create). 직후 오류 로그 없음.
+  docs/ai-gateway-deploy-log.md 에 기록
+- 이제 운영 스위치 화면에서 새 스위치(수업기록 서버 저장 · 서버 읽기 · AI 회원 요약 · 새 브리핑 · 재등록 알림 · 상담 소재)를 저장할 수 있다.
+  **전부 꺼진 채.** 켜는 순서는 대표 확인 뒤: 동의 문구 법률 검토 → 서버 저장(시범 1~2명) → 비교 일치 → 읽기 → 요약 판정 → 브리핑 → 상담 소재.
+  재등록 알림은 일찍 켜도 됨 -- 켠 뒤 [지난 6달 채우기]
+- 밤 정리(sweepRenewalCandidatesNightly 04:30 · sweepMemberSummaries 15분)는 스위치가 꺼져 있으면 아무것도 안 한다
+- 폰 앱은 새 빌드(1.1.54) 전까지 이번 기능 없음
+
 ## 2026-11-16 저녁 — #222 ~ #234 병합 · 강사 웹 배포됨 (대표 지시 "병합및 웹배포 다진행해줘")
 
 - #222 ~ #233 을 차례로 merge commit 으로 병합 (쌓인 PR 은 main 으로 다시 겨눈 뒤). #233 = 회원 목표 · 주의사항 서버 사본

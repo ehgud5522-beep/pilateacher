@@ -135,3 +135,12 @@ npx firebase functions:log --only aiGateway --project pilateacher -n 6
 롤백 지점은 `aigateway-00014-noz` (소스 `403862a`) 다. 이번 배포가 문제가 되면
 그쪽으로 트래픽을 되돌린다 -- 다만 되돌리는 순간 센터가 등록한 회원의 음성
 수업기록은 다시 막힌다.
+
+
+## 2026-11-16 19:39 KST — #222 회원 이름 막기 + provider 공유 코드 (대표 지시 "규칙서버함수도배포")
+
+- 소스: main `f1ec2b4` (#222 ~ #234 병합). deploy-main 에서 `npx firebase deploy --project pilateacher --config firebase.ai-gateway.json --only functions:aiGateway,...`
+- 바뀐 것: STT 힌트에서 회원 이름을 뺌, 음성 경로 전사에 이름 지우기(`redactName`), provider 를 `runStructured` 로 나눔(`executeInternal` 추가 -- 회원 요약 · 상담 소재가 씀, 게이트웨이 작업 목록은 그대로)
+- 결과: `Successful update operation`, 새 인스턴스 기동 · STARTUP 프로브 1회 통과(10:39:48Z), 직후 오류 로그 없음
+- 같이 나간 함수: updateRuntimeConfig(update), refreshMemberSummaryOnRecord · sweepMemberSummaries · rebuildMemberSummary · sweepRenewalCandidatesNightly · markRenewalOnPassCreated · backfillRenewalCandidates · consultTalkingPoints (create)
+- 이름을 빼면 음성 인식이 회원 이름을 말했을 때 철자가 틀릴 수 있다 (설계 결정 6에서 받아들인 대가). 기록에 이름이 남는 일은 오히려 줄어든다

@@ -849,6 +849,9 @@ export const fbRebuildMemberSummary = callableAsOwner("rebuildMemberSummary");
 /** 재등록 후보 다시 채우기 (설계 문서 4단계, 대표 · 총괄). 지난 6달 동안 끝난 회원권을 한 번 넣는다. */
 export const fbBackfillRenewalCandidates = callableAsOwner("backfillRenewalCandidates");
 
+/** 재등록 상담 소재 초안 (설계 문서 5단계). 담당 강사 · 대표가 누를 때만. 결과는 저장하지 않는다. */
+export const fbConsultTalkingPoints = callableAsOwner("consultTalkingPoints");
+
 /* 공지 쓰기 · 고치기 · 지우기. 대표 · 총괄매니저 (총괄매니저는 자기 공지만) --
    역할은 서버가 다시 읽는다. functions/src/notice-admin.js 머리말에 근거가 있다. */
 export const fbManageNotice = callableAsOwner("manageNotice");

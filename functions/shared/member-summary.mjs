@@ -145,35 +145,46 @@ const sideOf = (value) => {
 };
 
 /**
+ * 근거 달린 문장 목록 하나를 검사한다 (요약 · 상담 소재가 함께 쓴다).
+ * @returns {{ kept: Array<{text: string, sources: Array<{recordId: string, date: string}>}>, dropped: Array<{reason: string}> }}
+ */
+export function checkSourcedItems(items, records, { extraForbidden = [], max = MAX_ITEMS_PER_BLOCK } = {}) {
+  const byId = new Map(records.map((record) => [text(record.id), record]));
+  const forbidden = [...FORBIDDEN_WORDS, ...extraForbidden];
+  const kept = [];
+  const dropped = [];
+  for (const item of (Array.isArray(items) ? items : [])) {
+    const sentence = text(item?.text).slice(0, MAX_TEXT);
+    const drop = (reason) => dropped.push({ reason });
+    if (!sentence) { drop(DROP_REASON.EMPTY); continue; }
+    const sources = (Array.isArray(item?.sources) ? item.sources : []).map((source) => ({ recordId: text(source?.recordId), date: text(source?.date) }));
+    if (!sources.length) { drop(DROP_REASON.NO_SOURCE); continue; }
+    if (sources.some((source) => !byId.has(source.recordId))) { drop(DROP_REASON.UNKNOWN_SOURCE); continue; }
+    if (sources.some((source) => text(byId.get(source.recordId).lessonDate) !== source.date)) { drop(DROP_REASON.DATE_MISMATCH); continue; }
+    if (forbidden.some((word) => squash(sentence).includes(squash(word)))) { drop(DROP_REASON.FORBIDDEN_WORD); continue; }
+    const evidence = sources.map((source) => recordText(byId.get(source.recordId))).join(" / ");
+    const evidenceSides = sideOf(evidence);
+    if ([...sideOf(sentence)].some((side) => !evidenceSides.has(side))) { drop(DROP_REASON.SIDE_MISMATCH); continue; }
+    const squashedEvidence = squash(evidence);
+    const terms = EQUIPMENT_TERMS.filter((term) => squash(sentence).includes(squash(term)));
+    if (terms.some((term) => !squashedEvidence.includes(squash(term)))) { drop(DROP_REASON.TERM_NOT_IN_SOURCE); continue; }
+    if (kept.length >= max) continue;
+    kept.push({ text: sentence, sources: [...new Map(sources.map((source) => [source.recordId, source])).values()] });
+  }
+  return { kept, dropped };
+}
+
+/**
  * 받은 요약을 검사한다. 통과한 문장만 남기고, 버린 것은 이유 코드만 센다.
  * @returns {{ summary: Record<string, Array<{text: string, sources: Array<{recordId: string, date: string}>}>>, dropped: Array<{block: string, reason: string}> }}
  */
 export function checkSummary(output, records) {
-  const byId = new Map(records.map((record) => [text(record.id), record]));
   const dropped = [];
   const summary = {};
   for (const block of SUMMARY_BLOCKS) {
-    summary[block] = [];
-    for (const item of (Array.isArray(output?.[block]) ? output[block] : [])) {
-      const sentence = text(item?.text).slice(0, MAX_TEXT);
-      const drop = (reason) => dropped.push({ block, reason });
-      if (!sentence) { drop(DROP_REASON.EMPTY); continue; }
-      const sources = (Array.isArray(item?.sources) ? item.sources : []).map((source) => ({ recordId: text(source?.recordId), date: text(source?.date) }));
-      if (!sources.length) { drop(DROP_REASON.NO_SOURCE); continue; }
-      if (sources.some((source) => !byId.has(source.recordId))) { drop(DROP_REASON.UNKNOWN_SOURCE); continue; }
-      if (sources.some((source) => text(byId.get(source.recordId).lessonDate) !== source.date)) { drop(DROP_REASON.DATE_MISMATCH); continue; }
-      if (FORBIDDEN_WORDS.some((word) => squash(sentence).includes(squash(word)))) { drop(DROP_REASON.FORBIDDEN_WORD); continue; }
-      const evidence = sources.map((source) => recordText(byId.get(source.recordId))).join("\n");
-      const sentenceSides = sideOf(sentence);
-      const evidenceSides = sideOf(evidence);
-      if ([...sentenceSides].some((side) => !evidenceSides.has(side))) { drop(DROP_REASON.SIDE_MISMATCH); continue; }
-      const squashedEvidence = squash(evidence);
-      const terms = EQUIPMENT_TERMS.filter((term) => squash(sentence).includes(squash(term)));
-      if (terms.some((term) => !squashedEvidence.includes(squash(term)))) { drop(DROP_REASON.TERM_NOT_IN_SOURCE); continue; }
-      if (summary[block].length >= MAX_ITEMS_PER_BLOCK) continue;
-      const unique = [...new Map(sources.map((source) => [source.recordId, source])).values()];
-      summary[block].push({ text: sentence, sources: unique });
-    }
+    const result = checkSourcedItems(output?.[block], records);
+    summary[block] = result.kept;
+    dropped.push(...result.dropped.map((entry) => ({ block, ...entry })));
   }
   return { summary, dropped };
 }

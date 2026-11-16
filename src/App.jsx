@@ -407,7 +407,7 @@ import { connectAuthInitLog } from "./features/auth/auth-init-log.js";
 import { runAuthPreflight } from "./features/auth/connectivity-probe.js";
 import { describeLessonRecordFailure, failureCauseDetail, LESSON_RECORD_FAILURE_CATEGORY, lessonRecordProvenanceSource, takeLessonRecordDebugFailure } from "./features/lesson-record/failure-diagnostics.js";
 import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./features/lesson-record/pipeline-diagnostics.js";
-import { createRecordStore } from "./features/lesson-record/record-store.js";
+import { createRecordStore, migrationRecordsFor } from "./features/lesson-record/record-store.js";
 import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/server-outbox.js";
 import { createFirestoreLessonRecordStore } from "./data/repositories/lesson-record-repository.js";
 import { buildRemoteDiagnosticReport } from "./features/diagnostics/remote-diagnostics.js";
@@ -32997,6 +32997,37 @@ export default function App() {
     const timer = window.setInterval(() => { if (lessonRecordOutbox.pending().length) flush(); }, 60e3);
     return () => { window.removeEventListener("online", onOnline); document.removeEventListener("visibilitychange", onVisible); window.clearInterval(timer); };
   }, [lessonRecordServerOn, lessonRecordOutbox]);
+  /* 1단계-3: 기존 확정 기록 이관 (결정 1: 확정 기록만, 상담 메모 제외). 스위치가 켜진 기기에서 한 번 --
+     보낼 줄에 들어갈 만큼씩(최대 200) 넣고, 넣은 기록ID 를 기억해 다음 번에 이어 간다. 기록ID 는 내용 지문이라
+     실시간 저장과 겹쳐도 서버에는 한 줄이다. 센터 회원의 기록만(기기에만 있는 회원은 서버가 받지 않는다). */
+  useEffect(() => {
+    if (!lessonRecordServerOn || !lessonRecordOutbox || !account?.id || !organizationContext.organizationId) return undefined;
+    const clientIds = new Set((rosterMembers || []).map((member) => String(member?.id || "")).filter(Boolean));
+    if (!clientIds.size) return undefined;
+    const stateKey = `pilateacher_lesson_record_migration_v1_${account.id}`;
+    const readState = () => { try { return JSON.parse(globalThis.localStorage?.getItem(stateKey) || "{}") || {}; } catch (_error) { return {}; } };
+    const step = () => {
+      const state = readState();
+      if (state.finishedAt) return;
+      const room = Math.min(200, lessonRecordOutbox.room());
+      if (room <= 0) return;
+      const doneIds = new Set(Array.isArray(state.doneIds) ? state.doneIds : []);
+      const batch = migrationRecordsFor({ members: db.members, clientIds, schedule: db.schedule, organizationId: organizationContext.organizationId, uid: account.id, appBuild: APP_BUILD_LABEL, doneIds, limit: room });
+      let queued = 0;
+      for (const record of batch.records) {
+        if (!lessonRecordOutbox.enqueue({ ...record, organizationId: organizationContext.organizationId })) break;
+        doneIds.add(record.recordId);
+        queued += 1;
+      }
+      const finished = batch.remaining === 0 && queued === batch.records.length;
+      try { globalThis.localStorage?.setItem(stateKey, JSON.stringify({ doneIds: [...doneIds], ...(finished ? { finishedAt: new Date().toISOString() } : {}) })); } catch (_error) { /* 다음 번에 다시 센다 -- 서버는 같은 줄을 두 번 만들지 않는다 */ }
+      if (queued || finished) deviceLog("lesson_record_migration_progress", { count: queued, blocked: batch.remaining, state: finished ? "done" : "partial", appBuild: APP_BUILD_LABEL });
+      if (queued) Promise.resolve(lessonRecordOutbox.flush()).catch(() => {});
+    };
+    step();
+    const timer = window.setInterval(step, 120e3);
+    return () => window.clearInterval(timer);
+  }, [lessonRecordServerOn, lessonRecordOutbox, account?.id, organizationContext.organizationId, rosterMembers, db.members, db.schedule]);
   const saveScheduleComment = async (id, type, sid, body, voiceMeta = null, noteOptions = null) => {
     const text = String(body || "").trim();
     /* 빈 기록은 저장하지 않는다. 말없이 false 만 돌려주면 강사는 버튼이 고장 난 줄

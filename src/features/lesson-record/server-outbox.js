@@ -40,8 +40,9 @@ export function createServerOutbox({ storage = globalThis.localStorage, key, sto
       return Array.isArray(parsed) ? parsed.filter((item) => item && text(item.recordId) && text(item.path)) : [];
     } catch (_error) { return []; }
   };
+  /* 잘라 내지 않는다 -- 넘치면 새로 넣기를 거절할 뿐, 이미 있는 줄은 버리지 않는다 (원문은 기기 기록에도 있다). */
   const writeAll = (items) => {
-    try { storage?.setItem(key, JSON.stringify(items.slice(-MAX_ITEMS))); return true; } catch (_error) { return false; }
+    try { storage?.setItem(key, JSON.stringify(items)); return true; } catch (_error) { return false; }
   };
   let flushing = null;
 
@@ -52,6 +53,10 @@ export function createServerOutbox({ storage = globalThis.localStorage, key, sto
       if (!id || !text(organizationId) || !data) return false;
       const items = readAll();
       if (items.some((item) => item.recordId === id)) return true;
+      if (items.length >= MAX_ITEMS) {
+        log("lesson_record_outbox_store_failed", { stage: "enqueue", errorCode: "outbox_full", attempts: items.length });
+        return false;
+      }
       items.push({ recordId: id, path: lessonRecordPath(organizationId, id), data, attempts: 0, nextAt: 0, lastError: null, queuedAt: now() });
       const stored = writeAll(items);
       if (!stored) log("lesson_record_outbox_store_failed", { stage: "enqueue", errorCode: "storage_write_failed" });
@@ -59,6 +64,9 @@ export function createServerOutbox({ storage = globalThis.localStorage, key, sto
     },
 
     pending() { return readAll(); },
+
+    /** 지금 더 넣을 수 있는 수 (이관이 한 번에 너무 많이 넣지 않게). */
+    room() { return Math.max(0, MAX_ITEMS - readAll().length); },
 
     /**
      * 보낼 차례인 것을 보낸다. 겹쳐 부르면 앞의 것을 기다린다.

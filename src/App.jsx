@@ -407,6 +407,7 @@ import { connectAuthInitLog } from "./features/auth/auth-init-log.js";
 import { runAuthPreflight } from "./features/auth/connectivity-probe.js";
 import { describeLessonRecordFailure, failureCauseDetail, LESSON_RECORD_FAILURE_CATEGORY, lessonRecordProvenanceSource, takeLessonRecordDebugFailure } from "./features/lesson-record/failure-diagnostics.js";
 import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./features/lesson-record/pipeline-diagnostics.js";
+import { createRecordStore } from "./features/lesson-record/record-store.js";
 import { buildRemoteDiagnosticReport } from "./features/diagnostics/remote-diagnostics.js";
 import { aiRecordingAvailable, AI_RECORDING_STATUS, readAIRecordingStatus, writeAIRecordingStatus } from "./features/lesson-record/ai-recording-status.js";
 import { runLessonRecordRetryCycle, scheduleLessonRecordRetry } from "./features/lesson-record/retry-queue.js";
@@ -32953,6 +32954,9 @@ export default function App() {
     setTab("schedule");
   };
   const savedLessonRecordToastKeysRef = useRef(new Set());
+  /* 수업기록 저장을 한 곳으로 (설계 문서 1단계-1). 기기 저장이 끝난 뒤 부른다. 지금은 꺼져 있다 --
+     1-2 단계가 서버 "보낼 줄" 을 여기에 붙인다 (features/lesson-record/record-store.js). */
+  const lessonRecordStore = useMemo(() => createRecordStore({ isEnabled: () => false }), []);
   const saveScheduleComment = async (id, type, sid, body, voiceMeta = null, noteOptions = null) => {
     const text = String(body || "").trim();
     /* 빈 기록은 저장하지 않는다. 말없이 false 만 돌려주면 강사는 버튼이 고장 난 줄
@@ -33103,6 +33107,7 @@ export default function App() {
       setToast({ ok: false, msg: "로그인이 풀려 기록을 저장하지 못했어요. 다시 로그인한 뒤 저장해 주세요. 입력한 내용은 그대로 있어요. (코드 no_account)" });
       return false;
     }
+    if (shouldConfirm) lessonRecordStore.afterDeviceSave({ note, memberId: id, lesson: linkedLesson });
     if (voiceMeta?.aiMeta?.requestId) {
       Promise.resolve(fbWritePilotMetricAttempt({
         requestId: voiceMeta.aiMeta.requestId,
@@ -33909,6 +33914,7 @@ export default function App() {
     const memoryResult = buildMemberMemorySafely({ memberId: id, notes: nextNotes, existingMemory: t.aiMemory || [], schedule: db.schedule });
     const stored = await patch(id, { notes: nextNotes, aiMemory: memoryResult.memories, memoryRebuildNeeded: memoryResult.failed });
     if (stored === false) return false;
+    lessonRecordStore.afterDeviceSave({ note: finalizedWithSession, memberId: id, lesson: linkedSid ? db.schedule.find((lesson) => lesson?.id === linkedSid) || null : null });
     if (audioBlobId) {
       try { dropUrl(audioBlobId); await blobDel(audioBlobId); }
       catch (error) { deviceLog("voice_record_delete_retry_required", { memberId: id, lessonId: noteSid, storage: "indexedDB", ...deviceError(error) }); }

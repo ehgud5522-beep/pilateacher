@@ -49,7 +49,7 @@ import {
   fbLoadAppUpdateConfig,
   fbSwapInstructorAccount,
   fbConfirmInstructorNames,
-  fbGrantMemberCancel, fbLessonRatingStats, fbManageGroupPayroll, fbManageNotice, fbUpdateRuntimeConfig,
+  fbGrantMemberCancel, fbLessonRatingStats, fbRebuildMemberSummary, fbManageGroupPayroll, fbManageNotice, fbUpdateRuntimeConfig,
   fbHandoverPass,
   fbSessionUpPass, fbManagePassHold,
   fbResetMigratedData,
@@ -410,6 +410,7 @@ import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./fea
 import { createRecordStore, migrationRecordsFor } from "./features/lesson-record/record-store.js";
 import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/server-outbox.js";
 import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
+import { listRecentMemberSummaries, readClientName } from "./data/repositories/member-summary-repository.js";
 import { compareRecordSets, parityState } from "./features/lesson-record/record-parity.js";
 import { mergeServerNotes } from "./features/lesson-record/server-notes.js";
 import { buildRemoteDiagnosticReport } from "./features/diagnostics/remote-diagnostics.js";
@@ -25531,6 +25532,105 @@ function LessonRecordParityAdmin({ organization, instructorStore, onLoad = listL
   );
 }
 
+/* AI 회원 요약 점검 (설계 문서 2단계). 대표 · 총괄이 최근 요약을 직접 읽고 판정한다 -- 문장마다 근거 기록 날짜,
+   서버가 버린 문장 수(이유별). [다시 만들기] 는 앞 요약을 쓰지 않고 원본 기록에서 처음부터. */
+const SUMMARY_BLOCK_LABELS = [["mustRemember", "꼭 기억할 것"], ["recentTrend", "최근 흐름"], ["openQuestions", "계속 확인 중"]];
+const SUMMARY_DROP_LABELS = { no_source: "근거 없음", unknown_source: "없는 기록", date_mismatch: "날짜 어긋남", forbidden_word: "진단 · 처방 말", side_mismatch: "좌우 어긋남", term_not_in_source: "기구 이름", empty: "빈 문장" };
+function memberSummaryStatusLabel(row) {
+  if (row?.status === "ready") return { key: "ready", label: "준비됨" };
+  if (row?.status === "empty") return { key: "empty", label: "기록 없음" };
+  if (row?.status === "failed") return { key: "failed", label: `갱신 실패 (코드 ${row.statusCode || "unknown"})` };
+  return { key: "pending", label: "만드는 중" };
+}
+function MemberSummaryAdmin({ organization, onLoad = listRecentMemberSummaries, onName = readClientName, onRebuild = fbRebuildMemberSummary }) {
+  const [state, setState] = useState({ rows: null, names: new Map(), error: "" });
+  const [open, setOpen] = useState("");
+  const [busy, setBusy] = useState("");
+  const [message, setMessage] = useState("");
+  const organizationId = organization?.organizationId || "";
+  const load = useCallback(() => {
+    if (!organizationId) return;
+    onLoad(organizationId)
+      .then(async (rows) => {
+        const list = Array.isArray(rows) ? rows : [];
+        const names = new Map(await Promise.all(list.map(async (row) => [row.id, await onName(organizationId, row.id).catch(() => "")])));
+        setState({ rows: list, names, error: "" });
+      })
+      .catch((error) => setState({ rows: [], names: new Map(), error: `요약을 읽지 못했어요 (코드 ${String(error?.code || "unknown").replace("firestore/", "")})` }));
+  }, [organizationId, onLoad, onName]);
+  useEffect(() => { load(); }, [load]);
+  const rebuild = async (clientId = "") => {
+    setBusy(clientId || "all");
+    setMessage("");
+    try {
+      const result = await onRebuild({ organizationId, ...(clientId ? { clientId } : {}) });
+      setMessage(`다시 만들었어요 -- ${result?.targets ?? 0}명`);
+      load();
+    } catch (error) {
+      setMessage(`다시 만들지 못했어요 (코드 ${String(error?.details?.reason || error?.code || "unknown").replace("functions/", "")})`);
+    } finally {
+      setBusy("");
+    }
+  };
+  const dateOf = (value) => {
+    const ms = typeof value?.toMillis === "function" ? value.toMillis() : typeof value?.seconds === "number" ? value.seconds * 1000 : 0;
+    return ms ? new Date(ms).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+  };
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-member-summary-admin>
+      <div className="flex items-center justify-between gap-2">
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>AI 회원 요약 점검</h2>
+        <button type="button" disabled={Boolean(busy) || !state.rows?.length} onClick={() => rebuild("")}
+          className="px-3 py-1.5 font-bold" style={{ borderRadius: 8, fontSize: TYPE.caption, color: PRIMARY, border: `1px solid ${LINE}`, opacity: busy ? 0.5 : 1 }}>
+          {busy === "all" ? "만드는 중…" : "전체 다시 만들기"}
+        </button>
+      </div>
+      <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>기록이 서버에 쌓일 때마다 요약이 고쳐 쓰입니다. 문장마다 근거 수업 날짜가 붙고, 근거가 맞지 않거나 진단 · 처방 말이 섞인 문장은 서버가 버립니다. 회원 AI 동의가 있는 회원만 만듭니다.</p>
+      {message ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }} data-member-summary-message>{message}</p> : null}
+      {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
+      {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
+      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>아직 만든 요약이 없습니다.</p> : null}
+      <div className="mt-2 space-y-1.5">
+        {(state.rows || []).map((row) => {
+          const status = memberSummaryStatusLabel(row);
+          const dropped = Object.entries(row.dropped || {}).filter(([, count]) => count > 0);
+          return (
+            <div key={row.id} style={{ borderRadius: 10, backgroundColor: CANVAS }} data-member-summary-row={status.key}>
+              <button type="button" onClick={() => setOpen(open === row.id ? "" : row.id)} className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left" style={{ fontSize: TYPE.caption }}>
+                <span className="min-w-0 flex-1 truncate font-bold" style={{ color: INK }}>{state.names.get(row.id) || "이름 모름"}</span>
+                <span style={{ color: SUB }}>{dateOf(row.updatedAt)}</span>
+                <span className="font-bold" style={{ color: status.key === "failed" ? WARN : status.key === "ready" ? GOOD : SUB }}>{status.label}</span>
+              </button>
+              {open === row.id ? (
+                <div className="px-3 pb-3" style={{ fontSize: TYPE.caption, lineHeight: 1.5 }}>
+                  {SUMMARY_BLOCK_LABELS.map(([block, label]) => (
+                    <div key={block} className="mt-2">
+                      <p className="font-bold" style={{ color: INK }}>{label}</p>
+                      {(row.summary?.[block] || []).length
+                        ? row.summary[block].map((item, index) => (
+                          <p key={index} style={{ color: INK }}>· {item.text} <span style={{ color: SUB }}>({(item.sources || []).map((source) => source.date).join(", ")})</span></p>
+                        ))
+                        : <p style={{ color: SUB }}>기록 없음</p>}
+                    </div>
+                  ))}
+                  <p className="mt-2" style={{ color: SUB }}>
+                    {dropped.length ? `버린 문장: ${dropped.map(([reason, count]) => `${SUMMARY_DROP_LABELS[reason] || reason} ${count}`).join(" · ")}` : "버린 문장 없음"}
+                    {row.promptVersion ? ` · ${row.promptVersion}` : ""}
+                  </p>
+                  <button type="button" disabled={Boolean(busy)} onClick={() => rebuild(row.id)} className="mt-2 px-3 py-1.5 font-bold"
+                    style={{ borderRadius: 8, fontSize: TYPE.caption, color: PRIMARY, border: `1px solid ${LINE}`, opacity: busy ? 0.5 : 1 }}>
+                    {busy === row.id ? "만드는 중…" : "이 회원 다시 만들기"}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function ScheduleSyncAdmin({
   organization, instructorStore, onLoadConfig, onSaveConfig,
   /* 같은 카드로 두 스위치를 다룬다: 센터 수업(scheduleSync)과 본인 일정(privateSync, 3단계). */
@@ -27993,6 +28093,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="lessonRecordServerRead" title="수업기록 서버에서 읽기"
               description="켜진 계정은 회원 상세 · 수업 관리의 지난 수업에 서버의 기록도 함께 보여 줍니다 -- 다른 기기 · 대타 강사가 쓴 기록, 새 폰에서도. 서버 기록은 보기만 하고 고치지 않습니다. 위 비교가 '일치' 인 강사부터 켜세요." />
+            {/* 2단계: AI 회원 요약. 켜진 강사가 확정한 기록이 서버에 쌓이면 그 회원 요약을 서버가 고쳐 쓴다. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="memberSummary" title="AI 회원 요약"
+              description="켜진 강사가 확정한 기록이 서버에 쌓이면, 서버가 그 회원의 요약(꼭 기억할 것 · 최근 흐름 · 계속 확인 중)을 고쳐 씁니다. 회원 이름 · 연락처는 보내지 않고, 회원 AI 동의가 있는 회원만 만듭니다. 위 '수업기록 서버 저장' 이 켜진 강사에게만 의미가 있습니다." />
+            <MemberSummaryAdmin organization={organization} />
             {/* 비포애프터 회원 공유 (2026-11-15). 켜면 모든 강사가 비교 카드를 보내고, 동의한 회원이 보니따 앱에서 본다. */}
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}

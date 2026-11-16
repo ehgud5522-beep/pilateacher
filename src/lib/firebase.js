@@ -843,6 +843,9 @@ export const fbManageGroupPayroll = callableAsOwner("manageGroupPayroll");
    개별 응답은 서버도 돌려주지 않는다. functions/src/lesson-rating.js. */
 export const fbLessonRatingStats = callableAsOwner("lessonRatingStats");
 
+/** AI 회원 요약 다시 만들기 (설계 문서 2단계, 대표 · 총괄). { organizationId, clientId? } -- clientId 가 없으면 요약이 있는 회원 전부. */
+export const fbRebuildMemberSummary = callableAsOwner("rebuildMemberSummary");
+
 /* 공지 쓰기 · 고치기 · 지우기. 대표 · 총괄매니저 (총괄매니저는 자기 공지만) --
    역할은 서버가 다시 읽는다. functions/src/notice-admin.js 머리말에 근거가 있다. */
 export const fbManageNotice = callableAsOwner("manageNotice");

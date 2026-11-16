@@ -1747,6 +1747,25 @@ service cloud.firestore {
         allow update, delete: if false;
       }
 
+      /* AI 회원 요약 (설계 문서 2단계). 서버(Functions)만 쓴다. 읽기는 대표 · 총괄 + 그 회원의 담당 강사(FC매니저 ·
+         점장은 담당일 때만) -- 1단계 서버 기록과 같은 범위(설계 결정 5). 앞 판(versions)은 대표 · 총괄만. */
+      match /memberSummaries/{clientId} {
+        allow get: if isCentreStaff(organizationId)
+          && (
+            hasRole(organizationId, ownerLevel())
+            || (
+              hasRole(organizationId, ["manager", "instructor"])
+              && request.auth.uid in get(/databases/$(database)/documents/organizations/$(organizationId)/clients/$(clientId)).data.get("instructorIds", [])
+            )
+          );
+        allow list: if hasRole(organizationId, ownerLevel());
+        allow create, update, delete: if false;
+        match /versions/{versionId} {
+          allow get, list: if hasRole(organizationId, ownerLevel());
+          allow create, update, delete: if false;
+        }
+      }
+
       /* 수업기록 서버 저장 · 비교 검증 (1단계-4). 강사 기기가 "기기 확정 N · 서버 N · 차이 N" 숫자만 자기 칸에 쓰고,
          대표 · 총괄이 강사별로 읽는다. 기록 내용 · 회원은 없다. */
       match /lessonRecordParity/{userId} {

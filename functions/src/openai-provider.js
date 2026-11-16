@@ -147,10 +147,21 @@ function createOpenAIProvider({
   const openai = client || new OpenAI({ apiKey, timeout: timeoutMs, maxRetries: 0 });
 
   async function execute({ operation, input, safetyIdentifier = "" }) {
-      const prompt = getPrompt(operation);
-      const schema = OUTPUT_SCHEMAS[operation];
-      const outputName = OUTPUT_NAMES[operation];
-      if (!prompt || !schema || !outputName) throw new GatewayError("invalid_request");
+    const prompt = getPrompt(operation);
+    const schema = OUTPUT_SCHEMAS[operation];
+    const outputName = OUTPUT_NAMES[operation];
+    if (!prompt || !schema || !outputName) throw new GatewayError("invalid_request");
+    return runStructured({ prompt, schema, outputName, validate: (parsed) => validateOperationOutput(operation, parsed), input, safetyIdentifier });
+  }
+
+  /* 서버 안에서만 부르는 작업(회원 요약 · 2단계). 게이트웨이 OPERATIONS 에 넣지 않는다 -- 넣으면 앱이 직접
+     부를 수 있는 작업이 된다. prompt = { instructions, maxOutputTokens, promptVersion }. */
+  async function executeInternal({ prompt, schema, outputName, validate, input, safetyIdentifier = "" }) {
+    if (!prompt?.instructions || !schema || !outputName || typeof validate !== "function") throw new GatewayError("invalid_request");
+    return runStructured({ prompt, schema, outputName, validate, input, safetyIdentifier });
+  }
+
+  async function runStructured({ prompt, schema, outputName, validate, input, safetyIdentifier = "" }) {
       const controller = new AbortController();
       const startedAt = Date.now();
       let timer;
@@ -206,7 +217,7 @@ function createOpenAIProvider({
         }
         let output;
         try {
-          output = validateOperationOutput(operation, parsed);
+          output = validate(parsed);
         } catch (error) {
           throw new GatewayError("invalid_output", {
             cause: error,
@@ -528,6 +539,7 @@ function createOpenAIProvider({
     provider: "openai",
     model: normalizedModel,
     execute,
+    executeInternal,
     executeAudio,
   });
 }

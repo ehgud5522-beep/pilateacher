@@ -6569,3 +6569,31 @@ describe("AI 회원 요약 -- 서버만 쓰고 담당만 읽는다", () => {
     await assertFails(getDoc(doc(dbFor(users.instructor), "organizations", ORG_A, "memberSummaries", "client-member", "versions", "1")));
   });
 });
+
+/* ── 회원 단위 수업기록 서버 보관 · AI 처리 동의 (설계 결정 4) ── 서버 저장 · AI 요약이 이 칸 하나를 믿는다. */
+describe("회원 동의 칸(aiConsent) -- 강사 이상이 자기 이름 · 서버 시각으로만", () => {
+  const ref = (userId) => doc(dbFor(userId), "organizations", ORG_A, "clients", "client-member");
+  const grant = (userId, extra = {}) => ({ aiConsent: { status: "granted", version: "2026-11-16", grantedAt: serverTimestamp(), grantedBy: userId, method: "instructor_confirmed", ...extra } });
+  const revoke = (userId) => ({ aiConsent: { status: "revoked", version: "2026-11-16", revokedAt: serverTimestamp(), revokedBy: userId, method: "instructor_confirmed" } });
+  test("강사 · FC · 대표는 동의 · 철회를 기록한다", async () => {
+    await assertSucceeds(updateDoc(ref(users.instructor), grant(users.instructor)));
+    await assertSucceeds(updateDoc(ref(users.manager), revoke(users.manager)));
+    await assertSucceeds(updateDoc(ref(users.owner), grant(users.owner)));
+  });
+  test("직원 · 남의 이름 · 기기 시각 · 모르는 칸 · 다른 방식은 거부", async () => {
+    await assertFails(updateDoc(ref(users.staff), grant(users.staff)), "직원");
+    await assertFails(updateDoc(ref(users.instructor), grant(users.owner)), "남의 이름");
+    await assertFails(updateDoc(ref(users.instructor), grant(users.instructor, { grantedAt: new Date() })), "기기 시각");
+    await assertFails(updateDoc(ref(users.instructor), grant(users.instructor, { memberName: "김지민" })), "모르는 칸");
+    await assertFails(updateDoc(ref(users.instructor), grant(users.instructor, { method: "member_app" })), "방식");
+    await assertFails(updateDoc(ref(users.instructor), { aiConsent: "yes" }), "모양");
+  });
+  test("동의 칸을 건드리지 않는 수정은 지금처럼 된다", async () => {
+    await assertSucceeds(updateDoc(ref(users.instructor), { memo: "메모 수정" }));
+  });
+  test("등록 때 동의 칸을 넣을 수 없다", async () => {
+    await assertFails(setDoc(doc(dbFor(users.owner), "organizations", ORG_A, "clients", "new-client"), {
+      organizationId: ORG_A, name: "새 회원", status: "active", ...grant(users.owner),
+    }));
+  });
+});

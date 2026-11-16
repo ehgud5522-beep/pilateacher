@@ -411,6 +411,8 @@ import { createRecordStore, migrationRecordsFor } from "./features/lesson-record
 import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/server-outbox.js";
 import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
 import { listRecentMemberSummaries, readClientName } from "./data/repositories/member-summary-repository.js";
+import { writeMemberDataConsent } from "./data/repositories/member-consent-repository.js";
+import { MEMBER_AI_CONSENT_VERSION, MEMBER_DATA_CONSENT_CONFIRM, MEMBER_DATA_CONSENT_SECTIONS, MEMBER_DATA_CONSENT_TITLE, memberDataConsentGranted, memberDataConsentState } from "./features/consent/member-data-consent.js";
 import { compareRecordSets, parityState } from "./features/lesson-record/record-parity.js";
 import { mergeServerNotes } from "./features/lesson-record/server-notes.js";
 import { buildRemoteDiagnosticReport } from "./features/diagnostics/remote-diagnostics.js";
@@ -506,7 +508,7 @@ const LESSON_RECORD_REVIEW_FLAGS = new Set(["no_speech", "low_confidence", "tail
 const hasLessonRecordReviewFlag = (record) => (record?.reviewFlags || record?.flags || []).some((flag) => LESSON_RECORD_REVIEW_FLAGS.has(flag));
 /* 서버 기록 읽기 (설계 문서 1단계-5). 스위치가 켜진 계정에서 회원을 열 때 그 회원의 서버 기록을 받아 화면에만 더한다.
    기기에는 쓰지 않는다 (features/lesson-record/server-notes.js). 꺼져 있으면 회원 객체를 그대로 돌려준다. */
-const ServerNotesContext = createContext({ enabled: false, recordsFor: () => null, request: () => {}, resolveClientId: () => "" });
+const ServerNotesContext = createContext({ enabled: false, recordsFor: () => null, request: () => {}, resolveClientId: () => "", consentOn: false, saveConsent: async () => {} });
 function useServerMergedMember(member) {
   const context = useContext(ServerNotesContext);
   const clientId = context.enabled && member ? context.resolveClientId(member) : "";
@@ -7307,6 +7309,81 @@ function PassCard({ card, onEdit, sessionUpWindow = null }) {
    사진 · 분석 기록은 그대로이고, 비포애프터 탭과 "기록" 화면에서 계속 쓴다. */
 const MEMBER_DETAIL_BODY_CARD = false;
 
+/* 회원 단위 수업기록 서버 보관 · AI 처리 동의 (설계 결정 4). 서버 저장 · AI 요약 스위치가 켜진 계정에서만 보인다.
+   강사가 회원에게 문구를 보여 주고 동의를 받은 뒤 확인을 눌러 기록한다. 동의가 없으면 그 회원 기록은 기기에만 남는다. */
+function MemberDataConsentCard({ member, sectionStyle }) {
+  const context = useContext(ServerNotesContext);
+  const [open, setOpen] = useState(false);
+  const [checked, setChecked] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [override, setOverride] = useState(null);
+  const clientId = String(member?.orgClientId || "");
+  useEffect(() => { setOverride(null); setOpen(false); setChecked(false); setMessage(""); }, [clientId]);
+  if (!context.consentOn || !clientId) return null;
+  const state = memberDataConsentState(override ? { aiConsent: override } : member);
+  const save = async (granted) => {
+    if (granted && !checked) return;
+    if (!granted && typeof window !== "undefined" && !window.confirm("동의를 철회할까요? 그 뒤 기록은 서버로 보내지 않습니다. 이미 서버에 있는 기록은 남습니다.")) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      await context.saveConsent(clientId, granted);
+      setOverride(granted ? { status: "granted", version: MEMBER_AI_CONSENT_VERSION, grantedAt: "now" } : { status: "revoked", version: MEMBER_AI_CONSENT_VERSION });
+      setOpen(false);
+      setChecked(false);
+      setMessage(granted ? "동의를 기록했어요." : "철회를 기록했어요.");
+    } catch (error) {
+      const code = String(error?.code || "unknown").replace("firestore/", "");
+      setMessage(code === "permission-denied" ? `이 계정은 동의를 기록할 수 없어요 (코드 ${code})` : `기록하지 못했어요. 연결을 확인하고 다시 눌러 주세요 (코드 ${code})`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section data-member-section="data-consent" data-consent-state={state.key} style={sectionStyle}>
+      <div className="flex items-center gap-2">
+        <h2 className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{MEMBER_DATA_CONSENT_TITLE}</h2>
+        <span className="font-bold" style={{ fontSize: TYPE.caption, color: state.key === "granted" ? GOOD : WARN }}>{state.label}</span>
+      </div>
+      {state.key !== "granted" ? (
+        <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>동의가 없으면 이 회원의 수업기록은 이 기기에만 남고, 서버 보관 · AI 요약을 쓰지 않습니다.</p>
+      ) : null}
+      {message ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }} data-consent-message>{message}</p> : null}
+      {open ? (
+        <div className="mt-2 space-y-2" data-consent-text>
+          {MEMBER_DATA_CONSENT_SECTIONS.map((section) => (
+            <div key={section.heading}>
+              <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{section.heading}</p>
+              <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK }}>{section.body}</p>
+            </div>
+          ))}
+          <label className="flex items-start gap-2" style={{ fontSize: TYPE.caption, color: INK }}>
+            <input type="checkbox" checked={checked} onChange={(event) => setChecked(event.target.checked)} />
+            <span>{MEMBER_DATA_CONSENT_CONFIRM}</span>
+          </label>
+          <div className="flex gap-2">
+            <button type="button" disabled={!checked || busy} onClick={() => save(true)} className="flex-1 py-2 font-bold"
+              style={{ borderRadius: 10, fontSize: TYPE.caption, color: "#fff", backgroundColor: PRIMARY, opacity: !checked || busy ? 0.5 : 1 }}>
+              {busy ? "기록 중…" : "동의 기록"}
+            </button>
+            <button type="button" disabled={busy} onClick={() => { setOpen(false); setChecked(false); }} className="px-4 py-2 font-bold"
+              style={{ borderRadius: 10, fontSize: TYPE.caption, color: SUB, border: `1px solid ${LINE}` }}>닫기</button>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-2 flex gap-2">
+          {state.key !== "granted" ? (
+            <button type="button" onClick={() => setOpen(true)} className="px-3 py-1.5 font-bold" style={{ borderRadius: 8, fontSize: TYPE.caption, color: PRIMARY, border: `1px solid ${LINE}` }}>동의 받기</button>
+          ) : (
+            <button type="button" disabled={busy} onClick={() => save(false)} className="px-3 py-1.5 font-bold" style={{ borderRadius: 8, fontSize: TYPE.caption, color: SUB, border: `1px solid ${LINE}` }}>동의 철회</button>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ReferenceMemberDetail({ member: deviceMember, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centrePasses = null, centreLessons = null, viewerRole = "", onHandoverPass, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide, cancelGrant = null }) {
   /* 1단계-5: 서버 기록을 화면에만 더한 회원 (스위치 꺼짐이면 그대로). */
   const member = useServerMergedMember(deviceMember);
@@ -7550,6 +7627,7 @@ function ReferenceMemberDetail({ member: deviceMember, schedule, photos, setting
           </section>
           {/* 회원 앱 취소 횟수 · 추가 (2026-11-07). 센터 회원 상세와 같은 줄이다. */}
           {cancelGrant ? <section data-member-section="cancel-grant" style={sectionStyle}>{cancelGrant}</section> : null}
+          <MemberDataConsentCard member={member} sectionStyle={sectionStyle} />
           {/* 이 회원이 우리와 얼마나 왔는가. 이번 회원권만으로는 답할 수 없는
               질문이고, 재등록 상담에서 필요한 것은 그쪽이다. */}
           {hasJourney(journey) ? (
@@ -33138,7 +33216,19 @@ export default function App() {
   const lessonRecordServerReadOn = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.lessonRecordServerRead, account?.id);
   const [serverRecordsByClient, setServerRecordsByClient] = useState(() => new Map());
   const serverRecordFetchedAt = useRef(new Map());
+  /* 결정 4: 동의 카드는 서버 저장 · AI 요약 스위치가 켜진 계정에서만 보인다 -- 꺼져 있으면 지금 화면 그대로. */
+  const memberConsentOn = Boolean(organizationRoster) && (lessonRecordServerOn || scheduleSyncEnabledFor(scheduleSyncConfig?.memberSummary, account?.id));
   const serverNotesValue = useMemo(() => ({
+    consentOn: memberConsentOn,
+    saveConsent: async (clientId, granted) => {
+      try {
+        await writeMemberDataConsent(organizationContext.organizationId, clientId, { granted, uid: account?.id || "", version: MEMBER_AI_CONSENT_VERSION });
+        deviceLog("member_data_consent_saved", { feature: "member_data_consent", stage: granted ? "grant" : "revoke", correlationId: String(clientId).slice(-8), appBuild: APP_BUILD_LABEL });
+      } catch (error) {
+        deviceLog("member_data_consent_failed", { feature: "member_data_consent", stage: granted ? "grant" : "revoke", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), correlationId: String(clientId).slice(-8), appBuild: APP_BUILD_LABEL });
+        throw error;
+      }
+    },
     enabled: lessonRecordServerReadOn,
     recordsFor: (clientId) => serverRecordsByClient.get(String(clientId)) || null,
     resolveClientId: (member) => String(member?.orgClientId || findRosterMember(member?.id)?.orgClientId || ""),
@@ -33152,7 +33242,7 @@ export default function App() {
         .then((rows) => setServerRecordsByClient((current) => new Map(current).set(key, rows)))
         .catch((error) => deviceLog("lesson_record_server_read_failed", { feature: "lesson_record", stage: "server_read", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), appBuild: APP_BUILD_LABEL }));
     },
-  }), [lessonRecordServerReadOn, serverRecordsByClient, findRosterMember, organizationContext.organizationId]);
+  }), [lessonRecordServerReadOn, serverRecordsByClient, findRosterMember, organizationContext.organizationId, memberConsentOn, account?.id]);
   const lessonRecordServerOnRef = useRef(lessonRecordServerOn);
   lessonRecordServerOnRef.current = lessonRecordServerOn;
   const lessonRecordOutbox = useMemo(() => (account?.id ? createServerOutbox({
@@ -33160,6 +33250,9 @@ export default function App() {
     store: createFirestoreLessonRecordStore(),
     log: (event, details) => deviceLog(event, { ...details, appBuild: APP_BUILD_LABEL }),
   }) : null), [account?.id]);
+  /* 명부는 나중에 채워진다. 저장 후크가 처음 그린 때의 (빈) 명부를 붙잡지 않게 늘 최신 것을 본다. */
+  const findRosterMemberRef = useRef(findRosterMember);
+  findRosterMemberRef.current = findRosterMember;
   const lessonRecordStore = useMemo(() => createRecordStore({
     isEnabled: () => lessonRecordServerOnRef.current && Boolean(lessonRecordOutbox),
     enqueue: (record) => {
@@ -33169,7 +33262,9 @@ export default function App() {
     context: () => ({
       organizationId: organizationContext.organizationId, uid: account?.id || "", appBuild: APP_BUILD_LABEL,
       /* 기기 회원 -> 센터 회원 id (명부의 orgClientId). 이어지지 않은 기기 전용 회원은 빈 값 = 보내지 않음. */
-      resolveClientId: (memberId) => findRosterMember(memberId)?.orgClientId || "",
+      resolveClientId: (memberId) => findRosterMemberRef.current(memberId)?.orgClientId || "",
+      /* 결정 4: 회원 단위 동의가 있는 회원만 서버로. */
+      consentFor: (memberId) => memberDataConsentGranted(findRosterMemberRef.current(memberId)),
     }),
   }), [lessonRecordOutbox, organizationContext.organizationId, account?.id]);
   /* 보낼 줄 비우기: 켜질 때(멈춘 것도 한 번 더), 다시 연결될 때, 앱이 앞으로 올 때, 1분마다. */
@@ -33201,7 +33296,7 @@ export default function App() {
       const room = Math.min(200, lessonRecordOutbox.room());
       if (room <= 0) return;
       const doneIds = new Set(Array.isArray(state.doneIds) ? state.doneIds : []);
-      const batch = migrationRecordsFor({ members: rosterMembers, schedule: db.schedule, organizationId: organizationContext.organizationId, uid: account.id, appBuild: APP_BUILD_LABEL, doneIds, limit: room });
+      const batch = migrationRecordsFor({ members: rosterMembers, consentOf: memberDataConsentGranted, schedule: db.schedule, organizationId: organizationContext.organizationId, uid: account.id, appBuild: APP_BUILD_LABEL, doneIds, limit: room });
       let queued = 0;
       for (const record of batch.records) {
         if (!lessonRecordOutbox.enqueue({ ...record, organizationId: organizationContext.organizationId })) break;
@@ -33226,7 +33321,7 @@ export default function App() {
     const run = async () => {
       const last = Number(globalThis.localStorage?.getItem(lastKey) || 0);
       if (Date.now() - last < 6 * 60 * 60e3) return;
-      const all = migrationRecordsFor({ members: rosterMembers, schedule: db.schedule, organizationId: organizationContext.organizationId, uid: account.id, appBuild: APP_BUILD_LABEL, limit: Number.MAX_SAFE_INTEGER });
+      const all = migrationRecordsFor({ members: rosterMembers, consentOf: memberDataConsentGranted, schedule: db.schedule, organizationId: organizationContext.organizationId, uid: account.id, appBuild: APP_BUILD_LABEL, limit: Number.MAX_SAFE_INTEGER });
       if (!all.records.length) return;
       const store = createFirestoreLessonRecordStore();
       const clientIds = [...new Set(all.records.map((record) => record.data.clientId))];

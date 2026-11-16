@@ -103,7 +103,7 @@ function createMemberSummaryService({ firestore, getProvider, now = () => new Da
         input,
       });
       stage = "check";
-      const { summary, dropped } = shared.checkSummary(result.output, records);
+      const { summary, dropped } = shared.checkSummary(shared.restoreSourceIds(result.output, records), records);
       const droppedByReason = shared.droppedCounts(dropped);
       stage = "write";
       if (current.summary) {

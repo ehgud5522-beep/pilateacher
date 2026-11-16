@@ -212,3 +212,15 @@ test("도는 중이면 dirty 만 세우고, 성공하면 앞 판을 versions 에
   assert.equal(versions.length, 1);
   assert.equal(store.docs.get(`organizations/${ORG}/memberSummaries/c1`).status, "ready");
 });
+
+test("요약: AI 로 가는 기록 번호는 임시 번호, 모르는 번호는 없는 기록으로 빠진다", async () => {
+  const { buildSummaryInput, restoreSourceIds, checkSummary, recentRecords } = await shared();
+  const rows = recentRecords([record("uidA_n1_aaaa", "2026-11-01", "리포머"), record("uidA_n2_bbbb", "2026-11-03", "캐딜락")]);
+  const input = buildSummaryInput({ records: rows });
+  assert.doesNotMatch(JSON.stringify(input), /uidA/);
+  assert.deepEqual(input.records.map((row) => row.recordId), ["r1", "r2"]);
+  const restored = restoreSourceIds({ mustRemember: [item("캐딜락 사용", [{ recordId: "r1", date: "2026-11-03" }]), item("지어낸 근거", [{ recordId: "r9", date: "2026-11-03" }])], recentTrend: [], openQuestions: [] }, rows);
+  const { summary, dropped } = checkSummary(restored, rows);
+  assert.equal(summary.mustRemember[0].sources[0].recordId, "uidA_n2_bbbb");
+  assert.equal(dropped[0].reason, "unknown_source");
+});

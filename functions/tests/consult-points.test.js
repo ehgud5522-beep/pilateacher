@@ -63,7 +63,8 @@ const deps = (store, calls = []) => ({
   firestore: store,
   membershipId: (org, uid) => `${org}_${uid}`,
   isOwnerLevel: (membership) => membership?.role === "owner",
-  getProvider: () => ({ executeInternal: async (request) => { calls.push(request); return { output: { talkingPoints: [{ text: "계단 오를 때 무릎이 편하다고 하심", sources: src("r2", "2026-11-10") }] }, usage: {} }; } }),
+  /* AI 는 임시 번호(r1 = 가장 최근 기록)로 답한다. */
+  getProvider: () => ({ executeInternal: async (request) => { calls.push(request); return { output: { talkingPoints: [{ text: "계단 오를 때 무릎이 편하다고 하심", sources: [{ recordId: "r1", date: "2026-11-10" }] }] }, usage: {} }; } }),
 });
 
 test("담당 강사 · 동의 · 스위치가 맞으면 만든다, 이름은 지워서 보낸다", async () => {
@@ -84,4 +85,16 @@ test("담당 아님 · 동의 없음 · 스위치 꺼짐은 부르지 않고 이
   assert.equal(await reasonOf(fake(await seed({ "organizations/o1/clients/c1": { instructorIds: ["t1"] } }))), "consent_missing");
   assert.equal(await reasonOf(fake(await seed({ "runtimeConfig/scheduleSync": {} }))), "feature_off");
   assert.equal(calls.length, 0);
+});
+
+test("AI 로 가는 기록 번호는 임시 번호 -- 강사 계정 번호가 든 기록ID 는 보내지 않고, 받은 근거는 진짜 ID 로 되돌린다", async () => {
+  const calls = [];
+  const realIds = { "organizations/o1/lessonRecords/teacherUid123_n9_abcd": record("teacherUid123_n9_abcd", "2026-11-10", RECORDS[0].fields) };
+  const store = fake(await seed(realIds));
+  const service = createConsultPointsService(deps(store, calls));
+  const result = await service.generate({ callerUid: "t1", organizationId: "o1", clientId: "c1" });
+  assert.doesNotMatch(JSON.stringify(calls[0].input), /teacherUid123|_n9_|r2_|t1/);
+  assert.deepEqual(calls[0].input.records.map((row) => row.recordId), ["r1", "r2", "r3"]);
+  const realOn1110 = ["r2", "teacherUid123_n9_abcd"];
+  assert.ok(result.talkingPoints[0].sources.every((source) => realOn1110.includes(source.recordId)), "진짜 기록ID 로 돌아온다");
 });

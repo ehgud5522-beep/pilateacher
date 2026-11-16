@@ -7259,6 +7259,11 @@ function PassCard({ card, onEdit, sessionUpWindow = null }) {
   );
 }
 
+/* 회원 상세의 "체형 변화" 카드 (2026-11-16 대표: "체형변화 빼주고 더 깔끔하게"). 지우지 않고 끈다 --
+   360° 바디뷰(posture-model.js BODY_VIEW_ENABLED)와 같은 방식이다. 되살릴 때는 이 값 하나만 true 로.
+   사진 · 분석 기록은 그대로이고, 비포애프터 탭과 "기록" 화면에서 계속 쓴다. */
+const MEMBER_DETAIL_BODY_CARD = false;
+
 function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centrePasses = null, centreLessons = null, viewerRole = "", onHandoverPass, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide, cancelGrant = null }) {
   /* 세션업 기간은 **회원권 문서에서** 센다. 카드(passCards)는 회원 앱과 함께
      쓰는 모양이라 그 칸이 없다 -- pass-cards.js 머리말의 "회원에게 가지 않는
@@ -7481,9 +7486,22 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
       </header>
       <main ref={scrollContainerRef} data-member-detail-scroll className="pt-scroll min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden" style={{ padding: "8px 12px calc(18px + max(env(safe-area-inset-bottom, 0px), 12px))" }}>
         <div data-member-detail-content className="min-w-0 max-w-full space-y-2">
-          <section ref={firstSummaryRef} data-member-section="status" style={{ ...sectionStyle, backgroundColor: statusSurface, borderColor: statusInk }}>
-            <div className="flex min-w-0 items-center gap-3"><span className="min-w-0 flex-1 break-words text-xs font-extrabold tabular-nums" style={{ color: statusInk }}>잔여 {detailStatus.remaining}회 · 다음 예약 {detailStatus.nextLesson ? formatMemberLessonDate(detailStatus.nextLesson.date) : "없음"} · {detailStatus.expiry ? `${formatMemberLessonDate(detailStatus.expiry)} 만료` : "만료일 없음"}</span>{pendingSessionCount > 0 && <span className="shrink-0 rounded-full px-2 py-1 text-caption font-extrabold" style={{ backgroundColor: CARD, color: WARN }}>확인 {pendingSessionCount}</span>}</div>
-            {detailStatus.risk !== "normal" && bodyPhotoSurface.latest && bodyPhotoSurface.daysSinceLatest !== null && <p className="mt-1.5 text-caption font-medium tabular-nums" style={{ color: INK2, opacity: 0.78 }}>최근 체형사진 · {bodyPhotoSurface.daysSinceLatest}일 전</p>}
+          {/* 한눈에 셋 (2026-11-16). 전에는 "잔여 · 다음 예약 · 만료" 를 한 줄로 이어 써서 폰에서 두세 줄로 접혔다. */}
+          <section ref={firstSummaryRef} data-member-section="status" style={{ ...sectionStyle, padding: "10px 12px", backgroundColor: statusSurface, borderColor: statusInk }}>
+            <div className="grid min-w-0 grid-cols-3 gap-2">
+              {[
+                ["잔여", `${detailStatus.remaining}회`, true],
+                ["다음 예약", detailStatus.nextLesson ? formatMemberLessonDate(detailStatus.nextLesson.date) : "없음", false],
+                ["만료", detailStatus.expiry ? formatMemberLessonDate(detailStatus.expiry) : "없음", false],
+              ].map(([label, value, strong]) => (
+                <div key={label} className="min-w-0">
+                  <p className="text-caption font-bold" style={{ color: SUB }}>{label}</p>
+                  <p className="mt-0.5 truncate font-extrabold tabular-nums" style={{ fontSize: strong ? 18 : 13, lineHeight: 1.25, color: strong ? statusInk : INK }}>{value}</p>
+                </div>
+              ))}
+            </div>
+            {pendingSessionCount > 0 && <p className="mt-2 text-caption font-extrabold" style={{ color: WARN }}>확인할 수업 기록 {pendingSessionCount}건</p>}
+            {MEMBER_DETAIL_BODY_CARD && detailStatus.risk !== "normal" && bodyPhotoSurface.latest && bodyPhotoSurface.daysSinceLatest !== null && <p className="mt-1.5 text-caption font-medium tabular-nums" style={{ color: INK2, opacity: 0.78 }}>최근 체형사진 · {bodyPhotoSurface.daysSinceLatest}일 전</p>}
           </section>
           {/* 회원 앱 취소 횟수 · 추가 (2026-11-07). 센터 회원 상세와 같은 줄이다. */}
           {cancelGrant ? <section data-member-section="cancel-grant" style={sectionStyle}>{cancelGrant}</section> : null}
@@ -7569,7 +7587,7 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
               </details>
             ) : null}
           </section>
-          <section data-member-management-card="posture" data-member-section="posture" className="min-w-0 max-w-full" style={{ ...sectionStyle, overflow: "hidden", backgroundColor: CARD }}>
+          {MEMBER_DETAIL_BODY_CARD && <section data-member-management-card="posture" data-member-section="posture" className="min-w-0 max-w-full" style={{ ...sectionStyle, overflow: "hidden", backgroundColor: CARD }}>
             <div className="flex min-w-0 items-center gap-2"><h2 className="min-w-0 flex-1 text-sm font-extrabold" style={{ color: INK }}>체형 변화</h2>{bodyPhotoSurface.assessmentCount > 0 && <><span className="shrink-0 text-caption tabular-nums" style={{ color: SUB }}>체형기록 {bodyPhotoSurface.assessmentCount}회 · 최근 {formatMemberLessonDate(bodyPhotoSurface.latestDate)}</span><button type="button" onClick={() => onAssess?.({ mode: "history" })} className="shrink-0 text-caption font-bold" style={{ color: BRAND_D }}>전체 보기</button></>}</div>
             {bodyPhotoSurface.state === "empty" ? <div className="mt-3 rounded-xl p-3 text-center" style={{ backgroundColor: CANVAS }}><span className="mx-auto flex h-16 w-16 items-center justify-center rounded-xl" style={{ backgroundColor: CARD, color: BRAND }}><Camera size={22} /></span><p className="mt-2 text-xs font-bold" style={{ color: INK }}>지금 찍어두면 나중에 변화를 보여줄 수 있습니다.</p><p className="mt-1 text-caption" style={{ color: INK2 }}>첫 수업 전에 사진 한 장 남겨두면 나중에 변화를 비교할 수 있습니다.</p><button type="button" onClick={() => onAssess?.({ mode: "new" })} className="mt-3 h-10 w-full text-xs font-extrabold text-white" style={{ borderRadius: 9, backgroundColor: BRAND }}>첫 사진 촬영</button></div> : bodyPhotoSurface.state === "comparison" ? <>
               <div data-body-photo-pair-view={bodyPhotoSurface.view} className="mt-3 grid min-w-0 grid-cols-2 gap-2 overflow-hidden">
@@ -7579,11 +7597,12 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
               <button type="button" onClick={openBodyPhotoCard} className="mt-3 h-10 w-full text-xs font-extrabold text-white" style={{ borderRadius: 9, backgroundColor: BRAND }}>비교 카드 만들어 보내기</button>
             </> : <div className="mt-3"><div className="grid min-w-0 grid-cols-2 gap-2 overflow-hidden"><div className="min-w-0"><div className="aspect-[3/4] w-full overflow-hidden rounded-xl" style={{ backgroundColor: PHOTO }}>{bodyPhotoSurface.latest?.src ? <img src={bodyPhotoSurface.latest.src} alt={`${postureViewLabel(bodyPhotoSurface.view)} 현재 사진`} className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center" style={{ color: FAINT }}><Camera size={20} /></span>}</div><p className="mt-1 truncate text-center text-caption font-bold tabular-nums" style={{ color: INK2 }}>{formatMemberLessonDate(bodyPhotoSurface.latestDate)}</p></div><button type="button" onClick={() => onAssess?.({ mode: "new" })} className="flex aspect-[3/4] min-w-0 flex-col items-center justify-center rounded-xl" style={{ border: `1px dashed ${LINE}`, backgroundColor: CANVAS, color: BRAND_D }}><Plus size={20} /><span className="mt-1 text-xs font-bold">다음 촬영</span></button></div><p className="mt-2 break-words text-center text-caption leading-relaxed" style={{ color: INK2 }}>{bodyPhotoSurface.sameDayOnly ? "같은 날 촬영한 기록만 있습니다. 다른 날짜에 한 번 더 촬영하면 변화를 비교할 수 있습니다." : "한두 달 뒤 같은 자세로 한 번 더 촬영하면 변화를 비교할 수 있습니다."}</p><p className="mt-1 text-center text-caption tabular-nums" style={{ color: SUB }}>체형기록 {bodyPhotoSurface.assessmentCount}회 · 사진 {bodyPhotoSurface.photoCount}장</p></div>}
             {resumableAssessment && <button type="button" onClick={() => onAssess?.({ mode: "resume", assessmentId: resumableAssessment.id })} className="mt-2 h-10 w-full text-xs font-bold" style={{ borderRadius: 9, backgroundColor: CANVAS, color: BRAND_D }}>진행 중 분석 이어가기</button>}
-          </section>
+          </section>}
           <details data-member-management-card="membership" style={{ ...sectionStyle, padding: 0, overflow: "hidden", backgroundColor: TINT, borderColor: "#D5D1EB" }}>
             <summary aria-label="이용권·결제 관리 카드 열기" className="flex min-h-14 cursor-pointer list-none items-center gap-3 px-3.5 py-3"><span className="min-w-0 flex-1"><span className="block truncate text-sm font-extrabold" style={{ color: INK }}>이용권·결제</span><span className="mt-0.5 block truncate text-caption" style={{ color: SUB }}>{passCards ? passCards.summary : `${member.passName || "이용권 없음"} · 잔여 ${left(member)}회 (정규 ${num(member.regular)} · 서비스 ${num(member.service)}) · ${member.contractEnd ? ymd(member.contractEnd) : "만료일 미설정"}`}</span></span><ChevronDown size={16} style={{ color: SUB }} /></summary>
             <div data-member-management-content="membership" style={{ padding: "0 12px 12px" }}>
-          <section data-member-section="membership" style={{ ...sectionStyle, backgroundColor: TINT, borderColor: "#D5D1EB" }}>
+          {/* 바깥 카드가 이미 같은 색의 틀이다 -- 안에서 다시 테두리를 두르면 상자 속 상자가 된다. */}
+          <section data-member-section="membership" style={{ padding: "2px 2px 4px" }}>
             {/* ── 회원권 한 장 = 카드 한 개 ─────────────────────────────
                 합계를 지웠다. 잔여와 누적은 더하고 상품명·만료일·회당 금액은
                 그중 한 장의 것만 쓰던 화면이었다 -- 1:1 두 장과 2:1 두 장을
@@ -7646,7 +7665,8 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
               </>
             )}
             {canViewSettlement && !organizationMode && <div className="mt-2 flex items-center gap-2" style={{ padding: "8px 9px", borderRadius: 8, backgroundColor: CARD }}><span className="min-w-0 flex-1"><span className="block" style={{ fontSize: TYPE.caption, color: SUB }}>강사 정산 단가</span><span className="block text-xs font-bold tabular-nums" style={{ color: INK }}>₩{won(settlementUnit)}{Number(member.payRate) > 0 ? "" : " · 센터 기본"}</span></span><button type="button" onClick={openRate} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>단가 수정</button></div>}
-            <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: SUB }}>회원 회당 금액은 총 결제액을 정규 유료 횟수로 나눕니다. 할인은 결제액에 반영하고 서비스 횟수는 제외합니다.</p>
+            {/* 회당 금액 설명은 기기 이용권(개인 모드) 화면에만 -- 센터 회원권 카드에는 그 숫자가 없다. */}
+            {!passCards && <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: SUB }}>회원 회당 금액은 총 결제액을 정규 유료 횟수로 나눕니다. 할인은 결제액에 반영하고 서비스 횟수는 제외합니다.</p>}
             {/* 센터 소속이면 이 버튼을 내지 않는다.
 
                 이 카드의 잔여·만료일·이용권 이름은 **센터 회원권에서 온다**
@@ -7665,14 +7685,16 @@ function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSett
               <button type="button" onClick={openMembership} className="mt-2 h-10 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: BRAND, color: "#fff" }}>이용권 수정</button>
             )}
           </section>
-          <Section title="이용권 변경 이력 및 상세 설정" action={organizationMode ? null : <button type="button" onClick={openMembership} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>관리</button>}>
+          {/* 센터 소속이면 이 칸의 값(기기 결제 · 홀딩 · 담당 이력)이 대개 비어 있다 -- 센터 이력은 더보기 → 회원 관리의
+              회원 상세가 원장으로 보여 준다. 빈 칸만 세우지 않는다. 정보 수정은 아래 "기본정보" 에도 있다. */}
+          {(!organizationMode || (member.payments || []).length > 0 || holdHistory.length > 0 || (member.instructorHistory || []).length > 0 || isInactive(member) || isHold(member)) && <Section title={organizationMode ? "이 기기의 변경 이력" : "이용권 변경 이력 및 상세 설정"} action={organizationMode ? null : <button type="button" onClick={openMembership} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>관리</button>}>
             {(member.payments || []).length ? member.payments.slice(0, 4).map((p) => <div key={p.id || `${p.date}-${p.amount}`} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span className="min-w-0 flex-1"><span className="block truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(p.date)} · {p.name || p.passName || "이용권"}</span>{p.kind === "adjustment" && <span className="block truncate" style={{ fontSize: TYPE.caption, color: SUB }}>잔여 {p.before?.remaining}회 → {p.after?.remaining}회 · 총 {p.before?.total}회 → {p.after?.total}회</span>}</span><span className="tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{p.kind === "adjustment" ? "수정" : `${num(p.count || p.sessions)}회`}</span></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>저장된 변경 이력이 없습니다</p>}
             {holdHistory.slice(0, 4).map((h) => <div key={h.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, backgroundColor: CANVAS }}><span style={{ padding: "2px 6px", borderRadius: 5, color: INK2, fontSize: TYPE.caption, fontWeight: 600 }}>홀딩</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(h.startDate)} ~ {ymd(h.releasedAt || h.endDate)}{h.extendDays ? ` · 만료 +${h.extendDays}일` : ""}</span></div>)}
             {(member.instructorHistory || []).slice(0, 3).map((entry) => <div key={entry.id || entry.date} className="flex gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span style={{ fontSize: TYPE.caption, color: SUB }}>담당 변경</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(entry.date)} · {entry.before || "미지정"} → {entry.after || "미지정"}</span></div>)}
             {isHold(member) && <div className="mt-2 flex items-start gap-2" style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: CANVAS }}><AlertCircle size={14} className="mt-0.5 shrink-0" style={{ color: SUB }} /><p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{ymd(member.holdFrom)} ~ {ymd(member.holdUntil)}{member.holdReason ? ` · ${member.holdReason}` : ""}</p></div>}
             {isInactive(member) && <button type="button" onClick={async () => { const saved = await onReactivate?.(member.id); if (saved !== false) onBack?.(); }} className="mt-2 h-11 w-full rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>활성으로 되돌리기</button>}
             <div className="mt-2 flex gap-2"><button type="button" onClick={openEdit} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: INK2, fontSize: TYPE.caption, fontWeight: 600 }}>정보 수정</button>{organizationMode ? null : isHold(member) ? <button type="button" onClick={() => { if (!releaseArmed) { setReleaseArmed(true); return; } const releasedAt = todayISO(); onPatch({ status: "active", holdFrom: "", holdUntil: "", holdReason: "", holdHistory: [{ id: uid(), startDate: member.holdFrom, endDate: member.holdUntil, releasedAt, reason: member.holdReason, extendDays: num(member.holdExtendDays), createdAt: releasedAt }, ...holdHistory] }); setReleaseArmed(false); }} style={{ flex: 1.35, height: 42, borderRadius: 8, border: `1px solid ${releaseArmed ? BRAND : LINE}`, backgroundColor: releaseArmed ? TINT : CARD, color: BRAND_D, fontSize: TYPE.caption, fontWeight: 600 }}>{releaseArmed ? "한 번 더 눌러 홀딩 해제" : "홀딩 해제"}</button> : <button type="button" onClick={() => { setHold({ start: todayISO(), end: shift(todayISO(), 14), reason: "", extend: true }); setSheet("hold"); }} style={{ flex: 1, height: 42, borderRadius: 8, border: `1px solid ${LINE}`, color: BRAND_D, fontSize: TYPE.caption, fontWeight: 600 }}>홀딩 설정</button>}</div>
-          </Section>
+          </Section>}
             </div>
           </details>
           <details data-member-management-card="basic-and-memos" style={{ ...sectionStyle, padding: 0, overflow: "hidden" }}>

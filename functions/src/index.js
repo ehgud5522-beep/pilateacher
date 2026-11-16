@@ -1724,3 +1724,46 @@ exports.backfillRenewalCandidates = onCall({
     throw new HttpsError("unavailable", "renewal_backfill_failed", { reason: String(error?.code || "renewal_backfill_failed") });
   }
 });
+
+/* ── 재등록 상담 소재 초안 (설계 문서 5단계) ────────────────────────────────
+   강사가 누를 때만 부른다. 스위치 scheduleSync.consultPoints (처음엔 꺼짐), 회원 AI 동의 필요. 결과는 저장하지
+   않는다. 근거는 consult-points.js 머리말. */
+const { createConsultPointsService } = require("./consult-points");
+const consultPointsService = createConsultPointsService({
+  firestore, membershipId, isOwnerLevel,
+  getProvider: () => {
+    if (!openAIProvider) openAIProvider = createOpenAIProvider({ apiKey: OPENAI_API_KEY.value(), model: process.env.AI_MODEL || DEFAULT_MODEL });
+    return openAIProvider;
+  },
+});
+exports.consultTalkingPoints = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  secrets: [OPENAI_API_KEY],
+  timeoutSeconds: 60,
+  memory: "256MiB",
+  invoker: "public",
+}, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const clientId = String(request?.data?.clientId || "").trim();
+  const fields = { feature: "consult_points", organizationId, correlationId: clientId.slice(-8) };
+  try {
+    const result = await consultPointsService.generate({
+      callerUid: request?.auth?.uid, organizationId, clientId,
+      goal: String(request?.data?.goal || ""), hasBeforeAfter: request?.data?.hasBeforeAfter === true,
+    });
+    logger.info("consult_points_done", { ...fields, stage: "done", points: result.talkingPoints.length, dropped: result.dropped, usage: result.usage || null });
+    return { talkingPoints: result.talkingPoints, dropped: result.dropped, promptVersion: result.promptVersion, reason: result.reason || "" };
+  } catch (error) {
+    if (error?.httpsCode) {
+      logger.warn("consult_points_refused", { ...fields, stage: "authorize", errorDomain: "consult_points", errorCode: error.reason });
+      throw new HttpsError(error.httpsCode, error.reason, { reason: error.reason });
+    }
+    const code = String(error?.code || "unknown");
+    const transient = ["timeout", "provider_unavailable", "provider_incomplete"].includes(code);
+    logger.error("consult_points_failed", {
+      ...fields, stage: "provider", errorDomain: "openai", errorCode: code, transient,
+      providerRequestId: String(error?.diagnostic?.providerRequestId || "").slice(0, 160),
+    });
+    throw new HttpsError(transient ? "unavailable" : "internal", code, { reason: code });
+  }
+});

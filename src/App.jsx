@@ -49,7 +49,7 @@ import {
   fbLoadAppUpdateConfig,
   fbSwapInstructorAccount,
   fbConfirmInstructorNames,
-  fbGrantMemberCancel, fbLessonRatingStats, fbRebuildMemberSummary, fbManageGroupPayroll, fbManageNotice, fbUpdateRuntimeConfig,
+  fbGrantMemberCancel, fbLessonRatingStats, fbRebuildMemberSummary, fbBackfillRenewalCandidates, fbManageGroupPayroll, fbManageNotice, fbUpdateRuntimeConfig,
   fbHandoverPass,
   fbSessionUpPass, fbManagePassHold,
   fbResetMigratedData,
@@ -412,6 +412,8 @@ import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/serve
 import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
 import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
 import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js";
+import { RENEWAL_ALERT, livePassesOf, renewalForecast, renewalLine, renewalRates } from "../functions/shared/renewal-forecast.mjs";
+import { listRecentDeductions, listRenewalCandidates } from "./data/repositories/renewal-repository.js";
 import LessonBriefing from "./features/schedule/LessonBriefing.jsx";
 import { writeMemberDataConsent } from "./data/repositories/member-consent-repository.js";
 import { MEMBER_AI_CONSENT_VERSION, MEMBER_DATA_CONSENT_CONFIRM, MEMBER_DATA_CONSENT_SECTIONS, MEMBER_DATA_CONSENT_TITLE, memberDataConsentGranted, memberDataConsentState } from "./features/consent/member-data-consent.js";
@@ -510,7 +512,7 @@ const LESSON_RECORD_REVIEW_FLAGS = new Set(["no_speech", "low_confidence", "tail
 const hasLessonRecordReviewFlag = (record) => (record?.reviewFlags || record?.flags || []).some((flag) => LESSON_RECORD_REVIEW_FLAGS.has(flag));
 /* 서버 기록 읽기 (설계 문서 1단계-5). 스위치가 켜진 계정에서 회원을 열 때 그 회원의 서버 기록을 받아 화면에만 더한다.
    기기에는 쓰지 않는다 (features/lesson-record/server-notes.js). 꺼져 있으면 회원 객체를 그대로 돌려준다. */
-const ServerNotesContext = createContext({ enabled: false, recordsFor: () => null, request: () => {}, resolveClientId: () => "", consentOn: false, saveConsent: async () => {}, briefingV2On: false, summaryFor: () => null, requestSummary: () => {} });
+const ServerNotesContext = createContext({ enabled: false, recordsFor: () => null, request: () => {}, resolveClientId: () => "", consentOn: false, saveConsent: async () => {}, briefingV2On: false, summaryFor: () => null, requestSummary: () => {}, renewalOn: false, renewalFor: () => null, requestRenewal: () => {} });
 function useServerMergedMember(member) {
   const context = useContext(ServerNotesContext);
   const clientId = context.enabled && member ? context.resolveClientId(member) : "";
@@ -4611,6 +4613,16 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
   const briefingClientId = briefingContext.briefingV2On && activeMember ? String(activeMember.orgClientId || "") : "";
   useEffect(() => { if (briefingClientId) briefingContext.requestSummary(briefingClientId); }, [briefingClientId, briefingContext]);
   const briefingSummary = briefingClientId ? briefingContext.summaryFor(briefingClientId) : null;
+  /* 4단계: 재등록 알림 한 줄 (스위치 renewalAlerts). */
+  const renewalClientId = briefingContext.renewalOn && activeMember ? String(activeMember.orgClientId || "") : "";
+  useEffect(() => { if (renewalClientId) briefingContext.requestRenewal(renewalClientId); }, [renewalClientId, briefingContext]);
+  const renewal = renewalClientId ? briefingContext.renewalFor(renewalClientId) : null;
+  const renewalLineView = renewal?.line ? (
+    <p data-renewal-line={renewal.forecast.alert} className="rounded-lg px-3 py-2 font-bold tabular-nums"
+      style={{ fontSize: TYPE.caption, color: [RENEWAL_ALERT.CANNOT_USE_UP, RENEWAL_ALERT.LOW_REMAINING, RENEWAL_ALERT.EXPIRY_SOON].includes(renewal.forecast.alert) ? WARN : INK2, backgroundColor: [RENEWAL_ALERT.CANNOT_USE_UP, RENEWAL_ALERT.LOW_REMAINING, RENEWAL_ALERT.EXPIRY_SOON].includes(renewal.forecast.alert) ? WARN_S : CANVAS }}>
+      {renewal.line}
+    </p>
+  ) : null;
   const lessonBriefingView = useMemo(() => (briefingContext.briefingV2On && activeMember
     ? selectLessonBriefing({ member: activeMember, lesson: draft, sessions: activeLessonSessions, schedule, summary: briefingSummary })
     : null), [briefingContext.briefingV2On, activeMember, draft, activeLessonSessions, schedule, briefingSummary]);
@@ -4879,7 +4891,8 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
               })}
             </div>
 
-            {lessonBriefingView ? <LessonBriefing view={lessonBriefingView} sessions={activeLessonSessions} /> : null}
+            {lessonBriefingView ? <LessonBriefing view={lessonBriefingView} sessions={activeLessonSessions} footer={renewalLineView} /> : null}
+            {!lessonBriefingView ? renewalLineView : null}
             {!lessonBriefingView && activeMember && lessonSheetBriefing && (
               <section className="min-w-0 rounded-xl p-3" aria-label="지난 수업과 다음 수업 준비" style={{ backgroundColor: LAVENDER_S, border: `1px solid ${RING}` }}>
                 <div className="mb-2 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: BRAND_D }}>{lessonSheetBriefing.source === "lesson_record" ? "지난 수업" : lessonSheetBriefing.source === "posture_fallback" ? "비포애프터 참고" : "이전 기록 참고"}</p>{lessonSheetBriefing.date && <span className="shrink-0 text-caption tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(lessonSheetBriefing.date)}{previousLessonSession ? ` · ${previousLessonSession.type}` : ""}</span>}</div>
@@ -24592,6 +24605,24 @@ function ExpiryReportScreen({
   const [period, setPeriod] = useState(initialState?.period || EXPIRY_PERIOD.THIS_MONTH);
   const [state, setState] = useState(initialState?.state || { stage: "idle" });
   const [instructors, setInstructors] = useState(initialState?.instructors || []);
+  /* 4단계 재등록 알림 (스위치 renewalAlerts). "다 못 쓸 회원" 묶음과 재등록률 표. 꺼져 있으면 지금 화면 그대로. */
+  const renewalOn = useContext(ServerNotesContext).renewalOn;
+  const [renewal, setRenewal] = useState(initialState?.renewal || { entries: null, candidates: null, error: "" });
+  const [backfill, setBackfill] = useState({ busy: false, message: "" });
+  const renewalRole = organization?.role || "";
+  const seesBranchRates = isOwnerLevelRole(renewalRole) || renewalRole === "manager" || (renewalRole === "instructor" && organization?.title === "branch_manager");
+  const loadRenewal = useCallback(() => {
+    if (!renewalOn || locked || initialState?.renewal) return;
+    const wideDeductions = isOwnerLevelRole(renewalRole) || renewalRole === "manager";
+    const branchIds = isOwnerLevelRole(renewalRole) ? [] : [...(organization?.locationIds || []), organization?.locationId || ""].filter(Boolean);
+    Promise.all([
+      listRecentDeductions({ organizationId, instructorId: wideDeductions ? "" : currentUserId, now: now() }),
+      seesBranchRates ? listRenewalCandidates(organizationId, { locationIds: branchIds }) : Promise.resolve(null),
+      seesBranchRates ? listLocations(organizationId).catch(() => []) : Promise.resolve([]),
+    ]).then(([entries, candidates, locations]) => setRenewal({ entries, candidates, locationNames: new Map((locations || []).map((item) => [String(item.id), String(item.name || "")])), error: "" }))
+      .catch((error) => setRenewal({ entries: [], candidates: null, error: String(error?.code || "unknown").replace("firestore/", "") }));
+  }, [renewalOn, locked, initialState, renewalRole, organization, organizationId, currentUserId, now, seesBranchRates]);
+  useEffect(() => { loadRenewal(); }, [loadRenewal]);
 
   useEffect(() => {
     if (locked || initialState) return;
@@ -24652,6 +24683,25 @@ function ExpiryReportScreen({
   const report = expiryReport(rows, {
     period, now: at, instructorId: ownerView ? "" : currentUserId,
   });
+  /* 다 못 쓸 회원: 지금 속도로 만료 전에 다 쓰지 못할 회원 (홀딩 · 연장 상담용). 계산은 브리핑 아래 한 줄과 같다. */
+  const cannotUseUp = renewalOn && renewal.entries
+    ? rows.map((row) => ({ row, forecast: renewalForecast({ clientId: row.clientId, passes: row.passes, entries: renewal.entries, now: at }) }))
+      .filter((item) => item.forecast?.alert === RENEWAL_ALERT.CANNOT_USE_UP)
+      .sort((left, right) => (left.forecast.daysToExpiry ?? 9999) - (right.forecast.daysToExpiry ?? 9999))
+    : [];
+  const instructorName = (id) => instructors.find((item) => String(item.userId || "") === id)?.displayName || "";
+  const ratesByLocation = renewalOn && renewal.candidates ? renewalRates(renewal.candidates, (row) => row.locationId || "지점 없음").filter((row) => row.month !== "pending").slice(0, 18) : [];
+  const ratesByInstructor = renewalOn && renewal.candidates ? renewalRates(renewal.candidates, (row) => row.instructorId).filter((row) => row.month !== "pending").slice(0, 30) : [];
+  const runBackfill = async () => {
+    setBackfill({ busy: true, message: "" });
+    try {
+      const result = await fbBackfillRenewalCandidates({ organizationId });
+      setBackfill({ busy: false, message: `채워 넣었어요 -- ${result?.written ?? 0}건` });
+      loadRenewal();
+    } catch (error) {
+      setBackfill({ busy: false, message: `채우지 못했어요 (코드 ${String(error?.details?.reason || error?.code || "unknown").replace("functions/", "")})` });
+    }
+  };
   const byInstructor = ownerView
     ? instructors.map((item) => ({
       userId: String(item.userId || ""),
@@ -24726,6 +24776,54 @@ function ExpiryReportScreen({
               </div>
             ))}
           </div>
+        </section>
+      ) : null}
+
+      {renewalOn && renewal.error ? (
+        <p style={{ fontSize: TYPE.caption, color: BAD }} data-renewal-error>재등록 알림 자료를 읽지 못했어요 (코드 {renewal.error})</p>
+      ) : null}
+      {renewalOn && renewal.entries ? (
+        <section style={sectionStyle} data-cannot-use-up>
+          <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>다 못 쓸 회원</h2>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>최근 4주 출석 속도로 보면 만료 전에 다 쓰지 못할 회원입니다. 홀딩 · 연장 상담에 쓰세요.</p>
+          {cannotUseUp.length ? (
+            <div className="mt-2">
+              {cannotUseUp.map(({ row, forecast }) => (
+                <div key={row.clientId} className="flex items-center gap-2" style={{ padding: "9px 0", borderTop: `1px solid ${LINE}` }}>
+                  <p className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{row.name || "(이름 없음)"}</p>
+                  <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: WARN }}>{renewalLine(forecast, at)}</p>
+                </div>
+              ))}
+            </div>
+          ) : <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>없음</p>}
+        </section>
+      ) : null}
+      {renewalOn && renewal.candidates ? (
+        <section style={sectionStyle} data-renewal-rates>
+          <div className="flex items-center gap-2">
+            <h2 className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>재등록률 (알림 받은 회원 기준)</h2>
+            {ownerView ? (
+              <button type="button" disabled={backfill.busy} onClick={runBackfill} className="shrink-0 px-3 py-1.5 font-bold"
+                style={{ borderRadius: 8, fontSize: TYPE.caption, color: BRAND, border: `1px solid ${LINE}`, opacity: backfill.busy ? 0.5 : 1 }}>
+                {backfill.busy ? "채우는 중…" : "지난 6달 채우기"}
+              </button>
+            ) : null}
+          </div>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>재등록 ÷ (재등록 + 끊김). 회원권이 끝나고 30일 안에 새 회원권이 나가면 재등록 (다른 강사여도), 30일이 지나도 없으면 끊김. 결정된 달로 셉니다.</p>
+          {backfill.message ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }} data-renewal-backfill>{backfill.message}</p> : null}
+          {[["지점별", ratesByLocation, (key) => renewal.locationNames?.get(key) || key], ["강사별", ratesByInstructor, (key) => instructorName(key) || "이름 모름"]].map(([label, list, nameOf]) => (
+            <div key={label} className="mt-2">
+              <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>{label}</p>
+              {list.length ? list.map((row) => (
+                <div key={`${row.key}|${row.month}`} className="flex items-center gap-2 tabular-nums" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, fontSize: TYPE.caption }}>
+                  <span className="shrink-0" style={{ color: SUB }}>{row.month}</span>
+                  <span className="min-w-0 flex-1 truncate" style={{ fontWeight: 600, color: INK }}>{nameOf(row.key)}</span>
+                  <span className="shrink-0" style={{ color: SUB }}>재등록 {row.renewed} · 끊김 {row.lapsed}</span>
+                  <span className="shrink-0 font-bold" style={{ color: INK }}>{row.rate === null ? "-" : `${Math.round(row.rate * 100)}%`}</span>
+                </div>
+              )) : <p style={{ fontSize: TYPE.caption, color: SUB }}>아직 결정된 줄이 없습니다</p>}
+            </div>
+          ))}
         </section>
       ) : null}
 
@@ -28192,6 +28290,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="lessonBriefingV2" title="수업 전 브리핑 (새 화면)"
               description="켜진 계정은 수업 관리 시트 위쪽에 꼭 기억할 것 · 지난 수업 · 최근 흐름이 크게 섭니다. 지난 수업은 연 수업보다 앞선 기록만, 같은 문장은 한 번만. 회원 요약이 있으면 함께 보여 줍니다. 끄면 지금 화면 그대로입니다." />
+            {/* 4단계: 재등록 알림 (규칙 계산). */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="renewalAlerts" title="재등록 알림"
+              description="켜진 계정은 수업 관리 시트 브리핑 아래에 잔여 · 만료 · 소진 예상 한 줄이 섭니다 (최근 4주 출석 속도로 계산). 만료 회원 화면에 '다 못 쓸 회원' 묶음이 생깁니다." />
             <MemberSummaryAdmin organization={organization} />
             {/* 비포애프터 회원 공유 (2026-11-15). 켜면 모든 강사가 비교 카드를 보내고, 동의한 회원이 보니따 앱에서 본다. */}
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
@@ -33238,7 +33341,31 @@ export default function App() {
   const lessonBriefingV2On = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.lessonBriefingV2, account?.id);
   const [summariesByClient, setSummariesByClient] = useState(() => new Map());
   const summaryFetchedAt = useRef(new Map());
+  /* 4단계: 재등록 알림 (규칙 계산). 수업 관리 시트 브리핑 아래 한 줄. 회원권은 명부가 이미 들고 있고(rosterPasses),
+     출석 속도는 그 회원의 쓰는 회원권 원장을 열 때 한 번 읽는다(5분). */
+  const renewalAlertsOn = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.renewalAlerts, account?.id);
+  const [renewalLedgers, setRenewalLedgers] = useState(() => new Map());
+  const renewalFetchedAt = useRef(new Map());
   const serverNotesValue = useMemo(() => ({
+    renewalOn: renewalAlertsOn,
+    renewalFor: (clientId) => {
+      const key = String(clientId || "");
+      const entries = renewalLedgers.get(key);
+      if (!key || !entries) return null;
+      const now = new Date();
+      const forecast = renewalForecast({ clientId: key, passes: rosterPasses, entries, now });
+      return forecast ? { forecast, line: renewalLine(forecast, now) } : null;
+    },
+    requestRenewal: (clientId) => {
+      const key = String(clientId || "");
+      if (!key || !organizationContext.organizationId) return;
+      if (Date.now() - (renewalFetchedAt.current.get(key) || 0) < 5 * 60e3) return;
+      renewalFetchedAt.current.set(key, Date.now());
+      const live = livePassesOf(rosterPasses, key, new Date());
+      Promise.all(live.map((pass) => listPassLedger(organizationContext.organizationId, pass.id)))
+        .then((lists) => setRenewalLedgers((current) => new Map(current).set(key, lists.flat())))
+        .catch((error) => deviceLog("renewal_forecast_failed", { feature: "renewal_alerts", stage: "ledger_read", errorDomain: "firestore", errorCode: String(error?.code || error?.cause?.code || "unknown"), correlationId: key.slice(-8), appBuild: APP_BUILD_LABEL }));
+    },
     briefingV2On: lessonBriefingV2On,
     summaryFor: (clientId) => summariesByClient.get(String(clientId)) || null,
     requestSummary: (clientId) => {
@@ -33273,7 +33400,7 @@ export default function App() {
         .then((rows) => setServerRecordsByClient((current) => new Map(current).set(key, rows)))
         .catch((error) => deviceLog("lesson_record_server_read_failed", { feature: "lesson_record", stage: "server_read", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), appBuild: APP_BUILD_LABEL }));
     },
-  }), [lessonRecordServerReadOn, serverRecordsByClient, findRosterMember, organizationContext.organizationId, memberConsentOn, account?.id, lessonBriefingV2On, summariesByClient]);
+  }), [lessonRecordServerReadOn, serverRecordsByClient, findRosterMember, organizationContext.organizationId, memberConsentOn, account?.id, lessonBriefingV2On, summariesByClient, renewalAlertsOn, renewalLedgers, rosterPasses]);
   const lessonRecordServerOnRef = useRef(lessonRecordServerOn);
   lessonRecordServerOnRef.current = lessonRecordServerOn;
   const lessonRecordOutbox = useMemo(() => (account?.id ? createServerOutbox({

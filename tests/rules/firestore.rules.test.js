@@ -6597,3 +6597,32 @@ describe("회원 동의 칸(aiConsent) -- 강사 이상이 자기 이름 · 서�
     }));
   });
 });
+
+/* ── 재등록 후보 (설계 문서 4단계) ── 서버만 쓰고, 대표 · 총괄 전부 · FC 맡은 지점 · 점장 자기 지점만 읽는다. */
+describe("재등록 후보 -- 서버만 쓰고 지점 범위로 읽는다", () => {
+  const LEAD = "branch-lead";
+  const ref = (userId, id = "pass-here") => doc(dbFor(userId), "organizations", ORG_A, "renewalCandidates", id);
+  beforeEach(async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "memberships", `${ORG_A}_${LEAD}`), { organizationId: ORG_A, userId: LEAD, role: "instructor", title: "branch_manager", status: "active", locationId: "loc-here" });
+      await setDoc(doc(db, "organizations", ORG_A, "renewalCandidates", "pass-here"), { organizationId: ORG_A, passId: "pass-here", clientId: "c1", locationId: "loc-here", instructorId: users.instructor, status: "pending" });
+      await setDoc(doc(db, "organizations", ORG_A, "renewalCandidates", "pass-there"), { organizationId: ORG_A, passId: "pass-there", clientId: "c2", locationId: "loc-there", instructorId: users.instructor, status: "pending" });
+    });
+  });
+  test("대표 · 총괄은 전부, 점장은 자기 지점만, 일반 강사 · 직원 · 다른 센터는 못 읽는다", async () => {
+    await assertSucceeds(getDoc(ref(users.owner)));
+    await assertSucceeds(getDoc(ref(users.area_manager, "pass-there")));
+    await assertSucceeds(getDoc(ref(LEAD)));
+    await assertFails(getDoc(ref(LEAD, "pass-there")), "남의 지점");
+    await assertFails(getDoc(ref(users.instructor)), "일반 강사");
+    await assertFails(getDoc(ref(users.staff)));
+    await assertFails(getDoc(ref(users.outsider)));
+  });
+  test("쓰기는 누구도 못 한다 -- 서버만", async () => {
+    for (const userId of [users.owner, users.manager, LEAD]) {
+      await assertFails(setDoc(ref(userId, "new"), { organizationId: ORG_A, status: "renewed" }));
+      await assertFails(updateDoc(ref(userId), { status: "renewed" }));
+    }
+  });
+});

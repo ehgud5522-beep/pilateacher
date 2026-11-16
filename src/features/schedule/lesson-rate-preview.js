@@ -106,6 +106,9 @@ export function previewMemberRate(input = {}) {
     });
     return {
       unitPrice, rule, passId: text(pass.id), remaining: remainingCountOf(pass),
+      /* 이 회원권의 만료일. 수업 관리 시트가 잔여와 만료를 **같은 회원권에서** 읽는다 -- 회원 카드의 잔여는
+         여러 장의 합이라, 만료일만 한 장의 것이면 한 줄 안에서 서로 다른 회원권을 말한다. */
+      expiresAt: pass.expiresAt ?? null,
       /* 세션업 기간. 강사가 확정을 누르기 **전에** 보는 자리라, 마지막
          회차가 지나가 버리기 전에 대표에게 말할 수 있다. 판정은 회원권
          카드와 같은 함수다 -- 두 화면이 다른 숫자를 말하면 어느 쪽을

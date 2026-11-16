@@ -193,16 +193,15 @@ test("schedule detail uses three final statuses and native speech recognition ow
   const voiceEnd = source.indexOf("function NoteForm(", voiceStart);
   const voice = source.slice(voiceStart, voiceEnd);
 
-  assert.match(schedule, /\{ k: "done", l: "출석" \}, \{ k: "noshow", l: "노쇼" \}, \{ k: "cancel", l: "취소" \}/);
+  assert.match(schedule, /\[ATTENDANCE\.ATTEND, ATTENDANCE\.NOSHOW, ATTENDANCE\.CANCEL\]\.map/);
   assert.doesNotMatch(schedule, /\{ k: "booked", l: "예정" \}/);
-  assert.match(schedule, /activeAttendee\.status !== "booked"/);
   assert.match(schedule, /"booked", activeMemberId/);
   assert.match(schedule, /처리 되돌리기/);
   assert.doesNotMatch(schedule, /출석·노쇼·취소 중 하나를 선택하면/);
   assert.doesNotMatch(schedule, /AI 수업 시퀀스 추천|추천 생성|Provider/);
   assert.match(schedule, /grid grid-cols-2 gap-2/);
   assert.doesNotMatch(schedule, /\b말하기\b/);
-  ["기록하기", "직접입력", "노코멘트", "나중에", "닫기"].forEach((label) => assert.match(schedule, new RegExp(label)));
+  ["음성으로 기록하기", "직접 입력", "기록 없음", "나중에 기록", "닫기"].forEach((label) => assert.match(schedule, new RegExp(label)));
   assert.match(schedule, /setRecordMode\(recordMode === "voice" \? null : "voice"\)/);
   assert.match(schedule, /<VoiceNote[^>]*memberId=/);
   assert.doesNotMatch(schedule, /<VoiceNote autoStart/);

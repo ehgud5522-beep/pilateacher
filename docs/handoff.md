@@ -1,3 +1,10 @@
+## 2026-11-16 밤 — #236 AI 로 보내는 기록 번호를 임시 번호로 (병합 · Functions 4개 재배포됨)
+
+- 서버 기록ID(강사계정_기기기록_지문)가 근거용으로 OpenAI 에 가던 것을 r1, r2 … 로 바꿔 보내고 서버에서 되돌림
+- main `3af0df6`, Functions 411 통과 뒤 refreshMemberSummaryOnRecord · sweepMemberSummaries · rebuildMemberSummary ·
+  consultTalkingPoints 재배포 성공. 스위치가 꺼져 있어 운영에서 계정 번호가 실제로 나간 적은 없다
+- 남는 것: 강사가 쓴 본문 속 신상 정보(다른 사람 이름 · 직장)는 기계로 다 못 막음 -- 강사 안내로 보완
+
 ## 2026-11-16 저녁 — 권한 규칙 · 서버 함수 배포됨 (대표 지시 "규칙서버함수도배포")
 
 - main `f1ec2b4`, deploy-main 에서 `npm run test:rules` 449 통과 뒤 규칙 배포 (10:38:30Z 릴리스)

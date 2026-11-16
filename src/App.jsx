@@ -411,6 +411,7 @@ import { createRecordStore, migrationRecordsFor } from "./features/lesson-record
 import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/server-outbox.js";
 import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
 import { compareRecordSets, parityState } from "./features/lesson-record/record-parity.js";
+import { mergeServerNotes } from "./features/lesson-record/server-notes.js";
 import { buildRemoteDiagnosticReport } from "./features/diagnostics/remote-diagnostics.js";
 import { aiRecordingAvailable, AI_RECORDING_STATUS, readAIRecordingStatus, writeAIRecordingStatus } from "./features/lesson-record/ai-recording-status.js";
 import { runLessonRecordRetryCycle, scheduleLessonRecordRetry } from "./features/lesson-record/retry-queue.js";
@@ -502,6 +503,17 @@ const UPDATE_DISMISSED_KEY = "pilateacher_app_update_dismissed_build_v1";
 const STARTUP_CHECK_KEY = "pilateacher_startup_check_day_v1";
 const LESSON_RECORD_REVIEW_FLAGS = new Set(["no_speech", "low_confidence", "tail_dropped"]);
 const hasLessonRecordReviewFlag = (record) => (record?.reviewFlags || record?.flags || []).some((flag) => LESSON_RECORD_REVIEW_FLAGS.has(flag));
+/* 서버 기록 읽기 (설계 문서 1단계-5). 스위치가 켜진 계정에서 회원을 열 때 그 회원의 서버 기록을 받아 화면에만 더한다.
+   기기에는 쓰지 않는다 (features/lesson-record/server-notes.js). 꺼져 있으면 회원 객체를 그대로 돌려준다. */
+const ServerNotesContext = createContext({ enabled: false, recordsFor: () => null, request: () => {}, resolveClientId: () => "" });
+function useServerMergedMember(member) {
+  const context = useContext(ServerNotesContext);
+  const clientId = context.enabled && member ? context.resolveClientId(member) : "";
+  useEffect(() => { if (clientId) context.request(clientId); }, [clientId, context]);
+  const records = clientId ? context.recordsFor(clientId) : null;
+  return useMemo(() => (records ? mergeServerNotes(member, records) : member), [member, records]);
+}
+
 const LessonRecordLinkContext = createContext({
   prepare: async () => ({ state: "pending", reason: "unavailable" }),
   resolve: async () => ({ state: "link_review_required", reason: "unavailable" }),
@@ -4563,7 +4575,8 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
      디오사만 끊은 회원(PT 회원권 없음)은 그래서 아예 처리할 수 없었다. */
   const isCareLesson = isCareLessonKey(lessonTypeByFormKind(kind).key);
   const isMemberLesson = kind === "solo" || isDuet || isCareLesson;
-  const activeMember = members.find((m) => m.id === activeMemberId) || null;
+  /* 1단계-5: 지난 수업 · 브리핑에 서버 기록도 (스위치 꺼짐이면 그대로). 고치기 대상은 기기 기록만 (note-edit.js). */
+  const activeMember = useServerMergedMember(members.find((m) => m.id === activeMemberId) || null);
   /* 이 수업에 이미 손으로 쓴 기록. 있으면 직접입력이 그 글을 불러와 같은 기록을 고친다
      (2026-11-07). 전에는 늘 빈 칸에서 시작해 저장할 때마다 기록이 하나씩 늘었다. */
   const editingNote = manualNoteFor(activeMember?.notes, draft?.id);
@@ -7293,7 +7306,9 @@ function PassCard({ card, onEdit, sessionUpWindow = null }) {
    사진 · 분석 기록은 그대로이고, 비포애프터 탭과 "기록" 화면에서 계속 쓴다. */
 const MEMBER_DETAIL_BODY_CARD = false;
 
-function ReferenceMemberDetail({ member, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centrePasses = null, centreLessons = null, viewerRole = "", onHandoverPass, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide, cancelGrant = null }) {
+function ReferenceMemberDetail({ member: deviceMember, schedule, photos, settings, canViewSettlement = true, organizationMode = false, journey = null, passCards = null, centrePasses = null, centreLessons = null, viewerRole = "", onHandoverPass, onBack, onPatch, onSaveNote, onSchedule, onOpenLesson, onAssess, onToast, onDelete, onDeactivate, onReactivate, onHide, cancelGrant = null }) {
+  /* 1단계-5: 서버 기록을 화면에만 더한 회원 (스위치 꺼짐이면 그대로). */
+  const member = useServerMergedMember(deviceMember);
   /* 세션업 기간은 **회원권 문서에서** 센다. 카드(passCards)는 회원 앱과 함께
      쓰는 모양이라 그 칸이 없다 -- pass-cards.js 머리말의 "회원에게 가지 않는
      것은 여기서도 만들지 않는다". 그래서 여기서 짝지어 넘긴다. */
@@ -27973,6 +27988,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               document="lessonRecordServer" title="수업기록 서버 저장"
               description="켜진 강사가 확정한 수업기록이 기기에 저장된 뒤 센터 서버에도 쌓입니다. 고치거나 지울 수 없는 줄로 남고, 대표 · 총괄 · 쓴 강사 · 담당 강사만 읽습니다. 꺼도 기기 저장은 그대로입니다. 강사 한 명씩 켜세요." />
             <LessonRecordParityAdmin organization={organization} instructorStore={instructorStore} />
+            {/* 1단계-5: 서버 기록 읽기. 비교가 "일치" 인 강사부터 켠다. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="lessonRecordServerRead" title="수업기록 서버에서 읽기"
+              description="켜진 계정은 회원 상세 · 수업 관리의 지난 수업에 서버의 기록도 함께 보여 줍니다 -- 다른 기기 · 대타 강사가 쓴 기록, 새 폰에서도. 서버 기록은 보기만 하고 고치지 않습니다. 위 비교가 '일치' 인 강사부터 켜세요." />
             {/* 비포애프터 회원 공유 (2026-11-15). 켜면 모든 강사가 비교 카드를 보내고, 동의한 회원이 보니따 앱에서 본다. */}
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
@@ -33009,6 +33029,24 @@ export default function App() {
   /* 1단계-2: 기기 · 서버 동시 저장. 스위치는 scheduleSync 문서의 lessonRecordServer 칸(운영 스위치 화면) --
      꺼져 있으면 지금과 똑같다. 켜지면 확정 기록이 기기 저장 뒤 "보낼 줄" 에 들어가고 연결되면 서버로 간다. */
   const lessonRecordServerOn = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.lessonRecordServer, account?.id);
+  const lessonRecordServerReadOn = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.lessonRecordServerRead, account?.id);
+  const [serverRecordsByClient, setServerRecordsByClient] = useState(() => new Map());
+  const serverRecordFetchedAt = useRef(new Map());
+  const serverNotesValue = useMemo(() => ({
+    enabled: lessonRecordServerReadOn,
+    recordsFor: (clientId) => serverRecordsByClient.get(String(clientId)) || null,
+    resolveClientId: (member) => String(member?.orgClientId || findRosterMember(member?.id)?.orgClientId || ""),
+    request: (clientId) => {
+      const key = String(clientId);
+      if (!key || !organizationContext.organizationId) return;
+      const last = serverRecordFetchedAt.current.get(key) || 0;
+      if (Date.now() - last < 5 * 60e3) return;
+      serverRecordFetchedAt.current.set(key, Date.now());
+      createFirestoreLessonRecordStore().listForClient(organizationContext.organizationId, key)
+        .then((rows) => setServerRecordsByClient((current) => new Map(current).set(key, rows)))
+        .catch((error) => deviceLog("lesson_record_server_read_failed", { feature: "lesson_record", stage: "server_read", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), appBuild: APP_BUILD_LABEL }));
+    },
+  }), [lessonRecordServerReadOn, serverRecordsByClient, findRosterMember, organizationContext.organizationId]);
   const lessonRecordServerOnRef = useRef(lessonRecordServerOn);
   lessonRecordServerOnRef.current = lessonRecordServerOn;
   const lessonRecordOutbox = useMemo(() => (account?.id ? createServerOutbox({
@@ -34911,7 +34949,7 @@ export default function App() {
           </div>
         ) : null}
         <div key={tab} className="app-motion-content relative min-h-0 flex-1 overflow-hidden">
-          <Guard>
+          <ServerNotesContext.Provider value={serverNotesValue}><Guard>
             {tab === "schedule" && <ScheduleManager db={rosterDb} draftAccountId={account?.id} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id) => { setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} viewerLocationIds={organizationContext.locationIds || []} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterInMemberTab} centreAccount={centreAccount} onOpenCentreRegistration={canOpenCentreRegistration ? openCentreRegistration : undefined} unlinkedLocal={centreAccount && roster ? roster.unlinkedLocal || [] : []} onUploadUnlinked={canOpenCentreRegistration ? uploadUnlinkedMember : undefined} onLinkUnlinked={linkUnlinkedMember} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
@@ -34966,7 +35004,7 @@ export default function App() {
               currentUserId={account?.id || ""} rosterClients={rosterClients} rosterPasses={rosterPasses}
               onOpenPay={canSeeOwnPay ? () => setPayOpen(true) : undefined} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}
               onOpenSchedule={() => { setScheduleQuickAddRequest((request) => request + 1); setTab("schedule"); }} onOpenRecords={() => { setMobileView("list"); setTab("members"); }} onOpenOnboarding={openOnboardingReplay} onOpenLessonExamples={() => setLessonExamplesOpen(true)} backupStatus={cloudBackupStatus} onEnablePhotoBackup={enablePhotoBackup} onRetryBackup={retryCloudBackup} onRestorePrevious={() => openPreviousPhoneRestore()} onSnapshotBackup={takeMigrationSnapshot} snapshotBusy={snapshotBusy} onRetryOrganization={retryOrganizationContext} onLoadRuntimeConfig={loadRuntimeConfig} onSaveRuntimeConfig={saveRuntimeConfig} onSwapInstructorAccount={swapInstructorAccount} onPreviewInstructorNames={previewInstructorNames} onConfirmInstructorNames={confirmInstructorNames} noticeStore={noticeStore} onManageNotice={fbManageNotice} noticeWho={noticeWho} onOwnerMessageSaved={setOwnerMessage} onOpenClient={(picked) => setDetailClient(picked)} onClearMigratedSettlements={clearMigratedSettlements} />}
-          </Guard>
+          </Guard></ServerNotesContext.Provider>
         </div>
         {/* 출석 체크는 일정 탭 위에 시트로 뜬다. 탭 구조를 건드리지 않으면서
             수업이 끝난 자리에서 바로 열리게 하기 위해서다. */}

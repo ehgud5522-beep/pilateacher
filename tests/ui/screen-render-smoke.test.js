@@ -1324,7 +1324,8 @@ test("the monthly report and the payroll roll-up do not read alike", async () =>
   const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
-  const owner = markupOf("더보기 탭");
+  /* 대표에게 이 항목은 맨 아래 접힌 "강사 메뉴" 안에 있다 (2026-11-16). */
+  const owner = markupOf("더보기 탭 · 묶음 펼침");
   assert.match(owner, /이번 달 내 수업 활동/);
   assert.match(owner, /수업 수 · 출석 · 챙길 회원/);
   assert.match(owner, /강사별 수업료 · 그룹 급여 포함/);
@@ -2785,6 +2786,56 @@ test("the settings hub groups the centre work, and folds the dangerous half", as
   assert.equal(hub.includes("이상한 건만 모아 보기"), false, "감사 로그는 접혀 있다");
   assert.equal(hub.includes("쓰던 엑셀의 회원"), false, "이관 데이터는 접혀 있다");
   assert.match(hub, /aria-expanded="false"/);
+});
+
+/* ── 대표 · 총괄매니저의 더보기는 대표 일이 위다 (2026-11-16 대표) ─────────
+   "대표가 안 쓰는 강사 항목이 맨 위라 어수선하다." 대표 일 → 점검 → 접힌
+   강사 메뉴 순서로 서고, 강사 · FC매니저 · 개인 모드는 **그대로**다. */
+const orderOf = (markup, needles) => needles.map((needle) => {
+  const at = markup.indexOf(needle);
+  assert.ok(at >= 0, `${needle} 이(가) 보여야 한다`);
+  return at;
+});
+const assertInOrder = (markup, needles, label) => {
+  const at = orderOf(markup, needles);
+  for (let index = 1; index < at.length; index += 1) {
+    assert.ok(at[index - 1] < at[index], `${label}: ${needles[index - 1]} 이(가) ${needles[index]} 보다 위`);
+  }
+};
+
+test("owner-level hub puts owner work first, then 점검, then the folded instructor menu", async (t) => {
+  const markupOf = await issueScreens(t);
+  for (const [folded, open] of [["더보기 탭", "더보기 탭 · 묶음 펼침"], ["더보기 탭 · 총괄매니저", "더보기 탭 · 묶음 펼침 · 총괄매니저"]]) {
+    const hub = markupOf(folded);
+    // 강사 메뉴는 접힌 채로 시작한다 -- 머리글과 설명만 보이고 항목은 그려지지 않는다.
+    assert.match(hub, /강사 메뉴 · 강사 화면에 보이는 항목/, folded);
+    assert.match(hub, /강사 계정에서 보이는 항목입니다/, folded);
+    for (const hidden of ["새 수업 · 상담 · 휴무 추가", "회원별 수업 · 비포애프터", "이번 달 내 수업 활동", "비포애프터 설정", "일정 색상", "사용법 다시 보기", "AI 수업기록 예시", "오늘의 지식"]) {
+      assert.equal(hub.includes(hidden), false, `${folded}: ${hidden} 은(는) 접혀 있다`);
+    }
+    // 로그아웃은 접힌 묶음 안에 묻히지 않는다.
+    assert.match(hub, /프로필 사진 · 이메일 계정 · 로그아웃/, folded);
+    assertInOrder(hub, ["회원권 발급", "강사 · 급여", "만료 회원", "공지사항", "화면 설정", "프로필 사진 · 이메일 계정 · 로그아웃", "앱 정보", ">점검<", "강사 메뉴 · 강사 화면에 보이는 항목"], folded);
+
+    const expanded = markupOf(open);
+    assertInOrder(expanded, [
+      "회원권 발급", "만료 회원", "대표 설정", "내 설정", "화면 설정", "데이터 이관 · 백업", "프로필 사진 · 이메일 계정 · 로그아웃",
+      "감사 로그", "강사 메뉴 · 강사 화면에 보이는 항목",
+      "새 수업 · 상담 · 휴무 추가", "회원별 수업 · 비포애프터", "이번 달 내 수업 활동", "비포애프터 설정", "일정 색상", "사용법 다시 보기", "AI 수업기록 예시", "오늘의 지식",
+    ], open);
+  }
+});
+
+test("instructor, FC manager and personal hubs keep today's order", async (t) => {
+  const markupOf = await issueScreens(t);
+  const head = ["새 수업 · 상담 · 휴무 추가", "회원별 수업 · 비포애프터"];
+  const tail = ["비포애프터 설정", "일정 색상", "화면 설정", "데이터 상태", "데이터 이관 · 백업", "사용법 다시 보기", "접근권한 안내", "AI 수업기록 예시", "오늘의 지식", "프로필 사진 · 이메일 계정 · 로그아웃", "앱 정보"];
+  assertInOrder(markupOf("더보기 탭 · 강사"), [...head, "이번 달 내 수업 활동", "만료 회원", "공지사항", ...tail], "강사");
+  assertInOrder(markupOf("더보기 탭 · 매니저"), [...head, "이번 달 내 수업 활동", "만료 회원", "공지사항", "회원권 발급", "그룹 급여 정산", ...tail], "FC매니저");
+  assertInOrder(markupOf("더보기 탭 · 개인 모드"), [...head, "월간 리포트", tail[0], "센터명 · 담당자 · 그룹 단가", ...tail.slice(1)], "개인 모드");
+  for (const name of ["더보기 탭 · 강사", "더보기 탭 · 매니저", "더보기 탭 · 개인 모드"]) {
+    assert.equal(markupOf(name).includes("강사 메뉴"), false, `${name}: 강사 메뉴 묶음은 대표 배치에만`);
+  }
 });
 
 test("a role that sees none of a group never sees its heading", async (t) => {

@@ -408,6 +408,8 @@ import { runAuthPreflight } from "./features/auth/connectivity-probe.js";
 import { describeLessonRecordFailure, failureCauseDetail, LESSON_RECORD_FAILURE_CATEGORY, lessonRecordProvenanceSource, takeLessonRecordDebugFailure } from "./features/lesson-record/failure-diagnostics.js";
 import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./features/lesson-record/pipeline-diagnostics.js";
 import { createRecordStore } from "./features/lesson-record/record-store.js";
+import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/server-outbox.js";
+import { createFirestoreLessonRecordStore } from "./data/repositories/lesson-record-repository.js";
 import { buildRemoteDiagnosticReport } from "./features/diagnostics/remote-diagnostics.js";
 import { aiRecordingAvailable, AI_RECORDING_STATUS, readAIRecordingStatus, writeAIRecordingStatus } from "./features/lesson-record/ai-recording-status.js";
 import { runLessonRecordRetryCycle, scheduleLessonRecordRetry } from "./features/lesson-record/retry-queue.js";
@@ -831,6 +833,8 @@ const timeOf = (stamp) => {
 };
 const uid = () => Math.random().toString(36).slice(2, 9);
 const DEVICE_LOG_FIELDS = new Set([
+  /* 수업기록 서버 저장 보낼 줄 (1단계-2): 몇 번째 시도인지 · 일시 오류인지 · 어느 줄인지(기록ID 끝 8자). */
+  "attempts", "transient", "correlationId", "sent", "alreadyThere", "retryLater", "blocked",
   "reasonCode", "photoIdPrefix", "hasOrganizationId", "hasClientId", "category", "retryable",
   "memberId", "assessmentId", "lessonId", "hasLessonLink", "view", "storage", "operation",
   "platform", "lifecycleState",
@@ -27923,6 +27927,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="rosterRealtime" title="회원 명단 실시간"
               description="켜진 계정은 센터 회원 명단을 실시간으로 받습니다. 강사는 본인 담당 회원만, FC매니저 · 매니저 · 대표는 회원 목록에서 고른 지점을 받습니다 (대표 · 총괄매니저가 '전체'를 고르면 받지 않고 새로고침으로 맞춥니다). 대표 → 강사 한 명 → 전체 순서로 켜세요. 읽은 횟수는 진단에 남습니다." />
+            {/* 수업기록 서버 저장 (설계 문서 1단계-2, 2026-11-16). 강사 한 명씩 켜는 시범부터. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="lessonRecordServer" title="수업기록 서버 저장"
+              description="켜진 강사가 확정한 수업기록이 기기에 저장된 뒤 센터 서버에도 쌓입니다. 고치거나 지울 수 없는 줄로 남고, 대표 · 총괄 · 쓴 강사 · 담당 강사만 읽습니다. 꺼도 기기 저장은 그대로입니다. 강사 한 명씩 켜세요." />
             {/* 비포애프터 회원 공유 (2026-11-15). 켜면 모든 강사가 비교 카드를 보내고, 동의한 회원이 보니따 앱에서 본다. */}
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
@@ -32956,7 +32965,38 @@ export default function App() {
   const savedLessonRecordToastKeysRef = useRef(new Set());
   /* 수업기록 저장을 한 곳으로 (설계 문서 1단계-1). 기기 저장이 끝난 뒤 부른다. 지금은 꺼져 있다 --
      1-2 단계가 서버 "보낼 줄" 을 여기에 붙인다 (features/lesson-record/record-store.js). */
-  const lessonRecordStore = useMemo(() => createRecordStore({ isEnabled: () => false }), []);
+  /* 1단계-2: 기기 · 서버 동시 저장. 스위치는 scheduleSync 문서의 lessonRecordServer 칸(운영 스위치 화면) --
+     꺼져 있으면 지금과 똑같다. 켜지면 확정 기록이 기기 저장 뒤 "보낼 줄" 에 들어가고 연결되면 서버로 간다. */
+  const lessonRecordServerOn = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.lessonRecordServer, account?.id);
+  const lessonRecordServerOnRef = useRef(lessonRecordServerOn);
+  lessonRecordServerOnRef.current = lessonRecordServerOn;
+  const lessonRecordOutbox = useMemo(() => (account?.id ? createServerOutbox({
+    key: outboxKeyFor(account.id),
+    store: createFirestoreLessonRecordStore(),
+    log: (event, details) => deviceLog(event, { ...details, appBuild: APP_BUILD_LABEL }),
+  }) : null), [account?.id]);
+  const lessonRecordStore = useMemo(() => createRecordStore({
+    isEnabled: () => lessonRecordServerOnRef.current && Boolean(lessonRecordOutbox),
+    enqueue: (record) => {
+      lessonRecordOutbox.enqueue({ ...record, organizationId: organizationContext.organizationId });
+      Promise.resolve(lessonRecordOutbox.flush()).catch(() => {});
+    },
+    context: () => ({ organizationId: organizationContext.organizationId, uid: account?.id || "", appBuild: APP_BUILD_LABEL }),
+  }), [lessonRecordOutbox, organizationContext.organizationId, account?.id]);
+  /* 보낼 줄 비우기: 켜질 때(멈춘 것도 한 번 더), 다시 연결될 때, 앱이 앞으로 올 때, 1분마다. */
+  useEffect(() => {
+    if (!lessonRecordServerOn || !lessonRecordOutbox) return undefined;
+    const flush = (includeBlocked = false) => Promise.resolve(lessonRecordOutbox.flush({ includeBlocked }))
+      .then((summary) => { if (summary.sent || summary.blocked) deviceLog("lesson_record_outbox_flushed", { ...summary, appBuild: APP_BUILD_LABEL }); })
+      .catch(() => {});
+    flush(true);
+    const onOnline = () => flush();
+    const onVisible = () => { if (document.visibilityState === "visible") flush(); };
+    window.addEventListener("online", onOnline);
+    document.addEventListener("visibilitychange", onVisible);
+    const timer = window.setInterval(() => { if (lessonRecordOutbox.pending().length) flush(); }, 60e3);
+    return () => { window.removeEventListener("online", onOnline); document.removeEventListener("visibilitychange", onVisible); window.clearInterval(timer); };
+  }, [lessonRecordServerOn, lessonRecordOutbox]);
   const saveScheduleComment = async (id, type, sid, body, voiceMeta = null, noteOptions = null) => {
     const text = String(body || "").trim();
     /* 빈 기록은 저장하지 않는다. 말없이 false 만 돌려주면 강사는 버튼이 고장 난 줄

@@ -70,9 +70,9 @@ test("후크: 꺼져 있으면 아무것도 하지 않고, 켜지면 보낼 줄�
   assert.equal(broken.afterDeviceSave({ note: voice(), memberId: "client-1" }).reason, "error");
 });
 
-test("앱: 두 저장 경로가 기기 저장 성공 뒤 후크를 부르고, 지금은 꺼져 있다", async () => {
+test("앱: 두 저장 경로가 기기 저장 성공 뒤 후크를 부른다 (켜고 끄는 것은 1-2 의 스위치)", async () => {
   const source = await readFile(new URL("../../src/App.jsx", import.meta.url), "utf8");
-  assert.match(source, /const lessonRecordStore = useMemo\(\(\) => createRecordStore\(\{ isEnabled: \(\) => false \}\), \[\]\);/);
+  assert.match(source, /const lessonRecordStore = useMemo\(\(\) => createRecordStore\(\{/);
   assert.match(source, /if \(shouldConfirm\) lessonRecordStore\.afterDeviceSave\(\{ note, memberId: id, lesson: linkedLesson \}\);/);
   assert.match(source, /if \(stored === false\) return false;\n    lessonRecordStore\.afterDeviceSave\(\{ note: finalizedWithSession/);
 });

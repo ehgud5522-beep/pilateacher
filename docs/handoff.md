@@ -1,4 +1,7 @@
-## 2026-11-16 — 보니따 강제 업데이트: Android 만 켬 (대표 지시 "강제 업데이트 켜줘 1.1.5로")
+## 2026-11-16 — 보니따 강제 업데이트: Android 21 · iOS 26 (대표 지시 "강제 업데이트 켜줘 1.1.5로")
+
+- **iOS 도 켬** (대표: "출시됨, 켜줘"): Remote Config 버전 2 에 `member_ios_min_build = "26"` · `member_ios_latest_build = "26"` 추가.
+  아래는 버전 1(Android 만) 때의 기록
 
 - Firebase Remote Config(프로젝트 pilateacher)에 처음으로 값을 넣었다 -- 전에는 템플릿이 비어 있었다. 버전 1:
   `member_force_update_enabled = "true"` · `member_android_min_build = "21"` · `member_android_latest_build = "21"` (1.1.5 의 Play versionCode 21)

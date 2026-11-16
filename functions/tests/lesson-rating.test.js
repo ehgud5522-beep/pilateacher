@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { HTTPS_CODE_BY_REASON, lessonRatingStats, lessonRatingStatus, submitLessonRating } = require("../src/lesson-rating");
-const { isActiveOwner, membershipId } = require("../src/member-link");
+const { isActiveOwner, isOwnerLevel, membershipId } = require("../src/member-link");
 
 /* 수업 후 별점 평가 (2026-11-09). lesson-rating.js 의 본문을 그대로 지난다. index.js 는
    이 함수들을 감싸 오류를 HttpsError 로 바꿀 뿐이다. 메모리 Firestore 는 member-cancel.test.js 와 같다. */
@@ -45,6 +45,9 @@ function memoryFirestore(seed = {}) {
             const actual = docs.get(key)?.[field];
             if (op === "==") return actual === value;
             if (op === "array-contains") return Array.isArray(actual) && actual.includes(value);
+            const time = (v) => (v instanceof Date ? v.getTime() : typeof v?.toDate === "function" ? v.toDate().getTime() : Number(v));
+            if (op === ">=") return actual != null && time(actual) >= time(value);
+            if (op === "<") return actual != null && time(actual) < time(value);
             throw new Error(`unsupported ${op}`);
           }))
           .map(snapshot),
@@ -198,19 +201,19 @@ test("점수 모양이 틀리면 invalid-argument (scores_invalid) -- 빠진 항
 });
 
 test("모든 이유 코드에 Firebase 코드가 있다", () => {
-  for (const reason of ["feature_off", "lesson_not_found", "not_own_lesson", "lesson_cancelled", "lesson_not_attended", "lesson_not_started", "rating_expired", "scores_invalid", "not_owner"]) {
+  for (const reason of ["feature_off", "lesson_not_found", "not_own_lesson", "lesson_cancelled", "lesson_not_attended", "lesson_not_started", "rating_expired", "scores_invalid", "not_owner", "not_allowed", "month_invalid"]) {
     assert.ok(HTTPS_CODE_BY_REASON[reason], reason);
   }
 });
 
-test("대표 화면 집계: 대표만, 강사 이름 · 건수 · 평균만 -- 회원 · 개별 점수는 없다", async () => {
+test("집계 (누적): 강사 이름 · 건수 · 평균만 -- 회원 · 개별 점수는 없다 · 강사 · 회원은 못 본다", async () => {
   const db = seed();
   await submitLessonRating(db, { ...input(), scores: SCORES }, deps);
   db.docs.set(lessonPath("L3"), { organizationId: ORG, status: "completed", clientIds: ["client-a"], instructorId: "teacher-1", startsAt: new Date(NOW.getTime() - 2 * HOUR) });
   db.docs.set(lessonPath("L3") + "/participants/client-a", { attendanceStatus: "attended" });
   await submitLessonRating(db, { ...input({ lessonId: "L3" }), scores: { body: 5, care: 4, again: 4 } }, deps);
 
-  const stats = await lessonRatingStats(db, { callerUid: "owner-uid", organizationId: ORG }, { membershipId, isActiveOwner });
+  const stats = await lessonRatingStats(db, { callerUid: "owner-uid", organizationId: ORG, month: "all" }, { membershipId, isActiveOwner, isOwnerLevel });
   assert.deepEqual(stats.rows, [{
     instructorId: "teacher-1", instructorName: "정예진", count: 2,
     items: [{ id: "body", average: 4.5, count: 2 }, { id: "care", average: 4.5, count: 2 }, { id: "again", average: 3.5, count: 2 }],
@@ -219,7 +222,7 @@ test("대표 화면 집계: 대표만, 강사 이름 · 건수 · 평균만 -- �
   assert.doesNotMatch(JSON.stringify(stats), /client-a|member-uid|회원A|L1|L3/);
 
   for (const callerUid of ["teacher-1", "member-uid-a", "nobody"]) {
-    assert.equal(await reasonOf(lessonRatingStats(db, { callerUid, organizationId: ORG }, { membershipId, isActiveOwner })), "not_owner", callerUid);
+    assert.equal(await reasonOf(lessonRatingStats(db, { callerUid, organizationId: ORG }, { membershipId, isActiveOwner, isOwnerLevel })), "not_allowed", callerUid);
   }
   assert.equal(await reasonOf(lessonRatingStats(db, { callerUid: "", organizationId: ORG }, { membershipId, isActiveOwner })), "unauthenticated");
 });
@@ -247,4 +250,50 @@ test("종료 10분 전에는 평가를 받지 않고 출석을 확인한다", as
   db.docs.get(lessonPath("L1") + "/participants/client-a").attendanceStatus = "noshow";
   assert.equal((await lessonRatingStatus(db, input(), deps)).reason, "lesson_not_attended");
   assert.equal(await reasonOf(submitLessonRating(db, { ...input(), scores: SCORES }, deps)), "lesson_not_attended");
+});
+
+/* ── 월별 · 총괄 · 점장 (2026-11-16 대표: "점장이 자기 지점 강사들 몇 점 받는지 · 한 달 단위로 누적") ── */
+test("월별: 그 달 수업의 평가만 센다 (수업 시각 · 한국 시간) -- 누적과 따로", async () => {
+  const db = seed();
+  await submitLessonRating(db, { ...input(), scores: SCORES }, deps);
+  const statsDeps = { membershipId, isActiveOwner, isOwnerLevel, now: () => NOW };
+  const november = await lessonRatingStats(db, { callerUid: "owner-uid", organizationId: ORG }, statsDeps);
+  assert.equal(november.month, "2026-11", "달을 안 보내면 이번 달");
+  assert.equal(november.rows[0].count, 1);
+  const october = await lessonRatingStats(db, { callerUid: "owner-uid", organizationId: ORG, month: "2026-10" }, statsDeps);
+  assert.deepEqual(october.rows, []);
+  assert.equal(await reasonOf(lessonRatingStats(db, { callerUid: "owner-uid", organizationId: ORG, month: "2026-13" }, statsDeps)), "month_invalid");
+  assert.doesNotMatch(JSON.stringify(november), /client-a|member-uid|L1/);
+});
+
+test("총괄매니저도 전부 본다 -- 대표와 같은 자리", async () => {
+  const db = seed({ extra: { [`memberships/${membershipId(ORG, "area-uid")}`]: { role: "area_manager", status: "active", organizationId: ORG } } });
+  await submitLessonRating(db, { ...input(), scores: SCORES }, deps);
+  const stats = await lessonRatingStats(db, { callerUid: "area-uid", organizationId: ORG, month: "all" }, { membershipId, isActiveOwner, isOwnerLevel });
+  assert.equal(stats.scope, "all");
+  assert.equal(stats.rows.length, 1);
+});
+
+test("점장: 자기 지점 강사만, 본인 점수는 빼고 · 다른 지점 · 지점 없는 점장은 못 본다", async () => {
+  const manager = (uid, scope) => ({ [`memberships/${membershipId(ORG, uid)}`]: { role: "instructor", title: "branch_manager", status: "active", organizationId: ORG, displayName: uid, ...scope } });
+  const db = seed({ extra: {
+    ...manager("bm-same", { locationIds: ["loc-a"] }),
+    ...manager("bm-far", { locationIds: ["loc-b"] }),
+    ...manager("bm-none", {}),
+  } });
+  // 평가받은 강사 teacher-1 을 loc-a 로
+  db.docs.set(`memberships/${membershipId(ORG, "teacher-1")}`, { role: "instructor", status: "active", organizationId: ORG, displayName: "정예진", locationIds: ["loc-a"] });
+  await submitLessonRating(db, { ...input(), scores: SCORES }, deps);
+  const statsDeps = { membershipId, isActiveOwner, isOwnerLevel };
+  const same = await lessonRatingStats(db, { callerUid: "bm-same", organizationId: ORG, month: "all" }, statsDeps);
+  assert.equal(same.scope, "branch");
+  assert.deepEqual(same.rows.map((row) => row.instructorName), ["정예진"]);
+  assert.deepEqual((await lessonRatingStats(db, { callerUid: "bm-far", organizationId: ORG, month: "all" }, statsDeps)).rows, []);
+  assert.deepEqual((await lessonRatingStats(db, { callerUid: "bm-none", organizationId: ORG, month: "all" }, statsDeps)).rows, []);
+  // 점장 본인이 평가받아도 본인 화면에는 없다 -- 회원에게 "담당 선생님에게는 공개되지 않아요" 라고 했다
+  db.docs.set(`memberships/${membershipId(ORG, "teacher-1")}`, { role: "instructor", title: "branch_manager", status: "active", organizationId: ORG, displayName: "정예진", locationIds: ["loc-a"] });
+  assert.deepEqual((await lessonRatingStats(db, { callerUid: "teacher-1", organizationId: ORG, month: "all" }, statsDeps)).rows, []);
+  // 팀장 같은 다른 직함은 강사와 같다
+  db.docs.set(`memberships/${membershipId(ORG, "tl")}`, { role: "instructor", title: "team_lead", status: "active", organizationId: ORG, locationIds: ["loc-a"] });
+  assert.equal(await reasonOf(lessonRatingStats(db, { callerUid: "tl", organizationId: ORG, month: "all" }, statsDeps)), "not_allowed");
 });

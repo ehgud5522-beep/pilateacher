@@ -1067,7 +1067,8 @@ exports.manageGroupPayroll = onCall({
   }
 });
 
-/* 대표 화면: 강사별 누적 응답 수 · 항목별 평균. 대표만. 개별 응답은 읽지 않는다. */
+/* 별점 화면: 강사별 응답 수 · 항목별 평균. 대표 · 총괄은 전부, 점장은 자기 지점 강사만(본인 제외).
+   월별(수업 시각 기준) 또는 누적. 개별 응답 · 회원은 돌려주지 않는다 (lesson-rating.js). */
 exports.lessonRatingStats = onCall({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",
   timeoutSeconds: 30,
@@ -1076,9 +1077,9 @@ exports.lessonRatingStats = onCall({
   const organizationId = String(request?.data?.organizationId || "").trim();
   try {
     const result = await lessonRatingStats(firestore, {
-      callerUid: request?.auth?.uid, organizationId,
-    }, { membershipId, isActiveOwner });
-    lessonRatingLog("info", "lesson_rating_stats_read", { stage: "stats", organizationId, instructors: result.rows.length });
+      callerUid: request?.auth?.uid, organizationId, month: String(request?.data?.month || "").trim(),
+    }, { membershipId, isActiveOwner, isOwnerLevel });
+    lessonRatingLog("info", "lesson_rating_stats_read", { stage: "stats", organizationId, instructors: result.rows.length, month: result.month, scope: result.scope });
     return result;
   } catch (error) {
     if (error?.httpsCode) {

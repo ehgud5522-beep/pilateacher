@@ -321,6 +321,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "강사 알림함 시트 · 열지 못함",
     "운영 설정 · 회원 앱 수업 취소",
     "운영 설정 · 수업 후 별점 집계",
+    "수업 별점 · 점장 · 이 달",
+    "더보기 탭 · 점장",
     "운영 설정 · 수업 후 별점 집계 · 읽지 못함",
     "센터 회원 상세 · 보관 가능",
     "센터 회원 상세 · 보관 확인",
@@ -3609,7 +3611,8 @@ test("lesson ratings: the owner sees per-instructor counts and averages only, fa
   const markup = await screenMarkup();
   const stats = markup("운영 설정 · 수업 후 별점 집계");
   assert.match(stats, /data-lesson-rating-stats/);
-  assert.match(stats, /강사에게는 공개되지 않고/);
+  assert.match(stats, /담당 강사 본인에게는 공개되지 않고/);
+  assert.match(stats, /지금까지 누적/);
   assert.match(stats, /정예진/);
   assert.match(stats, /누적 12건/);
   assert.match(stats, /★ 4\.6/);
@@ -3617,6 +3620,21 @@ test("lesson ratings: the owner sees per-instructor counts and averages only, fa
   assert.match(stats, /—/, "응답 없는 항목은 평균 대신 줄표");
   const failed = markup("운영 설정 · 수업 후 별점 집계 · 읽지 못함");
   assert.match(failed, /평가 집계를 읽지 못했어요 \(코드 not_owner\)/);
+});
+
+/* 2026-11-16 대표: "별점 항목을 따로 빼고, 점장이 자기 지점 강사들 몇 점 받는지 · 한 달 단위로". */
+test("lesson ratings: its own menu, monthly, and the branch manager sees only the branch, never self", async () => {
+  const markup = await screenMarkup();
+  const manager = markup("수업 별점 · 점장 · 이 달");
+  assert.match(manager, /우리 지점 강사 별점/);
+  assert.match(manager, /2026년 11월/);
+  assert.match(manager, /aria-label="이전 달"/);
+  assert.match(manager, /이 달 4건/);
+  assert.match(manager, /본인 점수는 보이지 않습니다/);
+  assert.match(markup("더보기 탭"), /수업 별점/, "대표 더보기에 따로 선다");
+  assert.match(markup("더보기 탭 · 점장"), /수업 별점/, "점장 더보기에도");
+  assert.match(markup("더보기 탭 · 점장"), /우리 지점 강사 별점 · 월별 · 누적/);
+  assert.doesNotMatch(markup("더보기 탭 · 강사"), /수업 별점/, "일반 강사에게는 없다");
 });
 
 test("owner message: one line at the top of the schedule tab, the owner writes it in owner settings", async () => {

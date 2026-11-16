@@ -688,7 +688,10 @@ const APP_VERSION_REPORT_KEY = "pilateacher_app_version_report_v1";
 /* 더보기에서 펼쳐 둔 묶음. 접힘이 기본이고, 편 것만 적는다. */
 const SETTINGS_GROUPS_KEY = "pilateacher_settings_groups_v1";
 /* 접는 묶음 전부를 편 상태. 스모크 하네스가 접힌 항목을 보는 데 쓴다. */
-const ALL_MENU_GROUPS_OPEN = Object.freeze({ "점검": true, "대표 설정": true });
+/* 대표 · 총괄매니저의 더보기 맨 아래에 접혀 있는 강사 항목 묶음. 이 문자열이
+   펼침 기억(SETTINGS_GROUPS_KEY)의 열쇠라, 바꾸면 펴 둔 사람의 상태가 풀린다. */
+const INSTRUCTOR_MENU_GROUP = "강사 메뉴 · 강사 화면에 보이는 항목";
+const ALL_MENU_GROUPS_OPEN = Object.freeze({ "점검": true, "대표 설정": true, [INSTRUCTOR_MENU_GROUP]: true });
 /* 회원 범위 잠금(3단계 규칙)을 켜려면 강사 전원이 이 번호 이상이어야 한다.
    이 빌드에 담긴 번호다 -- 여기 담긴 앱만이 좁혀진 질의를 보내고, 그보다
    낮은 앱은 규칙 아래서 회원 목록을 통째로 못 읽는다.
@@ -27245,54 +27248,81 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     ] },
   ].filter((group) => group.items.length > 0);
 
-  const menuGroups = [
-    { label: "업무", items: [
-      { key: "schedule", title: "일정 등록", description: "새 수업 · 상담 · 휴무 추가", Icon: Plus, action: onOpenSchedule },
-      { key: "records", title: "기록", description: "회원별 수업 · 비포애프터", Icon: ClipboardList, action: onOpenRecords },
-      /* 소속 센터에서는 이 화면과 급여 집계가 서로 다른 것을 센다. 이름이 비슷해
-         헷갈리므로 무엇을 세는지로 가른다 -- 화면 안에도 같은 설명이 있다. */
-      /* 소속 강사에게는 더 이상 금액 화면이 아니다. 금액은 일정 탭의 급여
-         카드 하나로 모았고, 여기는 "이번 달 나는 무엇을 했나" 를 답한다. */
-      { key: "report", title: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", description: inOrganization ? "수업 수 · 출석 · 챙길 회원" : "이달 수업 · 성과 · 예상 급여", Icon: ArrowUpRight },
-      /* 만료는 조용히 일어난다. 회원권이 끝나도 알림이 없고, 강사는 그 회원이
-         안 온다는 것을 몇 주 뒤에 안다 -- 그때는 늦다. 개인 모드에는 회원권이
-         없어 셀 것이 없다. */
-      ...(inOrganization ? [{ key: "expiry", title: "만료 회원", description: "이번 달 · 지난달 · 재등록률", Icon: Users }] : []),
-      /* 공지는 **모두가 본다.** 쓰는 사람에게만 보이는 자리에 두면 강사는
-         넘긴 공지를 다시 볼 길이 없다 -- 한 번 뜨고 끝나는 창이기 때문이다. */
-      ...(inOrganization ? [{ key: "notices", title: "공지사항", description: "센터에서 알리는 글 · 다시 보기", Icon: Bell }] : []),
-    ] },
+  /* ── 항목은 한 번만 적는다 ─────────────────────────────────────────────
+     같은 항목이 두 배치(강사 · 대표)에 다른 문구로 서면, 한쪽만 고쳐지는 날이
+     온다. 배치는 아래에서 고르고, 항목의 얼굴은 여기 하나다. */
+  const scheduleItem = { key: "schedule", title: "일정 등록", description: "새 수업 · 상담 · 휴무 추가", Icon: Plus, action: onOpenSchedule };
+  const recordsItem = { key: "records", title: "기록", description: "회원별 수업 · 비포애프터", Icon: ClipboardList, action: onOpenRecords };
+  /* 소속 센터에서는 이 화면과 급여 집계가 서로 다른 것을 센다. 이름이 비슷해
+     헷갈리므로 무엇을 세는지로 가른다 -- 화면 안에도 같은 설명이 있다. */
+  /* 소속 강사에게는 더 이상 금액 화면이 아니다. 금액은 일정 탭의 급여
+     카드 하나로 모았고, 여기는 "이번 달 나는 무엇을 했나" 를 답한다. */
+  const reportItem = { key: "report", title: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", description: inOrganization ? "수업 수 · 출석 · 챙길 회원" : "이달 수업 · 성과 · 예상 급여", Icon: ArrowUpRight };
+  /* 만료는 조용히 일어난다. 회원권이 끝나도 알림이 없고, 강사는 그 회원이
+     안 온다는 것을 몇 주 뒤에 안다 -- 그때는 늦다. 개인 모드에는 회원권이
+     없어 셀 것이 없다. */
+  const expiryItems = inOrganization ? [{ key: "expiry", title: "만료 회원", description: "이번 달 · 지난달 · 재등록률", Icon: Users }] : [];
+  /* 공지는 **모두가 본다.** 쓰는 사람에게만 보이는 자리에 두면 강사는
+     넘긴 공지를 다시 볼 길이 없다 -- 한 번 뜨고 끝나는 창이기 때문이다. */
+  const noticeItems = inOrganization ? [{ key: "notices", title: "공지사항", description: "센터에서 알리는 글 · 다시 보기", Icon: Bell }] : [];
+  const assessmentItem = { key: "assessment", title: "비포애프터 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity };
+  /* 이름은 "센터"지만 센터의 설정이 아니다. 이 세 값은 기기에 저장되고 이
+     기기의 일정과 레거시 급여 추정에만 쓰인다 -- 소속 센터의 이름도 단가도
+     여기서 오지 않는다.
+
+     ── 소속 센터에서는 대표에게만 보인다 ──
+     강사에게 이 화면은 아무것도 바꾸지 못하는 칸 셋이다. 센터명을 고쳐도
+     센터가 바뀌지 않고, 그룹 단가를 고쳐도 급여가 바뀌지 않는다(그쪽은
+     회원권 원장이 정한다). 바꿀 수 있는 것처럼 보이는 자리가 실은
+     아무것도 아닌 것이 제일 나쁘다 -- 강사는 고쳤다고 믿고, 숫자는 그대로다.
+
+     미소속 개인 강사에게는 그대로 보인다. 그 사람에게는 이 세 값이
+     유일한 설정이고, 월간 리포트가 실제로 그것으로 계산한다. */
+  const centerItems = !inOrganization || isOwnerLevelRole(organization.role)
+    ? [{ key: "center", title: "센터 정보", description: inOrganization ? "이 기기의 센터명 · 담당자 · 그룹 단가" : "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon }]
+    : [];
+  const scheduleColorsItem = { key: "schedule-colors", title: "일정 색상", description: "개인 · 듀엣 · 그룹 · 상담 · 휴무 카드 색", Icon: Palette };
+  const themeItem = { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone };
+  const dataItem = { key: "data", title: "데이터 상태", description: "기기 저장 · 로그인 상태", Icon: Check };
+  const backupItem = { key: "backup", title: "데이터 이관 · 백업", description: "자동 클라우드 백업 · 회원 인계 · 백업 파일", Icon: Download };
+  const onboardingItem = { key: "onboarding", title: "사용법 다시 보기", description: "기록 → 기억 → 다음 수업 흐름 다시 보기", Icon: Play, action: onOpenOnboarding };
+  const permissionsItem = { key: "permissions", title: "접근권한 안내", description: "기능별 선택 권한과 현재 상태", Icon: Check };
+  const lessonExamplesItem = { key: "lesson-examples", title: "AI 수업기록 예시", description: "10~20초 말하기 예시 다시 보기", Icon: MessageSquare, action: onOpenLessonExamples };
+  const knowledgeItem = { key: "knowledge", title: "오늘의 지식", description: "해부학 · 영양학 모아보기", Icon: Star };
+  const accountItem = { key: "account", title: "계정", description: "프로필 사진 · 이메일 계정 · 로그아웃", Icon: Users };
+  const appItem = { key: "app", title: "앱 정보", description: "앱 버전 확인", Icon: AlertCircle };
+
+  /* ── 대표 · 총괄매니저의 더보기는 대표 일이 위다 (2026-11-16 대표) ─────
+     강사 배치 그대로 두면 맨 위가 일정 등록 · 기록 · 이번 달 내 수업 활동이고,
+     대표가 매일 여는 발급 · 회원 관리는 그 아래에 묻혀 있었다. 대표는 그
+     위쪽을 거의 쓰지 않는다.
+
+     순서: 센터 운영 묶음 → 업무(만료 · 공지) → 대표 설정 → 내 설정 → 계정 · 앱
+     → 점검 → **강사 메뉴(접힘)**.
+
+     강사 항목을 지우지 않고 접어 두는 이유: 대표도 가끔 일정을 넣고, 강사가
+     무엇을 보는지 확인할 자리가 있어야 한다. 머리글이 "강사 화면에 보이는
+     항목" 이라고 말하므로 빈 자리로 읽히지 않는다.
+
+     계정(로그아웃)은 접힌 묶음 안에 넣지 않는다 -- 찾을 수 없으면 나갈 수 없다.
+
+     개인 모드는 역할이 "owner" 여도 강사 한 사람이다. inOrganization 으로 거른다. */
+  const ownerLayout = inOrganization && isOwnerLevelRole(organization.role);
+  const menuGroups = ownerLayout ? [
+    ...centreGroups.filter((group) => group.label !== "점검" && group.label !== "대표 설정"),
+    { label: "업무", items: [...expiryItems, ...noticeItems] },
+    ...centreGroups.filter((group) => group.label === "대표 설정"),
+    { label: "내 설정", items: [...centerItems, themeItem, dataItem, backupItem] },
+    { label: "계정 · 앱", items: [accountItem, permissionsItem, appItem] },
+    ...centreGroups.filter((group) => group.label === "점검"),
+    { label: INSTRUCTOR_MENU_GROUP, collapsible: true,
+      hint: "강사 계정에서 보이는 항목입니다. 대표 업무에는 필요 없어 접어 두었어요.",
+      items: [scheduleItem, recordsItem, reportItem, assessmentItem, scheduleColorsItem, onboardingItem, lessonExamplesItem, knowledgeItem] },
+  ].filter((group) => group.items.length > 0) : [
+    { label: "업무", items: [scheduleItem, recordsItem, reportItem, ...expiryItems, ...noticeItems] },
     ...centreGroups,
-    { label: "내 설정", items: [
-      { key: "assessment", title: "비포애프터 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity },
-      /* 이름은 "센터"지만 센터의 설정이 아니다. 이 세 값은 기기에 저장되고 이
-         기기의 일정과 레거시 급여 추정에만 쓰인다 -- 소속 센터의 이름도 단가도
-         여기서 오지 않는다.
-
-         ── 소속 센터에서는 대표에게만 보인다 ──
-         강사에게 이 화면은 아무것도 바꾸지 못하는 칸 셋이다. 센터명을 고쳐도
-         센터가 바뀌지 않고, 그룹 단가를 고쳐도 급여가 바뀌지 않는다(그쪽은
-         회원권 원장이 정한다). 바꿀 수 있는 것처럼 보이는 자리가 실은
-         아무것도 아닌 것이 제일 나쁘다 -- 강사는 고쳤다고 믿고, 숫자는 그대로다.
-
-         미소속 개인 강사에게는 그대로 보인다. 그 사람에게는 이 세 값이
-         유일한 설정이고, 월간 리포트가 실제로 그것으로 계산한다. */
-      ...(!inOrganization || isOwnerLevelRole(organization.role)
-        ? [{ key: "center", title: "센터 정보", description: inOrganization ? "이 기기의 센터명 · 담당자 · 그룹 단가" : "센터명 · 담당자 · 그룹 단가", Icon: SettingsIcon }]
-        : []),
-      { key: "schedule-colors", title: "일정 색상", description: "개인 · 듀엣 · 그룹 · 상담 · 휴무 카드 색", Icon: Palette },
-      { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone },
-      { key: "data", title: "데이터 상태", description: "기기 저장 · 로그인 상태", Icon: Check },
-      { key: "backup", title: "데이터 이관 · 백업", description: "자동 클라우드 백업 · 회원 인계 · 백업 파일", Icon: Download },
-    ] },
-    { label: "기타", items: [
-      { key: "onboarding", title: "사용법 다시 보기", description: "기록 → 기억 → 다음 수업 흐름 다시 보기", Icon: Play, action: onOpenOnboarding },
-      { key: "permissions", title: "접근권한 안내", description: "기능별 선택 권한과 현재 상태", Icon: Check },
-      { key: "lesson-examples", title: "AI 수업기록 예시", description: "10~20초 말하기 예시 다시 보기", Icon: MessageSquare, action: onOpenLessonExamples },
-      { key: "knowledge", title: "오늘의 지식", description: "해부학 · 영양학 모아보기", Icon: Star },
-      { key: "account", title: "계정", description: "프로필 사진 · 이메일 계정 · 로그아웃", Icon: Users },
-      { key: "app", title: "앱 정보", description: "앱 버전 확인", Icon: AlertCircle },
-    ] },
+    { label: "내 설정", items: [assessmentItem, ...centerItems, scheduleColorsItem, themeItem, dataItem, backupItem] },
+    { label: "기타", items: [onboardingItem, permissionsItem, lessonExamplesItem, knowledgeItem, accountItem, appItem] },
   ];
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: "14px" };
   const openMenu = (item) => {
@@ -27362,6 +27392,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
                 </button>
               ) : (
                 <h2 style={{ margin: "0 4px 7px", fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>{group.label}</h2>
+              )}
+              {group.hint && (
+                <p style={{ margin: "-3px 4px 7px", fontSize: TYPE.caption, lineHeight: 1.4, color: FAINT }}>{group.hint}</p>
               )}
               {group.collapsible && openMenuGroups[group.label] !== true ? null : (
               <div style={{ overflow: "hidden", borderRadius: 12, border: `1px solid ${LINE}`, backgroundColor: CARD }}>

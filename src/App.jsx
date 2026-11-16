@@ -415,6 +415,7 @@ import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js"
 import { RENEWAL_ALERT, livePassesOf, renewalForecast, renewalLine, renewalRates } from "../functions/shared/renewal-forecast.mjs";
 import { listRecentDeductions, listRenewalCandidates } from "./data/repositories/renewal-repository.js";
 import LessonBriefing from "./features/schedule/LessonBriefing.jsx";
+import { ATTENDANCE, LESSON_STAGE, confirmBarView, doneTitle, effectiveNoshowFee, effectiveStatus, expirySuffix, expiryView, initialStage, nextConfirmStep, nextWeekLabel, remainingIsLow } from "./features/schedule/lesson-manage-view.js";
 import { writeMemberCareNotes, writeMemberDataConsent } from "./data/repositories/member-consent-repository.js";
 import { MEMBER_AI_CONSENT_VERSION, MEMBER_DATA_CONSENT_CONFIRM, MEMBER_DATA_CONSENT_SECTIONS, MEMBER_DATA_CONSENT_TITLE, memberDataConsentGranted, memberDataConsentState } from "./features/consent/member-data-consent.js";
 import { compareRecordSets, parityState } from "./features/lesson-record/record-parity.js";
@@ -4636,9 +4637,11 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
       ) : null}
     </p>
   ) : null;
-  const lessonBriefingView = useMemo(() => (briefingContext.briefingV2On && activeMember
+  /* 2026-11-17 개편: 브리핑은 늘 이 세 덩어리다. 회원 요약(서버 · AI)은 스위치 lessonBriefingV2 가 켜진 계정만 얹힌다 --
+     꺼져 있으면 briefingSummary 가 비어 기기 기록만으로 채운다. */
+  const lessonBriefingView = useMemo(() => (activeMember
     ? selectLessonBriefing({ member: activeMember, lesson: draft, sessions: activeLessonSessions, schedule, summary: briefingSummary })
-    : null), [briefingContext.briefingV2On, activeMember, draft, activeLessonSessions, schedule, briefingSummary]);
+    : null), [activeMember, draft, activeLessonSessions, schedule, briefingSummary]);
   const openedBriefingRef = useRef("");
   useEffect(() => {
     if (!activeMember?.id || !draft.id || !activeBriefing) return;
@@ -4686,6 +4689,160 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
     setRepeatNotice(null);
     onRepeatNextWeek(plan.lesson, repeatDateLabel);
   };
+  /* ── 수업 관리 개편 (2026-11-17 대표 지시서) ─────────────────────────────────────────────
+     기능은 그대로, 순서와 기본값만: 회원 요약 → [수업 전 | 수업 후] → 하단 고정 버튼 하나.
+     출석은 기본값이고 노쇼는 기본 1회 차감이다 -- [수업 확정] 을 누를 때 아직 안 고른 것을 그 값으로
+     한 명씩 적고(nextConfirmStep), 저장된 뒤에 확정한다. 문구 · 계산은 lesson-manage-view.js. */
+  const manageAttendees = attendeesOf(draft);
+  const managePanel = Boolean(draft.id) && !isGroup && isMemberLesson && manageAttendees.length > 0;
+  const manageRef = useRef(null);
+  const [stage, setStage] = useState(() => initialStage(attendeesOf(draft)));
+  const [stageDir, setStageDir] = useState("");
+  const [statusOpen, setStatusOpen] = useState(() => attendeesOf(draft).some((attendee) => ["noshow", "cancel"].includes(attendee.status)));
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [justDone, setJustDone] = useState(false);
+  const [undoOpen, setUndoOpen] = useState(false);
+  const [undoReason, setUndoReason] = useState("");
+  const [undoBusy, setUndoBusy] = useState(false);
+  /* 개인 모드에는 확정이 없다 -- 출석을 고르는 것이 곧 처리다. 이미 처리된 수업을 열면 완료 화면으로 연다. */
+  const openedProcessedRef = useRef(!organizationMode && attendeesOf(draft).length > 0 && attendeesOf(draft).every((attendee) => (attendee.status || "booked") !== "booked"));
+  const allMarked = manageAttendees.every((attendee) => (attendee.status || "booked") !== "booked");
+  const manageDone = organizationMode ? (settledLesson || settledElsewhere) : ((justDone || openedProcessedRef.current) && allMarked);
+  const manageFailedBefore = organizationMode && !settledLesson && settlementSkipsOf(draft).length > 0;
+  const manageNotStarted = organizationMode && !lessonHasStarted(draft);
+  const manageFromMigrated = settledDeductionsOf(draft).some((item) => String(item.passId).startsWith("csv_"));
+  /* 잔여는 **이번에 빠질 회원권**의 것 (단가 미리보기가 고른 그 회원권). 없으면 회원 카드의 합. */
+  const previewFor = (memberId) => { const preview = rates.get(memberId); return preview && !preview.skip ? preview : null; };
+  const remainingFor = (memberId) => {
+    const preview = previewFor(memberId);
+    if (preview && Number.isInteger(preview.remaining)) return preview.remaining;
+    const member = members.find((item) => item.id === memberId);
+    return member ? left(member) : null;
+  };
+  const activeStatus = activeAttendee ? effectiveStatus(activeAttendee) : ATTENDANCE.ATTEND;
+  const activePreview = previewFor(activeMemberId);
+  const activeRemaining = activeMember ? remainingFor(activeMemberId) : null;
+  const activeTotalDiffers = Boolean(activePreview) && Number.isInteger(activePreview.remaining) && activeMember && left(activeMember) !== activePreview.remaining;
+  const activeExpiry = activeMember ? expiryView(activePreview?.expiresAt || activeMember.contractEnd || "") : null;
+  const sharedPass = manageAttendees.length > 1 && manageAttendees.some((attendee) => rates.get(attendee.memberId)?.shared);
+  const confirmBar = confirmBarView({ stage, attendees: manageAttendees, remainingOf: remainingFor, sharedPass, busy: confirming, failedBefore: manageFailedBefore });
+  const confirmHint = stage === LESSON_STAGE.POST && manageNotStarted ? NOT_STARTED_NOTICE : confirmBar.hint;
+  const confirmDisabled = stage === LESSON_STAGE.POST && (confirming || recordBusy || (organizationMode && (manageNotStarted || settledElsewhere)));
+  const careChoice = activeAttendee ? (activeCare?.choices || CARE_CHOICES_UNKNOWN).find((choice) => (choice.key || "") === (activeAttendee.careGrade || "")) : null;
+  const careSummary = organizationMode && onCareGrade && !carePayCategory(draft) && activeAttendee ? `디오사 · ${careChoice?.label || "없음"}` : "";
+  const briefingFallback = lessonSheetBriefing?.text && lessonSheetBriefing.source !== "lesson_record"
+    ? { title: lessonSheetBriefing.source === "posture_fallback" ? "비포애프터 참고" : "이전 기록 참고", text: lessonSheetBriefing.text }
+    : latestNote && !latestNote.lessonRecord && latestNote.body
+      ? { title: "최근 기록", text: latestNote.body }
+      : selectScheduleBriefing(activeBriefing)?.text
+        ? { title: "다음 수업 준비", text: selectScheduleBriefing(activeBriefing).text }
+        : null;
+  const goStage = (next) => {
+    if (next === stage) return;
+    setStageDir(next === LESSON_STAGE.POST ? "forward" : "back");
+    setStage(next);
+    const scroller = manageRef.current?.closest?.("[data-schedule-sheet-scroll]");
+    const smooth = globalThis.matchMedia?.("(prefers-reduced-motion: no-preference)")?.matches;
+    if (scroller && manageRef.current) scroller.scrollTo?.({ top: Math.max(0, manageRef.current.offsetTop - 8), behavior: smooth ? "smooth" : "auto" });
+  };
+  const pickStatus = (status) => {
+    if (settledLesson || !activeAttendee) return;
+    if ((activeAttendee.status || "booked") === status) return;
+    onStatus?.(draft.id, status, activeMemberId, { single: true });
+  };
+  /* [수업 확정]: 한 번에 하나씩. 출석 → 노쇼 차감 → 확정. 저장이 끝나 draft 가 바뀌면 다음 걸음을 간다.
+     같은 걸음이 6초 안에 끝나지 않으면 멈추고 코드와 함께 말한다 -- 조용히 돌지 않는다. */
+  const confirmStepRef = useRef("");
+  useEffect(() => {
+    if (!confirming) return undefined;
+    const step = nextConfirmStep(attendeesOf(draft));
+    const key = `${step.type}:${step.memberId || ""}`;
+    if (step.type === "finish") {
+      if (confirmStepRef.current === key) return undefined;
+      confirmStepRef.current = key;
+      if (!organizationMode) { confirmStepRef.current = ""; setConfirming(false); setJustDone(true); return undefined; }
+      Promise.resolve(onSettleLesson?.(draft.id)).finally(() => { confirmStepRef.current = ""; setConfirming(false); });
+      return undefined;
+    }
+    if (confirmStepRef.current !== key) {
+      confirmStepRef.current = key;
+      if (step.type === "status") onStatus?.(draft.id, "done", step.memberId, { single: true });
+      else onNoshowFee?.(draft.id, true, step.memberId);
+    }
+    const timer = globalThis.setTimeout(() => {
+      deviceLog("lesson_confirm_stalled", { feature: "lesson_manage", stage: step.type, errorDomain: "app", errorCode: `confirm_${step.type}_stalled`, lessonId: draft.id });
+      confirmStepRef.current = "";
+      setConfirming(false);
+      onToast?.(`처리하지 못했어요. 다시 눌러 주세요. (코드 confirm_${step.type}_stalled)`);
+    }, 6000);
+    return () => globalThis.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- draft 가 저장될 때마다 다음 걸음
+  }, [confirming, draft]);
+  const pressConfirmBar = () => {
+    if (confirmBar.action === "advance") { goStage(LESSON_STAGE.POST); return; }
+    if (confirmDisabled) return;
+    confirmStepRef.current = "";
+    setConfirming(true);
+  };
+  const undoPersonal = () => {
+    if (manageAttendees.length > 1) onStatusAll?.(draft.id, "booked");
+    else onStatus?.(draft.id, "booked", activeMemberId);
+    openedProcessedRef.current = false;
+    setJustDone(false);
+    setStageDir("back");
+    setStage(LESSON_STAGE.POST);
+  };
+  const renderRepeat = (primary) => (draft.id && typeof onRepeatNextWeek === "function" ? (
+    <div data-repeat-next-week>
+      <button type="button" onClick={tryRepeatNextWeek}
+        className={primary ? "lm-cta flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl text-white" : "lm-chip flex min-h-11 w-full items-center justify-center gap-2 rounded-xl"}
+        style={primary ? { fontSize: TYPE.title, fontWeight: 700, backgroundColor: PRIMARY } : { fontSize: TYPE.caption, fontWeight: 600, backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>
+        {primary ? null : <RotateCcw size={14} style={{ color: BRAND_D }} />}
+        다음 주 같은 시간 등록 · <span className="tabular-nums">{nextWeekLabel(draft.date, draft.start, addDaysISO, dow)}</span>
+      </button>
+      {repeatNotice && (
+        <div role="status" data-repeat-notice={repeatNotice.kind} className="lm-fade-up mt-2 rounded-xl px-3 py-2 text-left" style={{ backgroundColor: repeatNotice.kind === "confirm" ? WARN_S : CANVAS }}>
+          <p className="text-xs font-bold leading-relaxed" style={{ color: repeatNotice.kind === "confirm" ? WARN : INK2 }}>{repeatNotice.msg}</p>
+          {repeatNotice.kind === "confirm" && (
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <button type="button" data-repeat-confirm onClick={() => { const plan = repeatNotice.plan; setRepeatNotice(null); onRepeatNextWeek(plan.lesson, repeatDateLabel); }} className="min-h-11 rounded-xl text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>그래도 등록</button>
+              <button type="button" onClick={() => setRepeatNotice(null)} className="min-h-11 rounded-xl text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>취소</button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  ) : null);
+  /* 완료 화면의 차감 결과 한 줄씩. 소속 모드는 원장에 남은 것, 개인 모드는 기기에 남은 것을 읽는다. */
+  const doneLines = manageAttendees.map((attendee) => {
+    const member = members.find((item) => item.id === attendee.memberId);
+    const who = manageAttendees.length > 1 ? `${member?.name || "회원"} · ` : "";
+    if (organizationMode) {
+      if (attendee.orgEntryId) return `${who}회원권 1회 차감됨`;
+      if (attendee.orgSkip) return `${who}${settlementSkipMessage({ reason: attendee.orgSkip, careCategory: attendee.orgSkipCare }, SETTLEMENT_SKIP_LABEL)}`;
+      return `${who}차감 없음`;
+    }
+    if (attendee.status === "done") return attendee.deductFrom ? `${who}${attendee.deductFrom} 1회 차감 · 잔여 ${left(member)}회` : `${who}차감 없이 출석 기록`;
+    if (attendee.status === "noshow") return attendee.noshowFee === true ? `${who}노쇼 · 1회 차감 · 잔여 ${left(member)}회` : `${who}노쇼 · 차감 없음`;
+    return `${who}차감 없음 · 잔여 ${left(member)}회 유지`;
+  });
+  const deleteControls = (
+    <>{draft.id && onDelete && deletePolicy.mode === DELETE_MODE.BLOCKED ? (
+          <p className="rounded-lg px-3 py-2.5 text-xs font-bold leading-relaxed" style={{ backgroundColor: CANVAS, color: SUB }}>{settledLockNotice({ canUnsettle, elsewhere: deletePolicy.reason === DELETE_BLOCK_REASON.SETTLED_ELSEWHERE })}</p>
+        ) : draft.id && onDelete && deletePolicy.mode === DELETE_MODE.ONE_TAP ? (
+          <button onClick={() => { onDelete(draft.id); onClose(); }} className="flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}><Trash2 size={13} /> 일정 삭제</button>
+        ) : draft.id && onDelete && (del ? (
+          <div className="flex items-center gap-2 rounded-lg p-2.5" style={{ backgroundColor: BAD_S }}>
+            <span className="min-w-0 flex-1 text-xs font-bold" style={{ color: BAD }}>삭제하면 뺀 회차가 회원에게 돌아갑니다. 삭제할까요?</span>
+            <button onClick={() => { onDelete(draft.id); onClose(); }} className="rounded-lg px-3 py-2 text-xs font-bold text-white" style={{ backgroundColor: BAD }}>삭제</button>
+            <button onClick={() => setDel(false)} className="rounded-lg px-3 py-2 text-xs font-bold" style={{ color: SUB }}>취소</button>
+          </div>
+        ) : draft.id ? (
+          <button onClick={() => setDel(true)} className="flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}><Trash2 size={13} /> 일정 삭제</button>
+        ) : null)}</>
+  );
   const submit = () => {
     const previous = attendeesOf(draft);
     const personal = kind === "consult" || kind === "off";
@@ -4732,7 +4889,13 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
                   style={{ backgroundColor: CARD, color: PRIMARY, border: `1px solid ${LINE}` }}>{MEMBER_CANCEL_VIEW_COPY.CONFIRM}</button>}
           </div>
         )}
-        {draft.id && !editingInfo && (
+        {draft.id && !editingInfo && managePanel && (
+          <div className="-mt-2 flex items-center justify-between gap-3" data-lesson-manage-head>
+            <p className="min-w-0 truncate tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{draft.type} {manageAttendees.length}명{lessonEquipFullText(draft) ? ` · ${lessonEquipFullText(draft)}` : ""}</p>
+            {!infoLocked && <button type="button" onClick={() => setEditingInfo(true)} className="min-h-11 shrink-0 px-1" style={{ fontSize: TYPE.caption, color: SUB, textDecoration: "underline", textUnderlineOffset: 3 }}>일정 수정</button>}
+          </div>
+        )}
+        {draft.id && !editingInfo && !managePanel && (
           <div className="flex items-center gap-3 rounded-xl px-3 py-2.5" style={{ backgroundColor: CANVAS, border: `1px solid ${LINE}` }}>
             <div className="min-w-0 flex-1">
               <p className="text-sm font-extrabold" style={{ color: INK }}>{draft.personal ? draft.title : isGroup ? `그룹 ${num(draft.groupCount) || DEFAULT_GROUP_COUNT}명` : `${draft.type} · ${attendeesOf(draft).length}명`}</p>
@@ -4881,115 +5044,120 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
           {draft.id ? "수정 저장" : "등록"}
         </button>
         </>}
-        {draft.id && !isGroup && isMemberLesson && attendeesOf(draft).length > 0 && (
-          <div className="space-y-3 border-t pt-3" style={{ borderColor: LINE }}>
-            <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(0,1fr))] gap-2 pb-0.5">
-              {attendeesOf(draft).map((a) => {
-                const m = members.find((x) => x.id === a.memberId);
-                const active = a.memberId === activeMemberId;
-                return (
-                  <div key={a.memberId} className="min-w-0 rounded-xl p-3 text-left" style={{ backgroundColor: active ? TINT : CANVAS, border: `1px solid ${active ? "#D9D7EE" : LINE}` }}>
-                    <button type="button" disabled={recordBusy} onClick={() => { setActiveMemberId(a.memberId); setRecordMode(null); }} className="w-full min-w-0 text-left">
-                      <span className="flex min-w-0 items-center gap-2"><span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: active ? PRIMARY : INK }}>{m?.name || "삭제된 회원"}</span><span className="shrink-0 rounded-full px-2 py-0.5 text-caption font-extrabold" data-member-cancel-badge={isMemberCancelledAttendee(a) ? "" : undefined} style={isMemberCancelledAttendee(a) ? { backgroundColor: WARN_S, color: WARN } : { backgroundColor: stOf(a.status).bg, color: stOf(a.status).color }}>{isMemberCancelledAttendee(a) ? MEMBER_CANCEL_VIEW_COPY.BADGE : stOf(a.status).label}</span></span>
-                      <span className="mt-0.5 block text-xs" style={{ color: SUB }}>잔여 {left(m)}회{m?.contractEnd ? ` · ${m.contractEnd.slice(5).replace("-", ".")}까지` : ""}</span>
-                      {/* 확정하면 얼마가 되는지. 눌러 본 뒤에 아는 것과 누르기 전에
-                          아는 것은 다르다 -- 원장은 append-only 라 누른 뒤에는
-                          고칠 수 없다. */}
-                      <SchedRateLine preview={rates.get(a.memberId)} />
-                      <SchedCareRateLine preview={rates.get(a.memberId)} />
-                    </button>
-                    {m?.goal ? <p className="mt-1 line-clamp-2 text-xs" style={{ color: INK2 }}>목표 · {m.goal}</p> : <button type="button" onClick={() => onOpenMember?.(a.memberId)} className="mt-1 text-xs font-extrabold" style={{ color: BRAND_D }}>+ 목표 추가</button>}
-                  </div>
-                );
-              })}
+        {managePanel && (() => {
+          const sectionTitle = (label, extra = null) => (
+            <div className="mb-2 flex min-h-11 items-center justify-between gap-3">
+              <h3 style={{ fontSize: TYPE.title, fontWeight: 700, color: INK }}>{label}</h3>
+              {extra}
             </div>
-
-            {lessonBriefingView ? <LessonBriefing view={lessonBriefingView} sessions={activeLessonSessions} footer={renewalLineView} /> : null}
-            {!lessonBriefingView ? renewalLineView : null}
-            {!lessonBriefingView && activeMember && lessonSheetBriefing && (
-              <section className="min-w-0 rounded-xl p-3" aria-label="지난 수업과 다음 수업 준비" style={{ backgroundColor: LAVENDER_S, border: `1px solid ${RING}` }}>
-                <div className="mb-2 flex items-center gap-2"><Sparkles size={14} style={{ color: BRAND_D }} /><p className="min-w-0 flex-1 text-xs font-extrabold" style={{ color: BRAND_D }}>{lessonSheetBriefing.source === "lesson_record" ? "지난 수업" : lessonSheetBriefing.source === "posture_fallback" ? "비포애프터 참고" : "이전 기록 참고"}</p>{lessonSheetBriefing.date && <span className="shrink-0 text-caption tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(lessonSheetBriefing.date)}{previousLessonSession ? ` · ${previousLessonSession.type}` : ""}</span>}</div>
-                {previousLessonSession ? <LessonRecordFieldRows session={previousLessonSession} fields={["today", "reaction"]} hideEmpty pastLesson bounded /> : <p className="line-clamp-3 break-words text-xs leading-relaxed" style={{ color: INK2 }}>{lessonSheetBriefing.text || "이전 기록 없음"}</p>}
-                <div className="mt-3 border-t pt-2" style={{ borderColor: LINE }}><p className="mb-1 text-caption font-bold" style={{ color: SUB }}>다음 수업 준비</p><p className="break-words text-xs font-bold leading-relaxed" style={{ color: BRAND_D }}>{previousLessonSession?.next || selectScheduleBriefing(activeBriefing)?.text || "다음 확인 없음"}</p></div>
-              </section>
-            )}
-
-            {activeMember && (
-              <button type="button" onClick={() => onFocusMemberWeek?.(activeMember.id)} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg text-xs font-bold"
-                style={{ backgroundColor: TINT, color: BRAND_D, border: `1px solid #D5D1EB` }}>
-                <CalendarDays size={14} /> 이번 주 이 회원 일정만 보기
-              </button>
-            )}
-
-            {/* 같은 회원 · 같은 시간으로 다음 주 등록 (2026-11-15 강사 제보: 고정 시간대를 미리 예약).
-                확정된 수업에서도 된다 -- 이 수업은 그대로 두고 7일 뒤에 새 수업을 만든다 (repeat-lesson.js). */}
-            {draft.id && isMemberLesson && attendeesOf(draft).length > 0 && typeof onRepeatNextWeek === "function" && (
-              <div data-repeat-next-week>
-                <button type="button" onClick={tryRepeatNextWeek} className="flex h-11 w-full items-center justify-center gap-2 rounded-lg text-xs font-bold"
-                  style={{ backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>
-                  <RotateCcw size={14} style={{ color: BRAND_D }} /> 다음 주 같은 시간 등록
-                  <span className="font-bold tabular-nums" style={{ color: SUB }}>{repeatDateLabel}</span>
+          );
+          const textLink = { fontSize: TYPE.caption, color: SUB, textDecoration: "underline", textUnderlineOffset: 3 };
+          const recordSection = activeMember && activeAttendee ? (
+            <section data-record-section>
+              {sectionTitle("수업 기록")}
+              {!aiRecordingAvailable(aiRecording) && <p className="mb-2 rounded-xl px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>AI 정리 잠시 점검 중 · 직접 입력으로 기록할 수 있어요.</p>}
+              {aiRecordingAvailable(aiRecording) && (
+                <button type="button" data-voice-record aria-pressed={recordMode === "voice"} disabled={recordBusy}
+                  onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "voice" ? null : "voice"); }}
+                  className="lm-cta flex min-h-16 w-full items-center justify-center gap-2.5 rounded-2xl disabled:opacity-35"
+                  style={{ fontSize: TYPE.title, fontWeight: 700, backgroundColor: recordMode === "voice" ? TINT : CANVAS, color: recordMode === "voice" ? PRIMARY : INK, boxShadow: recordMode === "voice" ? `inset 0 0 0 2px ${PRIMARY}` : "none" }}>
+                  <Smartphone size={20} />
+                  <span key={recordMode === "voice" ? "on" : "off"} className="lm-cta-text">{recordMode === "voice" ? "기록 중… 눌러서 종료" : "음성으로 기록하기"}</span>
                 </button>
-                {repeatNotice && (
-                  <div role="status" data-repeat-notice={repeatNotice.kind} className="mt-2 rounded-lg px-3 py-2" style={{ backgroundColor: repeatNotice.kind === "confirm" ? WARN_S : CANVAS }}>
-                    <p className="text-xs font-bold leading-relaxed" style={{ color: repeatNotice.kind === "confirm" ? WARN : INK2 }}>{repeatNotice.msg}</p>
-                    {repeatNotice.kind === "confirm" && (
-                      <div className="mt-2 grid grid-cols-2 gap-2">
-                        <button type="button" data-repeat-confirm onClick={() => { const plan = repeatNotice.plan; setRepeatNotice(null); onRepeatNextWeek(plan.lesson, repeatDateLabel); }} className="h-9 rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>그래도 등록</button>
-                        <button type="button" onClick={() => setRepeatNotice(null)} className="h-9 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>취소</button>
+              )}
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <button type="button" data-direct-record disabled={recordBusy} onClick={() => { setRecordFallback(""); if (recordMode === "write") closeRecordEntry(); else setRecordMode("write"); }}
+                  className="min-h-11 px-1 disabled:opacity-35" style={textLink}>
+                  {manualDraft.hasDraft && recordMode !== "write" ? "이어서 쓰기" : editingNote ? "기록 수정" : "직접 입력"}
+                </button>
+                <span className="flex items-center gap-2">
+                  <button type="button" data-no-comment disabled={recordBusy || manualDraft.hasDraft || Boolean(editingNote) || Boolean(recordMode)} onClick={async () => {
+                    setRecordSaving(true);
+                    try {
+                      await onNoComment?.(activeMemberId, draft.type, draft.id);
+                    } finally {
+                      setRecordSaving(false);
+                    }
+                  }} className="min-h-11 px-1 disabled:opacity-35" style={textLink}>기록 없음</button>
+                  <button type="button" data-record-later onClick={onClose} className="min-h-11 px-1" style={textLink}>나중에 기록</button>
+                </span>
+              </div>
+                {recordMode && (
+                  <div ref={recordSectionRef} data-lesson-record-entry className="app-motion-collapse" data-closing={recordClosing || undefined} inert={recordClosing ? "" : undefined}>
+                    <div className="app-motion-collapse-clip">
+                      <div className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
+                        <DeviceOnlyNote />
+                        {recordFallback && <p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
+                        {recordMode === "voice" && <Guard label="음성 기록"><VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id} savedNote={voiceNoteFor(activeMember?.notes, draft.id)}
+                          onLater={closeRecordEntry} onClose={closeRecordEntry} onDeferred={closeRecordEntry}
+                          onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }}
+                          onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)}
+                          onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} /></Guard>}
+                        {recordMode === "write" && <>
+                          <textarea rows={4} value={recordBody} readOnly={recordSaving} onChange={(e) => manualDraft.change(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
+                          <LessonNoteDraftStatus draft={manualDraft} />
+                          <button disabled={recordSaving || manualDraft.conflict || !recordBody.trim()} onClick={async () => {
+                            setRecordSaving(true);
+                            try {
+                              const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null, { ...(editingNote ? { existingNoteId: editingNote.id } : {}), expectedManualNote: manualDraft.base });
+                              if (stored === true) {
+                                manualDraft.clear();
+                                closeRecordEntry();
+                              }
+                            } finally {
+                              setRecordSaving(false);
+                            }
+                          }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>{editingNote ? "수정 저장" : "저장"}</button>
+                        </>}
                       </div>
-                    )}
+                    </div>
                   </div>
                 )}
+              {currentLessonSession && !recordMode ? (
+                <div className="lm-fade-up mt-2 border-t pt-3" style={{ borderColor: LINE }}>
+                  <LessonRecordFieldRows session={currentLessonSession} hideEmpty bounded />
+                </div>
+              ) : null}
+            </section>
+          ) : null;
+          const feedbackSection = organizationMode && activeMember ? (
+            <section data-feedback-section style={{ borderTop: `1px solid ${LINE}` }}>
+              <button type="button" aria-expanded={feedbackOpen} onClick={() => setFeedbackOpen((value) => !value)}
+                className="flex min-h-14 w-full items-center justify-between gap-3 text-left">
+                <span className="min-w-0">
+                  <span className="block" style={{ fontSize: TYPE.body, color: INK }}>회원에게 피드백 보내기</span>
+                  <span className="block" style={{ fontSize: TYPE.caption, color: SUB }}>회원 앱에서 이 수업의 한마디로 보입니다</span>
+                </span>
+                <ChevronDown size={18} className="lm-chevron shrink-0" style={{ color: SUB }} />
+              </button>
+              <div className="lm-reveal" data-open={feedbackOpen || undefined} inert={feedbackOpen ? undefined : ""}>
+                <div className="lm-reveal-clip"><div className="pb-3">
+                {organizationMode && (
+                  /* 센터 회원 id 로 저장한다. 맞물린 회원은 기기 id(activeMemberId)와
+                     센터 id(orgClientId)가 다르고, 회원 앱은 센터 id 로 찾는다 --
+                     기기 id 로 저장하면 말은 남는데 회원에게 끝내 안 간다. 차감도
+                     같은 이유로 orgClientId 를 쓴다 (lesson-settlement.js). */
+                  <SchedMemberNote key={`${draft.id}-${activeMemberId}`} lessonId={draft.id} clientId={activeMember?.orgClientId || ""}
+                    settled={settledLesson} onRead={onReadMemberNote} onSave={onSaveMemberNote} onToast={onToast} />
+                )}
+                </div></div>
               </div>
-            )}
-
-            {activeMember && activeAttendee && (
-              <>
-                {((activeMember.focus || []).length > 0 || currentLessonSession || (latestNote && !latestNote.lessonRecord)) && <div className="rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}` }}>
-                  {(activeMember.focus || []).length > 0 && <p className="mt-2 text-xs leading-relaxed" style={{ color: WARN }}>주의 · {(activeMember.focus || []).join(" · ")}</p>}
-                  {currentLessonSession && <div className="mt-3 border-t pt-2" style={{ borderColor: LINE }}><LessonRecordFieldRows session={currentLessonSession} hideEmpty bounded /></div>}
-                  {latestNote && !latestNote.lessonRecord && <p className="mt-2 line-clamp-2 text-xs leading-relaxed" style={{ color: INK2 }}>최근 기록 · {latestNote.body}</p>}
-                </div>}
-
-                <div>
-                  <p className="mb-1.5 text-xs font-extrabold" style={{ color: INK }}>출석 · 차감</p>
-                  <div className="grid grid-cols-3 gap-2">
-                    {[{ k: "done", l: "출석" }, { k: "noshow", l: "노쇼" }, { k: "cancel", l: "취소" }].map((o) => (
-                      <button key={o.k} disabled={settledLesson} onClick={() => {
-                        if (isDuet && o.k === "done") onStatusAll?.(draft.id, "done");
-                        else onStatus?.(draft.id, o.k, activeMemberId);
-                      }} className="h-9 rounded-lg text-xs font-bold disabled:opacity-40"
-                        style={activeAttendee.status === o.k ? { backgroundColor: stOf(o.k).color, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>{isDuet && o.k === "done" ? "둘 다 출석" : o.l}</button>
-                    ))}
-                  </div>
-                  {!settledLesson && activeAttendee.status !== "booked" && <button type="button" onClick={() => onStatus?.(draft.id, "booked", activeMemberId)} className="mt-2 h-9 w-full rounded-lg text-xs font-bold" style={{ backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>처리 되돌리기</button>}
-                  {/* 소속 모드에서는 확정이 차감한다. 레거시 잔여를 줄이던 문구를
-                      그대로 두면 차감되지 않은 회차가 차감된 것으로 읽힌다. */}
-                  {organizationMode && settledElsewhere ? (
-                    <p className="mt-1.5 text-xs font-bold" style={{ color: SUB }}>다른 기기에서 확정됨</p>
-                  ) : organizationMode
-                    ? settledLesson && (
-                      <p className="mt-1.5 text-xs font-bold" style={{ color: activeAttendee.orgEntryId ? GOOD : WARN }}>
-                        {activeAttendee.orgEntryId
-                          ? "회원권 1회 차감됨"
-                          : activeAttendee.orgSkip
-                          ? settlementSkipMessage(
-                            { reason: activeAttendee.orgSkip, careCategory: activeAttendee.orgSkipCare },
-                            SETTLEMENT_SKIP_LABEL,
-                          )
-                          : "차감 없음"}
-                      </p>
-                    )
-                    : activeAttendee.status === "done" && <p className="mt-1.5 text-xs font-bold" style={{ color: activeAttendee.deductFrom ? GOOD : SUB }}>{activeAttendee.deductFrom ? `${activeAttendee.deductFrom} 1회 차감 완료` : "차감 없이 출석 기록"}</p>}
-                  {/* 추가 관리. 디오사는 PT 와 별도로 끊는 관리권이라 한 수업에서
-                      둘이 함께 빠진다. 2:1 이면 두 사람이 각자 다르게 고르므로
-                      수업이 아니라 이 사람의 칸이다.
-
-                      단독 관리 수업(종류가 관리 A·B)에는 내지 않는다 -- 그
-                      수업 자체가 관리라, 여기서 또 고르면 한 수업에서 디오사가
-                      두 번 빠지는 것처럼 읽힌다. 실제로는 무시되지만, 무시되는
-                      것을 고르게 두지 않는다. */}
+            </section>
+          ) : null;
+          const moreSection = (
+            <section data-more-section style={{ borderTop: `1px solid ${LINE}` }}>
+              <button type="button" aria-expanded={moreOpen} onClick={() => setMoreOpen((value) => !value)}
+                className="flex min-h-12 w-full items-center justify-between gap-3 text-left">
+                <span style={{ fontSize: TYPE.body, color: INK }}>추가 관리</span>
+                <span className="flex min-w-0 items-center gap-1.5" style={{ fontSize: TYPE.caption, color: SUB }}>
+                  <span className="truncate">{careSummary}</span>
+                  <ChevronDown size={18} className="lm-chevron shrink-0" />
+                </span>
+              </button>
+              <div className="lm-reveal" data-open={moreOpen || undefined} inert={moreOpen ? undefined : ""}>
+                <div className="lm-reveal-clip"><div className="space-y-3 pb-3">
+                  {activeMember && activeAttendee ? (
+                  <>
                   {organizationMode && !settledLesson && onCareGrade && !carePayCategory(draft) ? (
                     <div className="mt-2">
                       <p className="mb-1 text-caption font-extrabold" style={{ color: SUB }}>추가 관리 (디오사)</p>
@@ -5022,116 +5190,164 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
                       ) : null}
                     </div>
                   ) : null}
-                  {/* 차감 여부를 묻는 자리 (개인 모드). 이 버튼이 기기의 잔여를
-                      실제로 줄이고, 센터 규칙이 닿지 않는다. 소속 모드는 아래 칸이다. */}
-                  {!settledLesson && activeAttendee.status === "noshow" && !organizationMode && (
-                    <div className="mt-2 grid grid-cols-2 gap-2">
-                      <button onClick={() => onNoshowFee?.(draft.id, true, activeMemberId)} className="h-9 rounded-lg text-xs font-extrabold" style={activeAttendee.noshowFee === true ? { backgroundColor: BAD, color: "#fff" } : { backgroundColor: BAD_S, color: BAD }}>차감</button>
-                      <button onClick={() => onNoshowFee?.(draft.id, false, activeMemberId)} className="h-9 rounded-lg text-xs font-extrabold" style={activeAttendee.noshowFee === false ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>비차감</button>
-                    </div>
+                  </>
+                  ) : null}
+                  {activeMember && (
+                    <button type="button" onClick={() => onFocusMemberWeek?.(activeMember.id)} className="lm-chip flex min-h-11 w-full items-center justify-center gap-2 rounded-xl text-xs font-bold"
+                      style={{ backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>
+                      <CalendarDays size={14} style={{ color: BRAND_D }} /> 이번 주 이 회원 일정만 보기
+                    </button>
                   )}
-                  {/* 무엇이 일어날지 미리 말한다. 노쇼는 확정 전까지 아무것도
-                      움직이지 않으므로, 이 줄이 없으면 강사는 노쇼를 누른 것으로
-                      끝난 줄 안다 -- 그 수업은 차감도 급여도 없이 남는다. */}
-                  {/* 소속 모드의 노쇼 (2026-11-06 대표): 강사가 고른다. 고른 대로
-                      확정이 차감하거나(출석과 같은 단가) 차감 없이 닫는다. 고르기
-                      전에는 확정 버튼이 잠긴다 (settleBlockReason). 듀엣은 회원마다. */}
-                  {!settledLesson && activeAttendee.status === "noshow" && organizationMode && (
-                    <div className="mt-2" data-noshow-choice>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button type="button" onClick={() => onNoshowFee?.(draft.id, true, activeMemberId)}
-                          aria-pressed={activeAttendee.noshowFee === true}
-                          className="h-11 rounded-lg text-xs font-extrabold"
-                          style={activeAttendee.noshowFee === true ? { backgroundColor: BAD, color: "#fff" } : { backgroundColor: BAD_S, color: BAD }}>노쇼 차감</button>
-                        <button type="button" onClick={() => onNoshowFee?.(draft.id, false, activeMemberId)}
-                          aria-pressed={activeAttendee.noshowFee === false}
-                          className="h-11 rounded-lg text-xs font-extrabold"
-                          style={activeAttendee.noshowFee === false ? { backgroundColor: BRAND, color: "#fff" } : { backgroundColor: CANVAS, color: SUB }}>노쇼 미차감</button>
-                      </div>
-                      <p className="mt-1.5 text-xs font-bold leading-relaxed" style={{ color: typeof activeAttendee.noshowFee === "boolean" ? INK2 : BAD }}>
-                        {activeAttendee.noshowFee === true
-                          ? "확정하면 회원권 1회가 빠지고, 출석과 같은 단가로 급여에 잡힙니다."
-                          : activeAttendee.noshowFee === false
-                            ? "확정하면 차감과 급여 없이 노쇼로만 남습니다."
-                            : "차감할지 골라 주세요. 고른 뒤 아래 [수업 확정]을 눌러야 끝납니다."}
-                      </p>
-                    </div>
-                  )}
-                </div>
-
-                {activeAttendee.status !== "booked" && <>
-                {!aiRecordingAvailable(aiRecording) && <p className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>AI 정리 잠시 점검 중 · 직접 입력으로 기록할 수 있어요.</p>}
-                <div className="grid grid-cols-2 gap-2">
-                  {aiRecordingAvailable(aiRecording) && <button disabled={recordBusy} onClick={() => { setRecordFallback(""); setRecordMode(recordMode === "voice" ? null : "voice"); }} className="flex h-12 items-center justify-center gap-1.5 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: recordMode === "voice" ? PRIMARY : TINT, color: recordMode === "voice" ? "#fff" : PRIMARY, border: `1px solid ${recordMode === "voice" ? PRIMARY : "#D9D7EE"}` }}><Smartphone size={15} /> 기록하기</button>}
-                  <button data-direct-record disabled={recordBusy} onClick={() => { setRecordFallback(""); if (recordMode === "write") closeRecordEntry(); else setRecordMode("write"); }} className="flex h-12 items-center justify-center gap-1 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: recordMode === "write" ? TINT : CARD, color: recordMode === "write" ? PRIMARY : INK, border: `1px solid ${LINE}` }}><Pencil size={13} /> {manualDraft.hasDraft && recordMode !== "write" ? "이어서 쓰기" : editingNote ? "기록 수정" : "직접입력"}</button>
-                  <button disabled={recordBusy || manualDraft.hasDraft || Boolean(editingNote) || Boolean(recordMode)} onClick={async () => {
-                    setRecordSaving(true);
-                    try {
-                      await onNoComment?.(activeMemberId, draft.type, draft.id);
-                    } finally {
-                      setRecordSaving(false);
-                    }
-                  }} className="h-12 rounded-lg text-xs font-extrabold disabled:opacity-35" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>노코멘트</button>
-                  <button onClick={onClose} className="h-12 rounded-lg text-xs font-extrabold" style={{ backgroundColor: CANVAS, color: SUB, border: `1px solid ${LINE}` }}>나중에</button>
-                </div>
-
-                {recordMode && (
-                  <div ref={recordSectionRef} data-lesson-record-entry className="app-motion-collapse" data-closing={recordClosing || undefined} inert={recordClosing ? "" : undefined}>
-                    <div className="app-motion-collapse-clip">
-                      <div className="space-y-2 rounded-xl p-3" style={{ backgroundColor: CANVAS }}>
-                        <DeviceOnlyNote />
-                        {recordFallback && <p role="status" className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: WARN_S, color: WARN }}>{recordFallback}</p>}
-                        {recordMode === "voice" && <Guard label="음성 기록"><VoiceNote key={lessonRecordSessionKey(activeMemberId, draft.id)} memberId={activeMemberId} memberName={activeMember?.name || "회원"} duetPartner={duetPartnerOf(activeMember)} lessonId={draft.id} savedNote={voiceNoteFor(activeMember?.notes, draft.id)}
-                          onLater={closeRecordEntry} onClose={closeRecordEntry} onDeferred={closeRecordEntry}
-                          onDirectEntry={(message) => { setRecordFallback(message || "음성 인식을 사용할 수 없어 직접 입력으로 전환했습니다."); setRecordMode("write"); }}
-                          onDraftChange={(text, meta, options) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, options)}
-                          onApply={(text, meta) => onSaveNote?.(activeMemberId, draft.type, draft.id, text, meta, { confirmed: true, upsert: true })} /></Guard>}
-                        {recordMode === "write" && <>
-                          <textarea rows={4} value={recordBody} readOnly={recordSaving} onChange={(e) => manualDraft.change(e.target.value)} placeholder="수업 내용과 회원 반응을 기록하세요" className={`${inputCls} h-auto resize-none py-3 leading-relaxed`} />
-                          <LessonNoteDraftStatus draft={manualDraft} />
-                          <button disabled={recordSaving || manualDraft.conflict || !recordBody.trim()} onClick={async () => {
-                            setRecordSaving(true);
-                            try {
-                              const stored = await onSaveNote?.(activeMemberId, draft.type, draft.id, recordBody.trim(), null, { ...(editingNote ? { existingNoteId: editingNote.id } : {}), expectedManualNote: manualDraft.base });
-                              if (stored === true) {
-                                manualDraft.clear();
-                                closeRecordEntry();
-                              }
-                            } finally {
-                              setRecordSaving(false);
-                            }
-                          }} className="h-11 w-full rounded-lg text-xs font-extrabold text-white disabled:opacity-35" style={{ backgroundColor: PRIMARY }}>{editingNote ? "수정 저장" : "저장"}</button>
-                        </>}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* 위 기록은 강사의 것이고, 이 칸은 회원의 것이다. 나란히 두되
-                    섞이지 않게 둔다 -- 한 칸이면 강사는 둘 중 하나를 포기한다. */}
-                {organizationMode && (
-                  /* 센터 회원 id 로 저장한다. 맞물린 회원은 기기 id(activeMemberId)와
-                     센터 id(orgClientId)가 다르고, 회원 앱은 센터 id 로 찾는다 --
-                     기기 id 로 저장하면 말은 남는데 회원에게 끝내 안 간다. 차감도
-                     같은 이유로 orgClientId 를 쓴다 (lesson-settlement.js). */
-                  <SchedMemberNote key={`${draft.id}-${activeMemberId}`} lessonId={draft.id} clientId={activeMember?.orgClientId || ""}
-                    settled={settledLesson} onRead={onReadMemberNote} onSave={onSaveMemberNote} onToast={onToast} />
-                )}
-                </>}
-              </>
-            )}
-
-            {!settledLesson && attendeesOf(draft).length > 1 && (
-              <div className="grid grid-cols-3 gap-1">
-                {[{ k: "done", l: "전체 출석" }, { k: "noshow", l: "전체 노쇼" }, { k: "cancel", l: "전체 취소" }].map((o) => (
-                  <button key={o.k} onClick={() => onStatusAll?.(draft.id, o.k)} className="h-9 rounded-lg text-xs font-bold" style={{ backgroundColor: TINT, color: PRIMARY }}>{o.l}</button>
-                ))}
+                  {!manageDone ? renderRepeat(false) : null}
+                  {onDelete ? deleteControls : null}
+                </div></div>
               </div>
-            )}
+            </section>
+          );
+          return (
+            <div ref={manageRef} data-lesson-manage className="space-y-5">
+              {manageAttendees.length > 1 && (
+                <div className="flex gap-2 overflow-x-auto pb-0.5" role="tablist" aria-label="회원 선택">
+                  {manageAttendees.map((attendee) => {
+                    const member = members.find((item) => item.id === attendee.memberId);
+                    const on = attendee.memberId === activeMemberId;
+                    const status = effectiveStatus(attendee);
+                    return (
+                      <button key={attendee.memberId} type="button" role="tab" aria-selected={on} disabled={recordBusy}
+                        onClick={() => { setActiveMemberId(attendee.memberId); setRecordMode(null); }}
+                        className="lm-chip flex min-h-11 shrink-0 items-center gap-1.5 rounded-full px-3.5"
+                        style={{ border: `1px solid ${on ? INK : LINE}`, backgroundColor: on ? INK : CARD, color: on ? CARD : INK, fontSize: TYPE.body, fontWeight: 600 }}>
+                        <span className="max-w-[9rem] truncate">{member?.name || "삭제된 회원"}</span>
+                        <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: on ? CARD : status === ATTENDANCE.ATTEND ? GOOD : WARN }}>{isMemberCancelledAttendee(attendee) ? MEMBER_CANCEL_VIEW_COPY.BADGE : stOf(status).label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
 
-            {/* 짝이 빠진 듀엣. 확정하면 2:1 에서 빠지는데, 혼자 1:1 을 받은
-                날도 화면에서는 똑같이 보인다. 가를 수 있는 것은 그 자리에 있던
-                강사뿐이라 짐작하지 않고 묻는다 -- 되돌릴 수 없게 되기 전에. */}
+              {activeMember && activeAttendee && (
+                <section aria-label="회원 요약" data-lesson-member-summary className="rounded-2xl p-4" style={{ backgroundColor: CANVAS }}>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="min-w-0 truncate" style={{ fontSize: TYPE.heading, fontWeight: 700, color: INK }}>{activeMember.name || "회원"}</span>
+                    {isMemberCancelledAttendee(activeAttendee)
+                      ? <span data-member-cancel-badge className="shrink-0 rounded-full px-3 py-0.5" style={{ fontSize: TYPE.caption, fontWeight: 700, backgroundColor: WARN_S, color: WARN }}>{MEMBER_CANCEL_VIEW_COPY.BADGE}</span>
+                      : <span data-attendance-badge={activeStatus} className="lm-chip shrink-0 rounded-full px-3 py-0.5" style={{ fontSize: TYPE.caption, fontWeight: 700, backgroundColor: activeStatus === ATTENDANCE.ATTEND ? GOOD_S : WARN_S, color: activeStatus === ATTENDANCE.ATTEND ? GOOD : WARN }}>{stOf(activeStatus).label}</span>}
+                  </div>
+                  <p className="mt-2 flex flex-wrap gap-x-3.5 gap-y-1 tabular-nums" style={{ fontSize: TYPE.body, color: INK }}>
+                    <span data-summary-remaining style={{ color: remainingIsLow(activeRemaining) ? WARN : INK, fontWeight: remainingIsLow(activeRemaining) ? 700 : 400 }}>잔여 {activeRemaining ?? left(activeMember)}회</span>
+                    {activeExpiry ? (
+                      <span data-summary-expiry={activeExpiry.date} style={{ color: activeExpiry.soon || activeExpiry.expired ? WARN : INK, fontWeight: activeExpiry.soon || activeExpiry.expired ? 700 : 400 }}>
+                        만료 {activeExpiry.label}{expirySuffix(activeExpiry)}
+                      </span>
+                    ) : null}
+                  </p>
+                  {/* 회원 카드의 잔여는 회원권 여러 장(관리권 포함)의 합이다. 이번에 빠질 회원권과 다르면 합계도 적는다. */}
+                  {activeTotalDiffers ? <p data-summary-total className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>이번에 쓰는 회원권 기준 · 전체 합계 {left(activeMember)}회</p> : null}
+                  <SchedRateLine preview={rates.get(activeMemberId)} />
+                  <SchedCareRateLine preview={rates.get(activeMemberId)} />
+                  {/* 여러 명 수업: 다른 회원의 단가 · 세션업 · 회원권 없음도 확정 전에 보여야 한다. */}
+                  {manageAttendees.filter((attendee) => attendee.memberId !== activeMemberId && rates.get(attendee.memberId)).map((attendee) => (
+                    <div key={attendee.memberId} data-other-rate={attendee.memberId} className="mt-1.5 border-t pt-1.5" style={{ borderColor: LINE }}>
+                      <span className="block truncate" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK2 }}>{members.find((item) => item.id === attendee.memberId)?.name || "회원"}</span>
+                      <SchedRateLine preview={rates.get(attendee.memberId)} />
+                      <SchedCareRateLine preview={rates.get(attendee.memberId)} />
+                    </div>
+                  ))}
+                  {activeMember.goal ? <p className="mt-1.5 line-clamp-2" style={{ fontSize: TYPE.caption, color: INK2 }}>목표 · {activeMember.goal}</p> : null}
+                  <div className="mt-1 flex items-center justify-between">
+                    {activeMember.goal ? <span /> : <button type="button" onClick={() => onOpenMember?.(activeMemberId)} className="min-h-11 pr-2" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>+ 목표 추가</button>}
+                    <button type="button" onClick={() => onOpenMember?.(activeMemberId)} className="min-h-11 pl-2" style={{ fontSize: TYPE.caption, fontWeight: 600, color: SUB }}>회원 상세 ›</button>
+                  </div>
+                </section>
+              )}
+
+              {!manageDone && (
+                <div role="tablist" aria-label="수업 단계" className="relative grid grid-cols-2 rounded-xl p-1" style={{ backgroundColor: CANVAS }}>
+                  <span aria-hidden="true" data-stage={stage} className="lm-tab-pill absolute bottom-1 left-1 top-1 rounded-[9px]" style={{ width: "calc(50% - 4px)", backgroundColor: CARD, boxShadow: `0 0 0 1px ${LINE}` }} />
+                  {[[LESSON_STAGE.PRE, "수업 전"], [LESSON_STAGE.POST, "수업 후"]].map(([key, label]) => (
+                    <button key={key} type="button" role="tab" aria-selected={stage === key} data-stage-tab={key} onClick={() => goStage(key)}
+                      className="lm-tab relative min-h-11" style={{ fontSize: TYPE.body, fontWeight: 600, color: stage === key ? INK : SUB }}>{label}</button>
+                  ))}
+                </div>
+              )}
+
+              {!manageDone && stage === LESSON_STAGE.PRE && (
+                <div key="pre" className="lm-stage" data-dir={stageDir || undefined} data-lesson-stage="pre">
+                  {sectionTitle("브리핑", activeMember ? <button type="button" onClick={() => onOpenMember?.(activeMember.id)} className="min-h-11 px-1" style={{ fontSize: TYPE.caption, color: SUB }}>전체 기록 ›</button> : null)}
+                  {lessonBriefingView ? <LessonBriefing view={lessonBriefingView} sessions={activeLessonSessions} footer={renewalLineView} fallback={briefingFallback} /> : null}
+                </div>
+              )}
+
+              {!manageDone && stage === LESSON_STAGE.POST && activeAttendee && (
+                <div key="post" className="lm-stage space-y-6" data-dir={stageDir || undefined} data-lesson-stage="post">
+                  <section data-attendance-section>
+                    {sectionTitle("출석", !settledLesson ? (
+                      <button type="button" aria-expanded={statusOpen} onClick={() => setStatusOpen((value) => !value)} className="min-h-11 px-1" style={textLink}>{statusOpen ? "접기" : "상태 변경"}</button>
+                    ) : null)}
+                    {manageAttendees.length > 1 ? (
+                      <div data-duet-attendance className="space-y-1">
+                        {manageAttendees.map((attendee) => (
+                          <div key={attendee.memberId} className="flex items-center gap-2" data-duet-member={attendee.memberId}>
+                            <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK2 }}>{members.find((item) => item.id === attendee.memberId)?.name || "회원"}</span>
+                            <span className="shrink-0" style={{ fontSize: TYPE.caption, fontWeight: 700, color: effectiveStatus(attendee) === ATTENDANCE.ATTEND ? GOOD : WARN }}>
+                              {(attendee.status || "booked") === "booked" ? "출석으로 처리됩니다" : stOf(attendee.status).label}
+                              {attendee.status === "noshow" ? (effectiveNoshowFee(attendee) ? " · 1회 차감" : " · 차감 안 함") : ""}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p data-attendance-line style={{ fontSize: TYPE.body, color: SUB }}>
+                        {{ done: "출석으로 처리됩니다", noshow: "노쇼로 처리됩니다", cancel: "취소로 처리됩니다" }[activeStatus] || "출석으로 처리됩니다"}
+                        {activeStatus === ATTENDANCE.NOSHOW ? (effectiveNoshowFee(activeAttendee) ? " · 1회 차감" : " · 차감 안 함") : ""}
+                      </p>
+                    )}
+                    {/* 무게를 미리 말한다. 누른 뒤에 알게 되면 늦다. */}
+                    {organizationMode ? <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>확정하면 회원권이 차감되고, 되돌리려면 대표 확인이 필요합니다.</p> : null}
+                    <div className="lm-reveal" data-open={statusOpen || undefined} inert={statusOpen ? undefined : ""}>
+                      <div className="lm-reveal-clip"><div className="space-y-2.5 pt-3">
+                        {manageAttendees.length > 1 ? <p style={{ fontSize: TYPE.caption, color: SUB }}>{activeMember?.name || "회원"}님 상태</p> : null}
+                        <div className="grid grid-cols-3 gap-2" role="group" aria-label="출석 상태">
+                          {[ATTENDANCE.ATTEND, ATTENDANCE.NOSHOW, ATTENDANCE.CANCEL].map((key) => {
+                            const pressed = activeStatus === key;
+                            return (
+                              <button key={key} type="button" aria-pressed={pressed} data-attendance-choice={key} disabled={settledLesson} onClick={() => pickStatus(key)}
+                                className="lm-chip min-h-11 rounded-xl disabled:opacity-40"
+                                style={{ fontSize: TYPE.body, fontWeight: 600, backgroundColor: pressed ? (key === ATTENDANCE.ATTEND ? GOOD : WARN) : CARD, color: pressed ? "#fff" : INK, border: `1px solid ${pressed ? (key === ATTENDANCE.ATTEND ? GOOD : WARN) : LINE}` }}>
+                                {stOf(key).label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="lm-reveal" data-open={activeStatus === ATTENDANCE.NOSHOW || undefined} inert={activeStatus === ATTENDANCE.NOSHOW ? undefined : ""}>
+                          <div className="lm-reveal-clip"><div data-noshow-choice>
+                            <div className="grid grid-cols-2 gap-2" role="group" aria-label="노쇼 차감 여부">
+                              {[[true, "1회 차감"], [false, "차감 안 함"]].map(([charge, label]) => {
+                                const pressed = effectiveNoshowFee(activeAttendee) === charge;
+                                return (
+                                  <button key={label} type="button" aria-pressed={pressed} disabled={settledLesson} onClick={() => onNoshowFee?.(draft.id, charge, activeMemberId)}
+                                    className="lm-chip min-h-11 rounded-xl disabled:opacity-40"
+                                    style={{ fontSize: TYPE.body, fontWeight: 600, backgroundColor: pressed ? WARN : CARD, color: pressed ? "#fff" : INK, border: `1px solid ${pressed ? WARN : LINE}` }}>{label}</button>
+                                );
+                              })}
+                            </div>
+                            <p className="mt-1.5 text-xs leading-relaxed" style={{ color: INK2 }}>
+                              {organizationMode
+                                ? effectiveNoshowFee(activeAttendee) ? "확정하면 회원권 1회가 빠지고, 출석과 같은 단가로 급여에 잡힙니다." : "확정하면 차감과 급여 없이 노쇼로만 남습니다."
+                                : effectiveNoshowFee(activeAttendee) ? "처리하면 회원권 1회가 빠집니다." : "차감 없이 노쇼로만 남습니다."}
+                            </p>
+                          </div></div>
+                        </div>
+                        {manageAttendees.length > 1 && !settledLesson ? (
+                          <div className="grid grid-cols-3 gap-1.5">
+                            {[{ k: "done", l: "전체 출석" }, { k: "noshow", l: "전체 노쇼" }, { k: "cancel", l: "전체 취소" }].map((option) => (
+                              <button key={option.k} type="button" data-all-attended={option.k === "done" ? "" : undefined} onClick={() => onStatusAll?.(draft.id, option.k)} className="lm-chip min-h-11 rounded-xl text-xs font-bold" style={{ backgroundColor: CANVAS, color: INK2 }}>{option.l}</button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div></div>
+                    </div>
+                  </section>
             {organizationMode && absentPrompt ? (
               <div className="rounded-xl p-3" style={{ backgroundColor: WARN_S, border: `1px solid ${WARN}` }}>
                 <p className="text-xs font-bold leading-relaxed" style={{ color: INK }}>
@@ -5150,68 +5366,88 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
                 </button>
               </div>
             ) : null}
-
-            {/* ── 여러 명 수업: 전원의 출석을 한눈에 (2026-11-06 대표) ──────────────
-                확정 전에 두 사람이 모두 정해져야 한다. 한 사람만 누르고 확정하면 다른
-                사람은 서버에 "예약" 으로 남았다 (60일 확정 듀엣 125건 중 48건). */}
-            {organizationMode && !settledLesson && !settledElsewhere && lessonTypeKeyOf(draft) === "duet" && attendeesOf(draft).length > 1 ? (
-              <div data-duet-attendance className="rounded-xl p-3" style={{ backgroundColor: CARD, border: `1px solid ${duetUnmarked ? BAD : LINE}` }}>
-                <p className="text-xs font-extrabold" style={{ color: INK }}>회원별 출석</p>
-                <div className="mt-1.5 space-y-1">
-                  {attendeesOf(draft).map((attendee) => (
-                    <div key={attendee.memberId} className="flex items-center gap-2" data-duet-member={attendee.memberId}>
-                      <span className="min-w-0 flex-1 truncate text-xs font-bold" style={{ color: INK2 }}>
-                        {members.find((item) => item.id === attendee.memberId)?.name || "회원"}
-                      </span>
-                      <span className="shrink-0 text-xs font-extrabold" style={{ color: attendee.status === "booked" ? BAD : stOf(attendee.status).color }}>
-                        {attendee.status === "booked" ? "아직 안 정함" : stOf(attendee.status).label}
-                      </span>
-                    </div>
-                  ))}
+                  {recordSection}
+                  {feedbackSection}
+                  {moreSection}
                 </div>
-                <button type="button" data-all-attended onClick={() => onStatusAll?.(draft.id, "done")}
-                  className="mt-2 h-11 w-full rounded-lg text-sm font-extrabold text-white" style={{ backgroundColor: GOOD }}>
-                  둘 다 출석
-                </button>
-              </div>
-            ) : null}
+              )}
 
-            {/* 여러 명인 수업은 전원을 정한 뒤 한 번에 확정한다 -- 누르는 횟수가
-                오히려 줄어든다. 개인 모드에는 조직 회원권이 없어 이 블록이 없다. */}
-            {organizationMode ? (
-              <SchedSettleBlock s={draft} members={members} settled={settledLesson} settledElsewhere={settledElsewhere} canSettle={canSettleLesson(draft)} notStarted={!lessonHasStarted(draft)}
-                blockedReason={duetUnmarked}
-                canUnsettle={canUnsettle} onSettle={onSettleLesson}
-                onUnsettle={async (...args) => {
-                  const done = await onUnsettleLesson?.(...args);
-                  if (done) onClose?.();
-                  return done;
-                }} />
-            ) : null}
-          </div>
-        )}
+              {manageDone && (
+                <>
+                  <section data-lesson-done className="lm-fade-up pt-2 text-center">
+                    <div className="lm-done-check mx-auto mb-3.5 grid h-14 w-14 place-items-center rounded-full" style={{ backgroundColor: settledElsewhere ? CANVAS : GOOD_S, color: settledElsewhere ? SUB : GOOD }}>
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10" /></svg>
+                    </div>
+                    <h3 role="status" style={{ fontSize: TYPE.heading, fontWeight: 700, color: INK }}>{settledElsewhere ? "다른 기기에서 확정된 수업이에요" : doneTitle(manageAttendees)}</h3>
+                    {organizationMode && settledLesson ? (() => {
+                      const outcome = SETTLEMENT_OUTCOME_LINE[draft?.orgSettledOutcome] || SETTLEMENT_OUTCOME_LINE[SETTLEMENT_OUTCOME.COMPLETE];
+                      return <p data-settle-outcome className="mt-1" style={{ fontSize: TYPE.body, fontWeight: 700, color: outcome.tone }}>{outcome.label}</p>;
+                    })() : null}
+                    {settledElsewhere
+                      ? <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>차감은 이미 원장에 있습니다. 되돌리려면 확정한 기기에서 해 주세요.</p>
+                      : doneLines.map((line, index) => <p key={index} className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{line}</p>)}
+                    {organizationMode && settledLesson ? <div className="text-left"><SchedSettleSkips s={draft} members={members} /></div> : null}
+                    {organizationMode && settledLesson && manageFromMigrated ? <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>이전 데이터 — 급여에 쓰지 않습니다. 되돌리지 않아도 됩니다.</p> : null}
+                    <div className="mt-5">{renderRepeat(true)}</div>
+                    <button type="button" onClick={onClose} className="mt-2 min-h-11 px-2" style={textLink}>나중에 할게요</button>
+                    {/* 되돌리기는 가장 작게. 소속 모드는 대표만 (차감 보정과 같은 선), 사유가 필수다. */}
+                    {(organizationMode ? (settledLesson && canUnsettle && !manageFromMigrated) : true) && !undoOpen ? (
+                      <div className="mt-4">
+                        <button type="button" data-undo-settle onClick={() => (organizationMode ? (setUndoOpen(true), setUndoReason("")) : undoPersonal())}
+                          className="min-h-11 px-2" style={{ fontSize: TYPE.caption, color: FAINT, textDecoration: "underline", textUnderlineOffset: 3 }}>처리 되돌리기</button>
+                      </div>
+                    ) : null}
+                    {organizationMode && undoOpen ? (
+                      <div className="lm-fade-up mt-4 text-left">
+                        <input value={undoReason} onChange={(event) => setUndoReason(event.target.value)} maxLength={LEDGER_REASON_MAX}
+                          placeholder="되돌리는 사유 (필수)" className="h-11 w-full rounded-xl border-0 px-3 text-xs outline-none"
+                          style={{ backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }} />
+                        <div className="mt-2 flex gap-2">
+                          <button type="button" onClick={() => { setUndoOpen(false); setUndoReason(""); }} className="min-h-11 flex-1 rounded-xl text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>취소</button>
+                          <button type="button" disabled={undoBusy || undoReason.trim() === ""}
+                            onClick={async () => { setUndoBusy(true); try { const done = await onUnsettleLesson?.(draft.id, undoReason.trim()); if (done) { setUndoOpen(false); onClose?.(); } } finally { setUndoBusy(false); } }}
+                            className="min-h-11 flex-1 rounded-xl text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: BAD }}>{undoBusy ? "처리 중" : "되돌리기"}</button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </section>
+                  {recordSection}
+                  {feedbackSection}
+                  {moreSection}
+                </>
+              )}
+
+              {!manageDone && (
+                <div data-lesson-confirm-bar className="sticky bottom-0 z-10 -mx-4 px-4 pb-1 pt-3"
+                  style={{ backgroundColor: CARD, borderTop: `1px solid ${LINE}`, boxShadow: "0 -12px 20px -16px rgba(28,36,51,.3)" }}>
+                  {stage === LESSON_STAGE.POST && manageFailedBefore ? (
+                    <div className="lm-fade-up mb-2">
+                      <p className="text-xs font-extrabold" style={{ color: BAD }}>차감이 한 건도 나가지 않았습니다</p>
+                      <SchedSettleSkips s={draft} members={members} />
+                      <p className="mt-1 text-xs leading-relaxed" style={{ color: INK2 }}>회원권이 아직 차감되지 않아 이 수업은 급여에 들어가지 않습니다. 원인을 고친 뒤 다시 확정해 주세요.</p>
+                    </div>
+                  ) : null}
+                  <button type="button" data-lesson-confirm={confirmBar.action} disabled={confirmDisabled} onClick={pressConfirmBar}
+                    className="lm-cta flex min-h-14 w-full items-center justify-center rounded-2xl disabled:opacity-40"
+                    style={{ fontSize: TYPE.title, fontWeight: 700, backgroundColor: stage === LESSON_STAGE.PRE ? INK : manageFailedBefore ? BAD : PRIMARY, color: stage === LESSON_STAGE.PRE ? CARD : "#fff" }}>
+                    <span key={confirmBar.label} className="lm-cta-text">{confirmBar.label}</span>
+                  </button>
+                  <p key={confirmHint} data-lesson-confirm-hint className="lm-fade-up mt-1.5 text-center tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{confirmHint}</p>
+                </div>
+              )}
+            </div>
+          );
+        })()}
         {draft.id && isGroup && (
           <div className="grid grid-cols-2 gap-2 border-t pt-3" style={{ borderColor: LINE }}>
             <button onClick={() => { onGroupDone?.(draft.id, true); onClose(); }} className="h-9 rounded-lg text-xs font-bold text-white" style={{ backgroundColor: GOOD }}>완료</button>
             <button onClick={() => { onGroupDone?.(draft.id, "cancelled"); onClose(); }} className="h-9 rounded-lg text-xs font-bold" style={{ backgroundColor: BAD_S, color: BAD }}>취소</button>
           </div>
         )}
-        {draft.id && !editingInfo && <button type="button" onClick={onClose} className="h-11 w-full rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>닫기</button>}
+        {draft.id && !editingInfo && !managePanel && <button type="button" onClick={onClose} className="h-11 w-full rounded-lg text-xs font-extrabold" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }}>닫기</button>}
         {/* 확정된 수업은 지우는 버튼 대신 다음 할 일을 말한다. 지울 수 있는 일정은
             누르면 바로 지우고 되돌리기를 준다. 회차가 돌아오는 수업만 한 번 묻는다. */}
-        {draft.id && onDelete && deletePolicy.mode === DELETE_MODE.BLOCKED ? (
-          <p className="rounded-lg px-3 py-2.5 text-xs font-bold leading-relaxed" style={{ backgroundColor: CANVAS, color: SUB }}>{settledLockNotice({ canUnsettle, elsewhere: deletePolicy.reason === DELETE_BLOCK_REASON.SETTLED_ELSEWHERE })}</p>
-        ) : draft.id && onDelete && deletePolicy.mode === DELETE_MODE.ONE_TAP ? (
-          <button onClick={() => { onDelete(draft.id); onClose(); }} className="flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}><Trash2 size={13} /> 일정 삭제</button>
-        ) : draft.id && onDelete && (del ? (
-          <div className="flex items-center gap-2 rounded-lg p-2.5" style={{ backgroundColor: BAD_S }}>
-            <span className="min-w-0 flex-1 text-xs font-bold" style={{ color: BAD }}>삭제하면 뺀 회차가 회원에게 돌아갑니다. 삭제할까요?</span>
-            <button onClick={() => { onDelete(draft.id); onClose(); }} className="rounded-lg px-3 py-2 text-xs font-bold text-white" style={{ backgroundColor: BAD }}>삭제</button>
-            <button onClick={() => setDel(false)} className="rounded-lg px-3 py-2 text-xs font-bold" style={{ color: SUB }}>취소</button>
-          </div>
-        ) : draft.id ? (
-          <button onClick={() => setDel(true)} className="flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}><Trash2 size={13} /> 일정 삭제</button>
-        ) : null)}
+        {!managePanel && deleteControls}
       </div>
     </ScheduleBottomSheet>
     {picker?.type === "hour" && <ChoiceBottomSheet title="시 선택" value={hour} columns={2} onClose={() => setPicker(null)} options={Array.from({ length: 24 }, (_, value) => ({ value, label: `${value}시` }))} onSelect={(value) => setTime(value, minute)} />}
@@ -33938,10 +34174,12 @@ export default function App() {
       .finally(() => attendanceMutationsInFlight.current.delete(lessonId));
     return true;
   };
-  const setStatus = (id, status, memberId) => {
+  /* options.single: 듀엣에서도 이 사람만 (수업 관리 시트의 [수업 확정] 이 아직 안 고른 사람을 한 명씩 출석으로 적는다 --
+     짝이 노쇼로 골라 둔 것을 "둘 다 출석" 이 덮으면 안 된다). 없으면 전처럼 듀엣 출석은 둘 다. */
+  const setStatus = (id, status, memberId, options = {}) => {
     const s0 = db.schedule.find((x) => x.id === id);
     if (!s0) return;
-    if (status === "done" && lessonTypeKeyOf(s0) === "duet") return setStatusAll(id, status);
+    if (status === "done" && lessonTypeKeyOf(s0) === "duet" && !options.single) return setStatusAll(id, status);
     const list = attendeesOf(s0);
     if (!list.length) return;
     const mid = memberId || list[0].memberId;

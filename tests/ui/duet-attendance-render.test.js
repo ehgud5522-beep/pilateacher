@@ -30,25 +30,26 @@ const markupOf = async (name) => {
 };
 test.after(async () => { if (vite) await vite.close(); });
 
-const settleButton = (html) => html.match(/<button[^>]*>(?:수업 확정[^<]*|다시 확정)<\/button>/)?.[0] || "";
+const settleButton = (html) => html.match(/<button[^>]*data-lesson-confirm[^>]*>[\s\S]*?<\/button>/)?.[0] || "";
 
-test("듀엣 한 명 미표시 — 확정 버튼이 잠기고 누가 남았는지 말한다, '둘 다 출석' 이 있다", async () => {
+/* 2026-11-17 개편: 출석은 기본값이다. 아직 안 고른 사람은 "출석으로 처리됩니다" 로 보이고, [수업 확정] 이
+   그 사람을 출석으로 적은 뒤에 확정한다 -- 한 명이 "예약" 으로 남은 채 확정되는 일(60일 125건 중 48건)은
+   버튼을 잠그지 않고도 생기지 않는다. 확정 진입점의 안전망(settleLesson 의 duet_unmarked)은 그대로다. */
+test("듀엣 한 명 미표시 — 그 사람은 출석으로 처리된다고 말하고, 확정은 2명 차감, '전체 출석' 이 있다", async () => {
   const html = await markupOf("일정 탭 · 소속 · 2:1 한 명 미표시");
-  assert.match(html, /data-settle-blocked[^>]*>[^<]*님 출석을 표시해 주세요/);
-  assert.match(settleButton(html), /disabled=""/);
-  assert.match(html, /data-all-attended[^>]*>\s*둘 다 출석/);
   assert.match(html, /data-duet-attendance/);
-  assert.match(html, /아직 안 정함/);
+  assert.match(html, /출석으로 처리됩니다/);
+  assert.match(settleButton(html), /수업 확정 · 2명 차감/);
+  assert.doesNotMatch(settleButton(html), /disabled=""/);
+  assert.match(html, /data-all-attended=""[^>]*>전체 출석/);
 });
 
-test("둘 다 정해진 듀엣 — 막지 않는다 (전과 같은 확정 버튼)", async () => {
-  /* 둘 다 정해졌으면 듀엣 출석 미표시(data-settle-blocked)로는 막지 않는다. 둘 다 노쇼인 수업은
-     노쇼 차감/미차감 선택(#138)이 따로 잠그므로 버튼 잠김은 그쪽 테스트가 본다. */
+test("둘 다 정해진 듀엣 — 막지 않는다", async () => {
   const ready = await markupOf("일정 탭 · 소속 · 확정 전");
-  assert.doesNotMatch(ready, /data-settle-blocked/);
   assert.doesNotMatch(settleButton(ready), /disabled=""/);
   const bothNoshow = await markupOf("일정 탭 · 소속 · 2:1 둘 다 노쇼");
-  assert.doesNotMatch(bothNoshow, /data-settle-blocked/, "출석은 둘 다 정해졌다");
+  assert.match(settleButton(bothNoshow), /노쇼 처리 · 2명 차감/, "노쇼는 기본 1회 차감");
+  assert.doesNotMatch(settleButton(bothNoshow), /disabled=""/);
 });
 
 test("1:1 은 회원별 출석 묶음도 '둘 다 출석' 도 없다", async () => {
@@ -79,8 +80,7 @@ test("배선 — 확정 진입점(시트 · 출석 화면 · 큐)이 모두 지�
   const settle = source.slice(source.indexOf("const settleLesson = async (lessonId) => {"));
   assert.match(settle.slice(0, 900), /unmarkedSettleMessage\(lesson,/);
   assert.match(settle.slice(0, 900), /errorCode: "duet_unmarked"/);
-  assert.match(source, /data-all-attended onClick=\{\(\) => onStatusAll\?\.\(draft\.id, "done"\)\}/);
-  assert.match(source, /blockedReason=\{duetUnmarked\}/);
-  const status = source.slice(source.indexOf("const setStatus = (id, status, memberId) => {"));
-  assert.match(status.slice(0, 400), /status === "done" && lessonTypeKeyOf\(s0\) === "duet"\) return setStatusAll\(id, status\)/);
+  assert.match(source, /data-all-attended=\{option\.k === "done" \? "" : undefined\} onClick=\{\(\) => onStatusAll\?\.\(draft\.id, option\.k\)\}/);
+  const status = source.slice(source.indexOf("const setStatus = (id, status, memberId, options = {}) => {"));
+  assert.match(status.slice(0, 600), /status === "done" && lessonTypeKeyOf\(s0\) === "duet" && !options\.single\) return setStatusAll\(id, status\)/);
 });

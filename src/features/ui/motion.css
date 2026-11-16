@@ -57,3 +57,58 @@
 .app-motion-tab[aria-current="page"] .app-motion-tab-mark { opacity: 1; transform: scaleX(1); }
 .app-motion-collapse-clip { min-height: 0; }
 .app-motion-collapse[data-closing] .app-motion-collapse-clip { overflow: hidden; }
+
+/* ── 수업 관리 시트 (2026-11-17 개편) ──────────────────────────────────────
+   탭 전환 · 펼치기 · 하단 버튼 문구가 바뀔 때. 길이는 위의 두 값(160 · 220ms)과 같은 곡선을 쓴다 --
+   한 시트 안에서 움직임마다 빠르기가 다르면 덜컹거린다. 동작 줄이기를 켠 기기에서는 움직이지 않고
+   바로 바뀐다 (아래 규칙이 no-preference 안에만 있다). */
+@keyframes lm-stage-in-right {
+  from { opacity: 0; transform: translate3d(14px, 0, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+@keyframes lm-stage-in-left {
+  from { opacity: 0; transform: translate3d(-14px, 0, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+@keyframes lm-fade-up {
+  from { opacity: 0; transform: translate3d(0, 6px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+@keyframes lm-check-in {
+  0% { opacity: 0; transform: scale(.6); }
+  60% { opacity: 1; transform: scale(1.06); }
+  100% { opacity: 1; transform: scale(1); }
+}
+@keyframes lm-check-draw {
+  from { stroke-dashoffset: 24; }
+  to { stroke-dashoffset: 0; }
+}
+
+.lm-reveal { display: grid; grid-template-rows: 0fr; opacity: 0; visibility: hidden; }
+.lm-reveal[data-open] { grid-template-rows: 1fr; opacity: 1; visibility: visible; }
+.lm-reveal > .lm-reveal-clip { min-height: 0; overflow: hidden; }
+.lm-tab-pill { transform: translate3d(0, 0, 0); }
+.lm-tab-pill[data-stage="post"] { transform: translate3d(100%, 0, 0); }
+.lm-chevron { display: inline-block; }
+[aria-expanded="true"] > .lm-chevron { transform: rotate(180deg); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .lm-stage[data-dir="forward"] { animation: lm-stage-in-right var(--motion-open) var(--motion-ease) both; }
+  .lm-stage[data-dir="back"] { animation: lm-stage-in-left var(--motion-open) var(--motion-ease) both; }
+  .lm-fade-up { animation: lm-fade-up var(--motion-open) var(--motion-ease) both; }
+  .lm-reveal {
+    transition: grid-template-rows var(--motion-open) var(--motion-ease), opacity var(--motion-quick) ease, visibility 0s linear var(--motion-open);
+  }
+  .lm-reveal[data-open] {
+    transition: grid-template-rows var(--motion-open) var(--motion-ease), opacity var(--motion-open) ease, visibility 0s linear 0s;
+  }
+  .lm-tab-pill { transition: transform var(--motion-open) var(--motion-ease); }
+  .lm-tab { transition: color var(--motion-quick) ease; }
+  .lm-chip { transition: background-color var(--motion-quick) ease, color var(--motion-quick) ease, border-color var(--motion-quick) ease, transform 120ms ease; }
+  .lm-chip:active, .lm-cta:active { transform: scale(.98); }
+  .lm-cta { transition: background-color var(--motion-open) ease, color var(--motion-open) ease, transform 120ms ease, opacity var(--motion-quick) ease; }
+  .lm-cta-text { display: inline-block; animation: lm-fade-up var(--motion-quick) var(--motion-ease) both; }
+  .lm-chevron { transition: transform var(--motion-open) var(--motion-ease); }
+  .lm-done-check { animation: lm-check-in 360ms var(--motion-ease) both; }
+  .lm-done-check path { stroke-dasharray: 24; animation: lm-check-draw 320ms 120ms var(--motion-ease) both; }
+}

@@ -66,11 +66,13 @@ test("회차 · 경과일은 연 수업보다 앞선 출석만 센다", () => {
   assert.deepEqual(lessonProgress({ memberId: "m1", lesson, schedule }), { sessionNumber: 3, lastAttendedDate: "2026-11-07", daysSinceLast: 3 });
 });
 
-test("시트: 스위치가 켜졌을 때만 새 브리핑, 꺼지면 지금 브리핑 그대로", () => {
+test("시트: 브리핑은 늘 세 덩어리, 회원 요약(서버 · AI)은 스위치가 켜진 계정만 얹힌다 (2026-11-17 개편)", () => {
   const app = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
   assert.match(app, /scheduleSyncEnabledFor\(scheduleSyncConfig\?\.lessonBriefingV2, account\?\.id\)/);
-  assert.match(app, /\{lessonBriefingView \? <LessonBriefing view=\{lessonBriefingView\} sessions=\{activeLessonSessions\} footer=\{renewalLineView\} \/> : null\}/);
-  assert.match(app, /\{!lessonBriefingView && activeMember && lessonSheetBriefing && \(/);
+  assert.match(app, /const briefingClientId = briefingContext\.briefingV2On && activeMember/);
+  assert.match(app, /\{lessonBriefingView \? <LessonBriefing view=\{lessonBriefingView\} sessions=\{activeLessonSessions\} footer=\{renewalLineView\} fallback=\{briefingFallback\} \/> : null\}/);
+  // 지난 수업 기록이 없는 회원도 읽을 것이 남는다 -- 옛 브리핑의 비포애프터 참고 · 이전 기록.
+  assert.match(app, /lessonSheetBriefing\.source === "posture_fallback" \? "비포애프터 참고" : "이전 기록 참고"/);
 });
 
 test("브리핑 화면 문구에 AI 를 쓰지 않는다, 빈 덩어리는 기록 없음", () => {

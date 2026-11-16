@@ -86,7 +86,7 @@
 
 .lm-reveal { display: grid; grid-template-rows: 0fr; opacity: 0; visibility: hidden; }
 .lm-reveal[data-open] { grid-template-rows: 1fr; opacity: 1; visibility: visible; }
-.lm-reveal > .lm-reveal-clip { min-height: 0; overflow: hidden; }
+.lm-reveal > .lm-reveal-clip { min-height: 0; overflow: hidden; contain: paint; }
 .lm-tab-pill { transform: translate3d(0, 0, 0); }
 .lm-tab-pill[data-stage="post"] { transform: translate3d(100%, 0, 0); }
 .lm-chevron { display: inline-block; }
@@ -108,6 +108,8 @@
   .lm-chip:active, .lm-cta:active { transform: scale(.98); }
   .lm-cta { transition: background-color var(--motion-open) ease, color var(--motion-open) ease, transform 120ms ease, opacity var(--motion-quick) ease; }
   .lm-cta-text { display: inline-block; animation: lm-fade-up var(--motion-quick) var(--motion-ease) both; }
+  /* 움직이는 것은 transform · opacity 뿐 (펼치기의 grid-template-rows 하나만 예외 -- 높이를 모르는 칸을 여닫는
+     가장 가벼운 길이다). 그 칸 안쪽은 contain 으로 묶어 바깥을 다시 그리지 않는다. */
   .lm-chevron { transition: transform var(--motion-open) var(--motion-ease); }
   .lm-done-check { animation: lm-check-in 360ms var(--motion-ease) both; }
   .lm-done-check path { stroke-dasharray: 24; animation: lm-check-draw 320ms 120ms var(--motion-ease) both; }

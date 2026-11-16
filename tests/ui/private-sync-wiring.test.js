@@ -48,7 +48,8 @@ test("화면 안내 — 메모 · 상담 메모 · 목표는 '다른 기기에�
   assert.ok(app.includes('<Sheet title="목표·주의사항 수정" onClose={() => setSheet(null)}><div className="space-y-3"><DeviceOnlyNote />'), "목표 · 통증 및 주의사항");
   assert.ok(app.includes("그래프 목표선과 종합 평가에 사용됩니다 · {DEVICE_ONLY_HINT}"), "목표 체중 · 체지방");
   assert.ok(app.includes('<Field label="상담 메모" hint={DEVICE_ONLY_HINT}>'), "회원 등록의 상담 메모");
-  assert.ok(app.includes('{(kind === "consult" || kind === "off") && <p data-shared-hint'), "개인 일정 고를 때");
+  assert.ok(app.includes('const personalKind = kind === "consult" || kind === "off";'), "개인 일정 고를 때");
+  assert.ok(app.includes('<p data-shared-hint className="mt-1.5" style={{ fontSize: TYPE.caption, color: SUB }}>{SHARED_TITLE_HINT}</p>'), "개인 일정 고를 때");
 });
 
 test("대표 화면에 두 스위치가 따로 보인다", async (t) => {

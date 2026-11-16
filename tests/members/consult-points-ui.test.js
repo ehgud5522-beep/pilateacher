@@ -7,7 +7,10 @@ const app = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
 
 test("스위치 consultPoints · 센터 회원일 때만 버튼, 자동 호출 없음", () => {
   assert.match(app, /scheduleSyncEnabledFor\(scheduleSyncConfig\?\.consultPoints, account\?\.id\)/);
-  assert.match(app, /\{consultClientId \? <button type="button" data-consult-points-open onClick=\{runConsultPoints\}/);
+  /* 2026-11-17: 버튼은 한 곳 -- 동의 카드가 있는 계정은 AI 요약 카드 아래, 없는 계정은 상담 메모 칸. */
+  assert.match(app, /onConsult=\{consultClientId \? runConsultPoints : null\}/);
+  assert.match(app, /\{consultClientId && !consultContext\.consentOn \? <button type="button" data-consult-points-open onClick=\{runConsultPoints\}/);
+  assert.match(app, /\{granted && onConsult \? \(\s*<button type="button" data-consult-points-open onClick=\{onConsult\}/);
   const calls = app.match(/fbConsultTalkingPoints\(/g) || [];
   assert.equal(calls.length, 1, "부르는 곳은 버튼 하나뿐");
 });

@@ -28,16 +28,15 @@ test("the other pickers are untouched", async () => {
 
 test("the field still reads as the same control", async () => {
   const source = await appSource();
-  const start = source.indexOf("<p className=\"mb-1.5 text-xs font-bold\" style={{ color: SUB }}>날짜</p>");
-  const field = source.slice(start, start + 1200);
-  // Same icon, same date-and-weekday text, same chevron: only the sheet behind
-  // it changed.
+  /* 2026-11-17 개편: 날짜 · 시간 · 길이가 한 줄. 날짜 칸은 그 줄의 첫 칸이고, 기기 달력을 그대로 연다. */
+  const start = source.indexOf("data-register-when");
+  const field = source.slice(start, start + 1600);
   assert.match(field, /<CalendarDays size=\{15\}/);
-  assert.match(field, /\{ymd\(f\.date\)\} · \{dow\(f\.date\)\}요일/);
-  assert.match(field, /<ChevronDown size=\{14\}/);
-  // The native input covers the row, and the label gives it a frame to sit in.
-  assert.match(field, /<label className="relative flex h-11 w-full/);
-  assert.match(field, /className="absolute h-11 w-full opacity-0"/);
+  assert.match(field, /\{f\.date\?\.slice\(5\)\.replace\("-", "\."\)\} \(\{dow\(f\.date\)\}\)/);
+  // The native input covers the cell, and the label gives it a frame to sit in.
+  assert.match(field, /<label className="lm-chip relative flex min-h-12/);
+  assert.match(field, /<input type="date" aria-label="날짜"/);
+  assert.match(field, /className="absolute inset-0 h-full w-full opacity-0"/);
 });
 
 test("an empty date is never written back", async () => {

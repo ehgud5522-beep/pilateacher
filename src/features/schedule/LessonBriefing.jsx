@@ -17,7 +17,7 @@ const shortDate = (value) => {
   return match ? `${Number(match[1])}.${Number(match[2])}` : "";
 };
 
-function SourceRecords({ sessions, dates }) {
+export function SourceRecords({ sessions, dates }) {
   const shown = [...new Set(dates)].flatMap((date) => sessionsOnDate(sessions, date));
   if (!shown.length) return <p data-briefing-source-missing style={{ fontSize: TYPE.caption, color: SUB }}>이 기기에서 그날 기록을 찾지 못했어요.</p>;
   return shown.map((session) => (
@@ -30,7 +30,7 @@ function SourceRecords({ sessions, dates }) {
   ));
 }
 
-function Sentence({ item, id, open, onToggle, sessions }) {
+export function Sentence({ item, id, open, onToggle, sessions }) {
   const dates = (item.sources || []).map((source) => source.date);
   const tappable = dates.length > 0;
   return (

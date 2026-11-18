@@ -31353,7 +31353,10 @@ export default function App() {
   const journeyForClient = useCallback((clientId) => {
     const target = String(clientId || "");
     if (!target || !organizationRoster) return null;
-    const mine = rosterPasses.filter((item) => item?.clientId === target);
+    /* passBelongsTo 로 고른다 (2026-11-18). 2:1 회원권은 한 사람 이름으로 발급되고 짝은 함께 쓰는 사람으로
+       붙는다 -- clientId 만 보면 짝의 카드에서 "이번 회원권" 막대가 통째로 빠졌다 (양홍순 · 강태임).
+       회원권 카드(passCardsForClient)와 같은 기준이어야 한 회원의 두 줄이 어긋나지 않는다. */
+    const mine = rosterPasses.filter((item) => passBelongsTo(item, target));
     const instructorId = String(mine.find((item) => item?.instructorId)?.instructorId || "");
     const pairId = instructorId + "_" + target;
     const total = rosterTotals.find((item) => String(item?.id || "") === pairId);

@@ -66,4 +66,6 @@ test("배선: 회원 상세(대표·총괄)에 급여 기준 누적 칸, 낡은 
   const body = app.slice(app.indexOf("function InstructorTotalSection("), app.indexOf("\nfunction ClientDetail({"));
   assert.match(body, /expectedSessions: edit\.current, reason: edit\.reason/);
   assert.match(body, /deviceLog\("instructor_total_adjust_failed"/);
+  // 실제 화면은 passStore 를 넘기지 않는다 -- 넘겨받은 것만 쓰면 칸이 사라진다 (2026-11-18 1차 배포).
+  assert.match(body, /givenStore \|\| createFirestorePassStore\(\)/);
 });

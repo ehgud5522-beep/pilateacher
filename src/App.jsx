@@ -216,6 +216,7 @@ import {
   transferPass,
 } from "./data/repositories/pass-repository.js";
 import { adjustInstructorTotal, readInstructorTotal } from "./data/repositories/instructor-total-repository.js";
+import { createFirestorePassStore } from "./data/repositories/pass-repository.js";
 import { TOTAL_ADJUST_REASON_LABEL, duetPartnersOf, totalAdjustFailure, totalAdjustInputError, totalAdjustInstructors, totalTierLabel } from "./features/membership/total-adjust-view.js";
 import { ADJUST_INCREASE_NOTICE, OUT_OF_SCOPE_NOTICE, passEditFailure } from "./features/membership/pass-edit-failure.js";
 import {
@@ -21609,8 +21610,11 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
    급여 판정 3 이 보는 강사–회원 누적을 대표·총괄매니저가 고친다. 통로는 adjustInstructorTotal --
    누적 문서와 감사 항목이 한 배치이고, 화면에 보인 값이 아직 참일 때만 쓴다 (expectedSessions).
    고친 값은 앞으로의 차감부터다. 이미 원장에 적힌 단가는 그대로다. 문구 · 판정은 total-adjust-view.js. */
-function InstructorTotalSection({ organizationId, clientId, passes, nameOfInstructor, nameOfClient, store, currentUserId, actorRole, onToast }) {
+function InstructorTotalSection({ organizationId, clientId, passes, nameOfInstructor, nameOfClient, store: givenStore, currentUserId, actorRole, onToast }) {
   const instructors = useMemo(() => totalAdjustInstructors(passes), [passes]);
+  /* 실제 화면(더보기 → 회원 상세)은 passStore 를 넘기지 않는다 -- 다른 동작은 저장소 함수가 기본값으로
+     Firestore 를 만든다. 넘겨받은 것만 쓰면 이 칸이 실제 화면에서 통째로 사라진다 (2026-11-18, 1차 배포). */
+  const store = useMemo(() => givenStore || createFirestorePassStore(), [givenStore]);
   const [rows, setRows] = useState({});
   const [edit, setEdit] = useState(null);
   const [busy, setBusy] = useState(false);

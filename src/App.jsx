@@ -215,6 +215,8 @@ import {
   transferPassInstructor,
   transferPass,
 } from "./data/repositories/pass-repository.js";
+import { adjustInstructorTotal, readInstructorTotal } from "./data/repositories/instructor-total-repository.js";
+import { TOTAL_ADJUST_REASON_LABEL, duetPartnersOf, totalAdjustFailure, totalAdjustInputError, totalAdjustInstructors, totalTierLabel } from "./features/membership/total-adjust-view.js";
 import { ADJUST_INCREASE_NOTICE, OUT_OF_SCOPE_NOTICE, passEditFailure } from "./features/membership/pass-edit-failure.js";
 import {
   SETTLEMENT_GATE, SETTLEMENT_GATE_LABEL, blocksSettlement, settlementGate,
@@ -21603,6 +21605,120 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
   );
 }
 
+/* ── 급여 기준 누적 (2026-11-18 대표: "이미 20회 이상 수업함, 20회 미만 신규페이 안 되게") ──
+   급여 판정 3 이 보는 강사–회원 누적을 대표·총괄매니저가 고친다. 통로는 adjustInstructorTotal --
+   누적 문서와 감사 항목이 한 배치이고, 화면에 보인 값이 아직 참일 때만 쓴다 (expectedSessions).
+   고친 값은 앞으로의 차감부터다. 이미 원장에 적힌 단가는 그대로다. 문구 · 판정은 total-adjust-view.js. */
+function InstructorTotalSection({ organizationId, clientId, passes, nameOfInstructor, nameOfClient, store, currentUserId, actorRole, onToast }) {
+  const instructors = useMemo(() => totalAdjustInstructors(passes), [passes]);
+  const [rows, setRows] = useState({});
+  const [edit, setEdit] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [revision, setRevision] = useState(0);
+  const canRead = typeof store?.read === "function";
+  useEffect(() => {
+    if (!canRead || !organizationId || !clientId) return undefined;
+    let alive = true;
+    instructors.forEach((instructorId) => {
+      const ids = [clientId, ...duetPartnersOf(passes, instructorId, clientId)];
+      Promise.all(ids.map((id) => readInstructorTotal(organizationId, instructorId, id, { store })
+        .then((found) => ({ id, sessions: found ? found.sessions : null }))))
+        .then((found) => { if (alive) setRows((current) => ({ ...current, [instructorId]: { found, error: "" } })); })
+        .catch((thrown) => {
+          const code = String(thrown?.code || "unknown");
+          deviceLog("instructor_total_read_failed", { feature: "instructor_total_adjust", stage: "read", errorDomain: "firestore", errorCode: code, message: thrown?.message });
+          if (alive) setRows((current) => ({ ...current, [instructorId]: { found: [], error: code } }));
+        });
+    });
+    return () => { alive = false; };
+  }, [canRead, organizationId, clientId, instructors, passes, store, revision]);
+  if (!canRead || instructors.length === 0) return null;
+
+  const save = async () => {
+    if (!edit || busy) return;
+    const problem = totalAdjustInputError(edit.value, edit.current);
+    if (problem) { setEdit({ ...edit, error: problem }); return; }
+    setBusy(true);
+    try {
+      await adjustInstructorTotal(organizationId, {
+        instructorId: edit.instructorId, clientId: edit.clientId, sessions: Number(edit.value),
+        expectedSessions: edit.current, reason: edit.reason, actorId: currentUserId, actorRole,
+      }, { store });
+      onToast?.({ ok: true, msg: `누적을 ${Number(edit.value)}회로 고쳤습니다. 다음 수업부터 적용돼요.` });
+      setEdit(null);
+      setRevision((value) => value + 1);
+    } catch (thrown) {
+      deviceLog("instructor_total_adjust_failed", {
+        feature: "instructor_total_adjust", stage: "commit", errorDomain: thrown?.code === "stale_total" ? "app" : "firestore",
+        errorCode: String(thrown?.code || "unknown"), message: thrown?.message,
+      });
+      setEdit((current) => (current ? { ...current, error: totalAdjustFailure(thrown) } : current));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-4" data-instructor-totals>
+      <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>급여 기준 누적</p>
+      <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB, lineHeight: 1.5 }}>
+        강사별로 이 회원과 한 수업 수예요. 20회 미만이면 신규 단가로 계산돼요. 고치면 다음 수업부터 적용되고, 이미 확정된 급여는 바뀌지 않아요.
+      </p>
+      {instructors.map((instructorId) => {
+        const row = rows[instructorId];
+        return (
+          <div key={instructorId} className="mt-2" data-instructor-total={instructorId} style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}>
+            <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>{nameOfInstructor(instructorId)} 강사</p>
+            {!row ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+            {row?.error ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: BAD }}>누적을 읽지 못했어요 (코드 {row.error})</p> : null}
+            {row && !row.error ? row.found.map(({ id, sessions }) => {
+              const editing = edit && edit.instructorId === instructorId && edit.clientId === id;
+              return (
+                <div key={id} className="mt-1.5">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <p className="min-w-0 flex-1 tabular-nums" style={{ fontSize: TYPE.caption, color: sessions !== null && totalTierLabel(sessions).includes("신규") ? WARN : SUB }}>
+                      {id !== clientId ? `${nameOfClient(id) || "듀엣 짝"} · ` : ""}{totalTierLabel(sessions)}
+                    </p>
+                    {sessions !== null && !editing ? (
+                      <button type="button" data-instructor-total-edit onClick={() => setEdit({ instructorId, clientId: id, current: sessions, value: String(sessions), reason: "manual_correction", error: "" })}
+                        className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>누적 고치기</button>
+                    ) : null}
+                  </div>
+                  {editing ? (
+                    <div className="lm-fade-up mt-2" data-instructor-total-form>
+                      <label className="flex items-center gap-2" style={{ fontSize: TYPE.caption, color: SUB }}>
+                        <span className="shrink-0">{edit.current}회 →</span>
+                        <input inputMode="numeric" value={edit.value} aria-label="고칠 누적 횟수"
+                          onChange={(event) => setEdit({ ...edit, value: event.target.value.replace(/[^\d]/g, "").slice(0, 4), error: "" })}
+                          className="h-10 w-20 rounded-lg px-2 text-center tabular-nums" style={{ fontSize: TYPE.body, color: INK, backgroundColor: CARD, border: `1px solid ${LINE}` }} />
+                        <span className="shrink-0">회</span>
+                      </label>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {Object.entries(TOTAL_ADJUST_REASON_LABEL).map(([key, label]) => (
+                          <button key={key} type="button" aria-pressed={edit.reason === key} onClick={() => setEdit({ ...edit, reason: key })}
+                            className="lm-chip h-8 px-3 font-bold" style={{ borderRadius: 999, fontSize: TYPE.caption, backgroundColor: edit.reason === key ? TINT : CARD, color: edit.reason === key ? BRAND_D : SUB }}>{label}</button>
+                        ))}
+                      </div>
+                      {edit.error ? <p role="alert" className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>{edit.error}</p> : null}
+                      <div className="mt-2 flex gap-2">
+                        <button type="button" onClick={() => setEdit(null)} disabled={busy} className="h-10 flex-1 rounded-lg font-bold" style={{ fontSize: TYPE.caption, backgroundColor: CARD, color: SUB }}>취소</button>
+                        <button type="button" data-instructor-total-save onClick={save} disabled={busy} className="lm-cta h-10 flex-1 rounded-lg font-bold" style={{ fontSize: TYPE.caption, backgroundColor: BRAND, color: CARD, opacity: busy ? 0.6 : 1 }}>{busy ? "저장 중…" : "저장"}</button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            }) : null}
+            {row && !row.error && row.found.length > 1 ? (
+              <p className="mt-1.5" style={{ fontSize: TYPE.caption, color: SUB }}>듀엣 수업은 두 사람 중 적은 누적으로 계산돼요.</p>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function ClientDetail({
   organization, client, history, loading, error, instructors = [], currentUserId = "", nameOfClient = () => "",
   clients = [], passStore, onClose, onRetry, onChanged, onToast, onChangePhone,
@@ -22083,6 +22199,12 @@ function ClientDetail({
                     ? () => onHandover(pass) : undefined} />
               ))}
           </div>
+
+          {canUndo ? (
+            <InstructorTotalSection organizationId={organizationId} clientId={client?.id || ""} passes={passes}
+              nameOfInstructor={nameOfInstructor} nameOfClient={nameOfClient} store={passStore}
+              currentUserId={currentUserId} actorRole={organization?.role || ""} onToast={onToast} />
+          ) : null}
 
           <div className="mt-4" data-pass-history>
             <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>이력</p>

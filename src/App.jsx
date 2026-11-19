@@ -54,7 +54,7 @@ import {
   fbSessionUpPass, fbManagePassHold,
   fbResetMigratedData,
   fbVerifyInstructorIds,
-  fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone,
+  fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone, fbDeleteArchivedClient,
   fbVerifyMemberViews, fbMemberAppStatus,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
@@ -143,6 +143,7 @@ import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories
 import {
   canEditPhone, maskPhone, phoneEditMessage,
 } from "./features/members/phone-edit.js";
+import { clientDeleteMessage, serverCodeOf } from "./features/members/client-delete-view.js";
 import {
   REVIEW_DEMO_BADGE, isReviewDemo, reviewDemoClientIds, visibleToRole,
 } from "./features/members/review-demo.js";
@@ -20703,6 +20704,29 @@ function ClientArchiveSheet({ client, archived, onCancel, onConfirm, busy, error
   );
 }
 
+/** 보관된 빈 회원 삭제 확인 (2026-11-19). 되돌릴 수 없다는 것을 누르기 전에 말한다. */
+function ClientDeleteSheet({ client, onCancel, onConfirm, busy, error }) {
+  return (
+    <section data-client-delete-sheet style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{client?.name || "회원"} 삭제</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: INK2 }}>
+        회원 목록에서 완전히 사라지고 <b style={{ color: INK }}>되살릴 수 없어요.</b> 이 회원이 쓰던 번호는 풀려서
+        다른 회원에게 줄 수 있어요. 회원권 · 수업 · 기록이 하나라도 있으면 지워지지 않아요.
+        {client?.userId ? " 회원 앱 연결도 함께 끊어요." : ""}
+      </p>
+      {error ? <p className="mt-2" role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{error}</p> : null}
+      <div className="mt-3 flex gap-2">
+        <button type="button" onClick={onCancel} className="h-11 flex-1 font-bold"
+          style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+        <button type="button" disabled={busy} onClick={onConfirm} data-client-delete-confirm
+          className="h-11 flex-1 font-bold" style={{
+            borderRadius: 10, backgroundColor: BAD, color: "#fff", fontSize: TYPE.caption, opacity: busy ? 0.5 : 1,
+          }}>{busy ? "지우는 중" : "삭제하기"}</button>
+      </div>
+    </section>
+  );
+}
+
 function ClientPhoneSheet({ client, masked, onCancel, onConfirm, busy, error }) {
   const [phone, setPhone] = useState("");
   const digits = phone.replace(/\D/g, "");
@@ -21736,13 +21760,15 @@ function ClientDetail({
   /* 이름 수정 · 보관 (2026-11-04). 바뀐 칸을 부르는 쪽에 알린다 -- 이 화면이 든
      client 는 연 순간의 것이라, 알리지 않으면 방금 고친 이름이 옛것으로 남는다. */
   clientStore, onClientChanged, initialNameEdit = false, initialArchive = null,
+  /* 보관된 빈 회원 삭제 (2026-11-19). 넘겨받지 않으면 버튼이 없다. 지운 뒤에는 onClientDeleted. */
+  onDeleteClient, onClientDeleted,
   /* 회원 앱 취소 횟수 (2026-11-07). runtimeConfig/scheduleSync 문서 그대로 -- memberCancel 칸. */
   memberCancelConfig = null,
 }) {
   const at = now();
   const [nameEdit, setNameEdit] = useState(initialNameEdit);
   const [nameError, setNameError] = useState("");
-  /* null · "archive" · "restore" */
+  /* null · "archive" · "restore" · "delete" */
   const [archiveSheet, setArchiveSheet] = useState(initialArchive);
   const [archiveError, setArchiveError] = useState("");
   /* 회원을 등록하는 사람이 고치고 정리한다 (규칙의 canRegisterClient 와 같은 선). */
@@ -21879,6 +21905,26 @@ function ClientDetail({
       setBusy(false);
     }
   };
+  const runDelete = async () => {
+    if (busy || typeof onDeleteClient !== "function") return;
+    setBusy(true);
+    setArchiveError("");
+    try {
+      const result = await onDeleteClient({ organizationId, clientId: client?.id || "" });
+      setArchiveSheet(null);
+      onToast?.({ ok: true, msg: result?.unlinked ? "삭제했습니다. 회원 앱 연결도 끊었어요." : "삭제했습니다." });
+      onClientDeleted?.(client?.id || "");
+    } catch (thrown) {
+      const code = serverCodeOf(thrown);
+      deviceLog("client_delete_failed", {
+        feature: "client_delete", stage: "delete", errorDomain: "firebase_functions",
+        errorCode: code || "unknown", outerCode: String(thrown?.code || ""), message: thrown?.message,
+      });
+      setArchiveError(clientDeleteMessage({ code, kinds: thrown?.details?.kinds }));
+    } finally {
+      setBusy(false);
+    }
+  };
   const runPhoneEdit = async (newPhone) => {
     if (busy) return;
     setBusy(true);
@@ -21897,7 +21943,10 @@ function ClientDetail({
       /* 서버가 준 코드를 그대로 문구로 옮긴다. 화면이 제 판정을 다시 하면
          서버와 갈라지고, 갈라지는 쪽은 언제나 화면이다. */
       setPhoneError(phoneEditMessage({
-        code: thrown?.code || thrown?.details?.code,
+        /* details.code 가 먼저다. 겉의 code 는 "functions/invalid-argument" 같은 갈래라서
+           그것을 먼저 읽으면 "지금 번호와 같음" · "다른 회원 번호" 가 전부 그 한 줄이 된다
+           (2026-11-19 정미혜 회원: 화면에 functions/invalid-argument 만 떴다). */
+        code: serverCodeOf(thrown),
         clientName: thrown?.details?.clientName,
       }));
     } finally {
@@ -22036,6 +22085,12 @@ function ClientDetail({
       onConfirm={runRename} busy={busy} error={nameError} />
   );
 
+  if (archiveSheet === "delete") return (
+    <ClientDeleteSheet client={client}
+      onCancel={() => { setArchiveSheet(null); setArchiveError(""); }}
+      onConfirm={runDelete} busy={busy} error={archiveError} />
+  );
+
   if (archiveSheet) return (
     <ClientArchiveSheet client={client} archived={archiveSheet === "restore"}
       onCancel={() => { setArchiveSheet(null); setArchiveError(""); }}
@@ -22118,7 +22173,12 @@ function ClientDetail({
               {isArchivedClient(client) ? (
                 <button type="button" onClick={() => { setArchiveSheet("restore"); setArchiveError(""); }}
                   className="font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>되살리기</button>
-              ) : !loading && !error ? (() => {
+              ) : null}
+              {isArchivedClient(client) && canUndo && typeof onDeleteClient === "function" ? (
+                <button type="button" data-client-delete onClick={() => { setArchiveSheet("delete"); setArchiveError(""); }}
+                  className="font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>삭제</button>
+              ) : null}
+              {isArchivedClient(client) ? null : !loading && !error ? (() => {
                 const blocked = archiveBlock(client, passes, at);
                 return blocked ? (
                   <span data-archive-blocked style={{ fontSize: TYPE.caption, color: SUB }}>
@@ -36132,6 +36192,9 @@ export default function App() {
               memberCancelConfig={scheduleSyncConfig}
               /* 규칙이 clients.phone 을 잠그고 있어 이 통로가 유일한 문이다. */
               onChangePhone={fbUpdateClientPhone}
+              /* 보관된 빈 회원 삭제 (2026-11-19). 판정은 서버가 한다 (functions/src/client-delete.js). */
+              onDeleteClient={fbDeleteArchivedClient}
+              onClientDeleted={() => { setDetailClient(null); setRosterRevision((value) => value + 1); }}
               onChanged={() => setHistoryRevision((value) => value + 1)}
               /* 이름 수정 · 보관 뒤: 열린 상세의 회원을 바꾸고 명부 · 회원 관리를 다시
                  읽는다 (회원 관리는 dataRevision → refreshKey 로 따라온다). */

@@ -1568,7 +1568,10 @@ service cloud.firestore {
             && request.resource.data.createdAt == request.time
             && request.resource.data.occurredAt is timestamp
             && request.resource.data.occurredAt <= request.time
-            && request.resource.data.occurredAt > request.time - duration.value(7, "d")
+            /* 확정 기간 14일 (2026-11-19 대표: 7일 → 14일). 율하 김혜은 11/6 수업을 아무도
+               확정할 수 없었다 -- 대표에게도 늦은 확정 길이 없다. 앱의
+               DEDUCT_BACKDATE_LIMIT_DAYS(pass-repository.js)와 같은 숫자여야 한다. */
+            && request.resource.data.occurredAt > request.time - duration.value(14, "d")
             /* 종류마다 들고 가야 하는 것이 다르다. 교체와 취소는 돈이 오가지
                않아 category 와 unitPrice 에 넣을 참값이 없다. 필수 목록을 채우자고
                지어내면 급여가 그 허구를 카테고리별로 묶어 센다. */

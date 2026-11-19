@@ -1518,10 +1518,10 @@ test("attendance shows what is left and what cannot be spent", async (t) => {
   assert.match(list, /잔여 0회 — 차감할 수 없습니다/);
   assert.match(list, /disabled/);
 
-  // 7일 창 안의 날짜만 고를 수 있다. 규칙이 그 밖을 막으므로 화면도 같은 범위다.
+  // 14일 창 안의 날짜만 고를 수 있다 (2026-11-19 7일 → 14일). 규칙이 그 밖을 막으므로 화면도 같은 범위다.
   assert.match(list, /오늘/);
   assert.match(list, /어제/);
-  assert.equal((list.match(/<button[^>]*>(오늘|어제|\d+\.\d+)<\/button>/g) || []).length, 7);
+  assert.equal((list.match(/<button[^>]*>(오늘|어제|\d+\.\d+)<\/button>/g) || []).length, 14);
 });
 
 test("attendance asks once before spending a session", async (t) => {

@@ -89,42 +89,42 @@ test("11월 1일 이전은 '지난 항목' 에만 -- 요약에 세지 않는다"
 test("개인 강사에게는 컷오프가 없다 (부르는 쪽이 0000-00-00 을 준다) -- 마감은 같다", () => {
   const recent = organize([task("attendance", "m1", lesson("L-recent", "2026-11-03"))], {}, { cutoff: "0000-00-00" });
   assert.equal(recent.tabs[QUEUE_TAB.OVERDUE].length, 1);
-  const old = organize([task("attendance", "m1", lesson("L-oct", "2026-10-30"))], {}, { cutoff: "0000-00-00" });
+  const old = organize([task("attendance", "m1", lesson("L-oct", "2026-10-20"))], {}, { cutoff: "0000-00-00" });
   assert.equal(old.tabs[QUEUE_TAB.ARCHIVED].length, 1, "확정할 수 없는 수업은 개인 모드에서도 지난 항목");
 });
 
 /* ── 확정 마감: 확정과 같은 선 ──────────────────────────────────────────── */
 
-test("마감은 확정 검사와 같은 helper -- 수업 시작 + 7일", () => {
-  assert.equal(DEDUCT_BACKDATE_LIMIT_DAYS, 7);
+test("마감은 확정 검사와 같은 helper -- 수업 시작 + 14일", () => {
+  assert.equal(DEDUCT_BACKDATE_LIMIT_DAYS, 14);
   const deadline = queueDeadlineOf(lesson("L", "2026-11-03", { start: "19:00" }));
   assert.equal(deadline.getTime(), settleDeadline(new Date("2026-11-03T19:00:00")).getTime());
-  assert.equal(deadline.getTime(), new Date("2026-11-10T19:00:00").getTime());
+  assert.equal(deadline.getTime(), new Date("2026-11-17T19:00:00").getTime());
   assert.equal(queueDeadlineOf(null), null, "수업 없는 항목은 마감이 없다");
 });
 
-test("7일째와 8일째 경계 -- 마감 순간부터 지난 항목, 그 직전까지는 지난 미처리", () => {
+test("14일째와 15일째 경계 -- 마감 순간부터 지난 항목, 그 직전까지는 지난 미처리", () => {
   const l = lesson("L-edge", "2026-11-03", { start: "19:00" });
   const tasks = [task("attendance", "m1", l)];
   const at = (iso, today) => organizeLessonQueue({ tasks, today, now: new Date(iso).getTime(), serverStates: {} });
-  // 7일째(11/10) 마감 1분 전: 아직 확정할 수 있다 -- 지난 미처리, "오늘까지".
-  const before = at("2026-11-10T18:59:00", "2026-11-10");
+  // 14일째(11/17) 마감 1분 전: 아직 확정할 수 있다 -- 지난 미처리, "오늘까지".
+  const before = at("2026-11-17T18:59:00", "2026-11-17");
   assert.deepEqual(keys(before.tabs[QUEUE_TAB.OVERDUE]), ["lesson|L-edge"]);
   assert.equal(before.tabs[QUEUE_TAB.OVERDUE][0].badge.label, "오늘까지 확정해야 해요");
-  // 마감 그 순간: 규칙이 거절한다(occurredAt > now - 7d 가 거짓) -- 지난 항목.
-  const exact = at("2026-11-10T19:00:00", "2026-11-10");
+  // 마감 그 순간: 규칙이 거절한다(occurredAt > now - 14d 가 거짓) -- 지난 항목.
+  const exact = at("2026-11-17T19:00:00", "2026-11-17");
   assert.deepEqual(keys(exact.tabs[QUEUE_TAB.ARCHIVED]), ["lesson|L-edge"]);
   assert.equal(exact.tabs[QUEUE_TAB.ARCHIVED][0].expired, true);
   assert.equal(exact.counts.expired, 1);
   assert.equal(exact.overdueCount, 0, "첫 화면 숫자에서 빠진다");
-  // 8일째(11/11): 지난 항목.
-  const eighth = at("2026-11-11T09:00:00", "2026-11-11");
+  // 15일째(11/18): 지난 항목.
+  const eighth = at("2026-11-18T09:00:00", "2026-11-18");
   assert.equal(eighth.tabs[QUEUE_TAB.ARCHIVED].length, 1);
   assert.equal(eighth.tabs[QUEUE_TAB.ARCHIVED][0].badge, null, "지난 항목에는 마감 표시가 없다");
 });
 
 test("출석 · 확정 · 기록 알림 모두 같은 마감으로 넘어간다", () => {
-  const l = lesson("L-all", "2026-10-31", { start: "10:00" });
+  const l = lesson("L-all", "2026-10-24", { start: "10:00" });
   const tasks = [task("attendance", "m1", l), task("settlement", "m1", l), task("note", "m2", l)];
   const queue = organizeLessonQueue({ tasks, today: "2026-11-08", now: new Date("2026-11-08T10:00:00").getTime(), serverStates: {}, cutoff: "0000-00-00" });
   assert.deepEqual(keys(queue.tabs[QUEUE_TAB.ARCHIVED]), ["lesson|L-all"]);
@@ -144,13 +144,13 @@ test("마감 표시: 2일 · 1일 · 0일 남았을 때만, 문구는 모레 · 
 });
 
 test("마감 표시는 확정하지 않은 수업에만, 날짜 없는 항목에는 없다", () => {
-  const near = lesson("L-near", "2026-11-01", { start: "13:00" }); // 마감 11/8 13:00 -- 11/7 기준 내일
-  const settledHere = lesson("L-mine", "2026-11-01", { start: "13:00", orgSettledAt: "2026-11-01T05:00:00Z" });
+  const near = lesson("L-near", "2026-10-25", { start: "13:00" }); // 마감 11/8 13:00 -- 11/7 기준 내일
+  const settledHere = lesson("L-mine", "2026-10-25", { start: "13:00", orgSettledAt: "2026-10-25T05:00:00Z" });
   const queue = organize([
     task("attendance", "m1", near),
     task("note", "m2", settledHere),
     { key: "m3|draft", kind: "local_draft", memberId: "m3", lessonId: "", s: null, session: { date: "" } },
-  ]);
+  ], {}, { cutoff: "0000-00-00" });
   const byKey = Object.fromEntries(queue.tabs[QUEUE_TAB.OVERDUE].map((group) => [group.key, group]));
   assert.equal(byKey["lesson|L-near"].badge.label, "내일까지 확정해야 해요");
   assert.equal(byKey["lesson|L-mine"].badge, null, "이 기기에서 확정한 수업의 기록 알림에는 달지 않는다");
@@ -169,7 +169,7 @@ test("듀엣 한 수업의 줄은 한 묶음 -- 회원 둘 + 확정 하나도 1�
   const oldDuet = lesson("L-old-duet", "2026-11-02", { start: "09:00" });
   const later = organizeLessonQueue({
     tasks: [task("attendance", "m1", oldDuet), task("attendance", "m2", oldDuet), task("settlement", "m1", oldDuet)],
-    today: "2026-11-09", now: new Date("2026-11-09T10:00:00").getTime(), serverStates: {},
+    today: "2026-11-16", now: new Date("2026-11-16T10:00:00").getTime(), serverStates: {},
   });
   assert.deepEqual(keys(later.tabs[QUEUE_TAB.ARCHIVED]), ["lesson|L-old-duet"], "한 카드로 함께 지난 항목");
   assert.equal(later.tabs[QUEUE_TAB.ARCHIVED][0].tasks.length, 3);
@@ -207,10 +207,10 @@ test("첫 화면 숫자는 지난 항목을 세지 않는다", () => {
 });
 
 test("서버에 물을 id: 지난 항목(컷오프 · 마감 지남)은 묻지 않고, TTL 안의 답은 다시 묻지 않고, 상한까지만", () => {
-  const now = new Date("2026-11-07T12:00:00").getTime();
+  const now = new Date("2026-11-14T12:00:00").getTime();
   const tasks = [
     task("attendance", "m1", lesson("L-oct", "2026-10-30")),
-    task("attendance", "m0", lesson("L-expired", "2026-11-01", { start: "08:00" })), // 마감 11/8 08:00 -- 아직 묻는다
+    task("attendance", "m0", lesson("L-expired", "2026-11-01", { start: "08:00" })), // 마감 11/15 08:00 -- 아직 묻는다
     task("attendance", "m2", lesson("L-fresh", "2026-11-05")),
     task("attendance", "m3", lesson("L-stale", "2026-11-05")),
     task("attendance", "m4", lesson("L-new", "2026-11-05")),
@@ -218,7 +218,7 @@ test("서버에 물을 id: 지난 항목(컷오프 · 마감 지남)은 묻지 �
   ];
   const cache = { "L-fresh": { state: "scheduled", at: now - 1000 }, "L-stale": { state: "scheduled", at: now - SERVER_STATE_TTL_MS - 1 } };
   assert.deepEqual(lessonIdsToCheck({ tasks, cache, now }), ["L-expired", "L-stale", "L-new"]);
-  const later = new Date("2026-11-08T09:00:00").getTime();
+  const later = new Date("2026-11-15T09:00:00").getTime();
   assert.deepEqual(lessonIdsToCheck({ tasks, cache: {}, now: later }), ["L-fresh", "L-stale", "L-new"], "마감이 지나면 묻지 않는다");
   const many = Array.from({ length: SERVER_STATE_READ_LIMIT + 10 }, (_, i) => task("attendance", `m${i}`, lesson(`L-${i}`, "2026-11-05")));
   assert.equal(lessonIdsToCheck({ tasks: many, cache: {}, now }).length, SERVER_STATE_READ_LIMIT);

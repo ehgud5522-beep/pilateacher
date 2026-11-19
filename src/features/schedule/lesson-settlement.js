@@ -147,7 +147,7 @@ export const NOT_STARTED_NOTICE = "아직 시작하지 않은 수업입니다. �
 export const DEDUCTION_CODE_LABEL = Object.freeze({
   pass_on_hold: "홀딩 중인 수강권은 차감할 수 없습니다. 홀딩 상태를 확인해 주세요.",
   ["occurred_at_future"]: "아직 시작하지 않은 수업입니다. 수업이 시작한 뒤에 확정해 주세요.",
-  ["occurred_at_too_old"]: "7일이 지난 수업은 이 화면에서 차감할 수 없습니다. 대표에게 문의해 주세요.",
+  ["occurred_at_too_old"]: "14일이 지난 수업은 확정할 수 없습니다. 대표에게 알려 주세요.",
   ["occurred_at_invalid"]: "수업 시각을 읽지 못했습니다. 일정의 날짜와 시간을 확인해 주세요.",
 });
 

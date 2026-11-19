@@ -5786,7 +5786,7 @@ export function ScheduleQueueSheet({ draftAccountId, queue, members, returnFocus
             <button type="button" onClick={() => setArchivedOpen((open) => !open)} aria-expanded={archivedOpen}
               className="flex h-11 w-full items-center gap-1.5 rounded-lg px-3 text-left text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
               <ChevronRight size={14} style={{ transform: archivedOpen ? "rotate(90deg)" : "none" }} />
-              확정 기간(7일)이 지났거나 11월 1일 이전인 수업 {shown.length}건 — 요약에 세지 않아요. 지우지 않고 그대로 둡니다.
+              확정 기간(14일)이 지났거나 11월 1일 이전인 수업 {shown.length}건 — 요약에 세지 않아요. 지우지 않고 그대로 둡니다.
             </button>
           )}
           {(tab !== QUEUE_TAB.ARCHIVED || archivedOpen) && shown.map((item) => (

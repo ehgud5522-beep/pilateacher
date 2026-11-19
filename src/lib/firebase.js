@@ -796,6 +796,9 @@ export const fbRebuildMemberViews = callableAsOwner("rebuildMemberViews");
    잠긴 문이 아니다. */
 export const fbUpdateClientPhone = callableAsOwner("updateClientPhone");
 
+/** 이 센터 사람들의 로그인 이메일. 대표 · 총괄매니저만 서버가 준다 (functions/src/member-lookup.js 의 listEmails). */
+export const fbListCentreMemberEmails = callableAsOwner("listCentreMemberEmails");
+
 /** 번호 철자가 깨진 회원 목록. 읽기만 하고, 고치는 것은 대표가 하나씩 한다. */
 export const fbListMalformedClientPhones = callableAsOwner("listMalformedClientPhones");
 

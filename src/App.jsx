@@ -42,7 +42,7 @@ import {
   fbDeleteAIConsent,
   fbLoadAIRecordingStatus, fbLoadSettlementConfig, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
   fbListPhotoBackups, fbUploadPhotoBackup, fbDownloadPhotoBackup, fbSoftDeletePhotoBackup, fbPurgeExpiredPhotoBackups, fbMovePhotoGroup,
-  fbLookupCentreMemberByEmail,
+  fbLookupCentreMemberByEmail, fbListCentreMemberEmails,
   fbListMalformedClientPhones,
   fbRebuildInstructorIds,
   fbFixMigratedServiceSessions,
@@ -143,6 +143,7 @@ import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories
 import {
   canEditPhone, maskPhone, phoneEditMessage,
 } from "./features/members/phone-edit.js";
+import { accountLabel, emailsFailure, sameNameMembers } from "./features/members/member-email-view.js";
 import {
   REVIEW_DEMO_BADGE, isReviewDemo, reviewDemoClientIds, visibleToRole,
 } from "./features/members/review-demo.js";
@@ -19201,7 +19202,7 @@ function useLocationFilter(locations, counts) {
   return [valid ? value : ALL_LOCATIONS, setValue];
 }
 
-function MembershipRow({ membership, locationName, busy, onEdit }) {
+function MembershipRow({ membership, email = "", locationName, busy, onEdit }) {
   const rate = fullRoomRateOf(membership);
   const usable = hasUsableFullRoomRate(membership);
   const deputy = isDeputyDirectorOf(membership);
@@ -19218,6 +19219,7 @@ function MembershipRow({ membership, locationName, busy, onEdit }) {
             backgroundColor: TINT, color: BRAND_D, opacity: busy ? 0.5 : 1,
           }}>수정</button>
       </div>
+      {email ? <p className="mt-0.5 truncate" data-member-email style={{ fontSize: TYPE.caption, color: SUB }}>{email}</p> : null}
       <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
         {membership.role === ROLES.AREA_MANAGER ? "총괄매니저"
           : membership.role === ROLES.MANAGER ? "FC매니저" : membershipTitleLabel(membership)}
@@ -19253,21 +19255,7 @@ function lookupMessage(error) {
   return `찾지 못했습니다 (코드 ${code || "unknown"}).`;
 }
 
-/**
- * 같은 이름으로 이 센터를 떠난 사람. **추가하려는 그 사람일 수 있다.**
- *
- * 로그인 계정만 바꾸는 것을 "퇴사 + 추가" 로 하면 담당 회원도 누적 진행도
- * 따라오지 않고, 그 달의 수업료가 두 uid 로 흩어진다 (2026-10 에 실제로
- * 그랬다). 막지 않고 길을 알려 준다 -- 동명이인은 실제로 있다.
- */
-function leftWithSameName(members, displayName) {
-  const wanted = String(displayName ?? "").trim();
-  if (!wanted) return [];
-  return (Array.isArray(members) ? members : []).filter((item) => (
-    String(item?.displayName ?? "").trim() === wanted
-    && String(item?.status ?? "") !== MEMBERSHIP_STATUS.ACTIVE
-  ));
-}
+/* 같은 이름의 계정은 member-email-view.js 의 sameNameMembers 가 찾는다 (2026-11-19, 재직 중인 계정도). */
 
 /**
  * 계정 교체 확인 화면. **누르기 전에 무엇이 옮겨지는지 숫자로 보여준다.**
@@ -19275,7 +19263,7 @@ function leftWithSameName(members, displayName) {
  * 누적 진행은 더하는 값이라 두 번 돌면 두 배가 되고 되돌릴 수 없다. 서버가
  * 끝난 교체를 알아보고 멈추지만, 그것은 마지막 문이지 첫 문이 아니다.
  */
-function InstructorSwapSheet({ swap, members, onChange, onRun, onClose, onDone }) {
+function InstructorSwapSheet({ swap, members, emails = {}, onChange, onRun, onClose, onDone }) {
   const from = swap.from || {};
   /* 받을 수 있는 계정만 고르게 둔다 -- 재직 중이고, 자기 자신이 아니고, 대표가
      아니고, 이미 남을 넘겨받지 않은 계정. 고를 수 없는 것을 고르게 두지 않는다. */
@@ -19317,7 +19305,7 @@ function InstructorSwapSheet({ swap, members, onChange, onRun, onClose, onDone }
     <section data-instructor-swap style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
       <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>계정 교체</h2>
       <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        <b>{from.displayName || from.userId}</b> 님이 쓰던 계정을 새 계정으로 넘깁니다.
+        <b>{accountLabel(from, emails)}</b> 계정을 새 계정으로 넘깁니다.
         퇴사가 아닙니다 — 같은 사람이고 로그인 계정만 바뀝니다.
       </p>
 
@@ -19327,7 +19315,7 @@ function InstructorSwapSheet({ swap, members, onChange, onRun, onClose, onDone }
             onChange={(event) => onChange({ ...swap, toUid: event.target.value, plan: null, error: "" })}>
             <option value="">고르세요</option>
             {candidates.map((item) => (
-              <option key={item.userId} value={item.userId}>{item.displayName || item.userId}</option>
+              <option key={item.userId} value={item.userId}>{accountLabel(item, emails)}</option>
             ))}
           </select>
         </Field>
@@ -19603,6 +19591,8 @@ function InstructorHandoverScreen({
 function InstructorAdmin({
   organization, currentUserId, instructorStore, rateStore, locationStore,
   lookupByEmail = fbLookupCentreMemberByEmail,
+  /* 로그인 이메일 (2026-11-19). 같은 이름의 계정을 가린다 -- 대표 · 총괄매니저만 서버가 준다. */
+  listEmails = fbListCentreMemberEmails,
   /* 메일 발송. 주입받는 이유는 스모크가 Auth 를 띄우지 않기 때문이다 --
      기본값이 진짜 발송이라 실수로 테스트에서 메일이 나가지 않는다. */
   sendReset = fbSendPasswordReset,
@@ -19610,6 +19600,8 @@ function InstructorAdmin({
 }) {
   const [swap, setSwap] = useState(initialState?.swap || null);
   const [members, setMembers] = useState(initialState?.members || []);
+  const [emails, setEmails] = useState(initialState?.emails || {});
+  const [emailsError, setEmailsError] = useState("");
   const [locations, setLocations] = useState(initialState?.locations || []);
   const [loading, setLoading] = useState(!initialState);
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
@@ -19662,6 +19654,26 @@ function InstructorAdmin({
   }, [organizationId, instructorStore, locationStore]);
 
   useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+
+  /* 로그인 이메일. 목록 · 교체 · 추가 화면이 같은 이름의 계정을 이것으로 가린다.
+     못 읽어도 목록은 그대로 -- 이메일 때문에 강사 관리가 막히면 안 된다. */
+  const canSeeEmails = isOwnerLevelRole(organization?.role) && typeof listEmails === "function";
+  const memberIdsKey = members.map((item) => String(item?.userId || "")).filter(Boolean).sort().join(",");
+  useEffect(() => {
+    if (!canSeeEmails || !organizationId || !memberIdsKey) return undefined;
+    let alive = true;
+    setEmailsError("");
+    listEmails({ organizationId, userIds: memberIdsKey.split(",").slice(0, 100) })
+      .then((result) => { if (alive) setEmails(result?.emails && typeof result.emails === "object" ? result.emails : {}); })
+      .catch((thrown) => {
+        deviceLog("member_emails_failed", {
+          feature: "member_emails", stage: "list", errorDomain: "firebase_functions",
+          errorCode: String(thrown?.details?.code || thrown?.code || "unknown"), outerCode: String(thrown?.code || ""), message: thrown?.message,
+        });
+        if (alive) setEmailsError(emailsFailure(thrown));
+      });
+    return () => { alive = false; };
+  }, [canSeeEmails, organizationId, memberIdsKey, listEmails]);
 
   const locationNames = useMemo(
     () => new Map(locations.map((location) => [location.id, location.name || ""])),
@@ -20020,7 +20032,7 @@ function InstructorAdmin({
 
   /* 교체 화면이 편집 시트보다 먼저 선다 -- [계정 교체] 를 누르면 바로 여기다. */
   if (swap) return (
-    <InstructorSwapSheet swap={swap} members={members} onChange={setSwap} onRun={onSwap}
+    <InstructorSwapSheet swap={swap} members={members} emails={emails} onChange={setSwap} onRun={onSwap}
       onClose={() => setSwap(null)} onDone={async (message) => {
         setSwap(null);
         setEditing(null);
@@ -20052,6 +20064,7 @@ function InstructorAdmin({
         <div className="mt-3" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}>
           <p style={{ fontSize: TYPE.caption, color: INK2 }}>
             계정을 찾았습니다{lookup.found.displayName ? ` · ${lookup.found.displayName}` : ""}
+            {" · "}<b style={{ color: INK }}>{lookup.email.trim().toLowerCase()}</b>
           </p>
           {/* 이미 있는 사람을 다시 추가하려 하면 규칙이 거부한다. 왜인지 여기서
               먼저 말한다 -- permission-denied 한 줄로는 알 수 없다. */}
@@ -20075,11 +20088,14 @@ function InstructorAdmin({
               추가가 아니라 교체다** -- 2026-10 에 그렇게 추가했다가 그 사람의
               그 달 수업료가 두 uid 로 흩어졌다. 막지는 않는다: 동명이인은
               실제로 있고, 둘을 가릴 수 있는 것은 대표뿐이다. */}
-          {leftWithSameName(members, draft.displayName).map((item) => (
-            <p key={item.userId} className="rounded-lg px-3 py-2" style={{
+          {/* 이메일을 함께 보여 준다 (2026-11-19) -- 이름만으로는 기존 계정이 어느 것인지 모른다.
+              재직 중인 같은 이름도 알린다: 같은 사람의 두 번째 계정일 수 있다. */}
+          {sameNameMembers(members, draft.displayName).map((item) => (
+            <p key={item.userId} data-same-name-member className="rounded-lg px-3 py-2" style={{
               backgroundColor: WARN_S, fontSize: TYPE.caption, lineHeight: 1.5, color: INK,
             }}>
-              같은 이름의 {labelOf(MEMBERSHIP_STATUS_LABELS, item.status)} 강사가 있습니다.
+              같은 이름의 {labelOf(MEMBERSHIP_STATUS_LABELS, item.status)} 강사가 있습니다
+              {emails[item.userId] ? <> — 기존 계정 <b>{emails[item.userId]}</b></> : null}.
               {" "}<b>로그인 계정만 바꾸는 것이라면</b> 추가하지 말고 목록에서 그 강사의
               {" "}<b>[계정 교체]</b>를 쓰세요. 그래야 담당 회원·누적 진행·급여가 이어집니다.
             </p>
@@ -20146,6 +20162,7 @@ function InstructorAdmin({
         <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
           {editing.displayName || editing.userId}
         </h2>
+        {emails[editing.userId] ? <p data-member-email style={{ fontSize: TYPE.caption, color: SUB }}>{emails[editing.userId]}</p> : null}
         <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
           단가를 바꾸면 이후 차감분부터 적용됩니다. 이미 기록된 수업의 급여는 바뀌지 않습니다.
         </p>
@@ -20375,6 +20392,7 @@ function InstructorAdmin({
         {!loading && loadError
           ? <p style={{ fontSize: TYPE.caption, color: BAD }}>강사 목록을 불러오지 못했습니다 (코드 {loadError}).</p>
           : null}
+        {emailsError ? <p role="status" className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{emailsError}</p> : null}
         {!loading && !loadError && members.length === 0
           ? <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 강사가 없습니다. 추가를 눌러 첫 강사를 붙이세요.</p>
           : null}
@@ -20406,13 +20424,13 @@ function InstructorAdmin({
                   {group.place.name} {group.rows.length}명
                 </p>
                 {group.rows.map((membership) => (
-                  <MembershipRow key={membership.userId} membership={membership} busy={saving}
+                  <MembershipRow key={membership.userId} membership={membership} email={emails[membership.userId] || ""} busy={saving}
                     locationName={locationNames.get(membership.locationId)} onEdit={openEditor} />
                 ))}
               </div>
             ))
         ) : working.map((membership) => (
-          <MembershipRow key={membership.userId} membership={membership} busy={saving}
+          <MembershipRow key={membership.userId} membership={membership} email={emails[membership.userId] || ""} busy={saving}
             locationName={locationNames.get(membership.locationId)} onEdit={openEditor} />
         )))}
       </div>
@@ -20422,7 +20440,7 @@ function InstructorAdmin({
         <div className="mt-4">
           <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>퇴사</p>
           {retired.map((membership) => (
-            <MembershipRow key={membership.userId} membership={membership} busy={saving}
+            <MembershipRow key={membership.userId} membership={membership} email={emails[membership.userId] || ""} busy={saving}
               locationName={locationNames.get(membership.locationId)} onEdit={openEditor} />
           ))}
         </div>

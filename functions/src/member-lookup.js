@@ -25,6 +25,9 @@
  * 대표가 방금 입력한 값이라 되돌려 줄 이유가 없다.
  */
 
+/* Auth getUsers 한 번이 받는 한계가 100 이다. 한 센터의 강사 목록은 그보다 작다. */
+const MAX_EMAIL_LOOKUPS = 100;
+
 const STAGES = Object.freeze({
   AUTHORIZE: "authorize",
   VERIFY_OWNER: "verify_owner",
@@ -67,6 +70,7 @@ function normalizeEmail(value) {
  * @param {{
  *   findUserByEmail: (email: string) => Promise<{ uid: string, displayName?: string } | null>,
  *   readMembership: (membershipDocumentId: string) => Promise<any | null>,
+ *   findUsersByUids?: (uids: string[]) => Promise<Array<{ uid: string, email?: string }>>,
  *   isNotFoundError?: (error: any) => boolean,
  * }} dependencies
  */
@@ -74,6 +78,7 @@ function createMemberLookupService(dependencies) {
   const {
     findUserByEmail,
     readMembership,
+    findUsersByUids = async () => [],
     isNotFoundError = (error) => String(error?.code || "") === "auth/user-not-found",
   } = dependencies || {};
 
@@ -141,7 +146,54 @@ function createMemberLookupService(dependencies) {
     };
   }
 
-  return { lookupByEmail };
+  /**
+   * 이 센터 사람들의 로그인 이메일 (2026-11-19 대표: "계정 교체 · 추가 때 이름이 같으면
+   * 구분이 어렵다, 기존 것이 어떤 이메일인지 확인이 필요하다").
+   *
+   * 같은 사람이 계정을 바꾸면 이름이 같은 소속이 둘 생긴다 -- 계정 교체 화면이 그
+   * 둘을 이름으로만 보여 주면 대표가 어느 쪽이 새 계정인지 고를 수 없다.
+   *
+   * 대표 · 총괄매니저만. **이 센터 소속 문서가 있는 uid 만** 돌려준다 -- 아무 uid 나
+   * 넣어 남의 이메일을 캐는 통로가 되면 안 된다. 전화번호는 돌려주지 않는다.
+   * 로그에는 이메일도 uid 도 남기지 않는다 (§7).
+   *
+   * @param {{ auth?: { uid?: string }, data?: { organizationId?: string, userIds?: string[] } }} request
+   */
+  async function listEmails(request) {
+    const callerUid = text(request?.auth?.uid);
+    if (!callerUid) throw new MemberLookupError("unauthenticated", { stage: STAGES.AUTHORIZE });
+    const organizationId = text(request?.data?.organizationId);
+    const asked = Array.isArray(request?.data?.userIds) ? request.data.userIds.map(text).filter(Boolean) : [];
+    if (!organizationId || asked.length > MAX_EMAIL_LOOKUPS) {
+      throw new MemberLookupError("invalid_request", { stage: STAGES.AUTHORIZE });
+    }
+    await requireOwner(organizationId, callerUid);
+
+    const unique = [...new Set(asked)];
+    let memberships;
+    try {
+      memberships = await Promise.all(unique.map((userId) => readMembership(membershipId(organizationId, userId))));
+    } catch (error) {
+      throw new MemberLookupError("lookup_unavailable", { stage: STAGES.READ_MEMBERSHIP, cause: error });
+    }
+    const belonging = unique.filter((userId, index) => memberships[index]);
+    if (!belonging.length) return { emails: {} };
+
+    let users;
+    try {
+      users = await findUsersByUids(belonging);
+    } catch (error) {
+      throw new MemberLookupError("lookup_unavailable", { stage: STAGES.FIND_USER, cause: error });
+    }
+    const emails = {};
+    for (const user of Array.isArray(users) ? users : []) {
+      const uid = text(user?.uid);
+      if (uid && belonging.includes(uid) && text(user?.email)) emails[uid] = text(user.email);
+    }
+    return { emails };
+  }
+
+  return { lookupByEmail, listEmails };
 }
 
 module.exports = {

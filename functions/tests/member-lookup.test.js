@@ -164,3 +164,33 @@ test("the address is normalised without judging the whole grammar", () => {
     assert.throws(() => normalizeEmail(bad), /invalid_email/, JSON.stringify(bad));
   }
 });
+
+/* ── 이 센터 사람들의 이메일 (2026-11-19) ──────────────────────────────── */
+
+test("이메일 목록: 대표만, 이 센터 소속 uid 만, 소속 없는 uid 는 Auth 에 묻지도 않는다", async () => {
+  const asked = [];
+  const memberships = {
+    "center-a_u-owner": { status: "active", role: "owner" },
+    "center-a_u-old": { status: "ended", role: "instructor" },
+    "center-a_u-new": { status: "active", role: "instructor" },
+  };
+  const service = createMemberLookupService({
+    findUserByEmail: async () => null,
+    readMembership: async (id) => memberships[id] || null,
+    findUsersByUids: async (uids) => { asked.push(...uids); return uids.map((uid) => ({ uid, email: `${uid}@x.com` })); },
+  });
+  const result = await service.listEmails({ auth: { uid: "u-owner" }, data: { organizationId: "center-a", userIds: ["u-old", "u-new", "u-stranger", "u-new"] } });
+  assert.deepEqual(result, { emails: { "u-old": "u-old@x.com", "u-new": "u-new@x.com" } });
+  assert.deepEqual(asked, ["u-old", "u-new"]);
+
+  const instructor = createMemberLookupService({
+    findUserByEmail: async () => null,
+    readMembership: async () => ({ status: "active", role: "instructor" }),
+    findUsersByUids: async () => { throw new Error("should not be called"); },
+  });
+  await assert.rejects(() => instructor.listEmails({ auth: { uid: "u-x" }, data: { organizationId: "center-a", userIds: ["u-a"] } }),
+    (error) => error.code === "not_owner");
+  await assert.rejects(() => service.listEmails({ auth: { uid: "u-owner" }, data: { organizationId: "center-a", userIds: Array.from({ length: 101 }, (_, i) => `u${i}`) } }),
+    (error) => error.code === "invalid_request");
+  await assert.rejects(() => service.listEmails({ data: { organizationId: "center-a", userIds: [] } }), (error) => error.code === "unauthenticated");
+});

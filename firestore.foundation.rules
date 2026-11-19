@@ -2010,10 +2010,22 @@ service cloud.firestore {
     //
     // organizationId must be constrained by the query or the whole read is
     // refused — see the list note near the top of this file.
+    /* 계정을 교체한 강사의 옛 uid (2026-11-19 장유점 이예진 강사: 내 급여가
+       "permission-denied"). 교체 함수(Admin)가 새 계정의 소속 문서에 previousUids 를
+       적고, 급여 화면은 그 uid 들의 원장도 함께 읽는다 -- 원장은 옮기지 않으므로.
+       그런데 이 문은 instructorId == 본인 uid 만 열어 두어서, 교체한 강사는 자기 급여
+       화면 전체가 거부됐다 (쿼리 하나가 막히면 Promise.all 전체가 실패한다).
+       previousUids 는 클라이언트가 쓸 수 없다 (memberships 의 create · update 가 그 칸을
+       받지 않는다) -- 남의 uid 를 적어 남의 급여를 읽는 길은 없다. */
+    function previousUidsOf(organizationId) {
+      return membership(organizationId).data.get("previousUids", []);
+    }
+
     match /{path=**}/ledger/{entryId} {
       allow read: if isActiveMember(resource.data.organizationId)
         && (
           resource.data.instructorId == request.auth.uid
+          || resource.data.instructorId in previousUidsOf(resource.data.organizationId)
           || hasRole(resource.data.organizationId, ["owner", "area_manager", "manager"])
         );
     }

@@ -796,6 +796,10 @@ export const fbRebuildMemberViews = callableAsOwner("rebuildMemberViews");
    잠긴 문이 아니다. */
 export const fbUpdateClientPhone = callableAsOwner("updateClientPhone");
 
+/* 보관된 빈 회원 삭제 (2026-11-19). 규칙은 clients 삭제를 닫아 두었고 계속 닫혀 있다 --
+   예외는 이 통로 하나다. 역할 · 보관 여부 · 남은 기록은 서버가 본다 (functions/src/client-delete.js). */
+export const fbDeleteArchivedClient = callableAsOwner("deleteArchivedClient");
+
 /** 이 센터 사람들의 로그인 이메일. 대표 · 총괄매니저만 서버가 준다 (functions/src/member-lookup.js 의 listEmails). */
 export const fbListCentreMemberEmails = callableAsOwner("listCentreMemberEmails");
 

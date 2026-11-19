@@ -1645,8 +1645,15 @@ describe("ledger and pass bodies are validated at write time", () => {
       ledgerFixture(ORG_A, PASS_A, { occurredAt: hoursAgo(-24) }),
     ));
     await assertFails(setDoc(
-      ledgerRef(users.instructor, "occurred-eight-days"),
-      ledgerFixture(ORG_A, PASS_A, { occurredAt: hoursAgo(8 * 24) }),
+      ledgerRef(users.instructor, "occurred-fifteen-days"),
+      ledgerFixture(ORG_A, PASS_A, { occurredAt: hoursAgo(15 * 24) }),
+    ));
+  });
+
+  test("a lesson 13 days ago can still be confirmed (window is 14 days since 2026-11-19)", async () => {
+    await assertSucceeds(setDoc(
+      ledgerRef(users.instructor, "occurred-thirteen-days"),
+      ledgerFixture(ORG_A, PASS_A, { occurredAt: hoursAgo(13 * 24) }),
     ));
   });
 
@@ -3348,7 +3355,7 @@ describe("checking attendance against a pass", () => {
     // 강사가 그날 밤에 몰아 누르는 것은 허용하고, 지난달 소급은 막는다.
     await assertFails(setDoc(
       ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-old"),
-      deductEntry({ occurredAt: Timestamp.fromDate(new Date(Date.now() - 8 * 24 * 60 * 60 * 1000)) }),
+      deductEntry({ occurredAt: Timestamp.fromDate(new Date(Date.now() - 15 * 24 * 60 * 60 * 1000)) }), // 창 14일 (2026-11-19)
     ));
   });
 
@@ -3915,6 +3922,31 @@ describe("reading the ledger across passes", () => {
     for (const entry of snapshot.docs) {
       assert.equal(entry.data().instructorId, users.instructor);
     }
+  });
+
+  test("an instructor who swapped accounts reads the old account's month too", async () => {
+    /* 2026-11-19 장유점: 계정을 교체한 강사의 내 급여가 permission-denied 로 통째로 막혔다.
+       옛 uid 는 교체 함수만 소속 문서에 적는다. */
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.instructor}`), { previousUids: ["instructor-old-uid"] }, { merge: true });
+      await setDoc(
+        doc(db, "organizations", ORG_A, "passes", PASS_A, "ledger", "entry-old-account"),
+        ledgerFixture(ORG_A, PASS_A, { instructorId: "instructor-old-uid" }),
+      );
+    });
+    const snapshot = await assertSucceeds(getDocs(myDeductions(users.instructor, ORG_A, "instructor-old-uid")));
+    assert.equal(snapshot.size, 1);
+    // 옛 uid 가 열렸다고 남의 것까지 열리지는 않는다.
+    await assertFails(getDocs(myDeductions(users.instructor, ORG_A, users.manager)));
+    // 옛 uid 를 소속 문서에 갖지 않은 강사에게는 그대로 닫혀 있다.
+    await assertFails(getDocs(myDeductions(users.staff, ORG_A, "instructor-old-uid")));
+  });
+
+  test("an instructor cannot write previousUids onto their own membership", async () => {
+    await assertFails(updateDoc(doc(dbFor(users.instructor), "memberships", `${ORG_A}_${users.instructor}`), {
+      previousUids: [users.manager],
+    }));
   });
 
   test("an instructor cannot read another instructor's month", async () => {

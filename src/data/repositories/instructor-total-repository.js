@@ -120,3 +120,26 @@ export async function adjustInstructorTotal(organizationId, input, options = {})
   ]);
   return { path, logId, previousSessions, sessions, entry };
 }
+
+/**
+ * 누적 보정 화면이 보여 줄 지금 값 (2026-11-18). 문서가 없으면 null -- 0 과 다르다:
+ * 없다는 것은 그 강사가 그 회원을 앱으로 가르친 적이 없다는 뜻이고, 보정도 그 문서를 만들지 않는다.
+ * 읽지 못하면 던진다. 조용히 0 으로 그리면 대표가 그 0 을 보고 숫자를 넣는다.
+ *
+ * @param {string} organizationId @param {string} instructorId @param {string} clientId
+ * @param {{ store?: InstructorTotalStore }} [options]
+ * @returns {Promise<null | { sessions: number }>}
+ */
+export async function readInstructorTotal(organizationId, instructorId, clientId, options = {}) {
+  const { store } = options;
+  if (!store) throw new Error("Missing store");
+  const path = paths.instructorClientTotal(
+    requiredText(organizationId, "organizationId"),
+    requiredText(instructorId, "instructorId"),
+    requiredText(clientId, "clientId"),
+  );
+  const found = await store.read(path);
+  if (!found) return null;
+  const sessions = Number(found?.sessions);
+  return { sessions: Number.isInteger(sessions) && sessions >= 0 ? sessions : 0 };
+}

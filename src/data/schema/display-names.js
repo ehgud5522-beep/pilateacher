@@ -170,6 +170,10 @@ export const MEMBERSHIP_STATUS_LABELS = Object.freeze({
   [MEMBERSHIP_STATUS.INVITED]: "초대됨",
   [MEMBERSHIP_STATUS.SUSPENDED]: "정지",
   [MEMBERSHIP_STATUS.REVOKED]: "퇴사",
+  /* 계정 교체로 물러난 옛 계정 (functions/shared/instructor-swap.mjs 의 MEMBERSHIP_SWAPPED).
+     스키마 상태값이 아니라 교체 함수가 적는 값이라 빠져 있었고, 강사 관리에 "swapped" 가
+     영어 그대로 보였다 (2026-11-19). 급여 집계의 "계정 교체됨" 과 같은 말을 쓴다. */
+  swapped: "계정 교체됨",
 });
 
 export const MEMBERSHIP_TITLE_LABELS = Object.freeze({

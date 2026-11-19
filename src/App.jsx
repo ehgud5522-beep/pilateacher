@@ -42,7 +42,7 @@ import {
   fbDeleteAIConsent,
   fbLoadAIRecordingStatus, fbLoadSettlementConfig, fbSendDiagnosticReport, fbWritePilotMetricAttempt,
   fbListPhotoBackups, fbUploadPhotoBackup, fbDownloadPhotoBackup, fbSoftDeletePhotoBackup, fbPurgeExpiredPhotoBackups, fbMovePhotoGroup,
-  fbLookupCentreMemberByEmail,
+  fbLookupCentreMemberByEmail, fbListCentreMemberEmails,
   fbListMalformedClientPhones,
   fbRebuildInstructorIds,
   fbFixMigratedServiceSessions,
@@ -54,7 +54,7 @@ import {
   fbSessionUpPass, fbManagePassHold,
   fbResetMigratedData,
   fbVerifyInstructorIds,
-  fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone,
+  fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone, fbDeleteArchivedClient,
   fbVerifyMemberViews, fbMemberAppStatus,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
@@ -143,6 +143,8 @@ import { connectRepositoryLog, toleratingReadFailure } from "./data/repositories
 import {
   canEditPhone, maskPhone, phoneEditMessage,
 } from "./features/members/phone-edit.js";
+import { clientDeleteMessage, serverCodeOf } from "./features/members/client-delete-view.js";
+import { accountLabel, emailsFailure, sameNameMembers } from "./features/members/member-email-view.js";
 import {
   REVIEW_DEMO_BADGE, isReviewDemo, reviewDemoClientIds, visibleToRole,
 } from "./features/members/review-demo.js";
@@ -215,6 +217,9 @@ import {
   transferPassInstructor,
   transferPass,
 } from "./data/repositories/pass-repository.js";
+import { adjustInstructorTotal, readInstructorTotal } from "./data/repositories/instructor-total-repository.js";
+import { createFirestorePassStore } from "./data/repositories/pass-repository.js";
+import { TOTAL_ADJUST_REASON_LABEL, duetPartnersOf, totalAdjustFailure, totalAdjustInputError, totalAdjustInstructors, totalTierLabel } from "./features/membership/total-adjust-view.js";
 import { ADJUST_INCREASE_NOTICE, OUT_OF_SCOPE_NOTICE, passEditFailure } from "./features/membership/pass-edit-failure.js";
 import {
   SETTLEMENT_GATE, SETTLEMENT_GATE_LABEL, blocksSettlement, settlementGate,
@@ -5781,7 +5786,7 @@ export function ScheduleQueueSheet({ draftAccountId, queue, members, returnFocus
             <button type="button" onClick={() => setArchivedOpen((open) => !open)} aria-expanded={archivedOpen}
               className="flex h-11 w-full items-center gap-1.5 rounded-lg px-3 text-left text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>
               <ChevronRight size={14} style={{ transform: archivedOpen ? "rotate(90deg)" : "none" }} />
-              확정 기간(7일)이 지났거나 11월 1일 이전인 수업 {shown.length}건 — 요약에 세지 않아요. 지우지 않고 그대로 둡니다.
+              확정 기간(14일)이 지났거나 11월 1일 이전인 수업 {shown.length}건 — 요약에 세지 않아요. 지우지 않고 그대로 둡니다.
             </button>
           )}
           {(tab !== QUEUE_TAB.ARCHIVED || archivedOpen) && shown.map((item) => (
@@ -19198,7 +19203,7 @@ function useLocationFilter(locations, counts) {
   return [valid ? value : ALL_LOCATIONS, setValue];
 }
 
-function MembershipRow({ membership, locationName, busy, onEdit }) {
+function MembershipRow({ membership, email = "", locationName, busy, onEdit }) {
   const rate = fullRoomRateOf(membership);
   const usable = hasUsableFullRoomRate(membership);
   const deputy = isDeputyDirectorOf(membership);
@@ -19215,6 +19220,7 @@ function MembershipRow({ membership, locationName, busy, onEdit }) {
             backgroundColor: TINT, color: BRAND_D, opacity: busy ? 0.5 : 1,
           }}>수정</button>
       </div>
+      {email ? <p className="mt-0.5 truncate" data-member-email style={{ fontSize: TYPE.caption, color: SUB }}>{email}</p> : null}
       <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
         {membership.role === ROLES.AREA_MANAGER ? "총괄매니저"
           : membership.role === ROLES.MANAGER ? "FC매니저" : membershipTitleLabel(membership)}
@@ -19250,21 +19256,7 @@ function lookupMessage(error) {
   return `찾지 못했습니다 (코드 ${code || "unknown"}).`;
 }
 
-/**
- * 같은 이름으로 이 센터를 떠난 사람. **추가하려는 그 사람일 수 있다.**
- *
- * 로그인 계정만 바꾸는 것을 "퇴사 + 추가" 로 하면 담당 회원도 누적 진행도
- * 따라오지 않고, 그 달의 수업료가 두 uid 로 흩어진다 (2026-10 에 실제로
- * 그랬다). 막지 않고 길을 알려 준다 -- 동명이인은 실제로 있다.
- */
-function leftWithSameName(members, displayName) {
-  const wanted = String(displayName ?? "").trim();
-  if (!wanted) return [];
-  return (Array.isArray(members) ? members : []).filter((item) => (
-    String(item?.displayName ?? "").trim() === wanted
-    && String(item?.status ?? "") !== MEMBERSHIP_STATUS.ACTIVE
-  ));
-}
+/* 같은 이름의 계정은 member-email-view.js 의 sameNameMembers 가 찾는다 (2026-11-19, 재직 중인 계정도). */
 
 /**
  * 계정 교체 확인 화면. **누르기 전에 무엇이 옮겨지는지 숫자로 보여준다.**
@@ -19272,7 +19264,7 @@ function leftWithSameName(members, displayName) {
  * 누적 진행은 더하는 값이라 두 번 돌면 두 배가 되고 되돌릴 수 없다. 서버가
  * 끝난 교체를 알아보고 멈추지만, 그것은 마지막 문이지 첫 문이 아니다.
  */
-function InstructorSwapSheet({ swap, members, onChange, onRun, onClose, onDone }) {
+function InstructorSwapSheet({ swap, members, emails = {}, onChange, onRun, onClose, onDone }) {
   const from = swap.from || {};
   /* 받을 수 있는 계정만 고르게 둔다 -- 재직 중이고, 자기 자신이 아니고, 대표가
      아니고, 이미 남을 넘겨받지 않은 계정. 고를 수 없는 것을 고르게 두지 않는다. */
@@ -19314,7 +19306,7 @@ function InstructorSwapSheet({ swap, members, onChange, onRun, onClose, onDone }
     <section data-instructor-swap style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
       <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>계정 교체</h2>
       <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        <b>{from.displayName || from.userId}</b> 님이 쓰던 계정을 새 계정으로 넘깁니다.
+        <b>{accountLabel(from, emails)}</b> 계정을 새 계정으로 넘깁니다.
         퇴사가 아닙니다 — 같은 사람이고 로그인 계정만 바뀝니다.
       </p>
 
@@ -19324,7 +19316,7 @@ function InstructorSwapSheet({ swap, members, onChange, onRun, onClose, onDone }
             onChange={(event) => onChange({ ...swap, toUid: event.target.value, plan: null, error: "" })}>
             <option value="">고르세요</option>
             {candidates.map((item) => (
-              <option key={item.userId} value={item.userId}>{item.displayName || item.userId}</option>
+              <option key={item.userId} value={item.userId}>{accountLabel(item, emails)}</option>
             ))}
           </select>
         </Field>
@@ -19600,6 +19592,8 @@ function InstructorHandoverScreen({
 function InstructorAdmin({
   organization, currentUserId, instructorStore, rateStore, locationStore,
   lookupByEmail = fbLookupCentreMemberByEmail,
+  /* 로그인 이메일 (2026-11-19). 같은 이름의 계정을 가린다 -- 대표 · 총괄매니저만 서버가 준다. */
+  listEmails = fbListCentreMemberEmails,
   /* 메일 발송. 주입받는 이유는 스모크가 Auth 를 띄우지 않기 때문이다 --
      기본값이 진짜 발송이라 실수로 테스트에서 메일이 나가지 않는다. */
   sendReset = fbSendPasswordReset,
@@ -19607,6 +19601,8 @@ function InstructorAdmin({
 }) {
   const [swap, setSwap] = useState(initialState?.swap || null);
   const [members, setMembers] = useState(initialState?.members || []);
+  const [emails, setEmails] = useState(initialState?.emails || {});
+  const [emailsError, setEmailsError] = useState("");
   const [locations, setLocations] = useState(initialState?.locations || []);
   const [loading, setLoading] = useState(!initialState);
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
@@ -19659,6 +19655,26 @@ function InstructorAdmin({
   }, [organizationId, instructorStore, locationStore]);
 
   useEffect(() => { if (!locked) reload(); else setLoading(false); }, [locked, reload]);
+
+  /* 로그인 이메일. 목록 · 교체 · 추가 화면이 같은 이름의 계정을 이것으로 가린다.
+     못 읽어도 목록은 그대로 -- 이메일 때문에 강사 관리가 막히면 안 된다. */
+  const canSeeEmails = isOwnerLevelRole(organization?.role) && typeof listEmails === "function";
+  const memberIdsKey = members.map((item) => String(item?.userId || "")).filter(Boolean).sort().join(",");
+  useEffect(() => {
+    if (!canSeeEmails || !organizationId || !memberIdsKey) return undefined;
+    let alive = true;
+    setEmailsError("");
+    listEmails({ organizationId, userIds: memberIdsKey.split(",").slice(0, 100) })
+      .then((result) => { if (alive) setEmails(result?.emails && typeof result.emails === "object" ? result.emails : {}); })
+      .catch((thrown) => {
+        deviceLog("member_emails_failed", {
+          feature: "member_emails", stage: "list", errorDomain: "firebase_functions",
+          errorCode: String(thrown?.details?.code || thrown?.code || "unknown"), outerCode: String(thrown?.code || ""), message: thrown?.message,
+        });
+        if (alive) setEmailsError(emailsFailure(thrown));
+      });
+    return () => { alive = false; };
+  }, [canSeeEmails, organizationId, memberIdsKey, listEmails]);
 
   const locationNames = useMemo(
     () => new Map(locations.map((location) => [location.id, location.name || ""])),
@@ -20017,7 +20033,7 @@ function InstructorAdmin({
 
   /* 교체 화면이 편집 시트보다 먼저 선다 -- [계정 교체] 를 누르면 바로 여기다. */
   if (swap) return (
-    <InstructorSwapSheet swap={swap} members={members} onChange={setSwap} onRun={onSwap}
+    <InstructorSwapSheet swap={swap} members={members} emails={emails} onChange={setSwap} onRun={onSwap}
       onClose={() => setSwap(null)} onDone={async (message) => {
         setSwap(null);
         setEditing(null);
@@ -20049,6 +20065,7 @@ function InstructorAdmin({
         <div className="mt-3" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}>
           <p style={{ fontSize: TYPE.caption, color: INK2 }}>
             계정을 찾았습니다{lookup.found.displayName ? ` · ${lookup.found.displayName}` : ""}
+            {" · "}<b style={{ color: INK }}>{lookup.email.trim().toLowerCase()}</b>
           </p>
           {/* 이미 있는 사람을 다시 추가하려 하면 규칙이 거부한다. 왜인지 여기서
               먼저 말한다 -- permission-denied 한 줄로는 알 수 없다. */}
@@ -20072,11 +20089,14 @@ function InstructorAdmin({
               추가가 아니라 교체다** -- 2026-10 에 그렇게 추가했다가 그 사람의
               그 달 수업료가 두 uid 로 흩어졌다. 막지는 않는다: 동명이인은
               실제로 있고, 둘을 가릴 수 있는 것은 대표뿐이다. */}
-          {leftWithSameName(members, draft.displayName).map((item) => (
-            <p key={item.userId} className="rounded-lg px-3 py-2" style={{
+          {/* 이메일을 함께 보여 준다 (2026-11-19) -- 이름만으로는 기존 계정이 어느 것인지 모른다.
+              재직 중인 같은 이름도 알린다: 같은 사람의 두 번째 계정일 수 있다. */}
+          {sameNameMembers(members, draft.displayName).map((item) => (
+            <p key={item.userId} data-same-name-member className="rounded-lg px-3 py-2" style={{
               backgroundColor: WARN_S, fontSize: TYPE.caption, lineHeight: 1.5, color: INK,
             }}>
-              같은 이름의 {labelOf(MEMBERSHIP_STATUS_LABELS, item.status)} 강사가 있습니다.
+              같은 이름의 {labelOf(MEMBERSHIP_STATUS_LABELS, item.status)} 강사가 있습니다
+              {emails[item.userId] ? <> — 기존 계정 <b>{emails[item.userId]}</b></> : null}.
               {" "}<b>로그인 계정만 바꾸는 것이라면</b> 추가하지 말고 목록에서 그 강사의
               {" "}<b>[계정 교체]</b>를 쓰세요. 그래야 담당 회원·누적 진행·급여가 이어집니다.
             </p>
@@ -20143,6 +20163,7 @@ function InstructorAdmin({
         <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
           {editing.displayName || editing.userId}
         </h2>
+        {emails[editing.userId] ? <p data-member-email style={{ fontSize: TYPE.caption, color: SUB }}>{emails[editing.userId]}</p> : null}
         <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
           단가를 바꾸면 이후 차감분부터 적용됩니다. 이미 기록된 수업의 급여는 바뀌지 않습니다.
         </p>
@@ -20372,6 +20393,7 @@ function InstructorAdmin({
         {!loading && loadError
           ? <p style={{ fontSize: TYPE.caption, color: BAD }}>강사 목록을 불러오지 못했습니다 (코드 {loadError}).</p>
           : null}
+        {emailsError ? <p role="status" className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{emailsError}</p> : null}
         {!loading && !loadError && members.length === 0
           ? <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 강사가 없습니다. 추가를 눌러 첫 강사를 붙이세요.</p>
           : null}
@@ -20403,13 +20425,13 @@ function InstructorAdmin({
                   {group.place.name} {group.rows.length}명
                 </p>
                 {group.rows.map((membership) => (
-                  <MembershipRow key={membership.userId} membership={membership} busy={saving}
+                  <MembershipRow key={membership.userId} membership={membership} email={emails[membership.userId] || ""} busy={saving}
                     locationName={locationNames.get(membership.locationId)} onEdit={openEditor} />
                 ))}
               </div>
             ))
         ) : working.map((membership) => (
-          <MembershipRow key={membership.userId} membership={membership} busy={saving}
+          <MembershipRow key={membership.userId} membership={membership} email={emails[membership.userId] || ""} busy={saving}
             locationName={locationNames.get(membership.locationId)} onEdit={openEditor} />
         )))}
       </div>
@@ -20419,7 +20441,7 @@ function InstructorAdmin({
         <div className="mt-4">
           <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>퇴사</p>
           {retired.map((membership) => (
-            <MembershipRow key={membership.userId} membership={membership} busy={saving}
+            <MembershipRow key={membership.userId} membership={membership} email={emails[membership.userId] || ""} busy={saving}
               locationName={locationNames.get(membership.locationId)} onEdit={openEditor} />
           ))}
         </div>
@@ -20695,6 +20717,29 @@ function ClientArchiveSheet({ client, archived, onCancel, onConfirm, busy, error
           className="h-11 flex-1 font-bold" style={{
             borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption, opacity: busy ? 0.5 : 1,
           }}>{busy ? "처리 중" : archived ? "되살리기" : "보관하기"}</button>
+      </div>
+    </section>
+  );
+}
+
+/** 보관된 빈 회원 삭제 확인 (2026-11-19). 되돌릴 수 없다는 것을 누르기 전에 말한다. */
+function ClientDeleteSheet({ client, onCancel, onConfirm, busy, error }) {
+  return (
+    <section data-client-delete-sheet style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+      <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{client?.name || "회원"} 삭제</h2>
+      <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: INK2 }}>
+        회원 목록에서 완전히 사라지고 <b style={{ color: INK }}>되살릴 수 없어요.</b> 이 회원이 쓰던 번호는 풀려서
+        다른 회원에게 줄 수 있어요. 회원권 · 수업 · 기록이 하나라도 있으면 지워지지 않아요.
+        {client?.userId ? " 회원 앱 연결도 함께 끊어요." : ""}
+      </p>
+      {error ? <p className="mt-2" role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{error}</p> : null}
+      <div className="mt-3 flex gap-2">
+        <button type="button" onClick={onCancel} className="h-11 flex-1 font-bold"
+          style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+        <button type="button" disabled={busy} onClick={onConfirm} data-client-delete-confirm
+          className="h-11 flex-1 font-bold" style={{
+            borderRadius: 10, backgroundColor: BAD, color: "#fff", fontSize: TYPE.caption, opacity: busy ? 0.5 : 1,
+          }}>{busy ? "지우는 중" : "삭제하기"}</button>
       </div>
     </section>
   );
@@ -21603,6 +21648,123 @@ function MemberCancelGrant({ organization, client, passes = [], currentUserId = 
   );
 }
 
+/* ── 급여 기준 누적 (2026-11-18 대표: "이미 20회 이상 수업함, 20회 미만 신규페이 안 되게") ──
+   급여 판정 3 이 보는 강사–회원 누적을 대표·총괄매니저가 고친다. 통로는 adjustInstructorTotal --
+   누적 문서와 감사 항목이 한 배치이고, 화면에 보인 값이 아직 참일 때만 쓴다 (expectedSessions).
+   고친 값은 앞으로의 차감부터다. 이미 원장에 적힌 단가는 그대로다. 문구 · 판정은 total-adjust-view.js. */
+function InstructorTotalSection({ organizationId, clientId, passes, nameOfInstructor, nameOfClient, store: givenStore, currentUserId, actorRole, onToast }) {
+  const instructors = useMemo(() => totalAdjustInstructors(passes), [passes]);
+  /* 실제 화면(더보기 → 회원 상세)은 passStore 를 넘기지 않는다 -- 다른 동작은 저장소 함수가 기본값으로
+     Firestore 를 만든다. 넘겨받은 것만 쓰면 이 칸이 실제 화면에서 통째로 사라진다 (2026-11-18, 1차 배포). */
+  const store = useMemo(() => givenStore || createFirestorePassStore(), [givenStore]);
+  const [rows, setRows] = useState({});
+  const [edit, setEdit] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [revision, setRevision] = useState(0);
+  const canRead = typeof store?.read === "function";
+  useEffect(() => {
+    if (!canRead || !organizationId || !clientId) return undefined;
+    let alive = true;
+    instructors.forEach((instructorId) => {
+      const ids = [clientId, ...duetPartnersOf(passes, instructorId, clientId)];
+      Promise.all(ids.map((id) => readInstructorTotal(organizationId, instructorId, id, { store })
+        .then((found) => ({ id, sessions: found ? found.sessions : null }))))
+        .then((found) => { if (alive) setRows((current) => ({ ...current, [instructorId]: { found, error: "" } })); })
+        .catch((thrown) => {
+          const code = String(thrown?.code || "unknown");
+          deviceLog("instructor_total_read_failed", { feature: "instructor_total_adjust", stage: "read", errorDomain: "firestore", errorCode: code, message: thrown?.message });
+          if (alive) setRows((current) => ({ ...current, [instructorId]: { found: [], error: code } }));
+        });
+    });
+    return () => { alive = false; };
+  }, [canRead, organizationId, clientId, instructors, passes, store, revision]);
+  if (!canRead || instructors.length === 0) return null;
+
+  const save = async () => {
+    if (!edit || busy) return;
+    const problem = totalAdjustInputError(edit.value, edit.current);
+    if (problem) { setEdit({ ...edit, error: problem }); return; }
+    setBusy(true);
+    try {
+      await adjustInstructorTotal(organizationId, {
+        instructorId: edit.instructorId, clientId: edit.clientId, sessions: Number(edit.value),
+        expectedSessions: edit.current, reason: edit.reason, actorId: currentUserId, actorRole,
+      }, { store });
+      onToast?.({ ok: true, msg: `누적을 ${Number(edit.value)}회로 고쳤습니다. 다음 수업부터 적용돼요.` });
+      setEdit(null);
+      setRevision((value) => value + 1);
+    } catch (thrown) {
+      deviceLog("instructor_total_adjust_failed", {
+        feature: "instructor_total_adjust", stage: "commit", errorDomain: thrown?.code === "stale_total" ? "app" : "firestore",
+        errorCode: String(thrown?.code || "unknown"), message: thrown?.message,
+      });
+      setEdit((current) => (current ? { ...current, error: totalAdjustFailure(thrown) } : current));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-4" data-instructor-totals>
+      <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>급여 기준 누적</p>
+      <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB, lineHeight: 1.5 }}>
+        강사별로 이 회원과 한 수업 수예요. 20회 미만이면 신규 단가로 계산돼요. 고치면 다음 수업부터 적용되고, 이미 확정된 급여는 바뀌지 않아요.
+      </p>
+      {instructors.map((instructorId) => {
+        const row = rows[instructorId];
+        return (
+          <div key={instructorId} className="mt-2" data-instructor-total={instructorId} style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS }}>
+            <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>{nameOfInstructor(instructorId)} 강사</p>
+            {!row ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+            {row?.error ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: BAD }}>누적을 읽지 못했어요 (코드 {row.error})</p> : null}
+            {row && !row.error ? row.found.map(({ id, sessions }) => {
+              const editing = edit && edit.instructorId === instructorId && edit.clientId === id;
+              return (
+                <div key={id} className="mt-1.5">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <p className="min-w-0 flex-1 tabular-nums" style={{ fontSize: TYPE.caption, color: sessions !== null && totalTierLabel(sessions).includes("신규") ? WARN : SUB }}>
+                      {id !== clientId ? `${nameOfClient(id) || "듀엣 짝"} · ` : ""}{totalTierLabel(sessions)}
+                    </p>
+                    {sessions !== null && !editing ? (
+                      <button type="button" data-instructor-total-edit onClick={() => setEdit({ instructorId, clientId: id, current: sessions, value: String(sessions), reason: "manual_correction", error: "" })}
+                        className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>누적 고치기</button>
+                    ) : null}
+                  </div>
+                  {editing ? (
+                    <div className="lm-fade-up mt-2" data-instructor-total-form>
+                      <label className="flex items-center gap-2" style={{ fontSize: TYPE.caption, color: SUB }}>
+                        <span className="shrink-0">{edit.current}회 →</span>
+                        <input inputMode="numeric" value={edit.value} aria-label="고칠 누적 횟수"
+                          onChange={(event) => setEdit({ ...edit, value: event.target.value.replace(/[^\d]/g, "").slice(0, 4), error: "" })}
+                          className="h-10 w-20 rounded-lg px-2 text-center tabular-nums" style={{ fontSize: TYPE.body, color: INK, backgroundColor: CARD, border: `1px solid ${LINE}` }} />
+                        <span className="shrink-0">회</span>
+                      </label>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {Object.entries(TOTAL_ADJUST_REASON_LABEL).map(([key, label]) => (
+                          <button key={key} type="button" aria-pressed={edit.reason === key} onClick={() => setEdit({ ...edit, reason: key })}
+                            className="lm-chip h-8 px-3 font-bold" style={{ borderRadius: 999, fontSize: TYPE.caption, backgroundColor: edit.reason === key ? TINT : CARD, color: edit.reason === key ? BRAND_D : SUB }}>{label}</button>
+                        ))}
+                      </div>
+                      {edit.error ? <p role="alert" className="mt-2" style={{ fontSize: TYPE.caption, color: BAD }}>{edit.error}</p> : null}
+                      <div className="mt-2 flex gap-2">
+                        <button type="button" onClick={() => setEdit(null)} disabled={busy} className="h-10 flex-1 rounded-lg font-bold" style={{ fontSize: TYPE.caption, backgroundColor: CARD, color: SUB }}>취소</button>
+                        <button type="button" data-instructor-total-save onClick={save} disabled={busy} className="lm-cta h-10 flex-1 rounded-lg font-bold" style={{ fontSize: TYPE.caption, backgroundColor: BRAND, color: CARD, opacity: busy ? 0.6 : 1 }}>{busy ? "저장 중…" : "저장"}</button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            }) : null}
+            {row && !row.error && row.found.length > 1 ? (
+              <p className="mt-1.5" style={{ fontSize: TYPE.caption, color: SUB }}>듀엣 수업은 두 사람 중 적은 누적으로 계산돼요.</p>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function ClientDetail({
   organization, client, history, loading, error, instructors = [], currentUserId = "", nameOfClient = () => "",
   clients = [], passStore, onClose, onRetry, onChanged, onToast, onChangePhone,
@@ -21616,13 +21778,15 @@ function ClientDetail({
   /* 이름 수정 · 보관 (2026-11-04). 바뀐 칸을 부르는 쪽에 알린다 -- 이 화면이 든
      client 는 연 순간의 것이라, 알리지 않으면 방금 고친 이름이 옛것으로 남는다. */
   clientStore, onClientChanged, initialNameEdit = false, initialArchive = null,
+  /* 보관된 빈 회원 삭제 (2026-11-19). 넘겨받지 않으면 버튼이 없다. 지운 뒤에는 onClientDeleted. */
+  onDeleteClient, onClientDeleted,
   /* 회원 앱 취소 횟수 (2026-11-07). runtimeConfig/scheduleSync 문서 그대로 -- memberCancel 칸. */
   memberCancelConfig = null,
 }) {
   const at = now();
   const [nameEdit, setNameEdit] = useState(initialNameEdit);
   const [nameError, setNameError] = useState("");
-  /* null · "archive" · "restore" */
+  /* null · "archive" · "restore" · "delete" */
   const [archiveSheet, setArchiveSheet] = useState(initialArchive);
   const [archiveError, setArchiveError] = useState("");
   /* 회원을 등록하는 사람이 고치고 정리한다 (규칙의 canRegisterClient 와 같은 선). */
@@ -21759,6 +21923,26 @@ function ClientDetail({
       setBusy(false);
     }
   };
+  const runDelete = async () => {
+    if (busy || typeof onDeleteClient !== "function") return;
+    setBusy(true);
+    setArchiveError("");
+    try {
+      const result = await onDeleteClient({ organizationId, clientId: client?.id || "" });
+      setArchiveSheet(null);
+      onToast?.({ ok: true, msg: result?.unlinked ? "삭제했습니다. 회원 앱 연결도 끊었어요." : "삭제했습니다." });
+      onClientDeleted?.(client?.id || "");
+    } catch (thrown) {
+      const code = serverCodeOf(thrown);
+      deviceLog("client_delete_failed", {
+        feature: "client_delete", stage: "delete", errorDomain: "firebase_functions",
+        errorCode: code || "unknown", outerCode: String(thrown?.code || ""), message: thrown?.message,
+      });
+      setArchiveError(clientDeleteMessage({ code, kinds: thrown?.details?.kinds }));
+    } finally {
+      setBusy(false);
+    }
+  };
   const runPhoneEdit = async (newPhone) => {
     if (busy) return;
     setBusy(true);
@@ -21777,7 +21961,10 @@ function ClientDetail({
       /* 서버가 준 코드를 그대로 문구로 옮긴다. 화면이 제 판정을 다시 하면
          서버와 갈라지고, 갈라지는 쪽은 언제나 화면이다. */
       setPhoneError(phoneEditMessage({
-        code: thrown?.code || thrown?.details?.code,
+        /* details.code 가 먼저다. 겉의 code 는 "functions/invalid-argument" 같은 갈래라서
+           그것을 먼저 읽으면 "지금 번호와 같음" · "다른 회원 번호" 가 전부 그 한 줄이 된다
+           (2026-11-19 정미혜 회원: 화면에 functions/invalid-argument 만 떴다). */
+        code: serverCodeOf(thrown),
         clientName: thrown?.details?.clientName,
       }));
     } finally {
@@ -21916,6 +22103,12 @@ function ClientDetail({
       onConfirm={runRename} busy={busy} error={nameError} />
   );
 
+  if (archiveSheet === "delete") return (
+    <ClientDeleteSheet client={client}
+      onCancel={() => { setArchiveSheet(null); setArchiveError(""); }}
+      onConfirm={runDelete} busy={busy} error={archiveError} />
+  );
+
   if (archiveSheet) return (
     <ClientArchiveSheet client={client} archived={archiveSheet === "restore"}
       onCancel={() => { setArchiveSheet(null); setArchiveError(""); }}
@@ -21998,7 +22191,12 @@ function ClientDetail({
               {isArchivedClient(client) ? (
                 <button type="button" onClick={() => { setArchiveSheet("restore"); setArchiveError(""); }}
                   className="font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>되살리기</button>
-              ) : !loading && !error ? (() => {
+              ) : null}
+              {isArchivedClient(client) && canUndo && typeof onDeleteClient === "function" ? (
+                <button type="button" data-client-delete onClick={() => { setArchiveSheet("delete"); setArchiveError(""); }}
+                  className="font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>삭제</button>
+              ) : null}
+              {isArchivedClient(client) ? null : !loading && !error ? (() => {
                 const blocked = archiveBlock(client, passes, at);
                 return blocked ? (
                   <span data-archive-blocked style={{ fontSize: TYPE.caption, color: SUB }}>
@@ -22083,6 +22281,12 @@ function ClientDetail({
                     ? () => onHandover(pass) : undefined} />
               ))}
           </div>
+
+          {canUndo ? (
+            <InstructorTotalSection organizationId={organizationId} clientId={client?.id || ""} passes={passes}
+              nameOfInstructor={nameOfInstructor} nameOfClient={nameOfClient} store={passStore}
+              currentUserId={currentUserId} actorRole={organization?.role || ""} onToast={onToast} />
+          ) : null}
 
           <div className="mt-4" data-pass-history>
             <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>이력</p>
@@ -31353,7 +31557,10 @@ export default function App() {
   const journeyForClient = useCallback((clientId) => {
     const target = String(clientId || "");
     if (!target || !organizationRoster) return null;
-    const mine = rosterPasses.filter((item) => item?.clientId === target);
+    /* passBelongsTo 로 고른다 (2026-11-18). 2:1 회원권은 한 사람 이름으로 발급되고 짝은 함께 쓰는 사람으로
+       붙는다 -- clientId 만 보면 짝의 카드에서 "이번 회원권" 막대가 통째로 빠졌다 (양홍순 · 강태임).
+       회원권 카드(passCardsForClient)와 같은 기준이어야 한 회원의 두 줄이 어긋나지 않는다. */
+    const mine = rosterPasses.filter((item) => passBelongsTo(item, target));
     const instructorId = String(mine.find((item) => item?.instructorId)?.instructorId || "");
     const pairId = instructorId + "_" + target;
     const total = rosterTotals.find((item) => String(item?.id || "") === pairId);
@@ -36003,6 +36210,9 @@ export default function App() {
               memberCancelConfig={scheduleSyncConfig}
               /* 규칙이 clients.phone 을 잠그고 있어 이 통로가 유일한 문이다. */
               onChangePhone={fbUpdateClientPhone}
+              /* 보관된 빈 회원 삭제 (2026-11-19). 판정은 서버가 한다 (functions/src/client-delete.js). */
+              onDeleteClient={fbDeleteArchivedClient}
+              onClientDeleted={() => { setDetailClient(null); setRosterRevision((value) => value + 1); }}
               onChanged={() => setHistoryRevision((value) => value + 1)}
               /* 이름 수정 · 보관 뒤: 열린 상세의 회원을 바꾸고 명부 · 회원 관리를 다시
                  읽는다 (회원 관리는 dataRevision → refreshKey 로 따라온다). */

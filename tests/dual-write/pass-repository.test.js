@@ -790,7 +790,7 @@ test("a lesson time in the future or long past is refused, each with its own cod
      보여 주고 대표는 무엇을 고쳐야 하는지 알 수 없다 -- 실제로 그렇게 끝났다. */
   const refused = [
     { at: new Date("2026-09-17T13:00:00.000Z"), code: "occurred_at_future", label: "미래" },
-    { at: new Date("2026-09-09T12:00:00.000Z"), code: "occurred_at_too_old", label: "8일 전" },
+    { at: new Date("2026-09-02T12:00:00.000Z"), code: "occurred_at_too_old", label: "15일 전" },
     { at: "그저께", code: "occurred_at_invalid", label: "날짜가 아님" },
   ];
   for (const item of refused) {

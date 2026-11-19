@@ -1568,7 +1568,10 @@ service cloud.firestore {
             && request.resource.data.createdAt == request.time
             && request.resource.data.occurredAt is timestamp
             && request.resource.data.occurredAt <= request.time
-            && request.resource.data.occurredAt > request.time - duration.value(7, "d")
+            /* 확정 기간 14일 (2026-11-19 대표: 7일 → 14일). 율하 김혜은 11/6 수업을 아무도
+               확정할 수 없었다 -- 대표에게도 늦은 확정 길이 없다. 앱의
+               DEDUCT_BACKDATE_LIMIT_DAYS(pass-repository.js)와 같은 숫자여야 한다. */
+            && request.resource.data.occurredAt > request.time - duration.value(14, "d")
             /* 종류마다 들고 가야 하는 것이 다르다. 교체와 취소는 돈이 오가지
                않아 category 와 unitPrice 에 넣을 참값이 없다. 필수 목록을 채우자고
                지어내면 급여가 그 허구를 카테고리별로 묶어 센다. */
@@ -2010,10 +2013,22 @@ service cloud.firestore {
     //
     // organizationId must be constrained by the query or the whole read is
     // refused — see the list note near the top of this file.
+    /* 계정을 교체한 강사의 옛 uid (2026-11-19 장유점 이예진 강사: 내 급여가
+       "permission-denied"). 교체 함수(Admin)가 새 계정의 소속 문서에 previousUids 를
+       적고, 급여 화면은 그 uid 들의 원장도 함께 읽는다 -- 원장은 옮기지 않으므로.
+       그런데 이 문은 instructorId == 본인 uid 만 열어 두어서, 교체한 강사는 자기 급여
+       화면 전체가 거부됐다 (쿼리 하나가 막히면 Promise.all 전체가 실패한다).
+       previousUids 는 클라이언트가 쓸 수 없다 (memberships 의 create · update 가 그 칸을
+       받지 않는다) -- 남의 uid 를 적어 남의 급여를 읽는 길은 없다. */
+    function previousUidsOf(organizationId) {
+      return membership(organizationId).data.get("previousUids", []);
+    }
+
     match /{path=**}/ledger/{entryId} {
       allow read: if isActiveMember(resource.data.organizationId)
         && (
           resource.data.instructorId == request.auth.uid
+          || resource.data.instructorId in previousUidsOf(resource.data.organizationId)
           || hasRole(resource.data.organizationId, ["owner", "area_manager", "manager"])
         );
     }

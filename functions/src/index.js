@@ -125,6 +125,10 @@ const accountDeletionService = createAccountDeletionService({
 
 const memberLookupService = createMemberLookupService({
   findUserByEmail: (email) => getAuth().getUserByEmail(email),
+  async findUsersByUids(uids) {
+    const result = await getAuth().getUsers(uids.map((uid) => ({ uid })));
+    return result.users.map((user) => ({ uid: user.uid, email: user.email || "" }));
+  },
   async readMembership(membershipDocumentId) {
     const snapshot = await getFirestore().collection("memberships").doc(membershipDocumentId).get();
     return snapshot.exists ? snapshot.data() : null;
@@ -283,6 +287,33 @@ function memberLookupHttpsError(error) {
   }
   return new HttpsError("unavailable", "The lookup did not finish. Please retry.", details);
 }
+
+/* 이 센터 사람들의 로그인 이메일. 대표 화면이 같은 이름의 계정을 가린다 (member-lookup.js). */
+exports.listCentreMemberEmails = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 30,
+  memory: "256MiB",
+  invoker: "public",
+}, async (request) => {
+  try {
+    const result = await memberLookupService.listEmails(request);
+    logger.info("member_emails_listed", {
+      organizationId: String(request?.data?.organizationId || ""),
+      asked: Array.isArray(request?.data?.userIds) ? request.data.userIds.length : 0,
+      found: Object.keys(result.emails).length,
+    });
+    return result;
+  } catch (error) {
+    logger.warn("member_emails_failed", {
+      feature: "member_emails", errorDomain: "firebase_auth",
+      organizationId: String(request?.data?.organizationId || ""),
+      errorCode: String(error?.code || "unknown"),
+      stage: String(error?.stage || "unknown"),
+      message: String(error?.cause?.message || error?.message || "").slice(0, 200),
+    });
+    throw memberLookupHttpsError(error);
+  }
+});
 
 exports.lookupCentreMemberByEmail = onCall({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",

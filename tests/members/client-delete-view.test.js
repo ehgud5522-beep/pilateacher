@@ -30,7 +30,7 @@ test("삭제 실패 문구: 무엇이 남아 있는지 말하고, 모르는 코�
 
 test("배선: 연락처 수정은 serverCodeOf, 삭제 버튼은 보관된 회원 + 대표급 + 통로가 있을 때만", () => {
   const app = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
-  assert.match(app, /code: serverCodeOf\(thrown\),\n\s+clientName: thrown\?\.details\?\.clientName/);
+  assert.match(app, /code: serverCodeOf\(thrown\),\r?\n\s+clientName: thrown\?\.details\?\.clientName/);
   assert.doesNotMatch(app, /code: thrown\?\.code \|\| thrown\?\.details\?\.code/);
   assert.match(app, /isArchivedClient\(client\) && canUndo && typeof onDeleteClient === "function" \? \(\s*<button type="button" data-client-delete/);
   assert.match(app, /onDeleteClient=\{fbDeleteArchivedClient\}/);

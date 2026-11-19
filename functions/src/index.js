@@ -68,6 +68,7 @@ const {
 const { createMemberLookupService } = require("./member-lookup");
 const { createClientPhoneService } = require("./client-phone-service");
 const { createFirestoreClientPhonePorts } = require("./client-phone-store");
+const { createClientDeleteService, createFirestoreClientDeletePorts } = require("./client-delete");
 const { DEFAULT_MODEL, createOpenAIProvider } = require("./openai-provider");
 const { createFirestorePolicyService } = require("./policy");
 const { createPhotoBackupCleanupService } = require("./photo-backup-cleanup");
@@ -161,6 +162,12 @@ const clientPhoneService = createClientPhoneService({
     const snapshot = await firestore.collection("memberships").doc(membershipDocumentId).get();
     return snapshot.exists ? snapshot.data() : null;
   },
+});
+
+/* 보관된 빈 회원 삭제. 근거는 client-delete.js 머리말. */
+const clientDeleteService = createClientDeleteService({
+  ...createFirestoreClientDeletePorts(firestore, memberLinkPorts),
+  readMembership: memberLinkPorts.readMembership,
 });
 
 /* 투영 점검·재작성. loadBuildJourney 는 아래에 선언돼 있지만 함수 선언이라
@@ -535,6 +542,40 @@ exports.updateClientPhone = onCall(
   CLIENT_PHONE_OPTIONS,
   clientPhoneCallable("update", (request) => clientPhoneService.update(request)),
 );
+
+/* 보관된 빈 회원 삭제 (2026-11-19). 무엇이 남아 있어서 못 지우는지(kinds)를 함께
+   돌려준다 -- 화면이 "회원권이 있어요" 처럼 이유를 말해야 한다. */
+function clientDeleteHttpsError(error) {
+  const code = String(error?.code || "client_delete_unavailable");
+  const details = { code };
+  if (Array.isArray(error?.kinds)) details.kinds = error.kinds;
+  if (code === "unauthenticated") return new HttpsError("unauthenticated", "Please sign in again.", details);
+  if (code === "client_delete_not_allowed") return new HttpsError("permission-denied", "This account may not delete members.", details);
+  if (code === "client_delete_no_client") return new HttpsError("not-found", "The member was not found.", details);
+  if (["client_delete_not_archived", "client_delete_has_history"].includes(code)) {
+    return new HttpsError("failed-precondition", "The member cannot be deleted.", details);
+  }
+  if (code === "client_delete_invalid_request") return new HttpsError("invalid-argument", "The request was refused.", details);
+  return new HttpsError("unavailable", "The delete did not finish. Please retry.", details);
+}
+
+exports.deleteArchivedClient = onCall(CLIENT_PHONE_OPTIONS, async (request) => {
+  try {
+    const result = await clientDeleteService.remove(request);
+    logger.info("client_delete_finished", { feature: "client_delete", stage: "delete", unlinked: result.unlinked });
+    return result;
+  } catch (error) {
+    // 원본 코드를 그대로. 번호 · 이름은 남기지 않는다.
+    logger.error("client_delete_failed", {
+      feature: "client_delete", stage: "delete",
+      errorDomain: String(error?.code || "").startsWith("client_delete_") ? "app" : "firestore",
+      errorCode: String(error?.code || "unknown"),
+      kinds: Array.isArray(error?.kinds) ? error.kinds : [],
+      message: String(error?.cause?.message || error?.message || "").slice(0, 200),
+    });
+    throw clientDeleteHttpsError(error);
+  }
+});
 
 /* 번호 철자가 깨진 회원 목록. 읽기만 한다 -- 한꺼번에 정규화하면 아예 틀린
    번호가 "정상" 이 되어 더 찾기 어려워진다 (client-phone-store.js). */

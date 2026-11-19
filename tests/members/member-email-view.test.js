@@ -43,3 +43,9 @@ test("배선: 교체 · 목록 · 추가가 이메일을 쓴다", () => {
   const server = readFileSync(new URL("../../functions/src/index.js", import.meta.url), "utf8");
   assert.match(server, /exports\.listCentreMemberEmails = onCall\(/);
 });
+
+test("강사 관리 상태: 교체된 옛 계정은 영어가 아니라 '계정 교체됨'", async () => {
+  const { MEMBERSHIP_STATUS_LABELS } = await import("../../src/data/schema/display-names.js");
+  const { MEMBERSHIP_SWAPPED } = await import("../../functions/shared/instructor-swap.mjs");
+  assert.equal(MEMBERSHIP_STATUS_LABELS[MEMBERSHIP_SWAPPED], "계정 교체됨");
+});

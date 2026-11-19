@@ -1645,8 +1645,15 @@ describe("ledger and pass bodies are validated at write time", () => {
       ledgerFixture(ORG_A, PASS_A, { occurredAt: hoursAgo(-24) }),
     ));
     await assertFails(setDoc(
-      ledgerRef(users.instructor, "occurred-eight-days"),
-      ledgerFixture(ORG_A, PASS_A, { occurredAt: hoursAgo(8 * 24) }),
+      ledgerRef(users.instructor, "occurred-fifteen-days"),
+      ledgerFixture(ORG_A, PASS_A, { occurredAt: hoursAgo(15 * 24) }),
+    ));
+  });
+
+  test("a lesson 13 days ago can still be confirmed (window is 14 days since 2026-11-19)", async () => {
+    await assertSucceeds(setDoc(
+      ledgerRef(users.instructor, "occurred-thirteen-days"),
+      ledgerFixture(ORG_A, PASS_A, { occurredAt: hoursAgo(13 * 24) }),
     ));
   });
 
@@ -3348,7 +3355,7 @@ describe("checking attendance against a pass", () => {
     // 강사가 그날 밤에 몰아 누르는 것은 허용하고, 지난달 소급은 막는다.
     await assertFails(setDoc(
       ledgerDocOf(users.instructor, ORG_A, PASS_A, "entry-old"),
-      deductEntry({ occurredAt: Timestamp.fromDate(new Date(Date.now() - 8 * 24 * 60 * 60 * 1000)) }),
+      deductEntry({ occurredAt: Timestamp.fromDate(new Date(Date.now() - 15 * 24 * 60 * 60 * 1000)) }), // 창 14일 (2026-11-19)
     ));
   });
 

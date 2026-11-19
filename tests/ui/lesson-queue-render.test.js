@@ -26,7 +26,7 @@ const app = async () => {
 };
 test.after(async () => { if (vite) await vite.close(); });
 
-const TODAY = "2026-11-07";
+const TODAY = "2026-11-14";
 const NOW = new Date(`${TODAY}T12:00:00`).getTime();
 const members = [{ id: "m1", name: "회원가" }, { id: "m2", name: "회원나" }, { id: "m3", name: "회원다" }];
 const lesson = (id, date, start = "10:00") => ({ id, date, start, type: "듀엣", attendees: [] });
@@ -34,7 +34,7 @@ const duet = lesson("L-duet", TODAY);
 const tasks = [
   { key: "settle|L-duet", kind: "settlement", memberId: "m1", lessonId: "L-duet", s: duet, a: { memberId: "m1" } },
   { key: "m2|L-duet", kind: "attendance", memberId: "m2", lessonId: "L-duet", s: duet, a: { memberId: "m2" } },
-  // 11/1 13:00 -- 마감 11/8 13:00, 오늘(11/7) 기준 "내일까지".
+  // 11/1 13:00 -- 마감 11/15 13:00 (14일), 오늘(11/14) 기준 "내일까지".
   { key: "m3|L-near", kind: "attendance", memberId: "m3", lessonId: "L-near", s: lesson("L-near", "2026-11-01", "13:00"), a: { memberId: "m3" } },
   { key: "m3|L-oct", kind: "attendance", memberId: "m3", lessonId: "L-oct", s: lesson("L-oct", "2026-10-30"), a: { memberId: "m3" } },
 ];
@@ -65,7 +65,7 @@ test("마감 2일 전부터 카드에 마감 표시", async () => {
 
 test("지난 항목은 접혀 있다 -- 펼치면 보인다", async () => {
   const closed = await render({ initialTab: "archived" });
-  assert.match(closed, /확정 기간\(7일\)이 지났거나 11월 1일 이전인 수업 1건/);
+  assert.match(closed, /확정 기간\(14일\)이 지났거나 11월 1일 이전인 수업 1건/);
   assert.doesNotMatch(closed, /data-queue-group=/);
   const open = await render({ initialTab: "archived", initialArchivedOpen: true });
   assert.match(open, /data-queue-group="lesson\|L-oct"/);

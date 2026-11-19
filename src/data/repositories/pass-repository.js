@@ -543,12 +543,13 @@ export async function transferPassInstructor(organizationId, passId, input, opti
    ────────────────────────────────────────────────────────────────────────── */
 
 /** 규칙이 occurredAt 을 이 창 안으로 제한한다. 화면도 같은 범위만 고르게 한다. */
-export const DEDUCT_BACKDATE_LIMIT_DAYS = 7;
+/* 2026-11-19 대표: 7일 → 14일. 규칙(firestore.foundation.rules 원장 occurredAt)과 같은 숫자다. */
+export const DEDUCT_BACKDATE_LIMIT_DAYS = 14;
 
 /**
- * 이 수업을 확정(차감)할 수 있는 **마지막 순간** -- occurredAt + 7일.
+ * 이 수업을 확정(차감)할 수 있는 **마지막 순간** -- occurredAt + 14일.
  *
- * 규칙의 `occurredAt > request.time - duration.value(7, "d")` 와 같은 선이다: 지금이
+ * 규칙의 `occurredAt > request.time - duration.value(14, "d")` 와 같은 선이다: 지금이
  * 이 시각과 **같거나 지났으면** 거절된다. 확정 전 검사(deductPass)와 "확인할 수업" 큐
  * (lesson-queue.js)가 이 하나를 쓴다 -- 둘이 따로 세면 큐에는 남아 있는데 누르면
  * 거절되거나, 아직 확정할 수 있는데 큐에서 사라진다 (2026-11-07 대표).

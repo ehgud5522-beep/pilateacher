@@ -1,3 +1,21 @@
+## 2026-11-19 — #243 ~ #246 병합 · 규칙 · 함수 · 웹 배포
+
+- 대표 "모두다 병합및 배포" → #243 · #244 · #245 병합. 웹 배포를 막은 테스트 줄바꿈 수정 #246 은 "병합하고 웹배표" 로 따로 지시
+- **#243 보관된 빈 회원 삭제**: 정미혜 회원 두 벌 -- 보관된 쪽이 맞는 번호(4915)를 들고 있어 번호 변경이 `phone_duplicate`.
+  화면은 `functions/invalid-argument` 만 보였다(겉 code 를 details.code 보다 먼저 읽음 → `serverCodeOf`).
+  callable `deleteArchivedClient`: 대표 · 총괄만, `archived === true` 이고 회원권(clientId · clientIds) · lessons · lessonRecords ·
+  lessonNotes · memberCancellations · memberSummaries 가 0 일 때만. 회원 앱 연결은 끊고, `clientDeletions` 에 사본(규칙 catch-all 로 닫힘).
+  **정미혜 정리는 대표가 할 일**: 보관된 쪽 삭제 → 쓰는 쪽 번호를 010-4915-5730 으로
+- **#244 강사 관리 이메일**: callable `listCentreMemberEmails`(대표 · 총괄, 이 센터 소속 uid 만, 100개). 목록 · 수정 · 계정 교체 고르기 ·
+  강사 추가(같은 이름 경고를 재직자까지)에 로그인 이메일
+- **#245 교체 강사 내 급여 permission-denied** (장유점 이예진 강사): 급여 화면이 `previousUids` 원장도 읽는데 원장 그룹 규칙이
+  본인 uid 만 열어 둠 → **교체한 강사 전부** 막혀 있었다. 규칙에 `previousUidsOf` 추가. 이예진 강사가 교체 계정인지는 데이터로 미확인
+- **#246**: #243 배선 테스트 정규식이 `\n` 만 받아 CRLF 체크아웃(deploy-main)의 prebuild 에서 실패 → `\r?\n`.
+  **교훈: 배선 테스트 정규식의 줄바꿈은 `\s*` 나 `\r?\n`**
+- 배포: 규칙(`firestore:rules`, 451 통과) → 함수 `deleteArchivedClient` · `listCentreMemberEmails` 생성(`firebase.ai-gateway.json`) →
+  웹(main 503bad3, 운영 번들 index-DUKzEc-z.js 일치). 실제 화면 · 실기기 전부 미확인. 폰 앱에는 #240 ~ #246 화면 변경이 다음 빌드에
+  (급여 규칙은 앱 빌드 없이 적용)
+
 ## 2026-11-18 — #242 "급여 기준 누적" 칸이 실제 화면에서 안 보이던 것 · 병합 · 웹 배포
 
 - 대표 스크린샷(황혜린): 회원권과 이력 사이에 칸이 없음. 더보기 → 회원 상세(ClientDetail)는 passStore 를 넘기지 않는데 #241 칸은

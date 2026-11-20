@@ -5,7 +5,10 @@
  * 읽기: 대표 · 총괄 -- 기기 보고 · 이 달 원장 · 회원에게 보낸 말.
  */
 
-import { RECORD_ACTIVITY_COLLECTION, recordActivityId } from "../../features/records/record-activity.js";
+/* features/records/record-activity.js 와 같은 값. 그 모듈을 불러오면 수업기록 화면 코드까지 타입 검사
+   범위(jsconfig.foundation.json 의 src/data)로 끌려 들어온다 -- 테스트가 두 값이 같은지 본다. */
+export const RECORD_ACTIVITY_COLLECTION = "recordActivity";
+export const recordActivityId = (uid, month) => `${String(uid ?? "").trim()}_${String(month ?? "").trim()}`;
 import { readCollection } from "./repository-read.js";
 
 const load = () => import("firebase/firestore");

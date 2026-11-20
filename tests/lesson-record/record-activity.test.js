@@ -8,6 +8,8 @@ import {
   RECORD_TONE, countDeviceRecordActivity, instructorRecordBoard, previousRecordMonth,
   recordActivityDocument, recordActivityId, recordBoardSummary, recordRowView,
 } from "../../src/features/records/record-activity.js";
+import * as repository from "../../src/data/repositories/record-activity-repository.js";
+import { RECORD_ACTIVITY_COLLECTION } from "../../src/features/records/record-activity.js";
 
 const NOW = new Date(2026, 10, 21, 12, 0);
 const lesson = (id, date, attendees, extra = {}) => ({ id, date, start: "10:00", end: "10:50", attendees, ...extra });
@@ -46,6 +48,8 @@ test("올리는 문서: 숫자 · 달 · 빌드만, 이상한 숫자는 0", () =
   assert.equal(document.draft, 0);
   assert.equal(document.voice, 3);
   assert.equal(recordActivityId("u1", "2026-11"), "u1_2026-11");
+  assert.equal(repository.recordActivityId("u1", "2026-11"), recordActivityId("u1", "2026-11"), "저장소와 화면의 칸 id 가 같다");
+  assert.equal(repository.RECORD_ACTIVITY_COLLECTION, RECORD_ACTIVITY_COLLECTION);
   assert.equal(previousRecordMonth("2026-01"), "2025-12");
 });
 

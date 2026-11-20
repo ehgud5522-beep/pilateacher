@@ -167,6 +167,7 @@ import { scheduleChanges } from "./features/schedule/schedule-publish.js";
 import { applyPublishedRevisions, mergeFormEdit, mergeServerLessons, reapplyChanges, syncWindow } from "./features/schedule/schedule-sync.js";
 import { recordSyncReads, syncReadsByDay } from "./features/schedule/sync-read-counter.js";
 import { SCHEDULE_SYNC_MODE, readScheduleSyncConfig, scheduleSyncEnabledFor } from "./features/schedule/sync-switch.js";
+import { SYNC_STATUS_TONE, scheduleSyncStatus } from "./features/schedule/sync-status-view.js";
 import {
   DEFAULT_LIMIT_HINT as MEMBER_CANCEL_DEFAULT_LIMIT_HINT, LIMIT_RANGE as MEMBER_CANCEL_LIMIT_RANGE,
   MEMBER_CANCEL_PERIOD, bucketKey as memberCancelBucketKey, grantFailureMessage, grantsByGranter,
@@ -3638,7 +3639,9 @@ function ScheduleColorSettings({ scheduleColors, onChange }) {
 
 function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null, ownerMessage = "", memberCancelOn = false, inbox = null,
   /* 큐 정리용 서버 상태 읽기 (2026-11-07, lesson-queue.js). 센터 소속일 때만 넘어온다. */
-  readQueueLessonStates = null }) {
+  readQueueLessonStates = null,
+  /* 일정 동기화 상태 한 줄 (2026-11-20, sync-status-view.js). 문제가 있을 때만 맨 위에, 빈 화면에는 늘. */
+  syncStatus = null }) {
   const initialDisplay = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(SCHEDULE_VIEW_KEY) || "null") || {}; }
     catch (e) { return {}; }
@@ -3995,6 +3998,11 @@ function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatu
     <div className="flex h-full min-h-0 flex-col">
       {/* 조직 소속 강사의 이달 예상 급여. 앱을 여는 이유가 이 숫자라 맨 위에 둔다. */}
       {payCard}
+      {syncStatus && (syncStatus.tone === SYNC_STATUS_TONE.BAD || syncStatus.tone === SYNC_STATUS_TONE.WARN) && db.schedule.length > 0 ? (
+        <p role="status" data-sync-status={syncStatus.tone} className="shrink-0 px-3 py-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: syncStatus.tone === SYNC_STATUS_TONE.BAD ? BAD : WARN, backgroundColor: syncStatus.tone === SYNC_STATUS_TONE.BAD ? BAD_S : WARN_S }}>
+          일정 동기화 · {syncStatus.detail}
+        </p>
+      ) : null}
       {/* ─── 상단 헤더: 주 범위 + 이동 + 오늘 + 등록 ─── */}
       <div className="shrink-0 flex items-center gap-1 px-2" style={{ height: 44, background: "var(--header-grad)", borderBottom: `1px solid ${LINE}` }}>
         <button onClick={() => step(-1)} className="flex items-center justify-center" style={{ width: 36, height: 36, color: SUB }}>
@@ -4041,7 +4049,7 @@ function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatu
             <button type="button" onClick={() => setFocusedMemberId(null)} className="flex h-7 shrink-0 items-center gap-1 px-2 text-xs font-semibold" style={{ borderRadius: 7, backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}><X size={12} />필터 해제</button>
           </div>
         )}
-        {db.members.length === 0 ? <div className="flex h-full flex-col items-center justify-center px-7 text-center"><Users size={28} style={{ color: FAINT }} /><p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>먼저 회원을 등록해 주세요</p><p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>회원이 있어야 수업을 등록하고<br />수업 후 기록을 이어갈 수 있습니다</p><button type="button" onClick={onAddMember} className="mt-5 h-11 rounded-lg px-5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>회원 등록</button></div> : db.schedule.length === 0 ? <div className="flex h-full flex-col items-center justify-center px-7 text-center"><Calendar size={28} style={{ color: FAINT }} /><p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>등록된 수업이 없습니다</p><p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>시간표 빈 칸을 눌러 수업을 넣어보세요<br />수업이 끝나면 여기서 출석과 기록을 처리합니다</p><button type="button" onClick={() => setEditing({ id: null, memberIds: [], date: todayISO(), start: "10:00", dur: DEFAULT_CLASS_DURATION, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" })} className="mt-5 h-11 rounded-lg px-5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>수업 등록</button></div> : <WeekGrid days={visibleDays} byDate={byDate} nameOf={nameOf} memberOf={(id) => db.members.find((m) => m.id === id)} briefingOf={briefingOf} cursor={cursor} foldEmpty={foldEmpty} focusedMemberId={focusedMemberId} scheduleColors={scheduleColors}
+        {db.members.length === 0 ? <div className="flex h-full flex-col items-center justify-center px-7 text-center"><Users size={28} style={{ color: FAINT }} /><p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>먼저 회원을 등록해 주세요</p><p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>회원이 있어야 수업을 등록하고<br />수업 후 기록을 이어갈 수 있습니다</p><button type="button" onClick={onAddMember} className="mt-5 h-11 rounded-lg px-5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>회원 등록</button></div> : db.schedule.length === 0 ? <div className="flex h-full flex-col items-center justify-center px-7 text-center"><Calendar size={28} style={{ color: FAINT }} /><p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>등록된 수업이 없습니다</p><p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>시간표 빈 칸을 눌러 수업을 넣어보세요<br />수업이 끝나면 여기서 출석과 기록을 처리합니다</p>{syncStatus ? <p role="status" data-sync-status={syncStatus.tone} className="mt-3 max-w-sm text-xs leading-relaxed" style={{ color: syncStatus.tone === SYNC_STATUS_TONE.BAD ? BAD : syncStatus.tone === SYNC_STATUS_TONE.WARN ? WARN : SUB }}>일정 동기화 · {syncStatus.label} — {syncStatus.detail}</p> : null}<button type="button" onClick={() => setEditing({ id: null, memberIds: [], date: todayISO(), start: "10:00", dur: DEFAULT_CLASS_DURATION, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" })} className="mt-5 h-11 rounded-lg px-5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>수업 등록</button></div> : <WeekGrid days={visibleDays} byDate={byDate} nameOf={nameOf} memberOf={(id) => db.members.find((m) => m.id === id)} briefingOf={briefingOf} cursor={cursor} foldEmpty={foldEmpty} focusedMemberId={focusedMemberId} scheduleColors={scheduleColors}
           onOpen={(s, trigger) => { scheduleTriggerRef.current = trigger; setEditing(s); }}
           onNew={(date, start, dur, trigger) => { scheduleTriggerRef.current = trigger; setEditing({ id: null, memberIds: [], date, start, dur: dur || DEFAULT_CLASS_DURATION, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" }); }} />}
       </div>
@@ -27942,7 +27950,7 @@ const WATCH_TONE = {
   get [WATCH_REASON.QUIET]() { return { backgroundColor: CANVAS, color: INK2 }; },
 };
 
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevision = 0,
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevision = 0, syncStatus = null,
   /* 일정 탭이 이미 읽어 둔 원장 급여를 **그대로** 받는다. 여기서 다시 읽으면
      두 화면이 서로 다른 순간의 원장을 보게 되고, 그 차이는 아무 데도 적히지
      않는다 -- 같은 객체를 쓰면 다를 수가 없다. */
@@ -28853,6 +28861,13 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
                 { l: "Firebase", v: fbReady ? "연결 가능" : "미사용", c: fbReady ? GOOD : SUB },
               ].map((item) => <div key={item.l} style={{ padding: "10px 8px", borderRadius: 8, backgroundColor: CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{item.l}</p><p className="mt-1 truncate" style={{ fontSize: TYPE.caption, fontWeight: 700, color: item.c }}>{item.v}</p></div>)}</div>
               {savedAt instanceof Date && <p className="mt-3 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>최근 기기 저장 {savedAt.getHours()}:{String(savedAt.getMinutes()).padStart(2, "0")}</p>}
+              {syncStatus ? (
+                <div className="mt-3" data-sync-status={syncStatus.tone} style={{ padding: "10px 8px", borderRadius: 8, backgroundColor: CANVAS }}>
+                  <p style={{ fontSize: TYPE.caption, color: SUB }}>일정 동기화</p>
+                  <p className="mt-1" style={{ fontSize: TYPE.caption, fontWeight: 700, color: syncStatus.tone === SYNC_STATUS_TONE.BAD ? BAD : syncStatus.tone === SYNC_STATUS_TONE.WARN ? WARN : syncStatus.tone === SYNC_STATUS_TONE.GOOD ? GOOD : SUB }}>{syncStatus.label}</p>
+                  <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: INK2 }}>{syncStatus.detail}</p>
+                </div>
+              ) : null}
             </section>
             {demoMode && <section style={{ ...sectionStyle, backgroundColor: WARN_S, borderColor: WARN }}><p style={{ fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>개발·데모 데이터 사용 중</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>현재 데이터는 실제 운영 데이터가 아닙니다.</p></section>}
           </div>
@@ -33162,6 +33177,8 @@ export default function App() {
     return () => { alive = false; document.removeEventListener("visibilitychange", onVisible); };
   }, [phase, account?.id, syncDay]);
   const scheduleSyncOn = scheduleSyncEnabledFor(scheduleSyncConfig, account?.id);
+  /* 화면에 보이는 한 줄 (sync-status-view.js). 아래 두 곳(일정 탭 · 데이터 상태)이 같은 값을 쓴다. */
+  const syncStatus = scheduleSyncStatus({ organizationMode: Boolean(organizationRoster), enabled: scheduleSyncOn, ...syncState });
 
   /* ── 센터 회원 명단 실시간 (2026-11-04, 2단계, roster-realtime.js) ─────────────
      스위치는 scheduleSync 문서의 rosterRealtime 칸이다 -- 위에서 이미 읽는 문서라
@@ -33341,6 +33358,8 @@ export default function App() {
           deviceLog("schedule_sync_kept_deducted", { feature: "schedule_sync", stage: "merge", count: merged.summary.keptWithDeductions });
         }
         if (merged.duplicates.length) setSyncDuplicates(merged.duplicates);
+        /* 받은 건수 · 명부에서 못 찾은 회원 수를 화면에 남긴다 (2026-11-20 율하: 웹에 수업이 0 인데 이유를 볼 곳이 없었다). */
+        if (alive) setSyncState({ state: "listening", errorCode: "", received: docs.length, unmatched: merged.unmatchedClientIds.length });
         /* 스위치가 켜진 계정의 첫 맞추기: 받은 뒤에, 서버의 다른 수업과 겹치는 기기 일정은
            올리지 않고(중복 의심으로 보여 준다) 나머지만 올린다. */
         if (initialUploadAfterPullRef.current) {
@@ -36067,7 +36086,7 @@ export default function App() {
         ) : null}
         <div key={tab} className="app-motion-content relative min-h-0 flex-1 overflow-hidden">
           <ServerNotesContext.Provider value={serverNotesValue}><Guard>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} draftAccountId={account?.id} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id, options) => { if (options?.consult) setConsultIntentId(id); setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} draftAccountId={account?.id} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} syncStatus={syncStatus} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id, options) => { if (options?.consult) setConsultIntentId(id); setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} viewerLocationIds={organizationContext.locationIds || []} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterInMemberTab} centreAccount={centreAccount} onOpenCentreRegistration={canOpenCentreRegistration ? openCentreRegistration : undefined} unlinkedLocal={centreAccount && roster ? roster.unlinkedLocal || [] : []} onUploadUnlinked={canOpenCentreRegistration ? uploadUnlinkedMember : undefined} onLinkUnlinked={linkUnlinkedMember} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
@@ -36116,7 +36135,7 @@ export default function App() {
                   onSaveMarks={(view, photoId, marks, options) => saveMarks(id, view, photoId, marks, options)} onSaveAssessmentRole={(assessmentId, role) => saveAssessmentRole(id, assessmentId, role)} onToggleAssessmentFavorite={(assessmentId, favorite) => toggleAssessmentFavorite(id, assessmentId, favorite)}
                   onToast={setToast} onSaved={(mode) => setAnalysisDone({ id, mode })} /></Guard>;
               }} />}
-            {tab === "settings" && <ReferenceSettingsTab key={`settings-${settingsEntry.key}`} initialView={settingsEntry.view} onRosterChanged={() => setRosterRevision((value) => value + 1)} dataRevision={rosterRevision} db={db} photos={Object.fromEntries(Object.entries(photos).filter(([id]) => allowedPhotoMembers.has(id)))} account={account} savedAt={savedAt} demoMode={demoMode}
+            {tab === "settings" && <ReferenceSettingsTab syncStatus={syncStatus} key={`settings-${settingsEntry.key}`} initialView={settingsEntry.view} onRosterChanged={() => setRosterRevision((value) => value + 1)} dataRevision={rosterRevision} db={db} photos={Object.fromEntries(Object.entries(photos).filter(([id]) => allowedPhotoMembers.has(id)))} account={account} savedAt={savedAt} demoMode={demoMode}
               instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError}
               currentUserId={account?.id || ""} rosterClients={rosterClients} rosterPasses={rosterPasses}
               onOpenPay={canSeeOwnPay ? () => setPayOpen(true) : undefined} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}

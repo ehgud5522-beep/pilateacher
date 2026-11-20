@@ -2290,6 +2290,17 @@ describe("protected and append-only data", () => {
     ));
   });
 
+  test("a first-time total is recorded from 0 (2026-11-19 누적 넣기)", async () => {
+    // 누적 문서가 없던 회원에 대표가 처음 넣는다. 전 값은 0 이다.
+    await assertSucceeds(setDoc(adjustmentRef(users.owner, "adjust-create"), adjustmentLog({
+      previousAmount: 0, amount: 30, reason: "migration_overwrite",
+    })));
+    // 0 → 0 은 기록할 것이 없다.
+    await assertFails(setDoc(adjustmentRef(users.owner, "adjust-zero"), adjustmentLog({
+      previousAmount: 0, amount: 0, reason: "migration_overwrite",
+    })));
+  });
+
   test("a totals document itself moves for owner level, and not below", async () => {
     /* 보정이 실제로 쓰는 문서다. 규칙은 이미 열어 두고 있었고, 이 검사는 그
        사실이 계속 참인지를 본다 -- 닫히면 보정 통로가 조용히 막힌다. */

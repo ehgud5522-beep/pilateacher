@@ -21689,6 +21689,8 @@ function InstructorTotalSection({ organizationId, clientId, passes, nameOfInstru
       await adjustInstructorTotal(organizationId, {
         instructorId: edit.instructorId, clientId: edit.clientId, sessions: Number(edit.value),
         expectedSessions: edit.current, reason: edit.reason, actorId: currentUserId, actorRole,
+        /* 누적이 없던 칸에 처음 넣는 것 (2026-11-19). current 가 null 이면 문서를 만든다. */
+        createIfMissing: edit.current === null,
       }, { store });
       onToast?.({ ok: true, msg: `누적을 ${Number(edit.value)}회로 고쳤습니다. 다음 수업부터 적용돼요.` });
       setEdit(null);
@@ -21725,15 +21727,15 @@ function InstructorTotalSection({ organizationId, clientId, passes, nameOfInstru
                     <p className="min-w-0 flex-1 tabular-nums" style={{ fontSize: TYPE.caption, color: sessions !== null && totalTierLabel(sessions).includes("신규") ? WARN : SUB }}>
                       {id !== clientId ? `${nameOfClient(id) || "듀엣 짝"} · ` : ""}{totalTierLabel(sessions)}
                     </p>
-                    {sessions !== null && !editing ? (
-                      <button type="button" data-instructor-total-edit onClick={() => setEdit({ instructorId, clientId: id, current: sessions, value: String(sessions), reason: "manual_correction", error: "" })}
-                        className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>누적 고치기</button>
+                    {!editing ? (
+                      <button type="button" data-instructor-total-edit onClick={() => setEdit({ instructorId, clientId: id, current: sessions, value: sessions === null ? "" : String(sessions), reason: sessions === null ? "migration_overwrite" : "manual_correction", error: "" })}
+                        className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>{sessions === null ? "누적 넣기" : "누적 고치기"}</button>
                     ) : null}
                   </div>
                   {editing ? (
                     <div className="lm-fade-up mt-2" data-instructor-total-form>
                       <label className="flex items-center gap-2" style={{ fontSize: TYPE.caption, color: SUB }}>
-                        <span className="shrink-0">{edit.current}회 →</span>
+                        <span className="shrink-0">{edit.current === null ? "없음" : `${edit.current}회`} →</span>
                         <input inputMode="numeric" value={edit.value} aria-label="고칠 누적 횟수"
                           onChange={(event) => setEdit({ ...edit, value: event.target.value.replace(/[^\d]/g, "").slice(0, 4), error: "" })}
                           className="h-10 w-20 rounded-lg px-2 text-center tabular-nums" style={{ fontSize: TYPE.body, color: INK, backgroundColor: CARD, border: `1px solid ${LINE}` }} />

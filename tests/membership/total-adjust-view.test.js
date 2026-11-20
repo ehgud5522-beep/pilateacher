@@ -60,6 +60,36 @@ test("읽고 고치기: 누적 문서와 감사 항목을 한 번에, 화면의 
   );
 });
 
+test("처음부터 넣기 (2026-11-19): 누적이 없으면 createIfMissing 일 때만 문서를 만든다 -- 네 칸 그대로, 감사는 전 값 0", async () => {
+  const docs = new Map();
+  const commits = [];
+  const store = {
+    read: async (path) => docs.get(path) || null,
+    commit: async (writes) => { commits.push(writes); },
+    serverTimestamp: async () => "NOW",
+  };
+  const base = { instructorId: "t1", clientId: "c9", sessions: 30, reason: "migration_overwrite", actorId: "u1", actorRole: "owner" };
+  await assert.rejects(adjustInstructorTotal("o1", { ...base, expectedSessions: null }, { store }), /Missing total/, "명시하지 않으면 만들지 않는다");
+  await adjustInstructorTotal("o1", { ...base, expectedSessions: null, createIfMissing: true }, { store });
+  assert.equal(commits.length, 1);
+  assert.equal(commits[0][0].path, "organizations/o1/instructorClientTotals/t1_c9");
+  assert.equal(commits[0][0].operation, undefined, "update 가 아니라 새로 쓴다");
+  assert.deepEqual(commits[0][0].data, { organizationId: "o1", instructorId: "t1", clientId: "c9", sessions: 30 });
+  assert.equal(commits[0][1].data.previousAmount, 0);
+  assert.equal(commits[0][1].data.amount, 30);
+  // 화면이 "없음" 을 본 사이 첫 수업이 문서를 만들었으면 멈춘다.
+  docs.set("organizations/o1/instructorClientTotals/t1_c9", { sessions: 1 });
+  await assert.rejects(adjustInstructorTotal("o1", { ...base, expectedSessions: null, createIfMissing: true }, { store }), (error) => error.code === "stale_total");
+  assert.equal(totalAdjustInputError("0", null), "1 이상으로 적어 주세요");
+  assert.equal(totalAdjustInputError("25", null), "");
+});
+
+test("배선: 누적이 없는 칸에도 버튼 (누적 넣기), 저장은 createIfMissing", () => {
+  const app = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
+  assert.match(app, /\{sessions === null \? "누적 넣기" : "누적 고치기"\}/);
+  assert.match(app, /createIfMissing: edit\.current === null,/);
+});
+
 test("배선: 회원 상세(대표·총괄)에 급여 기준 누적 칸, 낡은 값 확인과 사유를 넘긴다", () => {
   const app = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
   assert.match(app, /\{canUndo \? \(\s*<InstructorTotalSection organizationId=\{organizationId\}/);

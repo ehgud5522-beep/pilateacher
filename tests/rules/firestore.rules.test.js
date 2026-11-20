@@ -6575,6 +6575,55 @@ describe("수업기록 비교 검증 숫자 -- 강사는 자기 칸만 쓰고, �
   });
 });
 
+describe("강사 기록 현황 숫자 -- 강사 폰은 자기 칸({uid}_{달})에 숫자만, 대표 · 총괄이 읽는다", () => {
+  const MONTH = "2026-11";
+  const ref = (userId, target) => doc(dbFor(userId), "organizations", ORG_A, "recordActivity", target);
+  const row = (userId, extra = {}) => ({
+    organizationId: ORG_A, userId, month: MONTH,
+    attended: 40, recorded: 35, draft: 2, voice: 20, manual: 10, noComment: 5,
+    checkedAt: serverTimestamp(), appBuild: "1.1.57 (80)", ...extra,
+  });
+  test("자기 칸 쓰기 · 고치기", async () => {
+    await assertSucceeds(setDoc(ref(users.instructor, `${users.instructor}_${MONTH}`), row(users.instructor)));
+    await assertSucceeds(setDoc(ref(users.instructor, `${users.instructor}_${MONTH}`), row(users.instructor, { recorded: 38 })));
+    await assertSucceeds(setDoc(ref(users.owner, `${users.owner}_${MONTH}`), row(users.owner)));
+  });
+  test("남의 칸 · 달이 안 맞는 id · 모르는 칸 · 회원 이름 · 음수 · 직원 · 지우기는 거부", async () => {
+    await assertFails(setDoc(ref(users.instructor, `${users.manager}_${MONTH}`), row(users.manager)));
+    await assertFails(setDoc(ref(users.instructor, `${users.manager}_${MONTH}`), row(users.instructor)));
+    await assertFails(setDoc(ref(users.instructor, `${users.instructor}_2026-10`), row(users.instructor)));
+    await assertFails(setDoc(ref(users.instructor, `${users.instructor}_${MONTH}`), row(users.instructor, { memberName: "김지민" })));
+    await assertFails(setDoc(ref(users.instructor, `${users.instructor}_${MONTH}`), row(users.instructor, { recorded: -1 })));
+    await assertFails(setDoc(ref(users.instructor, `${users.instructor}_${MONTH}`), row(users.instructor, { recorded: 1.5 })));
+    await assertFails(setDoc(ref(users.instructor, `${users.instructor}_${MONTH}`), row(users.instructor, { organizationId: "other" })));
+    await assertFails(setDoc(ref(users.instructor, `${users.instructor}_11월`), row(users.instructor, { month: "11월" })));
+    await assertFails(setDoc(ref(users.staff, `${users.staff}_${MONTH}`), row(users.staff)));
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "recordActivity", `${users.instructor}_${MONTH}`), { ...row(users.instructor), checkedAt: new Date() });
+    });
+    await assertFails(deleteDoc(ref(users.instructor, `${users.instructor}_${MONTH}`)));
+  });
+  test("읽기: 대표 · 총괄은 달별 전부, 강사는 자기 것만, FC매니저는 남의 것 못 읽음", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "recordActivity", `${users.instructor}_${MONTH}`), { ...row(users.instructor), checkedAt: new Date() });
+    });
+    const byMonth = (userId) => getDocs(query(collection(dbFor(userId), "organizations", ORG_A, "recordActivity"), where("month", "==", MONTH)));
+    await assertSucceeds(byMonth(users.owner));
+    await assertSucceeds(byMonth(users.area_manager));
+    await assertFails(byMonth(users.instructor));
+    await assertFails(byMonth(users.manager));
+    await assertSucceeds(getDoc(ref(users.instructor, `${users.instructor}_${MONTH}`)));
+    await assertFails(getDoc(ref(users.manager, `${users.instructor}_${MONTH}`)));
+    await assertFails(getDoc(ref(users.outsider, `${users.instructor}_${MONTH}`)));
+  });
+  test("대표는 이 달 회원에게 보낸 말을 만든 시각으로 읽는다", async () => {
+    const notes = (userId) => getDocs(query(collection(dbFor(userId), "organizations", ORG_A, "lessonNotes"),
+      where("createdAt", ">=", new Date(2026, 10, 1)), where("createdAt", "<", new Date(2026, 11, 8))));
+    await assertSucceeds(notes(users.owner));
+    await assertFails(notes(users.outsider));
+  });
+});
+
 /* ── AI 회원 요약 (설계 문서 2단계) ── 서버만 쓰고, 대표 · 총괄 + 담당 강사만 읽는다. */
 describe("AI 회원 요약 -- 서버만 쓰고 담당만 읽는다", () => {
   const OTHER = "instructor-b";

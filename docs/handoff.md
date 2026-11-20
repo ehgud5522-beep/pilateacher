@@ -1,3 +1,9 @@
+## 2026-11-21 — release/1-1-57 (빌드 · 업로드는 대표)
+
+- release/1-1-56 + main 90f70a7(#249 ~ #253) + 버전: 강사 1.1.57 · versionCode 80 · iOS MARKETING_VERSION 1.1.57 · 허용 브랜치 추가 (14bc9de)
+- 들어간 것: 누적 넣기(#249) · 동기화 14일 · 상태 표시(#250 · #251) · **수업기록 숫자 보고(#252, 폰 앱만)** · 비포애프터 현황(#253, 웹 전용)
+- test:android-release 11 · test:node 3900 0 fail, typecheck 0, vite build 통과. 1.1.56 을 이미 올렸더라도 80 이라 겹치지 않음
+
 ## 2026-11-21 — #253 비포애프터 공유 현황 · 병합 · 함수 · 웹 배포
 
 - 대표: "비포애프터도 회원별로 잘 보내고 있는지". 강사 기록 현황 화면 아래 칸. 판정 `features/records/before-after-board.js`

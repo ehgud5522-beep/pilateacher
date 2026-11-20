@@ -55,6 +55,7 @@ import {
   fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone, fbDeleteArchivedClient,
+  fbBeforeAfterShareStats,
   fbVerifyMemberViews, fbMemberAppStatus,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
@@ -421,6 +422,7 @@ import {
   RECORD_TONE, countDeviceRecordActivity, instructorRecordBoard, monthOf as monthOfRecord, previousRecordMonth,
   recordActivityDocument, recordActivitySignature, recordBoardSummary, recordRowView,
 } from "./features/records/record-activity.js";
+import { beforeAfterBoard, shareInstructorView, shareMemberLabel } from "./features/records/before-after-board.js";
 import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
 import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js";
 import { RENEWAL_ALERT, livePassesOf, renewalForecast, renewalLine, renewalRates } from "../functions/shared/renewal-forecast.mjs";
@@ -26827,6 +26829,112 @@ function InstructorRecordBoard({ organization, instructorStore, clientStore, ini
 }
 
 /**
+ * 비포애프터 공유 현황 (2026-11-21 대표: "회원별로 잘 보내고 있는지").
+ *
+ * 서버 함수(beforeAfterShareStats)가 카드마다 강사 · 회원 id · 상태 · 시각 · 열람 여부만 준다 -- 사진 · 코멘트는 없다.
+ * 회원 이름은 대표 명부로 붙인다. 묶는 법 · 문구는 features/records/before-after-board.js.
+ */
+const SHARE_TONE_COLOR = { good: () => GOOD, warn: () => WARN, bad: () => BAD, muted: () => SUB };
+const SHARE_TONE_BG = { good: () => GOOD_S, warn: () => WARN_S, bad: () => BAD_S, muted: () => CANVAS };
+
+function BeforeAfterShareBoard({ organization, instructorStore, clientStore, passStore, onLoad = fbBeforeAfterShareStats, initialState = null }) {
+  const thisMonth = currentRatingMonth();
+  const [month, setMonth] = useState(thisMonth);
+  const [state, setState] = useState(() => initialState || { rows: null, error: "", namesError: "", truncated: false });
+  const [open, setOpen] = useState("");
+  const organizationId = organization?.organizationId || "";
+  const load = useCallback(async () => {
+    if (!organizationId) return;
+    setState((current) => ({ ...current, rows: null, error: "" }));
+    try {
+      const [stats, clients, passes, members] = await Promise.all([
+        onLoad({ organizationId }),
+        toleratingReadFailure(listClients(organizationId, { store: clientStore })),
+        toleratingReadFailure(listPasses(organizationId, { store: passStore })),
+        toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
+      ]);
+      const rows = beforeAfterBoard({
+        rows: Array.isArray(stats?.rows) ? stats.rows : [], clients: clients.items, passes: passes.items, instructors: members.items,
+        canonicalInstructorId: canonicalInstructorIdFrom(members.items), excludedClientIds: reviewDemoClientIds(clients.items),
+        month, now: new Date(),
+      });
+      setState({ rows, error: "", namesError: clients.errorCode || passes.errorCode || members.errorCode, truncated: Boolean(stats?.truncated) });
+    } catch (thrown) {
+      const code = serverCodeOf(thrown) || "unknown";
+      setState({ rows: [], error: `비포애프터 공유 현황을 읽지 못했어요 (코드 ${code})`, namesError: "", truncated: false });
+      deviceLog("before_after_stats_failed", {
+        feature: "before_after_stats", stage: "callable", errorDomain: "functions_callable",
+        errorCode: String(thrown?.code || "unknown"), serverCode: code, message: String(thrown?.message || "").slice(0, 200),
+        role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+      });
+    }
+  }, [organizationId, month, onLoad, clientStore, passStore, instructorStore, organization?.role]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
+  const badge = (view) => (
+    <span className="shrink-0 px-2 py-0.5 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: SHARE_TONE_COLOR[view.tone](), backgroundColor: SHARE_TONE_BG[view.tone]() }}>{view.label}</span>
+  );
+  return (
+    <section className="mt-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-before-after-board>
+      <div className="flex items-center justify-between">
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>비포애프터 공유 현황</h2>
+        <button type="button" onClick={load} className="h-9 px-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
+      </div>
+      <div className="mt-2 flex items-center gap-2" data-share-month={month}>
+        <button type="button" aria-label="이전 달" onClick={() => setMonth((current) => shiftRatingMonth(current, -1))} className="flex items-center justify-center" style={navButton}><ChevronLeft size={16} /></button>
+        <span className="min-w-0 flex-1 text-center font-extrabold tabular-nums" style={{ fontSize: TYPE.body, color: INK }}>{ratingMonthLabel(month)}</span>
+        <button type="button" aria-label="다음 달" disabled={month >= thisMonth} onClick={() => setMonth((current) => shiftRatingMonth(current, 1))} className="flex items-center justify-center disabled:opacity-30" style={navButton}><ChevronRight size={16} /></button>
+      </div>
+      <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        <b style={{ color: INK }}>받음 %</b>는 회원권이 남아 있고 회원 앱에 연결된 담당 회원 중, 비포애프터 카드를 한 번이라도 받은 회원의 비율이에요.
+        {" "}강사 이름을 누르면 회원별로 마지막으로 보낸 날이 보여요. 사진 · 코멘트는 여기 오지 않아요. 받은 회원이 적은 강사가 위에 있어요.
+      </p>
+      {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
+      {state.namesError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>회원 · 회원권 · 강사 명부 일부를 읽지 못해 숫자가 모자랄 수 있어요 (코드 {state.namesError})</p> : null}
+      {state.truncated ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>카드가 너무 많아 일부만 셌어요 (코드 share_stats_truncated)</p> : null}
+      {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
+      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>담당 회원 · 보낸 카드가 없어요.</p> : null}
+      <div className="mt-3 space-y-2">
+        {(state.rows || []).map((row) => {
+          const view = shareInstructorView(row);
+          const expanded = open === row.instructorId;
+          return (
+            <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-share-row={view.code}>
+              <button type="button" onClick={() => setOpen(expanded ? "" : row.instructorId)} className="flex w-full items-center justify-between gap-2 text-left" aria-expanded={expanded}>
+                <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>{row.name || row.instructorId}{row.active ? "" : " · 소속 아님"}</span>
+                {badge(view)}
+                <ChevronDown size={16} style={{ color: SUB, transform: expanded ? "rotate(180deg)" : "none" }} />
+              </button>
+              <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+                {`받은 회원 ${row.everSent}/${row.linked}명 · 보낸 적 없음 ${row.neverSent}명${row.notLinked ? ` · 앱 미연결 ${row.notLinked}명` : ""}`}
+              </div>
+              <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>
+                {`이 달 보낸 카드 ${row.sentThisMonth}장 · 회원 열람 ${row.readThisMonth}장${row.unsent ? ` · 만들고 안 보낸 카드 ${row.unsent}장` : ""}`}
+              </div>
+              <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>코드 {view.code}</div>
+              {expanded ? (
+                <div className="mt-2 space-y-1" data-share-members>
+                  {row.members.map((member) => {
+                    const label = shareMemberLabel(member);
+                    return (
+                      <div key={member.clientId} className="flex items-center justify-between gap-2 px-2 py-1.5" style={{ borderRadius: 8, backgroundColor: CARD }} data-share-member={label.code}>
+                        <span className="min-w-0 flex-1 truncate font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{member.name || "이름 모름"}</span>
+                        <span className="min-w-0 text-right" style={{ fontSize: TYPE.caption, color: SHARE_TONE_COLOR[label.tone]() }}>{label.label}</span>
+                      </div>
+                    );
+                  })}
+                  {!row.members.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>담당 회원이 없어요.</p> : null}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/**
  * 회원 앱 수업 취소 (2026-11-07, 5차 1단계) — 대표 설정 · 강사별 추가 부여 현황.
  *
  * 켜는 범위는 강사 단위 시범(고른 강사만)부터. **그 강사의 일정 동기화가 켜져 있어야**
@@ -28521,7 +28629,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       ...(showAudit ? [{ key: "expiry-order", title: "만료일 순서 확인", description: "뒤 차수가 먼저 만료되는 회원", Icon: AlertTriangle }] : []),
       /* 확정된 듀엣인데 한 사람이 "예약" 으로 남은 수업. 고치지 않고 모아만 둔다. */
       ...(showAudit ? [{ key: "duet-unmarked", title: "듀엣 출석 확인", description: "확정됐는데 한 명이 미표시인 듀엣", Icon: Users }] : []),
-      ...(showAudit ? [{ key: "record-board", title: "강사 기록 현황", description: "수업기록 · 회원에게 보낸 말 · 누가 빠뜨리는지", Icon: ClipboardList }] : []),
+      ...(showAudit ? [{ key: "record-board", title: "강사 기록 현황", description: "수업기록 · 회원에게 보낸 말 · 비포애프터 공유", Icon: ClipboardList }] : []),
       ...(showAudit ? [{ key: "phone-check", title: "번호 점검", description: "010 열한 자리가 아닌 회원 찾기", Icon: AlertCircle }] : []),
       ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
     ] },
@@ -29072,7 +29180,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
             auditStore={auditStore} ledgerStore={ledgerStore}
             onRetryOrganization={onRetryOrganization} />
         )}
-        {view === "record-board" && showAudit && <InstructorRecordBoard organization={organization} instructorStore={instructorStore} clientStore={clientStore} />}
+        {view === "record-board" && showAudit && (
+          <div>
+            <InstructorRecordBoard organization={organization} instructorStore={instructorStore} clientStore={clientStore} />
+            <BeforeAfterShareBoard organization={organization} instructorStore={instructorStore} clientStore={clientStore} passStore={passStore} />
+          </div>
+        )}
         {view === "phone-check" && showAudit && (
           <ClientPhoneCheck organization={organization}
             onList={fbListMalformedClientPhones}

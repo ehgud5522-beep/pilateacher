@@ -115,5 +115,5 @@ test("배선: 폰 앱에서만 올리고, 대표 메뉴에 기록 현황이 있�
   const app = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
   assert.match(app, /recordActivityReportOn = Boolean\(organizationRoster\) && Capacitor\.isNativePlatform\(\)/);
   assert.match(app, /key: "record-board", title: "강사 기록 현황"/);
-  assert.match(app, /view === "record-board" && showAudit && <InstructorRecordBoard/);
+  assert.match(app, /view === "record-board" && showAudit && \(\s*<div>\s*<InstructorRecordBoard /);
 });

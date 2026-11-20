@@ -69,6 +69,7 @@ const { createMemberLookupService } = require("./member-lookup");
 const { createClientPhoneService } = require("./client-phone-service");
 const { createFirestoreClientPhonePorts } = require("./client-phone-store");
 const { createClientDeleteService, createFirestoreClientDeletePorts } = require("./client-delete");
+const { createFirestoreShareStatsPorts, createShareStatsService } = require("./before-after-share-stats");
 const { DEFAULT_MODEL, createOpenAIProvider } = require("./openai-provider");
 const { createFirestorePolicyService } = require("./policy");
 const { createPhotoBackupCleanupService } = require("./photo-backup-cleanup");
@@ -605,6 +606,36 @@ exports.deleteArchivedClient = onCall(CLIENT_PHONE_OPTIONS, async (request) => {
       message: String(error?.cause?.message || error?.message || "").slice(0, 200),
     });
     throw clientDeleteHttpsError(error);
+  }
+});
+
+/* 비포애프터 공유 현황 (2026-11-21). 대표 · 총괄만, 누가 · 어느 회원에게 · 언제 · 상태만 (before-after-share-stats.js). */
+const shareStatsService = createShareStatsService({
+  ...createFirestoreShareStatsPorts(firestore),
+  readMembership: memberLinkPorts.readMembership,
+});
+function shareStatsHttpsError(error) {
+  const code = String(error?.code || "share_stats_unavailable");
+  const details = { code };
+  if (code === "unauthenticated") return new HttpsError("unauthenticated", "Please sign in again.", details);
+  if (code === "share_stats_not_allowed") return new HttpsError("permission-denied", "This account may not read share stats.", details);
+  if (code === "share_stats_invalid_request") return new HttpsError("invalid-argument", "The request was refused.", details);
+  return new HttpsError("unavailable", "The read did not finish. Please retry.", details);
+}
+exports.beforeAfterShareStats = onCall(CLIENT_PHONE_OPTIONS, async (request) => {
+  try {
+    const result = await shareStatsService.list(request);
+    logger.info("share_stats_listed", { feature: "before_after_stats", rows: result.rows.length, truncated: result.truncated });
+    return result;
+  } catch (error) {
+    logger.error("share_stats_failed", {
+      feature: "before_after_stats", stage: String(error?.stage || "unknown"),
+      errorDomain: String(error?.code || "").startsWith("share_stats_") ? "app" : "firestore",
+      errorCode: String(error?.code || "unknown"),
+      causeCode: String(error?.cause?.code || ""),
+      message: String(error?.cause?.message || error?.message || "").slice(0, 200),
+    });
+    throw shareStatsHttpsError(error);
   }
 });
 

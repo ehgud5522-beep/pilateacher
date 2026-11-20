@@ -1,9 +1,10 @@
-## 2026-11-21 — #253 비포애프터 공유 현황 (PR 만 · 병합 · 배포 전)
+## 2026-11-21 — #253 비포애프터 공유 현황 · 병합 · 함수 · 웹 배포
 
 - 대표: "비포애프터도 회원별로 잘 보내고 있는지". 강사 기록 현황 화면 아래 칸. 판정 `features/records/before-after-board.js`
 - 서버 `beforeAfterShareStats` (대표 · 총괄만) -- 카드마다 강사 · 회원 id · 상태 · 시각 · 열람만, 사진 · 코멘트 · 회원 계정 · 이름 없음
 - 담당 회원 = 보관 아님 + instructorIds + 쓸 수 있는 회원권. 앱 미연결은 "안 보냄" 과 따로. 보낸 뒤 거둔 카드도 보낸 것
 - **배포 순서: 함수(beforeAfterShareStats) → 웹**. 앱 빌드 · 규칙 불필요. functions 423 · test:node 3900 0 fail. 화면은 아직 안 봄
+- 대표 지시로 병합 90f70a7 → 함수 beforeAfterShareStats 새로 만듦(asia-northeast3) → 웹 배포(index-DVQkoUg5.js, 3900 pass)
 
 ## 2026-11-21 — #252 강사 기록 현황 · 병합 · 규칙 · 웹 배포
 

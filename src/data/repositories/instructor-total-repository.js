@@ -66,10 +66,11 @@ export const instructorTotalId = (instructorId, clientId) =>
  * @param {{
  *   instructorId?: string, clientId?: string, sessions?: number,
  *   expectedSessions?: number | null, reason?: string,
- *   actorId?: string, actorRole?: string,
+ *   actorId?: string, actorRole?: string, createIfMissing?: boolean,
  * }} input
  *   sessions         바꿀 값. 더하는 값이 아니라 **그 자체**다
- *   expectedSessions 지금 저장돼 있다고 믿는 값. 다르면 던진다
+ *   expectedSessions 지금 저장돼 있다고 믿는 값. 다르면 던진다 (없다고 믿으면 null)
+ *   createIfMissing  누적 문서가 없으면 만든다 -- 대표가 처음부터 넣을 때만 (2026-11-19)
  *   reason           TOTAL_ADJUST_REASON 중 하나
  * @param {{ store?: InstructorTotalStore, now?: () => Date }} [options]
  */
@@ -83,11 +84,21 @@ export async function adjustInstructorTotal(organizationId, input, options = {})
 
   const path = paths.instructorClientTotal(organization, instructorId, clientId);
   const current = await store.read(path);
-  /* 문서가 없으면 만들지 않는다. 없다는 것은 그 강사가 그 회원을 앱으로
-     가르친 적이 없다는 뜻이고, 거기에 숫자를 심으면 있지도 않던 기록이 생긴다.
-     정말 필요하면 이관 통로로 심는다 -- 그쪽은 이력이 남는다. */
-  if (!current) throw new Error("Missing total");
-  const previousSessions = requiredCount(Number(current?.sessions), "previousSessions");
+  /* 문서가 없으면 기본은 만들지 않는다. 없다는 것은 그 강사가 그 회원을 앱으로
+     가르친 적이 없다는 뜻이다.
+
+     **대표가 처음부터 넣는 길은 연다** (2026-11-19 대표: "처음부터 누적횟수 조정하는거").
+     새 회원권을 받은 회원(토월 김주연 · 하주은)은 앱 수업이 0 이라 칸이 "진행한 수업 없음" 이고
+     고칠 버튼이 없었다 -- 실제로는 그 전에 수십 회를 했어도 첫 20회가 신규 단가로 나간다.
+     createIfMissing 을 명시한 호출만 만든다. 감사 항목은 전 값 0 으로 같은 배치에 남는다.
+     규칙은 이미 대표급의 create(sessions >= 0, 이관 통로)를 허용한다. */
+  if (!current && input?.createIfMissing !== true) throw new Error("Missing total");
+  /* 화면이 "없음" 을 보고 넣으려 했는데 그 사이 첫 수업이 문서를 만들었으면 멈춘다 --
+     만들어진 값을 보고 다시 고르게 한다. */
+  if (current && input?.createIfMissing === true && input?.expectedSessions === null) {
+    throw Object.assign(new Error("Stale total"), { code: "stale_total" });
+  }
+  const previousSessions = current ? requiredCount(Number(current?.sessions), "previousSessions") : 0;
 
   if (input?.expectedSessions !== undefined && input?.expectedSessions !== null
     && Number(input.expectedSessions) !== previousSessions) {
@@ -115,7 +126,10 @@ export async function adjustInstructorTotal(organizationId, input, options = {})
   const logId = `instructor_total_adjusted_${instructorId}_${clientId}_${Date.now()}`
     .replace(/[^A-Za-z0-9_-]/g, "");
   await store.commit([
-    { path, data: { sessions }, operation: "update" },
+    current
+      ? { path, data: { sessions }, operation: "update" }
+      /* 새 문서. 규칙의 create 가 받는 네 칸 그대로 (hasOnly · hasAll). */
+      : { path, data: { organizationId: organization, instructorId, clientId, sessions } },
     { path: paths.auditLog(logId), data: entry },
   ]);
   return { path, logId, previousSessions, sessions, entry };

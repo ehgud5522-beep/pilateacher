@@ -50,6 +50,8 @@ export function totalAdjustInputError(text, current) {
   const raw = String(text ?? "").trim();
   if (!/^\d{1,4}$/.test(raw)) return "0 이상의 숫자로 적어 주세요";
   if (Number(raw) === current) return "지금 값과 같아요";
+  // 누적이 없는 칸에 0 을 넣는 것은 아무것도 바꾸지 않는다 (감사 규칙도 전 · 후가 같으면 거절).
+  if (current === null && Number(raw) === 0) return "1 이상으로 적어 주세요";
   return "";
 }
 

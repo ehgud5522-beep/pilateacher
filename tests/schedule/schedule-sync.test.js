@@ -30,9 +30,12 @@ const local = (extra = {}) => ({
 });
 const merge = (schedule, docs, extra = {}) => mergeServerLessons({ schedule, docs, rosterMembers: ROSTER, staffName: "정강사", ...extra });
 
-test("받는 범위는 7일 전 ~ 60일 뒤", () => {
+test("받는 범위는 14일 전 ~ 60일 뒤 -- 확정 기간과 같다", async () => {
   const { from, to } = syncWindow(new Date(2026, 10, 10, 15, 0));
-  assert.deepEqual(from, new Date(2026, 10, 3));
+  assert.deepEqual(from, new Date(2026, 9, 27));
+  const { SYNC_WINDOW } = await import("../../src/features/schedule/schedule-sync.js");
+  const { DEDUCT_BACKDATE_LIMIT_DAYS } = await import("../../src/data/repositories/pass-repository.js");
+  assert.equal(SYNC_WINDOW.pastDays, DEDUCT_BACKDATE_LIMIT_DAYS);
   assert.deepEqual(to, new Date(2027, 0, 10));
 });
 

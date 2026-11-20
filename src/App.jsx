@@ -55,6 +55,7 @@ import {
   fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone, fbDeleteArchivedClient,
+  fbBeforeAfterShareStats,
   fbVerifyMemberViews, fbMemberAppStatus,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
@@ -167,6 +168,7 @@ import { scheduleChanges } from "./features/schedule/schedule-publish.js";
 import { applyPublishedRevisions, mergeFormEdit, mergeServerLessons, reapplyChanges, syncWindow } from "./features/schedule/schedule-sync.js";
 import { recordSyncReads, syncReadsByDay } from "./features/schedule/sync-read-counter.js";
 import { SCHEDULE_SYNC_MODE, readScheduleSyncConfig, scheduleSyncEnabledFor } from "./features/schedule/sync-switch.js";
+import { SYNC_STATUS_TONE, scheduleSyncStatus } from "./features/schedule/sync-status-view.js";
 import {
   DEFAULT_LIMIT_HINT as MEMBER_CANCEL_DEFAULT_LIMIT_HINT, LIMIT_RANGE as MEMBER_CANCEL_LIMIT_RANGE,
   MEMBER_CANCEL_PERIOD, bucketKey as memberCancelBucketKey, grantFailureMessage, grantsByGranter,
@@ -415,6 +417,12 @@ import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./fea
 import { createRecordStore, migrationRecordsFor } from "./features/lesson-record/record-store.js";
 import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/server-outbox.js";
 import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
+import { listLessonNotesBetween, listRecordActivity, writeRecordActivity } from "./data/repositories/record-activity-repository.js";
+import {
+  RECORD_TONE, countDeviceRecordActivity, instructorRecordBoard, monthOf as monthOfRecord, previousRecordMonth,
+  recordActivityDocument, recordActivitySignature, recordBoardSummary, recordRowView,
+} from "./features/records/record-activity.js";
+import { beforeAfterBoard, shareInstructorView, shareMemberLabel } from "./features/records/before-after-board.js";
 import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
 import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js";
 import { RENEWAL_ALERT, livePassesOf, renewalForecast, renewalLine, renewalRates } from "../functions/shared/renewal-forecast.mjs";
@@ -3638,7 +3646,9 @@ function ScheduleColorSettings({ scheduleColors, onChange }) {
 
 function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatus, onStatusAll, onCareGrade, onNoshowFee, onGroupDone, onNoComment, onSaveNote, onToast, onSettings, memberPresetId, onConsumeMemberPreset, quickAddRequest, onConsumeQuickAdd, openLessonId, onConsumeOpenLesson, onOpenMember, onAddMember, onOpenAttendance, organizationMode = false, rateOf, careOptionsOf, onSettleLesson, onUnsettleLesson, onReadMemberNote, onSaveMemberNote, canUnsettle = false, payCard = null, ownerMessage = "", memberCancelOn = false, inbox = null,
   /* 큐 정리용 서버 상태 읽기 (2026-11-07, lesson-queue.js). 센터 소속일 때만 넘어온다. */
-  readQueueLessonStates = null }) {
+  readQueueLessonStates = null,
+  /* 일정 동기화 상태 한 줄 (2026-11-20, sync-status-view.js). 문제가 있을 때만 맨 위에, 빈 화면에는 늘. */
+  syncStatus = null }) {
   const initialDisplay = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(SCHEDULE_VIEW_KEY) || "null") || {}; }
     catch (e) { return {}; }
@@ -3995,6 +4005,11 @@ function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatu
     <div className="flex h-full min-h-0 flex-col">
       {/* 조직 소속 강사의 이달 예상 급여. 앱을 여는 이유가 이 숫자라 맨 위에 둔다. */}
       {payCard}
+      {syncStatus && (syncStatus.tone === SYNC_STATUS_TONE.BAD || syncStatus.tone === SYNC_STATUS_TONE.WARN) && db.schedule.length > 0 ? (
+        <p role="status" data-sync-status={syncStatus.tone} className="shrink-0 px-3 py-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: syncStatus.tone === SYNC_STATUS_TONE.BAD ? BAD : WARN, backgroundColor: syncStatus.tone === SYNC_STATUS_TONE.BAD ? BAD_S : WARN_S }}>
+          일정 동기화 · {syncStatus.detail}
+        </p>
+      ) : null}
       {/* ─── 상단 헤더: 주 범위 + 이동 + 오늘 + 등록 ─── */}
       <div className="shrink-0 flex items-center gap-1 px-2" style={{ height: 44, background: "var(--header-grad)", borderBottom: `1px solid ${LINE}` }}>
         <button onClick={() => step(-1)} className="flex items-center justify-center" style={{ width: 36, height: 36, color: SUB }}>
@@ -4041,7 +4056,7 @@ function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatu
             <button type="button" onClick={() => setFocusedMemberId(null)} className="flex h-7 shrink-0 items-center gap-1 px-2 text-xs font-semibold" style={{ borderRadius: 7, backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}><X size={12} />필터 해제</button>
           </div>
         )}
-        {db.members.length === 0 ? <div className="flex h-full flex-col items-center justify-center px-7 text-center"><Users size={28} style={{ color: FAINT }} /><p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>먼저 회원을 등록해 주세요</p><p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>회원이 있어야 수업을 등록하고<br />수업 후 기록을 이어갈 수 있습니다</p><button type="button" onClick={onAddMember} className="mt-5 h-11 rounded-lg px-5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>회원 등록</button></div> : db.schedule.length === 0 ? <div className="flex h-full flex-col items-center justify-center px-7 text-center"><Calendar size={28} style={{ color: FAINT }} /><p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>등록된 수업이 없습니다</p><p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>시간표 빈 칸을 눌러 수업을 넣어보세요<br />수업이 끝나면 여기서 출석과 기록을 처리합니다</p><button type="button" onClick={() => setEditing({ id: null, memberIds: [], date: todayISO(), start: "10:00", dur: DEFAULT_CLASS_DURATION, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" })} className="mt-5 h-11 rounded-lg px-5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>수업 등록</button></div> : <WeekGrid days={visibleDays} byDate={byDate} nameOf={nameOf} memberOf={(id) => db.members.find((m) => m.id === id)} briefingOf={briefingOf} cursor={cursor} foldEmpty={foldEmpty} focusedMemberId={focusedMemberId} scheduleColors={scheduleColors}
+        {db.members.length === 0 ? <div className="flex h-full flex-col items-center justify-center px-7 text-center"><Users size={28} style={{ color: FAINT }} /><p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>먼저 회원을 등록해 주세요</p><p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>회원이 있어야 수업을 등록하고<br />수업 후 기록을 이어갈 수 있습니다</p><button type="button" onClick={onAddMember} className="mt-5 h-11 rounded-lg px-5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>회원 등록</button></div> : db.schedule.length === 0 ? <div className="flex h-full flex-col items-center justify-center px-7 text-center"><Calendar size={28} style={{ color: FAINT }} /><p className="mt-3 text-sm font-extrabold" style={{ color: INK }}>등록된 수업이 없습니다</p><p className="mt-2 text-xs leading-relaxed" style={{ color: SUB }}>시간표 빈 칸을 눌러 수업을 넣어보세요<br />수업이 끝나면 여기서 출석과 기록을 처리합니다</p>{syncStatus ? <p role="status" data-sync-status={syncStatus.tone} className="mt-3 max-w-sm text-xs leading-relaxed" style={{ color: syncStatus.tone === SYNC_STATUS_TONE.BAD ? BAD : syncStatus.tone === SYNC_STATUS_TONE.WARN ? WARN : SUB }}>일정 동기화 · {syncStatus.label} — {syncStatus.detail}</p> : null}<button type="button" onClick={() => setEditing({ id: null, memberIds: [], date: todayISO(), start: "10:00", dur: DEFAULT_CLASS_DURATION, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" })} className="mt-5 h-11 rounded-lg px-5 text-sm font-extrabold text-white" style={{ backgroundColor: BRAND }}>수업 등록</button></div> : <WeekGrid days={visibleDays} byDate={byDate} nameOf={nameOf} memberOf={(id) => db.members.find((m) => m.id === id)} briefingOf={briefingOf} cursor={cursor} foldEmpty={foldEmpty} focusedMemberId={focusedMemberId} scheduleColors={scheduleColors}
           onOpen={(s, trigger) => { scheduleTriggerRef.current = trigger; setEditing(s); }}
           onNew={(date, start, dur, trigger) => { scheduleTriggerRef.current = trigger; setEditing({ id: null, memberIds: [], date, start, dur: dur || DEFAULT_CLASS_DURATION, type: "개인레슨", instructor: db.settings.staff, room: "", memo: "" }); }} />}
       </div>
@@ -21689,6 +21704,8 @@ function InstructorTotalSection({ organizationId, clientId, passes, nameOfInstru
       await adjustInstructorTotal(organizationId, {
         instructorId: edit.instructorId, clientId: edit.clientId, sessions: Number(edit.value),
         expectedSessions: edit.current, reason: edit.reason, actorId: currentUserId, actorRole,
+        /* 누적이 없던 칸에 처음 넣는 것 (2026-11-19). current 가 null 이면 문서를 만든다. */
+        createIfMissing: edit.current === null,
       }, { store });
       onToast?.({ ok: true, msg: `누적을 ${Number(edit.value)}회로 고쳤습니다. 다음 수업부터 적용돼요.` });
       setEdit(null);
@@ -21725,15 +21742,15 @@ function InstructorTotalSection({ organizationId, clientId, passes, nameOfInstru
                     <p className="min-w-0 flex-1 tabular-nums" style={{ fontSize: TYPE.caption, color: sessions !== null && totalTierLabel(sessions).includes("신규") ? WARN : SUB }}>
                       {id !== clientId ? `${nameOfClient(id) || "듀엣 짝"} · ` : ""}{totalTierLabel(sessions)}
                     </p>
-                    {sessions !== null && !editing ? (
-                      <button type="button" data-instructor-total-edit onClick={() => setEdit({ instructorId, clientId: id, current: sessions, value: String(sessions), reason: "manual_correction", error: "" })}
-                        className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>누적 고치기</button>
+                    {!editing ? (
+                      <button type="button" data-instructor-total-edit onClick={() => setEdit({ instructorId, clientId: id, current: sessions, value: sessions === null ? "" : String(sessions), reason: sessions === null ? "migration_overwrite" : "manual_correction", error: "" })}
+                        className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>{sessions === null ? "누적 넣기" : "누적 고치기"}</button>
                     ) : null}
                   </div>
                   {editing ? (
                     <div className="lm-fade-up mt-2" data-instructor-total-form>
                       <label className="flex items-center gap-2" style={{ fontSize: TYPE.caption, color: SUB }}>
-                        <span className="shrink-0">{edit.current}회 →</span>
+                        <span className="shrink-0">{edit.current === null ? "없음" : `${edit.current}회`} →</span>
                         <input inputMode="numeric" value={edit.value} aria-label="고칠 누적 횟수"
                           onChange={(event) => setEdit({ ...edit, value: event.target.value.replace(/[^\d]/g, "").slice(0, 4), error: "" })}
                           className="h-10 w-20 rounded-lg px-2 text-center tabular-nums" style={{ fontSize: TYPE.body, color: INK, backgroundColor: CARD, border: `1px solid ${LINE}` }} />
@@ -26694,6 +26711,230 @@ function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, in
 }
 
 /**
+ * 강사 기록 현황 (2026-11-21 대표: "누가 안 하고 있고 누가 잘하고 있는지").
+ *
+ * 두 갈래를 한 줄에 둔다 (features/records/record-activity.js 머리말):
+ *  - 수업기록: 강사 폰이 올린 숫자 -- 출석 처리한 수업 중 기록 남긴 것. 1.1.57 이상 폰 앱만 올린다
+ *  - 회원에게 보낸 말: 서버 -- 확정(차감)한 수업 중 회원 앱에 보낸 말이 있는 것
+ * 기록 내용 · 회원 이름은 여기 오지 않는다. 대표 · 총괄만 (규칙도 같은 선).
+ */
+const RECORD_TONE_COLOR = { [RECORD_TONE.GOOD]: () => GOOD, [RECORD_TONE.WARN]: () => WARN, [RECORD_TONE.BAD]: () => BAD, [RECORD_TONE.MUTED]: () => SUB };
+const RECORD_TONE_BG = { [RECORD_TONE.GOOD]: () => GOOD_S, [RECORD_TONE.WARN]: () => WARN_S, [RECORD_TONE.BAD]: () => BAD_S, [RECORD_TONE.MUTED]: () => CANVAS };
+const recordCheckedLabel = (millis) => {
+  if (!millis) return "";
+  const at = new Date(millis);
+  return `${at.getMonth() + 1}/${at.getDate()} ${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")} 확인`;
+};
+
+function InstructorRecordBoard({ organization, instructorStore, clientStore, initialState = null, initialMonth = null }) {
+  const thisMonth = currentRatingMonth();
+  const [month, setMonth] = useState(initialMonth || thisMonth);
+  const [state, setState] = useState(() => initialState || { rows: null, error: "", notesError: "", namesError: "" });
+  const organizationId = organization?.organizationId || "";
+  const load = useCallback(async () => {
+    if (!organizationId) return;
+    setState((current) => ({ ...current, rows: null, error: "" }));
+    const { start, end } = monthRange(month);
+    /* 회원에게 보낸 말은 수업 뒤 며칠 지나 쓰기도 한다 -- 만든 시각으로 15일 더 읽고, 짝은 수업 · 회원으로 맞춘다. */
+    const notesEnd = new Date(end.getTime() + 15 * 24 * 60 * 60e3);
+    try {
+      const [ledger, activities, notes, members, clients] = await Promise.all([
+        loadOrganizationLedger(organizationId, { start, end }),
+        listRecordActivity(organizationId, month),
+        toleratingReadFailure(listLessonNotesBetween(organizationId, start, notesEnd)),
+        toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
+        toleratingReadFailure(listClients(organizationId, { store: clientStore })),
+      ]);
+      const rows = instructorRecordBoard({
+        ledger, activities, lessonNotes: notes.items, instructors: members.items,
+        canonicalInstructorId: canonicalInstructorIdFrom(members.items),
+        excludedClientIds: reviewDemoClientIds(clients.items),
+      });
+      setState({ rows, error: "", notesError: notes.errorCode, namesError: members.errorCode || clients.errorCode });
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setState({ rows: [], error: `기록 현황을 읽지 못했어요 (코드 ${code})`, notesError: "", namesError: "" });
+      deviceLog("record_board_read_failed", {
+        feature: "record_activity", stage: thrown?.feature ? `${thrown.feature}:${thrown.stage || "list"}` : "board_read",
+        errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200),
+        role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+      });
+    }
+  }, [organizationId, month, instructorStore, clientStore, organization?.role]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const summary = recordBoardSummary(state.rows || []);
+  const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
+  const chip = (tone, label, value) => (
+    <span className="px-2 py-1 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: RECORD_TONE_COLOR[tone](), backgroundColor: RECORD_TONE_BG[tone]() }}>{label} {value}</span>
+  );
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-record-board>
+      <div className="flex items-center justify-between">
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>강사 기록 현황</h2>
+        <button type="button" onClick={load} className="h-9 px-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
+      </div>
+      <div className="mt-2 flex items-center gap-2" data-record-month={month}>
+        <button type="button" aria-label="이전 달" onClick={() => setMonth((current) => shiftRatingMonth(current, -1))} className="flex items-center justify-center" style={navButton}><ChevronLeft size={16} /></button>
+        <span className="min-w-0 flex-1 text-center font-extrabold tabular-nums" style={{ fontSize: TYPE.body, color: INK }}>{ratingMonthLabel(month)}</span>
+        <button type="button" aria-label="다음 달" disabled={month >= thisMonth} onClick={() => setMonth((current) => shiftRatingMonth(current, 1))} className="flex items-center justify-center disabled:opacity-30" style={navButton}><ChevronRight size={16} /></button>
+      </div>
+      <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        <b style={{ color: INK }}>수업기록</b>은 강사 폰이 알려 준 숫자예요 — 출석 처리한 수업 중 기록(직접 입력 · 음성 · 특이사항 없음)을 남긴 비율.
+        {" "}<b style={{ color: INK }}>회원에게 보낸 말</b>은 확정한 수업 중 회원 앱으로 한마디를 보낸 수업이에요.
+        {" "}기록 내용 · 회원 이름은 여기 오지 않아요. 기록이 적은 강사가 위에 있어요.
+      </p>
+      {state.rows && state.rows.length ? (
+        <div className="mt-2 flex flex-wrap gap-1.5" data-record-summary>
+          {chip(RECORD_TONE.GOOD, "잘함", summary.good)}
+          {chip(RECORD_TONE.WARN, "보통", summary.partial)}
+          {chip(RECORD_TONE.BAD, "부족", summary.low)}
+          {chip(RECORD_TONE.MUTED, "앱 보고 없음", summary.unknown)}
+        </div>
+      ) : null}
+      {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
+      {state.notesError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>회원에게 보낸 말을 읽지 못해 그 칸은 비어 있어요 (코드 {state.notesError})</p> : null}
+      {state.namesError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>강사 이름 · 회원 명부 일부를 읽지 못했어요 (코드 {state.namesError})</p> : null}
+      {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
+      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>이 달에 확정한 수업 · 보고가 없어요.</p> : null}
+      <div className="mt-3 space-y-2">
+        {(state.rows || []).map((row) => {
+          const view = recordRowView(row);
+          return (
+            <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-record-row={view.code}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>
+                  {row.name || row.instructorId}{row.active ? "" : " · 소속 아님"}
+                </span>
+                <span className="shrink-0 px-2 py-0.5 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: RECORD_TONE_COLOR[view.tone](), backgroundColor: RECORD_TONE_BG[view.tone]() }}>{view.label}</span>
+              </div>
+              <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+                {row.attended === null
+                  ? `수업기록 — ${view.detail || ""}`
+                  : `수업기록 ${row.recorded}/${row.attended}건${row.draft ? ` · 확인 안 한 AI 기록 ${row.draft}건` : ""}${view.detail ? ` · ${view.detail}` : ""}`}
+              </div>
+              <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>
+                {state.notesError
+                  ? `확정 수업 ${row.confirmed}건`
+                  : `확정 수업 ${row.confirmed}건 · 회원에게 보낸 말 ${row.withNote}건${row.noteRate === null ? "" : ` (${Math.round(row.noteRate * 100)}%)`}`}
+              </div>
+              <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>
+                {row.checkedAt ? `${recordCheckedLabel(row.checkedAt)}${row.appBuild ? ` · 앱 ${row.appBuild}` : ""} · ` : ""}코드 {view.code}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * 비포애프터 공유 현황 (2026-11-21 대표: "회원별로 잘 보내고 있는지").
+ *
+ * 서버 함수(beforeAfterShareStats)가 카드마다 강사 · 회원 id · 상태 · 시각 · 열람 여부만 준다 -- 사진 · 코멘트는 없다.
+ * 회원 이름은 대표 명부로 붙인다. 묶는 법 · 문구는 features/records/before-after-board.js.
+ */
+const SHARE_TONE_COLOR = { good: () => GOOD, warn: () => WARN, bad: () => BAD, muted: () => SUB };
+const SHARE_TONE_BG = { good: () => GOOD_S, warn: () => WARN_S, bad: () => BAD_S, muted: () => CANVAS };
+
+function BeforeAfterShareBoard({ organization, instructorStore, clientStore, passStore, onLoad = fbBeforeAfterShareStats, initialState = null }) {
+  const thisMonth = currentRatingMonth();
+  const [month, setMonth] = useState(thisMonth);
+  const [state, setState] = useState(() => initialState || { rows: null, error: "", namesError: "", truncated: false });
+  const [open, setOpen] = useState("");
+  const organizationId = organization?.organizationId || "";
+  const load = useCallback(async () => {
+    if (!organizationId) return;
+    setState((current) => ({ ...current, rows: null, error: "" }));
+    try {
+      const [stats, clients, passes, members] = await Promise.all([
+        onLoad({ organizationId }),
+        toleratingReadFailure(listClients(organizationId, { store: clientStore })),
+        toleratingReadFailure(listPasses(organizationId, { store: passStore })),
+        toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
+      ]);
+      const rows = beforeAfterBoard({
+        rows: Array.isArray(stats?.rows) ? stats.rows : [], clients: clients.items, passes: passes.items, instructors: members.items,
+        canonicalInstructorId: canonicalInstructorIdFrom(members.items), excludedClientIds: reviewDemoClientIds(clients.items),
+        month, now: new Date(),
+      });
+      setState({ rows, error: "", namesError: clients.errorCode || passes.errorCode || members.errorCode, truncated: Boolean(stats?.truncated) });
+    } catch (thrown) {
+      const code = serverCodeOf(thrown) || "unknown";
+      setState({ rows: [], error: `비포애프터 공유 현황을 읽지 못했어요 (코드 ${code})`, namesError: "", truncated: false });
+      deviceLog("before_after_stats_failed", {
+        feature: "before_after_stats", stage: "callable", errorDomain: "functions_callable",
+        errorCode: String(thrown?.code || "unknown"), serverCode: code, message: String(thrown?.message || "").slice(0, 200),
+        role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+      });
+    }
+  }, [organizationId, month, onLoad, clientStore, passStore, instructorStore, organization?.role]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
+  const badge = (view) => (
+    <span className="shrink-0 px-2 py-0.5 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: SHARE_TONE_COLOR[view.tone](), backgroundColor: SHARE_TONE_BG[view.tone]() }}>{view.label}</span>
+  );
+  return (
+    <section className="mt-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-before-after-board>
+      <div className="flex items-center justify-between">
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>비포애프터 공유 현황</h2>
+        <button type="button" onClick={load} className="h-9 px-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
+      </div>
+      <div className="mt-2 flex items-center gap-2" data-share-month={month}>
+        <button type="button" aria-label="이전 달" onClick={() => setMonth((current) => shiftRatingMonth(current, -1))} className="flex items-center justify-center" style={navButton}><ChevronLeft size={16} /></button>
+        <span className="min-w-0 flex-1 text-center font-extrabold tabular-nums" style={{ fontSize: TYPE.body, color: INK }}>{ratingMonthLabel(month)}</span>
+        <button type="button" aria-label="다음 달" disabled={month >= thisMonth} onClick={() => setMonth((current) => shiftRatingMonth(current, 1))} className="flex items-center justify-center disabled:opacity-30" style={navButton}><ChevronRight size={16} /></button>
+      </div>
+      <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        <b style={{ color: INK }}>받음 %</b>는 회원권이 남아 있고 회원 앱에 연결된 담당 회원 중, 비포애프터 카드를 한 번이라도 받은 회원의 비율이에요.
+        {" "}강사 이름을 누르면 회원별로 마지막으로 보낸 날이 보여요. 사진 · 코멘트는 여기 오지 않아요. 받은 회원이 적은 강사가 위에 있어요.
+      </p>
+      {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
+      {state.namesError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>회원 · 회원권 · 강사 명부 일부를 읽지 못해 숫자가 모자랄 수 있어요 (코드 {state.namesError})</p> : null}
+      {state.truncated ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>카드가 너무 많아 일부만 셌어요 (코드 share_stats_truncated)</p> : null}
+      {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
+      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>담당 회원 · 보낸 카드가 없어요.</p> : null}
+      <div className="mt-3 space-y-2">
+        {(state.rows || []).map((row) => {
+          const view = shareInstructorView(row);
+          const expanded = open === row.instructorId;
+          return (
+            <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-share-row={view.code}>
+              <button type="button" onClick={() => setOpen(expanded ? "" : row.instructorId)} className="flex w-full items-center justify-between gap-2 text-left" aria-expanded={expanded}>
+                <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>{row.name || row.instructorId}{row.active ? "" : " · 소속 아님"}</span>
+                {badge(view)}
+                <ChevronDown size={16} style={{ color: SUB, transform: expanded ? "rotate(180deg)" : "none" }} />
+              </button>
+              <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+                {`받은 회원 ${row.everSent}/${row.linked}명 · 보낸 적 없음 ${row.neverSent}명${row.notLinked ? ` · 앱 미연결 ${row.notLinked}명` : ""}`}
+              </div>
+              <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>
+                {`이 달 보낸 카드 ${row.sentThisMonth}장 · 회원 열람 ${row.readThisMonth}장${row.unsent ? ` · 만들고 안 보낸 카드 ${row.unsent}장` : ""}`}
+              </div>
+              <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>코드 {view.code}</div>
+              {expanded ? (
+                <div className="mt-2 space-y-1" data-share-members>
+                  {row.members.map((member) => {
+                    const label = shareMemberLabel(member);
+                    return (
+                      <div key={member.clientId} className="flex items-center justify-between gap-2 px-2 py-1.5" style={{ borderRadius: 8, backgroundColor: CARD }} data-share-member={label.code}>
+                        <span className="min-w-0 flex-1 truncate font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{member.name || "이름 모름"}</span>
+                        <span className="min-w-0 text-right" style={{ fontSize: TYPE.caption, color: SHARE_TONE_COLOR[label.tone]() }}>{label.label}</span>
+                      </div>
+                    );
+                  })}
+                  {!row.members.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>담당 회원이 없어요.</p> : null}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/**
  * 회원 앱 수업 취소 (2026-11-07, 5차 1단계) — 대표 설정 · 강사별 추가 부여 현황.
  *
  * 켜는 범위는 강사 단위 시범(고른 강사만)부터. **그 강사의 일정 동기화가 켜져 있어야**
@@ -27940,7 +28181,7 @@ const WATCH_TONE = {
   get [WATCH_REASON.QUIET]() { return { backgroundColor: CANVAS, color: INK2 }; },
 };
 
-function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevision = 0,
+function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevision = 0, syncStatus = null,
   /* 일정 탭이 이미 읽어 둔 원장 급여를 **그대로** 받는다. 여기서 다시 읽으면
      두 화면이 서로 다른 순간의 원장을 보게 되고, 그 차이는 아무 데도 적히지
      않는다 -- 같은 객체를 쓰면 다를 수가 없다. */
@@ -28388,6 +28629,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       ...(showAudit ? [{ key: "expiry-order", title: "만료일 순서 확인", description: "뒤 차수가 먼저 만료되는 회원", Icon: AlertTriangle }] : []),
       /* 확정된 듀엣인데 한 사람이 "예약" 으로 남은 수업. 고치지 않고 모아만 둔다. */
       ...(showAudit ? [{ key: "duet-unmarked", title: "듀엣 출석 확인", description: "확정됐는데 한 명이 미표시인 듀엣", Icon: Users }] : []),
+      ...(showAudit ? [{ key: "record-board", title: "강사 기록 현황", description: "수업기록 · 회원에게 보낸 말 · 비포애프터 공유", Icon: ClipboardList }] : []),
       ...(showAudit ? [{ key: "phone-check", title: "번호 점검", description: "010 열한 자리가 아닌 회원 찾기", Icon: AlertCircle }] : []),
       ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
     ] },
@@ -28851,6 +29093,13 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
                 { l: "Firebase", v: fbReady ? "연결 가능" : "미사용", c: fbReady ? GOOD : SUB },
               ].map((item) => <div key={item.l} style={{ padding: "10px 8px", borderRadius: 8, backgroundColor: CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{item.l}</p><p className="mt-1 truncate" style={{ fontSize: TYPE.caption, fontWeight: 700, color: item.c }}>{item.v}</p></div>)}</div>
               {savedAt instanceof Date && <p className="mt-3 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>최근 기기 저장 {savedAt.getHours()}:{String(savedAt.getMinutes()).padStart(2, "0")}</p>}
+              {syncStatus ? (
+                <div className="mt-3" data-sync-status={syncStatus.tone} style={{ padding: "10px 8px", borderRadius: 8, backgroundColor: CANVAS }}>
+                  <p style={{ fontSize: TYPE.caption, color: SUB }}>일정 동기화</p>
+                  <p className="mt-1" style={{ fontSize: TYPE.caption, fontWeight: 700, color: syncStatus.tone === SYNC_STATUS_TONE.BAD ? BAD : syncStatus.tone === SYNC_STATUS_TONE.WARN ? WARN : syncStatus.tone === SYNC_STATUS_TONE.GOOD ? GOOD : SUB }}>{syncStatus.label}</p>
+                  <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.45, color: INK2 }}>{syncStatus.detail}</p>
+                </div>
+              ) : null}
             </section>
             {demoMode && <section style={{ ...sectionStyle, backgroundColor: WARN_S, borderColor: WARN }}><p style={{ fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>개발·데모 데이터 사용 중</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>현재 데이터는 실제 운영 데이터가 아닙니다.</p></section>}
           </div>
@@ -28930,6 +29179,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
             productStore={productStore} passStore={passStore}
             auditStore={auditStore} ledgerStore={ledgerStore}
             onRetryOrganization={onRetryOrganization} />
+        )}
+        {view === "record-board" && showAudit && (
+          <div>
+            <InstructorRecordBoard organization={organization} instructorStore={instructorStore} clientStore={clientStore} />
+            <BeforeAfterShareBoard organization={organization} instructorStore={instructorStore} clientStore={clientStore} passStore={passStore} />
+          </div>
         )}
         {view === "phone-check" && showAudit && (
           <ClientPhoneCheck organization={organization}
@@ -33160,6 +33415,8 @@ export default function App() {
     return () => { alive = false; document.removeEventListener("visibilitychange", onVisible); };
   }, [phase, account?.id, syncDay]);
   const scheduleSyncOn = scheduleSyncEnabledFor(scheduleSyncConfig, account?.id);
+  /* 화면에 보이는 한 줄 (sync-status-view.js). 아래 두 곳(일정 탭 · 데이터 상태)이 같은 값을 쓴다. */
+  const syncStatus = scheduleSyncStatus({ organizationMode: Boolean(organizationRoster), enabled: scheduleSyncOn, ...syncState });
 
   /* ── 센터 회원 명단 실시간 (2026-11-04, 2단계, roster-realtime.js) ─────────────
      스위치는 scheduleSync 문서의 rosterRealtime 칸이다 -- 위에서 이미 읽는 문서라
@@ -33339,6 +33596,8 @@ export default function App() {
           deviceLog("schedule_sync_kept_deducted", { feature: "schedule_sync", stage: "merge", count: merged.summary.keptWithDeductions });
         }
         if (merged.duplicates.length) setSyncDuplicates(merged.duplicates);
+        /* 받은 건수 · 명부에서 못 찾은 회원 수를 화면에 남긴다 (2026-11-20 율하: 웹에 수업이 0 인데 이유를 볼 곳이 없었다). */
+        if (alive) setSyncState({ state: "listening", errorCode: "", received: docs.length, unmatched: merged.unmatchedClientIds.length });
         /* 스위치가 켜진 계정의 첫 맞추기: 받은 뒤에, 서버의 다른 수업과 겹치는 기기 일정은
            올리지 않고(중복 의심으로 보여 준다) 나머지만 올린다. */
         if (initialUploadAfterPullRef.current) {
@@ -34267,6 +34526,52 @@ export default function App() {
     const timer = window.setInterval(run, 30 * 60e3);
     return () => { alive = false; window.clearInterval(timer); };
   }, [lessonRecordServerOn, lessonRecordOutbox, account?.id, organizationContext.organizationId, rosterMembers, db.schedule]);
+  /* 강사 기록 현황 (2026-11-21 대표). 이 달 · 지난달 "출석 처리한 수업 N건 중 기록 남긴 것 M건" 숫자만
+     내 칸에 올린다. 기록 내용 · 회원은 올리지 않는다 -- 그래서 서버 저장 스위치 · 회원 동의와 무관하다.
+     **폰 앱에서만.** 웹의 기기 저장은 따로라 비어 있을 수 있고, 그 0 이 폰 숫자를 덮으면 안 된다.
+     숫자가 바뀌었을 때만 쓰고, 같아도 6시간에 한 번은 다시 쓴다(확인 시각). 15분마다 본다. */
+  const recordActivityReportOn = Boolean(organizationRoster) && Capacitor.isNativePlatform();
+  const recordActivityDbRef = useRef(db);
+  recordActivityDbRef.current = db;
+  useEffect(() => {
+    if (!recordActivityReportOn || !account?.id || !organizationContext.organizationId) return undefined;
+    const stateKey = `pilateacher_record_activity_v1_${account.id}`;
+    let alive = true;
+    const run = async () => {
+      let state = {};
+      try { state = JSON.parse(globalThis.localStorage?.getItem(stateKey) || "{}") || {}; } catch (_error) { state = {}; }
+      const now = new Date();
+      const thisMonth = monthOfRecord(now);
+      const lastMonth = previousRecordMonth(thisMonth);
+      const current = recordActivityDbRef.current;
+      for (const month of [thisMonth, lastMonth]) {
+        if (!alive) return;
+        const document = recordActivityDocument({
+          organizationId: organizationContext.organizationId, uid: account.id, month,
+          counts: countDeviceRecordActivity({ members: current?.members, schedule: current?.schedule, month, now }),
+          appBuild: APP_BUILD_LABEL,
+        });
+        const signature = recordActivitySignature(document);
+        const last = state[month] || {};
+        if (last.signature === signature && Date.now() - Number(last.at || 0) < 6 * 60 * 60e3) continue;
+        try {
+          await writeRecordActivity(document);
+          state[month] = { signature, at: Date.now() };
+          try { globalThis.localStorage?.setItem(stateKey, JSON.stringify({ [thisMonth]: state[thisMonth], [lastMonth]: state[lastMonth] })); } catch (_error) { /* 다음에 한 번 더 쓴다 -- 같은 칸이라 겹쳐도 한 줄 */ }
+        } catch (error) {
+          deviceLog("record_activity_report_failed", {
+            feature: "record_activity", stage: "write", errorDomain: "firestore",
+            errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+            month, appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+          });
+          return;
+        }
+      }
+    };
+    run();
+    const timer = window.setInterval(run, 15 * 60e3);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [recordActivityReportOn, account?.id, organizationContext.organizationId]);
   const saveScheduleComment = async (id, type, sid, body, voiceMeta = null, noteOptions = null) => {
     const text = String(body || "").trim();
     /* 빈 기록은 저장하지 않는다. 말없이 false 만 돌려주면 강사는 버튼이 고장 난 줄
@@ -36065,7 +36370,7 @@ export default function App() {
         ) : null}
         <div key={tab} className="app-motion-content relative min-h-0 flex-1 overflow-hidden">
           <ServerNotesContext.Provider value={serverNotesValue}><Guard>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} draftAccountId={account?.id} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id, options) => { if (options?.consult) setConsultIntentId(id); setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} draftAccountId={account?.id} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} syncStatus={syncStatus} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id, options) => { if (options?.consult) setConsultIntentId(id); setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} viewerLocationIds={organizationContext.locationIds || []} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterInMemberTab} centreAccount={centreAccount} onOpenCentreRegistration={canOpenCentreRegistration ? openCentreRegistration : undefined} unlinkedLocal={centreAccount && roster ? roster.unlinkedLocal || [] : []} onUploadUnlinked={canOpenCentreRegistration ? uploadUnlinkedMember : undefined} onLinkUnlinked={linkUnlinkedMember} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
@@ -36114,7 +36419,7 @@ export default function App() {
                   onSaveMarks={(view, photoId, marks, options) => saveMarks(id, view, photoId, marks, options)} onSaveAssessmentRole={(assessmentId, role) => saveAssessmentRole(id, assessmentId, role)} onToggleAssessmentFavorite={(assessmentId, favorite) => toggleAssessmentFavorite(id, assessmentId, favorite)}
                   onToast={setToast} onSaved={(mode) => setAnalysisDone({ id, mode })} /></Guard>;
               }} />}
-            {tab === "settings" && <ReferenceSettingsTab key={`settings-${settingsEntry.key}`} initialView={settingsEntry.view} onRosterChanged={() => setRosterRevision((value) => value + 1)} dataRevision={rosterRevision} db={db} photos={Object.fromEntries(Object.entries(photos).filter(([id]) => allowedPhotoMembers.has(id)))} account={account} savedAt={savedAt} demoMode={demoMode}
+            {tab === "settings" && <ReferenceSettingsTab syncStatus={syncStatus} key={`settings-${settingsEntry.key}`} initialView={settingsEntry.view} onRosterChanged={() => setRosterRevision((value) => value + 1)} dataRevision={rosterRevision} db={db} photos={Object.fromEntries(Object.entries(photos).filter(([id]) => allowedPhotoMembers.has(id)))} account={account} savedAt={savedAt} demoMode={demoMode}
               instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError}
               currentUserId={account?.id || ""} rosterClients={rosterClients} rosterPasses={rosterPasses}
               onOpenPay={canSeeOwnPay ? () => setPayOpen(true) : undefined} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}

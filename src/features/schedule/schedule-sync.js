@@ -25,8 +25,10 @@ import { isSettledElsewhere } from "./schedule-edit.js";
 const text = (value) => String(value ?? "").trim();
 const attendeesOf = (entry) => (Array.isArray(entry?.attendees) ? entry.attendees : []);
 
-/** 받는 범위. 내 수업만, 7일 전부터 60일 뒤까지 (2026-10-31 대표). */
-export const SYNC_WINDOW = Object.freeze({ pastDays: 7, futureDays: 60 });
+/** 받는 범위. 내 수업만, 14일 전부터 60일 뒤까지 (2026-10-31 대표, 2026-11-20 7일 → 14일).
+    확정 기간(DEDUCT_BACKDATE_LIMIT_DAYS)과 같은 날 수여야 한다 -- 짧으면 아직 확정할 수 있는
+    수업이 다른 기기(웹)에 오지 않는다 (율하 11/12 수업). */
+export const SYNC_WINDOW = Object.freeze({ pastDays: 14, futureDays: 60 });
 
 export function syncWindow(now = new Date()) {
   const day = 24 * 60 * 60 * 1000;

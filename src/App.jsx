@@ -416,6 +416,11 @@ import { appendLessonRecordDiagnostic, readLessonRecordDiagnostics } from "./fea
 import { createRecordStore, migrationRecordsFor } from "./features/lesson-record/record-store.js";
 import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/server-outbox.js";
 import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
+import { listLessonNotesBetween, listRecordActivity, writeRecordActivity } from "./data/repositories/record-activity-repository.js";
+import {
+  RECORD_TONE, countDeviceRecordActivity, instructorRecordBoard, monthOf as monthOfRecord, previousRecordMonth,
+  recordActivityDocument, recordActivitySignature, recordBoardSummary, recordRowView,
+} from "./features/records/record-activity.js";
 import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
 import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js";
 import { RENEWAL_ALERT, livePassesOf, renewalForecast, renewalLine, renewalRates } from "../functions/shared/renewal-forecast.mjs";
@@ -26704,6 +26709,124 @@ function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, in
 }
 
 /**
+ * 강사 기록 현황 (2026-11-21 대표: "누가 안 하고 있고 누가 잘하고 있는지").
+ *
+ * 두 갈래를 한 줄에 둔다 (features/records/record-activity.js 머리말):
+ *  - 수업기록: 강사 폰이 올린 숫자 -- 출석 처리한 수업 중 기록 남긴 것. 1.1.57 이상 폰 앱만 올린다
+ *  - 회원에게 보낸 말: 서버 -- 확정(차감)한 수업 중 회원 앱에 보낸 말이 있는 것
+ * 기록 내용 · 회원 이름은 여기 오지 않는다. 대표 · 총괄만 (규칙도 같은 선).
+ */
+const RECORD_TONE_COLOR = { [RECORD_TONE.GOOD]: () => GOOD, [RECORD_TONE.WARN]: () => WARN, [RECORD_TONE.BAD]: () => BAD, [RECORD_TONE.MUTED]: () => SUB };
+const RECORD_TONE_BG = { [RECORD_TONE.GOOD]: () => GOOD_S, [RECORD_TONE.WARN]: () => WARN_S, [RECORD_TONE.BAD]: () => BAD_S, [RECORD_TONE.MUTED]: () => CANVAS };
+const recordCheckedLabel = (millis) => {
+  if (!millis) return "";
+  const at = new Date(millis);
+  return `${at.getMonth() + 1}/${at.getDate()} ${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")} 확인`;
+};
+
+function InstructorRecordBoard({ organization, instructorStore, clientStore, initialState = null, initialMonth = null }) {
+  const thisMonth = currentRatingMonth();
+  const [month, setMonth] = useState(initialMonth || thisMonth);
+  const [state, setState] = useState(() => initialState || { rows: null, error: "", notesError: "", namesError: "" });
+  const organizationId = organization?.organizationId || "";
+  const load = useCallback(async () => {
+    if (!organizationId) return;
+    setState((current) => ({ ...current, rows: null, error: "" }));
+    const { start, end } = monthRange(month);
+    /* 회원에게 보낸 말은 수업 뒤 며칠 지나 쓰기도 한다 -- 만든 시각으로 15일 더 읽고, 짝은 수업 · 회원으로 맞춘다. */
+    const notesEnd = new Date(end.getTime() + 15 * 24 * 60 * 60e3);
+    try {
+      const [ledger, activities, notes, members, clients] = await Promise.all([
+        loadOrganizationLedger(organizationId, { start, end }),
+        listRecordActivity(organizationId, month),
+        toleratingReadFailure(listLessonNotesBetween(organizationId, start, notesEnd)),
+        toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
+        toleratingReadFailure(listClients(organizationId, { store: clientStore })),
+      ]);
+      const rows = instructorRecordBoard({
+        ledger, activities, lessonNotes: notes.items, instructors: members.items,
+        canonicalInstructorId: canonicalInstructorIdFrom(members.items),
+        excludedClientIds: reviewDemoClientIds(clients.items),
+      });
+      setState({ rows, error: "", notesError: notes.errorCode, namesError: members.errorCode || clients.errorCode });
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setState({ rows: [], error: `기록 현황을 읽지 못했어요 (코드 ${code})`, notesError: "", namesError: "" });
+      deviceLog("record_board_read_failed", {
+        feature: "record_activity", stage: thrown?.feature ? `${thrown.feature}:${thrown.stage || "list"}` : "board_read",
+        errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200),
+        role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+      });
+    }
+  }, [organizationId, month, instructorStore, clientStore, organization?.role]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const summary = recordBoardSummary(state.rows || []);
+  const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
+  const chip = (tone, label, value) => (
+    <span className="px-2 py-1 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: RECORD_TONE_COLOR[tone](), backgroundColor: RECORD_TONE_BG[tone]() }}>{label} {value}</span>
+  );
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-record-board>
+      <div className="flex items-center justify-between">
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>강사 기록 현황</h2>
+        <button type="button" onClick={load} className="h-9 px-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
+      </div>
+      <div className="mt-2 flex items-center gap-2" data-record-month={month}>
+        <button type="button" aria-label="이전 달" onClick={() => setMonth((current) => shiftRatingMonth(current, -1))} className="flex items-center justify-center" style={navButton}><ChevronLeft size={16} /></button>
+        <span className="min-w-0 flex-1 text-center font-extrabold tabular-nums" style={{ fontSize: TYPE.body, color: INK }}>{ratingMonthLabel(month)}</span>
+        <button type="button" aria-label="다음 달" disabled={month >= thisMonth} onClick={() => setMonth((current) => shiftRatingMonth(current, 1))} className="flex items-center justify-center disabled:opacity-30" style={navButton}><ChevronRight size={16} /></button>
+      </div>
+      <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        <b style={{ color: INK }}>수업기록</b>은 강사 폰이 알려 준 숫자예요 — 출석 처리한 수업 중 기록(직접 입력 · 음성 · 특이사항 없음)을 남긴 비율.
+        {" "}<b style={{ color: INK }}>회원에게 보낸 말</b>은 확정한 수업 중 회원 앱으로 한마디를 보낸 수업이에요.
+        {" "}기록 내용 · 회원 이름은 여기 오지 않아요. 기록이 적은 강사가 위에 있어요.
+      </p>
+      {state.rows && state.rows.length ? (
+        <div className="mt-2 flex flex-wrap gap-1.5" data-record-summary>
+          {chip(RECORD_TONE.GOOD, "잘함", summary.good)}
+          {chip(RECORD_TONE.WARN, "보통", summary.partial)}
+          {chip(RECORD_TONE.BAD, "부족", summary.low)}
+          {chip(RECORD_TONE.MUTED, "앱 보고 없음", summary.unknown)}
+        </div>
+      ) : null}
+      {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
+      {state.notesError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>회원에게 보낸 말을 읽지 못해 그 칸은 비어 있어요 (코드 {state.notesError})</p> : null}
+      {state.namesError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>강사 이름 · 회원 명부 일부를 읽지 못했어요 (코드 {state.namesError})</p> : null}
+      {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
+      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>이 달에 확정한 수업 · 보고가 없어요.</p> : null}
+      <div className="mt-3 space-y-2">
+        {(state.rows || []).map((row) => {
+          const view = recordRowView(row);
+          return (
+            <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-record-row={view.code}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>
+                  {row.name || row.instructorId}{row.active ? "" : " · 소속 아님"}
+                </span>
+                <span className="shrink-0 px-2 py-0.5 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: RECORD_TONE_COLOR[view.tone](), backgroundColor: RECORD_TONE_BG[view.tone]() }}>{view.label}</span>
+              </div>
+              <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+                {row.attended === null
+                  ? `수업기록 — ${view.detail || ""}`
+                  : `수업기록 ${row.recorded}/${row.attended}건${row.draft ? ` · 확인 안 한 AI 기록 ${row.draft}건` : ""}${view.detail ? ` · ${view.detail}` : ""}`}
+              </div>
+              <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>
+                {state.notesError
+                  ? `확정 수업 ${row.confirmed}건`
+                  : `확정 수업 ${row.confirmed}건 · 회원에게 보낸 말 ${row.withNote}건${row.noteRate === null ? "" : ` (${Math.round(row.noteRate * 100)}%)`}`}
+              </div>
+              <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>
+                {row.checkedAt ? `${recordCheckedLabel(row.checkedAt)}${row.appBuild ? ` · 앱 ${row.appBuild}` : ""} · ` : ""}코드 {view.code}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/**
  * 회원 앱 수업 취소 (2026-11-07, 5차 1단계) — 대표 설정 · 강사별 추가 부여 현황.
  *
  * 켜는 범위는 강사 단위 시범(고른 강사만)부터. **그 강사의 일정 동기화가 켜져 있어야**
@@ -28398,6 +28521,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       ...(showAudit ? [{ key: "expiry-order", title: "만료일 순서 확인", description: "뒤 차수가 먼저 만료되는 회원", Icon: AlertTriangle }] : []),
       /* 확정된 듀엣인데 한 사람이 "예약" 으로 남은 수업. 고치지 않고 모아만 둔다. */
       ...(showAudit ? [{ key: "duet-unmarked", title: "듀엣 출석 확인", description: "확정됐는데 한 명이 미표시인 듀엣", Icon: Users }] : []),
+      ...(showAudit ? [{ key: "record-board", title: "강사 기록 현황", description: "수업기록 · 회원에게 보낸 말 · 누가 빠뜨리는지", Icon: ClipboardList }] : []),
       ...(showAudit ? [{ key: "phone-check", title: "번호 점검", description: "010 열한 자리가 아닌 회원 찾기", Icon: AlertCircle }] : []),
       ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
     ] },
@@ -28948,6 +29072,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
             auditStore={auditStore} ledgerStore={ledgerStore}
             onRetryOrganization={onRetryOrganization} />
         )}
+        {view === "record-board" && showAudit && <InstructorRecordBoard organization={organization} instructorStore={instructorStore} clientStore={clientStore} />}
         {view === "phone-check" && showAudit && (
           <ClientPhoneCheck organization={organization}
             onList={fbListMalformedClientPhones}
@@ -34288,6 +34413,52 @@ export default function App() {
     const timer = window.setInterval(run, 30 * 60e3);
     return () => { alive = false; window.clearInterval(timer); };
   }, [lessonRecordServerOn, lessonRecordOutbox, account?.id, organizationContext.organizationId, rosterMembers, db.schedule]);
+  /* 강사 기록 현황 (2026-11-21 대표). 이 달 · 지난달 "출석 처리한 수업 N건 중 기록 남긴 것 M건" 숫자만
+     내 칸에 올린다. 기록 내용 · 회원은 올리지 않는다 -- 그래서 서버 저장 스위치 · 회원 동의와 무관하다.
+     **폰 앱에서만.** 웹의 기기 저장은 따로라 비어 있을 수 있고, 그 0 이 폰 숫자를 덮으면 안 된다.
+     숫자가 바뀌었을 때만 쓰고, 같아도 6시간에 한 번은 다시 쓴다(확인 시각). 15분마다 본다. */
+  const recordActivityReportOn = Boolean(organizationRoster) && Capacitor.isNativePlatform();
+  const recordActivityDbRef = useRef(db);
+  recordActivityDbRef.current = db;
+  useEffect(() => {
+    if (!recordActivityReportOn || !account?.id || !organizationContext.organizationId) return undefined;
+    const stateKey = `pilateacher_record_activity_v1_${account.id}`;
+    let alive = true;
+    const run = async () => {
+      let state = {};
+      try { state = JSON.parse(globalThis.localStorage?.getItem(stateKey) || "{}") || {}; } catch (_error) { state = {}; }
+      const now = new Date();
+      const thisMonth = monthOfRecord(now);
+      const lastMonth = previousRecordMonth(thisMonth);
+      const current = recordActivityDbRef.current;
+      for (const month of [thisMonth, lastMonth]) {
+        if (!alive) return;
+        const document = recordActivityDocument({
+          organizationId: organizationContext.organizationId, uid: account.id, month,
+          counts: countDeviceRecordActivity({ members: current?.members, schedule: current?.schedule, month, now }),
+          appBuild: APP_BUILD_LABEL,
+        });
+        const signature = recordActivitySignature(document);
+        const last = state[month] || {};
+        if (last.signature === signature && Date.now() - Number(last.at || 0) < 6 * 60 * 60e3) continue;
+        try {
+          await writeRecordActivity(document);
+          state[month] = { signature, at: Date.now() };
+          try { globalThis.localStorage?.setItem(stateKey, JSON.stringify({ [thisMonth]: state[thisMonth], [lastMonth]: state[lastMonth] })); } catch (_error) { /* 다음에 한 번 더 쓴다 -- 같은 칸이라 겹쳐도 한 줄 */ }
+        } catch (error) {
+          deviceLog("record_activity_report_failed", {
+            feature: "record_activity", stage: "write", errorDomain: "firestore",
+            errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+            month, appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+          });
+          return;
+        }
+      }
+    };
+    run();
+    const timer = window.setInterval(run, 15 * 60e3);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [recordActivityReportOn, account?.id, organizationContext.organizationId]);
   const saveScheduleComment = async (id, type, sid, body, voiceMeta = null, noteOptions = null) => {
     const text = String(body || "").trim();
     /* 빈 기록은 저장하지 않는다. 말없이 false 만 돌려주면 강사는 버튼이 고장 난 줄

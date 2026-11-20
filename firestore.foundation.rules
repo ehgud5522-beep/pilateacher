@@ -1835,6 +1835,37 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      /* 강사 기록 현황 (2026-11-21 대표). 강사 폰이 "이 달 출석 처리한 수업 N건 중 기록 남긴 것 M건" 숫자만
+         자기 칸({uid}_{YYYY-MM})에 쓰고, 대표 · 총괄이 강사별로 읽는다. 기록 내용 · 회원은 없다 --
+         그래서 칸 목록을 닫아 둔다 (features/records/record-activity.js). */
+      function recordActivityCount(value) {
+        return value is int && value >= 0 && value <= 5000;
+      }
+      match /recordActivity/{activityId} {
+        allow get, list: if hasRole(organizationId, ownerLevel())
+          || (isCentreStaff(organizationId) && resource.data.userId == request.auth.uid);
+        allow create, update: if hasRole(organizationId, ["owner", "area_manager", "manager", "instructor"])
+          && request.resource.data.keys().hasOnly([
+            "organizationId", "userId", "month", "attended", "recorded", "draft", "voice", "manual", "noComment", "checkedAt", "appBuild"
+          ])
+          && request.resource.data.keys().hasAll([
+            "organizationId", "userId", "month", "attended", "recorded", "draft", "voice", "manual", "noComment", "checkedAt", "appBuild"
+          ])
+          && request.resource.data.organizationId == organizationId
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.month is string && request.resource.data.month.matches("^[0-9]{4}-[0-9]{2}$")
+          && activityId == request.auth.uid + "_" + request.resource.data.month
+          && recordActivityCount(request.resource.data.attended)
+          && recordActivityCount(request.resource.data.recorded)
+          && recordActivityCount(request.resource.data.draft)
+          && recordActivityCount(request.resource.data.voice)
+          && recordActivityCount(request.resource.data.manual)
+          && recordActivityCount(request.resource.data.noComment)
+          && request.resource.data.checkedAt == request.time
+          && request.resource.data.appBuild is string && request.resource.data.appBuild.size() <= 40;
+        allow delete: if false;
+      }
+
       match /lessonNotes/{noteId} {
         // See the locations block for why get and list are split. As with
         // clients, a query cannot prove "only the notes about me", so listing

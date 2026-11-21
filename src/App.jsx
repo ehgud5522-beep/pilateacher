@@ -55,7 +55,7 @@ import {
   fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone, fbDeleteArchivedClient,
-  fbBeforeAfterShareStats, fbConfirmSalesMonth, fbConfirmFcLessonMonth,
+  fbBeforeAfterShareStats, fbConfirmSalesMonth, fbConfirmFcLessonMonth, fbClosePayMonth,
   fbVerifyMemberViews, fbMemberAppStatus,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
@@ -444,12 +444,12 @@ import {
 } from "./data/repositories/sales-repository.js";
 import { EXTRA_STATE, extraPayOf, extrasByInstructor, extrasTotal } from "./features/sales/extra-pay.js";
 import {
-  TAX_TYPE, TAX_TYPE_LABELS, adjustmentErrors, adjustmentsOf, payMonthStatusView, payPeriodLabel, payStatementOf,
-  statementFromSnapshot, statementSnapshot, taxTypeOf,
+  NET_LABELS, TAX_TYPE, TAX_TYPE_LABELS, adjustmentErrors, adjustmentsOf, isCanceled, payMonthStatusView, payPeriodLabel, payStatementCsv, payStatementOf,
+  statementFromSnapshot, statementOfRevision, taxTypeOf,
 } from "./features/payroll/pay-statement.js";
 import {
-  addPayAdjustment, closePayMonth, deletePayAdjustment, listMyPayAdjustments, listPayAdjustments, listPayStatements,
-  readPayMonth, readPayStatement, readPayTaxSettings, reopenPayMonth, savePayTaxSettings,
+  addPayAdjustment, cancelPayAdjustment, listMyPayAdjustments, listPayAdjustments, listPayCloseRuns, listPayStatements,
+  markPayMonthPaid, readPayMonth, readPayStatement, readPayTaxSettings, reopenPayMonth, savePayTaxSettings,
 } from "./data/repositories/pay-statement-repository.js";
 import { nextAggregateSort, sortAggregateRows } from "./features/records/aggregate-table.js";
 import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
@@ -17718,18 +17718,35 @@ function PayExtrasSection({ extras, lessonConfirmed, compact = false }) {
   );
 }
 
+/** 서버 급여 확정 거절 → 문구 (원본 코드 함께). */
+function payCloseFailureText(error) {
+  const details = error?.details || {};
+  const reason = String(details.reason || error?.message || error?.code || "unknown").replace(/^functions\//, "");
+  const known = {
+    totals_changed: `그 사이 숫자가 바뀌었어요 (서버 실수령 합계 ₩${won(Number(details.serverNet) || 0)}). 다시 읽은 숫자를 확인하고 다시 확정해 주세요`,
+    already_closed: "이미 확정된 달이에요",
+    nothing_to_close: "확정할 급여가 없어요",
+    not_closer: "급여 확정은 대표 · 총괄만 할 수 있어요",
+    target_required: "달을 다시 골라 주세요",
+  };
+  if (known[reason]) return { code: reason, text: `${known[reason]} (코드 ${reason})` };
+  if (/unavailable|deadline|network|aborted/.test(reason)) return { code: reason, text: `연결이 불안정해 확정하지 못했어요. 다시 눌러 주세요 (코드 ${reason})` };
+  return { code: reason, text: `급여를 확정하지 못했어요 (코드 ${reason})` };
+}
+
 /* ── 급여 명세 (2026-11-21 대표 승인): 수업료 + 수업료 외 + 조정 = 세전 → 세금 → 실수령, 다음 달 15일 지급 ──
    강사 화면과 대표 급여 집계가 같은 판을 쓴다. 대표 쪽(editable)만 조정 넣기 · 지우기 · 세금 종류 바꾸기가 붙는다.
    급여 확정된 달은 잠근다 -- 숫자는 확정 때 남긴 명세(payStatements) 그대로. 계산은 features/payroll/pay-statement.js. */
 function PayStatementSection({
   statement, month, status, editable = false, busy = false, message = "", compact = false,
-  onAddAdjustment, onDeleteAdjustment, onTaxType,
+  onAddAdjustment, onCancelAdjustment, onTaxType,
 }) {
   const [sign, setSign] = useState(-1);
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
   const [tried, setTried] = useState(false);
   const [askDelete, setAskDelete] = useState("");
+  const [cancelWhy, setCancelWhy] = useState("");
   if (!statement) return null;
   const locked = Boolean(status?.locked);
   const signed = (value) => `${value < 0 ? "−" : value > 0 ? "+" : ""}₩${won(Math.abs(value))}`;
@@ -17760,17 +17777,27 @@ function PayStatementSection({
       <div className="mt-1">
         {row("수업료", `₩${won(statement.lessons)}`, { code: "lessons", note: "확정된 수업만" })}
         {row("수업료 외", signed(statement.extras), { code: "extras", note: "확정된 매출 인센 · 그룹 인센 · FC 수업료" })}
-        {statement.adjustments.map((item) => row(`조정 · ${String(item.reason || "")}`, signed(Math.round(Number(item.amount) || 0)), {
+        {/* 조정은 지우지 않고 취소 기록 (2026-11-22 외부 검토 2차) -- 취소한 줄은 줄을 그어 남기고 계산에서만 뺀다. */}
+        {statement.adjustments.map((item) => (isCanceled(item) ? (
+          <div key={item.id || item.reason} className="flex items-start gap-2" style={{ padding: "7px 0", borderBottom: `1px solid ${LINE}` }} data-pay-line="adjust-canceled">
+            <span className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, color: FAINT, textDecoration: "line-through" }}>조정 · {String(item.reason || "")} {signed(Math.round(Number(item.amount) || 0))}</span>
+            <span className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>취소됨 · {String(item.cancelReason || "")}</span>
+          </div>
+        ) : row(`조정 · ${String(item.reason || "")}`, signed(Math.round(Number(item.amount) || 0)), {
           code: "adjust", color: Number(item.amount) < 0 ? BAD : INK,
           action: editable && !locked && item.id ? (askDelete === item.id
-            ? <span className="flex shrink-0 gap-2"><button type="button" onClick={() => { setAskDelete(""); onDeleteAdjustment?.(item); }} className="font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>정말 지우기</button><button type="button" onClick={() => setAskDelete("")} style={{ fontSize: TYPE.caption, color: SUB }}>그만</button></span>
-            : <button type="button" onClick={() => setAskDelete(item.id)} className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>지우기</button>) : null,
-        }))}
+            ? <span className="flex shrink-0 flex-wrap items-center gap-1.5">
+                <input value={cancelWhy} onChange={(event) => setCancelWhy(event.target.value)} maxLength={100} placeholder="취소 사유" aria-label="취소 사유" className="h-8 w-28 px-2" style={{ borderRadius: 6, border: `1px solid ${LINE}`, fontSize: TYPE.caption, backgroundColor: CARD, color: INK }} />
+                <button type="button" disabled={!cancelWhy.trim()} onClick={() => { onCancelAdjustment?.(item, cancelWhy.trim()); setAskDelete(""); setCancelWhy(""); }} className="font-bold disabled:opacity-40" style={{ fontSize: TYPE.caption, color: BAD }}>취소 기록</button>
+                <button type="button" onClick={() => { setAskDelete(""); setCancelWhy(""); }} style={{ fontSize: TYPE.caption, color: SUB }}>그만</button>
+              </span>
+            : <button type="button" onClick={() => setAskDelete(item.id)} className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>취소</button>) : null,
+        })))}
         {row("세전 합계", `₩${won(statement.gross)}`, { code: "gross", strong: true })}
         {row(`세금 · ${TAX_TYPE_LABELS[statement.taxType] || ""}`, statement.tax.total ? `−₩${won(statement.tax.total)}` : "₩0", { code: "tax", color: statement.tax.total ? BAD : INK })}
       </div>
       <div className="mt-2 flex items-end gap-2" style={{ padding: "10px 12px", borderRadius: 12, backgroundColor: TINT }} data-pay-net-total>
-        <p className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 800, color: BRAND_D }}>실수령 (세후)</p>
+        <p className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 800, color: BRAND_D }}>{NET_LABELS[statement.taxType] || NET_LABELS[TAX_TYPE.FREELANCE]}</p>
         <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.heading, fontWeight: 800, color: BRAND_D }}>₩{won(statement.net)}</p>
       </div>
       {locked ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>급여가 확정된 달이에요. 숫자가 바뀌지 않아요.</p>
@@ -17859,7 +17886,9 @@ function InstructorPayCard({ pay, loading, error, upcoming = null, extras = null
           {/* 세전 · 세후 한 줄 (2026-11-21 대표: "세전 세후 금액 나눠서 강사가 한 번에"). 급여일은 다음 달 15일. */}
           {!loading && !error && statement ? (
             <p className="tabular-nums" data-pay-net style={{ fontSize: TYPE.caption, fontWeight: 600, color: SUB, overflowWrap: "anywhere" }}>
-              {payPeriodLabel(month)} · 실수령 ₩{won(statement.net)} (세전 ₩{won(statement.gross)})
+              {statement.taxType === TAX_TYPE.NONE
+                ? `${payPeriodLabel(month)} · 지급액 ₩${won(statement.gross)} (공제는 따로)`
+                : `${payPeriodLabel(month)} · 실수령 ₩${won(statement.net)} (세전 ₩${won(statement.gross)})`}
             </p>
           ) : null}
           {!loading && !error && !statement && statementNote ? (
@@ -24897,7 +24926,7 @@ const MEMBER_VIEW_MISMATCH_LABEL = {
 
 function PayrollSummary({
   organization, locationStore, instructorStore, payrollStore, clientStore, passStore,
-  onRetryOrganization, onToast, now = () => new Date(), initialState = null, currentUserId = "",
+  onRetryOrganization, onToast, now = () => new Date(), initialState = null, currentUserId = "", onClosePay = fbClosePayMonth,
 }) {
   const [month, setMonth] = useState(initialState?.month || currentMonth(now()));
   const [summary, setSummary] = useState(initialState?.summary || null);
@@ -24921,6 +24950,7 @@ function PayrollSummary({
   const [reopenWhy, setReopenWhy] = useState("");
   /* 수업도 인센도 없는 강사에게 조정을 넣으려고 대표가 고른 강사 (화면에만). */
   const [manualPayRows, setManualPayRows] = useState([]);
+  const [askPaid, setAskPaid] = useState(false);
   const [loading, setLoading] = useState(!initialState);
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
   const [open, setOpen] = useState(initialState?.open || "");
@@ -24948,7 +24978,7 @@ function PayrollSummary({
       /* 심사용 회원을 빼려면 명부가 필요하다 -- 원장 항목에는 그 표시가
          없다. 이 화면이 예전에는 명부를 읽지 않았고, 읽기 한 번이 느는 대신
          가짜 회차가 강사 급여에 섞이지 않는다. */
-      const [payrollClients, instructorResult, locationResult, passResult, groupPayroll, salesMonthResult, fcMonthResult, adjustmentResult, payMonthResult, statementResult, taxResult] = await Promise.all([
+      const [payrollClients, instructorResult, locationResult, passResult, groupPayroll, salesMonthResult, fcMonthResult, adjustmentResult, payMonthResult, statementResult, taxResult, runResult] = await Promise.all([
         toleratingReadFailure(listClients(organizationId, { store: clientStore })),
         toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
@@ -24963,6 +24993,7 @@ function PayrollSummary({
         toleratingReadFailure(readPayMonth(organizationId, month)),
         toleratingReadFailure(listPayStatements(organizationId, month)),
         toleratingReadFailure(readPayTaxSettings(organizationId)),
+        toleratingReadFailure(listPayCloseRuns(organizationId, month)),
       ]);
       /* 집계보다 명부를 먼저 읽는다. 계정을 바꾼 강사를 한 사람으로 합치려면
          previousUids 가 있어야 하고, 그것은 소속 문서에만 있다 -- 나중에
@@ -24983,7 +25014,7 @@ function PayrollSummary({
       setPasses(passResult.items);
       setExtraDocs({ salesMonths: salesMonthResult.items, fcMonths: fcMonthResult.items, errorCode: salesMonthResult.errorCode || fcMonthResult.errorCode || "" });
       setPayDocs({
-        adjustments: adjustmentResult.items || [], payMonth: payMonthResult.items || null, statements: statementResult.items || [], tax: taxResult.items || null,
+        adjustments: adjustmentResult.items || [], payMonth: payMonthResult.items || null, statements: statementResult.items || [], tax: taxResult.items || null, runs: runResult.items || [],
         errorCode: adjustmentResult.errorCode || payMonthResult.errorCode || statementResult.errorCode || taxResult.errorCode || "",
       });
       setNamesFailed(
@@ -25091,7 +25122,9 @@ function PayrollSummary({
     const adjustments = adjustmentsOf(payDocs.adjustments, row.instructorId, canonicalInstructorId);
     if (payStatus.locked) {
       const saved = payDocs.statements.find((item) => canonicalInstructorId(String(item.instructorId)) === String(row.instructorId));
-      return saved ? statementFromSnapshot(saved, adjustments) : null;
+      /* 되돌린 뒤 다시 확정하면 회차가 오른다 -- 지금 회차의 명세만 쓴다. */
+      const current = statementOfRevision(saved, payDocs.payMonth);
+      return current ? statementFromSnapshot(current, adjustments) : null;
     }
     return payStatementOf({ lessons: row.total, extrasConfirmed: extras.get(row.instructorId)?.confirmedTotal || 0, adjustments, taxType: taxTypeOf(payDocs.tax, row.instructorId) });
   };
@@ -25115,21 +25148,48 @@ function PayrollSummary({
   };
   const currentUid = currentUserId;
   const addAdjustment = (instructorId) => (draft) => payWrite("adjust_add", () => addPayAdjustment(organizationId, { instructorId, month, ...draft }, { uid: currentUid }));
-  const removeAdjustment = (item) => payWrite("adjust_delete", () => deletePayAdjustment(organizationId, item.id));
+  const cancelAdjustment = (item, reason) => payWrite("adjust_cancel", () => cancelPayAdjustment(organizationId, item.id, reason, { uid: currentUid }));
   const setTaxType = (instructorId) => (type) => {
     const now = new Set((payDocs.tax?.noTaxIds || []).map(String));
     if (type === TAX_TYPE.NONE) now.add(String(instructorId)); else now.delete(String(instructorId));
     return payWrite("tax", () => savePayTaxSettings(organizationId, [...now], { uid: currentUid }));
   };
-  const closeMonth = () => (closeBlockers.length ? setPayMessage(`자료를 다 읽지 못해 확정하지 않았어요 (코드 close_blocked)`) : payWrite("close", () => closePayMonth(organizationId, month,
-    allInstructorRows.map((row) => ({ instructorId: row.instructorId, snapshot: statementSnapshot(statements.get(row.instructorId)) })), { uid: currentUid })));
+  /* 급여 확정은 서버가 한다 -- 원자료로 다시 계산하고, 대표가 지금 보는 실수령 합계와 다르면 거절한다 (2026-11-22 외부 검토 2차). */
+  const closeMonth = async () => {
+    if (closeBlockers.length) { setPayMessage("자료를 다 읽지 못해 확정하지 않았어요 (코드 close_blocked)"); return; }
+    setPayBusy(true); setPayMessage("");
+    try {
+      await onClosePay({ organizationId, month, expectedNet: statementTotals.net });
+      await reload();
+    } catch (error) {
+      const failure = payCloseFailureText(error);
+      setPayMessage(failure.text);
+      deviceLog("pay_close_failed", { feature: "pay_statement", stage: "close", errorDomain: "functions_callable", errorCode: String(error?.code || "unknown"), serverCode: failure.code, appBuild: APP_BUILD_LABEL });
+      if (failure.code === "totals_changed") await reload();
+    } finally { setPayBusy(false); }
+  };
+  const markPaid = () => payWrite("paid", () => markPayMonthPaid(organizationId, month, { uid: currentUid }));
+  const downloadStatements = () => {
+    try {
+      const csv = payStatementCsv({ month, status: payStatus.label, revision: Number(payDocs.payMonth?.revision || 0),
+        rows: allInstructorRows.map((row) => ({ name: nameOfInstructor(row.instructorId), statement: statements.get(row.instructorId) })) });
+      const url = globalThis.URL.createObjectURL(new globalThis.Blob([csv], { type: "text/csv;charset=utf-8" }));
+      const anchor = globalThis.document.createElement("a");
+      anchor.href = url;
+      anchor.download = `pilateacher-pay-statements-${month}${payStatus.locked ? `-r${payDocs.payMonth?.revision || 0}` : "-draft"}.csv`;
+      anchor.click();
+      globalThis.URL.revokeObjectURL(url);
+    } catch (error) {
+      onToast?.({ ok: false, msg: `파일을 만들지 못했어요 (코드 ${error?.name || "unknown"})` });
+    }
+  };
   const reopenMonth = () => {
     if (!reopenWhy.trim()) { setPayMessage("되돌리는 사유를 적어 주세요 (코드 reopen_reason_required)"); return undefined; }
     return payWrite("reopen", async () => { await reopenPayMonth(organizationId, month, reopenWhy, { uid: currentUid }); setReopenWhy(""); });
   };
   const statementSlotFor = (row) => (statements.get(row.instructorId) ? (
     <PayStatementSection compact statement={statements.get(row.instructorId)} month={month} status={payStatus} editable={!closeBlockers.length} busy={payBusy}
-      onAddAdjustment={addAdjustment(row.instructorId)} onDeleteAdjustment={removeAdjustment} onTaxType={setTaxType(row.instructorId)} />
+      onAddAdjustment={addAdjustment(row.instructorId)} onCancelAdjustment={cancelAdjustment} onTaxType={setTaxType(row.instructorId)} />
   ) : (
     <p className="mt-3 rounded-lg px-3 py-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN, backgroundColor: WARN_S }} data-pay-statement-missing>
       {payDocs.errorCode ? `확정 명세를 읽지 못했어요 (코드 ${payDocs.errorCode}). 지금 원장으로 다시 계산하지 않아요.` : "이 달 확정 명세에 이 강사가 없어요 -- 확정할 때 목록에 없었어요. 되돌린 뒤 다시 확정해 주세요."}
@@ -25165,6 +25225,30 @@ function PayrollSummary({
             {pickable.map((member) => <option key={member.userId} value={member.userId}>{member.displayName || member.userId}</option>)}
           </select>
         </label>
+      ) : null}
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button type="button" onClick={downloadStatements} className="flex h-9 items-center gap-1.5 px-3 font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }} data-pay-statement-csv>
+          <Download size={13} />명세 CSV{payStatus.locked ? "" : " (집계 중)"}
+        </button>
+        {payStatus.code === "closed" ? (
+          askPaid ? (
+            <>
+              <button type="button" disabled={payBusy} onClick={() => { setAskPaid(false); markPaid(); }} className="h-9 px-3 font-extrabold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: GOOD, color: "#fff", fontSize: TYPE.caption }}>정말 지급 완료</button>
+              <button type="button" onClick={() => setAskPaid(false)} className="h-9 px-3 font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>그만두기</button>
+            </>
+          ) : <button type="button" disabled={payBusy} onClick={() => setAskPaid(true)} className="h-9 px-3 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: GOOD_S, color: GOOD, fontSize: TYPE.caption }} data-pay-mark-paid>지급 완료로 표시</button>
+        ) : null}
+      </div>
+      {(payDocs.runs || []).length ? (
+        <details className="mt-2" data-pay-close-runs>
+          <summary className="cursor-pointer" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>확정 이력 {payDocs.runs.length}회</summary>
+          {payDocs.runs.map((run) => (
+            <p key={run.id} className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>
+              {run.revision}회차 · {kstDate(run.closedAt)} · 강사 {run.totals?.instructors || 0}명 · 세전 ₩{won(run.totals?.gross || 0)} · 실수령 ₩{won(run.totals?.net || 0)}
+              {run.previous?.reopenReason ? ` · 앞 회차 되돌린 사유: ${run.previous.reopenReason}` : ""}
+            </p>
+          ))}
+        </details>
       ) : null}
       {payStatus.locked ? (
         <div className="mt-2 flex flex-wrap gap-2">
@@ -25255,8 +25339,8 @@ function PayrollSummary({
               const value = statements.get(row.instructorId)?.adjustTotal || 0;
               return value ? <span style={{ color: value < 0 ? BAD : INK }}>{value < 0 ? "−" : "+"}₩{won(Math.abs(value))}</span> : <span style={{ color: FAINT }}>—</span>;
             } },
-            { key: "gross", label: "세전", align: "right", sortValue: (row) => statements.get(row.instructorId)?.gross || 0, render: (row) => `₩${won(statements.get(row.instructorId)?.gross || 0)}` },
-            { key: "tax", label: "세금", align: "right", sortValue: (row) => statements.get(row.instructorId)?.tax.total || 0, render: (row) => `₩${won(statements.get(row.instructorId)?.tax.total || 0)}` },
+            { key: "gross", label: "세전", align: "right", sortValue: (row) => statements.get(row.instructorId)?.gross || 0, render: (row) => (statements.get(row.instructorId) ? `₩${won(statements.get(row.instructorId).gross)}` : "—") },
+            { key: "tax", label: "세금", align: "right", sortValue: (row) => statements.get(row.instructorId)?.tax.total || 0, render: (row) => (statements.get(row.instructorId) ? `₩${won(statements.get(row.instructorId).tax.total)}` : "—") },
             { key: "net", label: "실수령", align: "right", sortValue: (row) => statements.get(row.instructorId)?.net ?? null, render: (row) => (statements.get(row.instructorId)
               ? <span className="font-extrabold">₩{won(statements.get(row.instructorId).net)}</span>
               : <span className="font-bold" style={{ color: WARN }}>명세 없음</span>) },
@@ -32571,6 +32655,8 @@ export function createAppScreenSmokeCases() {
     )) },
     { name: "예상 급여 카드", element: <InstructorPayCard pay={smokePay} loading={false} error="" onOpen={noop} /> },
     /* 수업료 외 (2026-11-21): 확정된 매출 인센 40만 원은 카드에 "+ 인센", 내 급여에는 줄별 + 이번 달 받을 돈. FC 수업료는 확정 전. */
+    { name: "예상 급여 카드 · 공제 없음", element: <InstructorPayCard pay={smokePay} loading={false} error="" onOpen={noop} month="2026-11"
+      statement={payStatementOf({ lessons: 500000, taxType: TAX_TYPE.NONE })} /> },
     { name: "예상 급여 카드 · 자료 누락", element: <InstructorPayCard pay={smokePay} loading={false} error="" onOpen={noop} month="2026-11"
       statementNote="일부 자료를 읽지 못해 실수령을 계산하지 않았어요 (코드 permission-denied)" /> },
     { name: "예상 급여 카드 · 인센", element: <InstructorPayCard pay={smokePay} loading={false} error="" onOpen={noop} month="2026-11"
@@ -33455,7 +33541,8 @@ export function createAppScreenSmokeCases() {
     { name: "급여 집계 · 명세 · PC", element: payrollSummary(smokeOwner, {
       summary: smokePayroll, ...smokePayrollNames, wide: true, selected: "u1",
       extraDocs: { salesMonths: [{ instructorId: "u1", status: "confirmed", snapshot: { total: 5000000, bracketAmount: 250000, otBonus: 50000, groupBase: 2000000, groupBonus: 100000, clawbackTotal: 0, payout: 400000 } }], fcMonths: [], errorCode: "" },
-      payDocs: { adjustments: [{ id: "adj1", instructorId: "u1", month: "2026-09", amount: -30000, reason: "대타 정산 차감", createdAt: new Date(2026, 9, 1) }],
+      payDocs: { adjustments: [{ id: "adj1", instructorId: "u1", month: "2026-09", amount: -30000, reason: "대타 정산 차감", createdAt: new Date(2026, 9, 1) },
+        { id: "adj0", instructorId: "u1", month: "2026-09", amount: -99999, reason: "잘못 넣은 조정", cancelReason: "중복 입력", canceledAt: new Date(2026, 9, 2), createdAt: new Date(2026, 9, 1) }],
         payMonth: null, statements: [], tax: { noTaxIds: ["u2"] }, errorCode: "" },
     }) },
     /* 급여 확정된 달: 숫자는 확정 때 남긴 명세 그대로(999,999 로 표시해 계산값이 아님을 본다), 조정 칸은 잠긴다. */
@@ -33463,6 +33550,19 @@ export function createAppScreenSmokeCases() {
       summary: smokePayroll, ...smokePayrollNames, wide: true, selected: "u1",
       payDocs: { adjustments: [], payMonth: { status: "closed" }, tax: null, errorCode: "",
         statements: [{ instructorId: "u1", lessons: 465000, extras: 0, adjustTotal: 0, gross: 1034000, incomeTax: 31020, localTax: 3100, net: 999999, taxType: "3.3" }] },
+    }) },
+    /* 2026-11-22 외부 검토 2차: 지급 완료 · 확정 이력 2회 · u2 명세는 앞 회차 것이라 숫자로 쓰지 않는다. */
+    { name: "급여 집계 · 지급 완료 · 이력", element: payrollSummary(smokeOwner, {
+      summary: smokePayroll, ...smokePayrollNames, wide: true, selected: "u1",
+      payDocs: { adjustments: [], payMonth: { status: "paid", revision: 2 }, tax: null, errorCode: "",
+        statements: [
+          { instructorId: "u1", revision: 2, lessons: 465000, extras: 0, adjustTotal: 0, gross: 465000, incomeTax: 13950, localTax: 1390, net: 449660, taxType: "3.3" },
+          { instructorId: "u2", revision: 1, lessons: 200000, extras: 0, adjustTotal: 0, gross: 200000, incomeTax: 6000, localTax: 600, net: 193400, taxType: "3.3" },
+        ],
+        runs: [
+          { id: "2026-09_r2", revision: 2, closedAt: new Date("2026-10-02T03:00:00Z"), totals: { instructors: 2, gross: 665000, net: 643060 }, previous: { status: "reopened", revision: 1, reopenReason: "조정 추가" } },
+          { id: "2026-09_r1", revision: 1, closedAt: new Date("2026-10-01T03:00:00Z"), totals: { instructors: 2, gross: 665000, net: 643060 }, previous: null },
+        ] },
     }) },
     /* 2026-11-22 검토: 매출 인센을 못 읽었으면 급여 확정을 막는다 (빈 값으로 확정하지 않는다). */
     { name: "급여 집계 · 자료 누락", element: payrollSummary(smokeOwner, {
@@ -34726,7 +34826,10 @@ export default function App() {
   const myStatement = useMemo(() => {
     if (!instructorPay || !payDocs || payMissingCode) return null;
     const adjustments = adjustmentsOf(payDocs.adjustments, account?.id || "");
-    if (payStatus?.locked) return payDocs.statementDoc ? statementFromSnapshot(payDocs.statementDoc, adjustments) : null;
+    if (payStatus?.locked) {
+      const current = statementOfRevision(payDocs.statementDoc, payDocs.payMonth);
+      return current ? statementFromSnapshot(current, adjustments) : null;
+    }
     return payStatementOf({ lessons: instructorPay.total, extrasConfirmed: payExtras?.confirmedTotal || 0, adjustments, taxType: taxTypeOf(payDocs.tax, account?.id || "") });
   }, [instructorPay, payDocs, payExtras, payStatus?.locked, account?.id, payMissingCode]);
   const myStatementNote = !payDocs || myStatement ? ""

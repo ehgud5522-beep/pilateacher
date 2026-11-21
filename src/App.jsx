@@ -81,7 +81,7 @@ import {
   careChoices, careMinutesOfGrade, careOnlyClient, settlementSkipMessage,
 } from "./features/schedule/care-options.js";
 import GroupPayrollAdmin from "./features/schedule/GroupPayrollAdmin.jsx";
-import { useNarrowViewport } from "./features/ui/viewport.js";
+import { useNarrowViewport, useWideViewport } from "./features/ui/viewport.js";
 import { upcomingPayPreview, upcomingPayRows } from "./features/schedule/upcoming-pay.js";
 import {
   PAY_FILTERS as MY_PAY_FILTERS, PAY_STATUS_LABEL as MY_PAY_STATUS_LABEL, myPayModel, myPayWeeks, whenLabel,
@@ -419,7 +419,7 @@ import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/serve
 import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
 import { listLessonNotesBetween, listRecordActivity, writeRecordActivity } from "./data/repositories/record-activity-repository.js";
 import {
-  RECORD_TONE, countDeviceRecordActivity, instructorRecordBoard, monthOf as monthOfRecord, previousRecordMonth,
+  RECORD_RATE_GOOD, RECORD_RATE_LOW, RECORD_TONE, countDeviceRecordActivity, instructorRecordBoard, monthOf as monthOfRecord, previousRecordMonth,
   recordActivityDocument, recordActivitySignature, recordBoardSummary, recordRowView,
 } from "./features/records/record-activity.js";
 import { beforeAfterBoard, shareInstructorView, shareMemberLabel } from "./features/records/before-after-board.js";
@@ -428,6 +428,7 @@ import {
   RADAR_EXPIRY_DAYS, RADAR_REMAINING_MAX, RATE_WINDOW_DAYS, radarPassLabel, radarSignalLabel, radarSummary, renewalRadar, renewalRateLabel,
 } from "./features/records/renewal-radar.js";
 import { groupRowsByBranch, pickBranch } from "./features/records/branch-groups.js";
+import { nextAggregateSort, sortAggregateRows } from "./features/records/aggregate-table.js";
 import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
 import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js";
 import { RENEWAL_ALERT, livePassesOf, renewalForecast, renewalLine, renewalRates } from "../functions/shared/renewal-forecast.mjs";
@@ -26759,6 +26760,8 @@ function InstructorRecordBoard({ organization, instructorStore, clientStore, ini
   const [month, setMonth] = useState(initialMonth || thisMonth);
   const [state, setState] = useState(() => initialState || { rows: null, error: "", notesError: "", namesError: "", instructors: [], locations: [] });
   const [branch, setBranch] = useState("");
+  const [selected, setSelected] = useState("");
+  const wide = useWideViewport(initialState?.wide);
   const organizationId = organization?.organizationId || "";
   const load = useCallback(async () => {
     if (!organizationId) return;
@@ -26797,10 +26800,29 @@ function InstructorRecordBoard({ organization, instructorStore, clientStore, ini
   const recordBranch = pickBranch(recordGroups, branch);
   const recordShown = recordGroups.length > 1 ? (recordGroups.find((group) => group.id === recordBranch)?.rows || []) : (state.rows || []);
   const summary = recordBoardSummary(recordShown);
+  const recordSelected = recordShown.find((row) => row.instructorId === selected) || (wide ? recordShown[0] : null) || null;
+  /* 강사 한 줄의 자세한 숫자 -- 폰은 카드 안, PC 는 오른쪽 칸. */
+  const recordCard = (row) => {
+    const view = recordRowView(row);
+    return (
+      <div data-record-detail={row.instructorId}>
+        <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+          {row.attended === null
+            ? `수업기록 — ${view.detail || ""}`
+            : `수업기록 ${row.recorded}/${row.attended}건${row.draft ? ` · 확인 안 한 AI 기록 ${row.draft}건` : ""}${view.detail ? ` · ${view.detail}` : ""}`}
+        </div>
+        <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>
+          {state.notesError
+            ? `확정 수업 ${row.confirmed}건`
+            : `확정 수업 ${row.confirmed}건 · 회원에게 보낸 말 ${row.withNote}건${row.noteRate === null ? "" : ` (${Math.round(row.noteRate * 100)}%)`}`}
+        </div>
+        <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>
+          {row.checkedAt ? `${recordCheckedLabel(row.checkedAt)}${row.appBuild ? ` · 앱 ${row.appBuild}` : ""} · ` : ""}코드 {view.code}
+        </div>
+      </div>
+    );
+  };
   const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
-  const chip = (tone, label, value) => (
-    <span className="px-2 py-1 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: RECORD_TONE_COLOR[tone](), backgroundColor: RECORD_TONE_BG[tone]() }}>{label} {value}</span>
-  );
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-record-board>
       <div className="flex items-center justify-between">
@@ -26817,48 +26839,49 @@ function InstructorRecordBoard({ organization, instructorStore, clientStore, ini
         {" "}<b style={{ color: INK }}>회원에게 보낸 말</b>은 확정한 수업 중 회원 앱으로 한마디를 보낸 수업이에요.
         {" "}기록 내용 · 회원 이름은 여기 오지 않아요. 기록이 적은 강사가 위에 있어요.
       </p>
-      <BranchTabs groups={recordGroups} selected={recordBranch} onSelect={setBranch} countLabel={(group) => `${group.rows.length}명`} />
+      <BranchTabs groups={recordGroups} selected={recordBranch} onSelect={(id) => { setBranch(id); setSelected(""); }} countLabel={(group) => `${group.rows.length}명`} />
       {state.rows && state.rows.length ? (
-        <div className="mt-2 flex flex-wrap gap-1.5" data-record-summary>
-          {chip(RECORD_TONE.GOOD, "잘함", summary.good)}
-          {chip(RECORD_TONE.WARN, "보통", summary.partial)}
-          {chip(RECORD_TONE.BAD, "부족", summary.low)}
-          {chip(RECORD_TONE.MUTED, "앱 보고 없음", summary.unknown)}
-        </div>
+        <SummaryTiles items={[
+          { label: "잘함", value: `${summary.good}명`, color: summary.good ? GOOD : INK, code: "record_good" },
+          { label: "보통", value: `${summary.partial}명`, color: summary.partial ? WARN : INK, code: "record_partial" },
+          { label: "부족", value: `${summary.low}명`, color: summary.low ? BAD : INK, code: "record_low" },
+          { label: "앱 보고 없음", value: `${summary.unknown}명`, code: "no_device_report" },
+        ]} />
       ) : null}
       {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
       {state.notesError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>회원에게 보낸 말을 읽지 못해 그 칸은 비어 있어요 (코드 {state.notesError})</p> : null}
       {state.namesError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>강사 이름 · 회원 명부 일부를 읽지 못했어요 (코드 {state.namesError})</p> : null}
       {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
       {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>이 달에 확정한 수업 · 보고가 없어요.</p> : null}
-      <div className="mt-3 space-y-2">
-        {recordShown.map((row) => {
-          const view = recordRowView(row);
-          return (
-            <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-record-row={view.code}>
-              <div className="flex items-center justify-between gap-2">
-                <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>
-                  {row.name || row.instructorId}{row.active ? "" : " · 소속 아님"}
-                </span>
-                <span className="shrink-0 px-2 py-0.5 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: RECORD_TONE_COLOR[view.tone](), backgroundColor: RECORD_TONE_BG[view.tone]() }}>{view.label}</span>
+      {wide ? (
+        <AggregateSplit wide detail={recordSelected ? <div className="space-y-2"><p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{recordSelected.name || recordSelected.instructorId}</p>{recordCard(recordSelected)}</div> : null}>
+          <InstructorTable rows={recordShown} selected={recordSelected?.instructorId} onSelect={setSelected} columns={[
+            { key: "name", label: "강사", firstDir: "asc", sortValue: (row) => row.name || row.instructorId, render: (row) => <span className="font-bold">{row.name || row.instructorId}{row.active ? "" : " · 소속 아님"}</span> },
+            { key: "rate", label: "수업기록", align: "right", sortValue: (row) => row.rate, render: (row) => { const view = recordRowView(row); return <TonePill color={RECORD_TONE_COLOR[view.tone]()} background={RECORD_TONE_BG[view.tone]()}>{view.label}</TonePill>; } },
+            { key: "recorded", label: "기록 / 출석", align: "right", sortValue: (row) => row.attended, render: (row) => (row.attended === null ? "—" : `${row.recorded}/${row.attended}`) },
+            { key: "draft", label: "확인 안 한 AI", align: "right", sortValue: (row) => row.draft, render: (row) => (row.draft ? row.draft : "—") },
+            { key: "confirmed", label: "확정 수업", align: "right", sortValue: (row) => row.confirmed, render: (row) => row.confirmed },
+            { key: "notes", label: "보낸 말", align: "right", sortValue: (row) => (state.notesError ? null : row.noteRate), render: (row) => (state.notesError ? "—" : `${row.withNote}${row.noteRate === null ? "" : ` (${Math.round(row.noteRate * 100)}%)`}`) },
+          ]} />
+        </AggregateSplit>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {recordShown.map((row) => {
+            const view = recordRowView(row);
+            return (
+              <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-record-row={view.code}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>
+                    {row.name || row.instructorId}{row.active ? "" : " · 소속 아님"}
+                  </span>
+                  <span className="shrink-0 px-2 py-0.5 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: RECORD_TONE_COLOR[view.tone](), backgroundColor: RECORD_TONE_BG[view.tone]() }}>{view.label}</span>
+                </div>
+                {recordCard(row)}
               </div>
-              <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
-                {row.attended === null
-                  ? `수업기록 — ${view.detail || ""}`
-                  : `수업기록 ${row.recorded}/${row.attended}건${row.draft ? ` · 확인 안 한 AI 기록 ${row.draft}건` : ""}${view.detail ? ` · ${view.detail}` : ""}`}
-              </div>
-              <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>
-                {state.notesError
-                  ? `확정 수업 ${row.confirmed}건`
-                  : `확정 수업 ${row.confirmed}건 · 회원에게 보낸 말 ${row.withNote}건${row.noteRate === null ? "" : ` (${Math.round(row.noteRate * 100)}%)`}`}
-              </div>
-              <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>
-                {row.checkedAt ? `${recordCheckedLabel(row.checkedAt)}${row.appBuild ? ` · 앱 ${row.appBuild}` : ""} · ` : ""}코드 {view.code}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
@@ -26878,6 +26901,7 @@ function BeforeAfterShareBoard({ organization, instructorStore, clientStore, pas
   const [state, setState] = useState(() => initialState || { rows: null, error: "", namesError: "", truncated: false, instructors: [], locations: [] });
   const [open, setOpen] = useState("");
   const [branch, setBranch] = useState("");
+  const wide = useWideViewport(initialState?.wide);
   const organizationId = organization?.organizationId || "";
   const load = useCallback(async () => {
     if (!organizationId) return;
@@ -26915,6 +26939,23 @@ function BeforeAfterShareBoard({ organization, instructorStore, clientStore, pas
   const shareGroups = groupRowsByBranch(state.rows || [], { instructors: state.instructors || [], locations: state.locations || [], canonicalInstructorId: canonicalInstructorIdFrom(state.instructors || []) });
   const shareBranch = pickBranch(shareGroups, branch);
   const shareShown = shareGroups.length > 1 ? (shareGroups.find((group) => group.id === shareBranch)?.rows || []) : (state.rows || []);
+  const shareSelected = shareShown.find((row) => row.instructorId === open) || (wide ? shareShown[0] : null) || null;
+  const shareTotals = shareShown.reduce((sum, row) => ({ linked: sum.linked + row.linked, everSent: sum.everSent + row.everSent, neverSent: sum.neverSent + row.neverSent, sentThisMonth: sum.sentThisMonth + row.sentThisMonth }), { linked: 0, everSent: 0, neverSent: 0, sentThisMonth: 0 });
+  /* 회원별 마지막으로 보낸 날 -- 폰은 펼침, PC 는 오른쪽 칸. */
+  const shareMemberList = (row) => (
+    <div className="space-y-1" data-share-members>
+      {row.members.map((member) => {
+        const label = shareMemberLabel(member);
+        return (
+          <div key={member.clientId} className="flex items-center justify-between gap-2 px-2 py-1.5" style={{ borderRadius: 8, backgroundColor: CARD }} data-share-member={label.code}>
+            <span className="min-w-0 flex-1 truncate font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{member.name || "이름 모름"}</span>
+            <span className="min-w-0 text-right" style={{ fontSize: TYPE.caption, color: SHARE_TONE_COLOR[label.tone]() }}>{label.label}</span>
+          </div>
+        );
+      })}
+      {!row.members.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>담당 회원이 없어요.</p> : null}
+    </div>
+  );
   return (
     <section className="mt-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-before-after-board>
       <div className="flex items-center justify-between">
@@ -26936,6 +26977,32 @@ function BeforeAfterShareBoard({ organization, instructorStore, clientStore, pas
       {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
       {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>담당 회원 · 보낸 카드가 없어요.</p> : null}
       <BranchTabs groups={shareGroups} selected={shareBranch} onSelect={(id) => { setBranch(id); setOpen(""); }} countLabel={(group) => `${group.rows.length}명`} />
+      {state.rows && state.rows.length ? (
+        <SummaryTiles items={[
+          { label: "앱 연결 담당 회원", value: `${shareTotals.linked}명`, code: "share_linked" },
+          { label: "한 번이라도 받음", value: `${shareTotals.everSent}명`, color: GOOD, code: "share_ever_sent" },
+          { label: "보낸 적 없음", value: `${shareTotals.neverSent}명`, color: shareTotals.neverSent ? BAD : INK, code: "share_never_sent" },
+          { label: "이 달 보낸 카드", value: `${shareTotals.sentThisMonth}장`, code: "share_this_month" },
+        ]} />
+      ) : null}
+      {wide ? (
+        <AggregateSplit wide detail={shareSelected ? (
+          <div data-share-detail={shareSelected.instructorId}>
+            <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{shareSelected.name || shareSelected.instructorId}</p>
+            <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{`받은 회원 ${shareSelected.everSent}/${shareSelected.linked}명 · 이 달 보낸 카드 ${shareSelected.sentThisMonth}장 · 회원 열람 ${shareSelected.readThisMonth}장`}</p>
+            <div className="mt-2">{shareMemberList(shareSelected)}</div>
+          </div>
+        ) : null}>
+          <InstructorTable rows={shareShown} selected={shareSelected?.instructorId} onSelect={setOpen} columns={[
+            { key: "name", label: "강사", firstDir: "asc", sortValue: (row) => row.name || row.instructorId, render: (row) => <span className="font-bold">{row.name || row.instructorId}{row.active ? "" : " · 소속 아님"}</span> },
+            { key: "rate", label: "받음", align: "right", sortValue: (row) => (row.linked ? row.everSent / row.linked : null), render: (row) => { const view = shareInstructorView(row); return <TonePill color={SHARE_TONE_COLOR[view.tone]()} background={SHARE_TONE_BG[view.tone]()}>{view.label}</TonePill>; } },
+            { key: "ever", label: "받은 회원", align: "right", sortValue: (row) => row.everSent, render: (row) => `${row.everSent}/${row.linked}` },
+            { key: "never", label: "보낸 적 없음", align: "right", sortValue: (row) => row.neverSent, render: (row) => (row.neverSent || "—") },
+            { key: "unlinked", label: "앱 미연결", align: "right", sortValue: (row) => row.notLinked, render: (row) => (row.notLinked || "—") },
+            { key: "month", label: "이 달 보냄 · 열람", align: "right", sortValue: (row) => row.sentThisMonth, render: (row) => `${row.sentThisMonth} · ${row.readThisMonth}` },
+          ]} />
+        </AggregateSplit>
+      ) : (
       <div className="mt-3 space-y-2">
         {shareShown.map((row) => {
           const view = shareInstructorView(row);
@@ -26954,24 +27021,12 @@ function BeforeAfterShareBoard({ organization, instructorStore, clientStore, pas
                 {`이 달 보낸 카드 ${row.sentThisMonth}장 · 회원 열람 ${row.readThisMonth}장${row.unsent ? ` · 만들고 안 보낸 카드 ${row.unsent}장` : ""}`}
               </div>
               <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>코드 {view.code}</div>
-              {expanded ? (
-                <div className="mt-2 space-y-1" data-share-members>
-                  {row.members.map((member) => {
-                    const label = shareMemberLabel(member);
-                    return (
-                      <div key={member.clientId} className="flex items-center justify-between gap-2 px-2 py-1.5" style={{ borderRadius: 8, backgroundColor: CARD }} data-share-member={label.code}>
-                        <span className="min-w-0 flex-1 truncate font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{member.name || "이름 모름"}</span>
-                        <span className="min-w-0 text-right" style={{ fontSize: TYPE.caption, color: SHARE_TONE_COLOR[label.tone]() }}>{label.label}</span>
-                      </div>
-                    );
-                  })}
-                  {!row.members.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>담당 회원이 없어요.</p> : null}
-                </div>
-              ) : null}
+              {expanded ? <div className="mt-2">{shareMemberList(row)}</div> : null}
             </div>
           );
         })}
       </div>
+      )}
     </section>
   );
 }
@@ -27050,6 +27105,95 @@ function prefetchRenewalRadar(params) {
   try { startRadarLoad(params); } catch (_ignored) { /* 미리 읽기가 메뉴를 깨뜨리면 안 된다 -- 화면을 열면 다시 읽는다. */ }
 }
 
+/* ── 현황판 틀 (2026-11-21 대표 승인 "현황판 웹 배치안" 1단계) ───────────────
+   강사별 현황판은 모두 같은 다섯 줄이다: 도구 줄 · 요약 · 지점 · 강사 · 상세.
+   PC(1024px 이상)는 강사 표 + 오른쪽 상세 칸, 폰은 지금처럼 카드 + 펼침. 판정 · 숫자는 화면마다 그대로이고
+   여기는 보이는 틀만 맡는다. 줄 세우기 규칙은 features/records/aggregate-table.js. */
+
+/** 요약 숫자 줄. 폰 두 칸, PC 네 칸. */
+function SummaryTiles({ items }) {
+  const list = (items || []).filter(Boolean);
+  if (!list.length) return null;
+  return (
+    <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4" data-summary-tiles>
+      {list.map((item) => (
+        <div key={item.label} style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: "8px 12px", backgroundColor: CARD }} data-summary-tile={item.code || item.label}>
+          <p style={{ fontSize: TYPE.caption, color: SUB }}>{item.label}</p>
+          <p className="tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: item.color || INK }}>{item.value}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 강사 표 (PC). columns: [{ key, label, render(row), sortValue?(row), firstDir?, align? }]. 머리를 누르면 그 열로 줄을 세운다
+ * (한 번 더 누르면 반대로). 줄을 누르면 onSelect -- 오른쪽 상세 칸이 그 강사로 바뀐다.
+ */
+function InstructorTable({ columns, rows, rowKey = (row) => row.instructorId, selected, onSelect }) {
+  const [sort, setSort] = useState(null);
+  const sorted = useMemo(() => sortAggregateRows(rows, columns, sort), [rows, columns, sort]);
+  const headerFor = (column) => {
+    const active = sort?.key === column.key;
+    const label = `${column.label}${active ? (sort.dir === "asc" ? " ↑" : " ↓") : ""}`;
+    if (!column.sortValue) return label;
+    return (
+      <button type="button" onClick={() => setSort(nextAggregateSort(sort, column.key, column.firstDir))} className="font-bold" style={{ color: active ? INK : SUB }}>{label}</button>
+    );
+  };
+  return (
+    <div className="overflow-x-auto" style={{ border: `1px solid ${LINE}`, borderRadius: 10, backgroundColor: CARD }} data-instructor-table>
+      <table className="w-full" style={{ borderCollapse: "collapse", fontSize: TYPE.caption }}>
+        <thead>
+          <tr>
+            {columns.map((column) => (
+              <th key={column.key} scope="col" aria-sort={sort?.key === column.key ? (sort.dir === "asc" ? "ascending" : "descending") : undefined}
+                style={{ textAlign: column.align || "left", padding: "8px 10px", fontWeight: 700, color: SUB, backgroundColor: CANVAS, whiteSpace: "nowrap", borderBottom: `1px solid ${LINE}` }}>
+                {headerFor(column)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((row) => {
+            const key = rowKey(row);
+            const active = key === selected;
+            return (
+              <tr key={key || "none"} onClick={() => onSelect?.(key)} tabIndex={0} aria-selected={active}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect?.(key); } }}
+                className="cursor-pointer" style={{ backgroundColor: active ? TINT : "transparent" }} data-table-row={key || "none"}>
+                {columns.map((column) => (
+                  <td key={column.key} className="tabular-nums" style={{ textAlign: column.align || "left", padding: "8px 10px", color: INK, borderBottom: `1px solid ${LINE}`, verticalAlign: "top" }}>
+                    {column.render(row)}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** PC: 왼쪽 표 + 오른쪽 상세 칸. 폰: 안의 것만 (상세는 화면이 펼침으로 그린다). */
+function AggregateSplit({ wide, detail, children }) {
+  if (!wide) return children;
+  return (
+    <div className="mt-3 grid items-start gap-3" style={{ gridTemplateColumns: "minmax(0, 1fr) 340px" }} data-aggregate-split>
+      <div className="min-w-0">{children}</div>
+      <aside style={{ position: "sticky", top: 0, border: `1px solid ${LINE}`, borderRadius: 12, backgroundColor: CANVAS, padding: 12 }} data-aggregate-detail>
+        {detail || <p style={{ fontSize: TYPE.caption, color: SUB }}>표에서 강사를 고르면 여기에 자세히 보여요.</p>}
+      </aside>
+    </div>
+  );
+}
+
+/** 표 칸 안의 작은 판정 칩. */
+function TonePill({ color, background, children }) {
+  return <span className="inline-block px-2 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color, backgroundColor: background, whiteSpace: "nowrap" }}>{children}</span>;
+}
+
 /** 지점 칩 (2026-11-21 대표: "취합하는 거 나올 땐 지점별로 강사 하나씩"). 강사별 집계 화면이 같이 쓴다. */
 function BranchTabs({ groups, selected, onSelect, countLabel = (group) => `${group.rows.length}` }) {
   if (!Array.isArray(groups) || groups.length < 2) return null;
@@ -27079,6 +27223,7 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
   });
   const [open, setOpen] = useState(initialState?.open || "");
   const [branch, setBranch] = useState(initialState?.branch || "");
+  const wide = useWideViewport(initialState?.wide);
   useEffect(() => {
     if (initialState || !organizationId) return undefined;
     const entry = radarEntry(organizationId);
@@ -27114,6 +27259,13 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
   const summary = radarSummary(view?.rows || []);
   const selectedBranch = view ? pickBranch(view.groups, branch) : "";
   const shown = view ? (view.groups.find((group) => group.id === selectedBranch)?.rows || []) : [];
+  /* 센터 전체 재등록률 -- 강사 줄의 결과를 더한다 (같은 90일 · 같은 판정). */
+  const overallRenewal = (view?.rows || []).reduce((sum, row) => (row.renewal
+    ? { renewed: sum.renewed + row.renewal.renewed, decided: sum.decided + row.renewal.decided, pending: sum.pending + row.renewal.pending, rate: null }
+    : sum), { renewed: 0, decided: 0, pending: 0, rate: null });
+  if (overallRenewal.decided) overallRenewal.rate = overallRenewal.renewed / overallRenewal.decided;
+  /* PC 는 고른 강사 하나를 오른쪽 칸에. 고른 강사가 이 지점에 없으면 첫 강사. */
+  const selectedRow = shown.find((row) => row.instructorId === open) || (wide ? shown[0] : null) || null;
   const chip = (tone, label) => (
     <span className="px-2 py-0.5 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: RADAR_TONE[tone](), backgroundColor: RADAR_TONE_BG[tone]() }}>{label}</span>
   );
@@ -27131,6 +27283,41 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
   ].filter(Boolean);
   const candidatesEmpty = Array.isArray(data.candidates?.rows) && !data.candidates.rows.length;
   const monthLabel = data.core?.activityMonth ? `${Number(data.core.activityMonth.slice(5, 7))}월` : "";
+  /* 회원 목록 -- 폰은 강사 카드 펼침, PC 는 오른쪽 칸에서 같은 것을 그린다. */
+  const radarMemberList = (row) => (
+    <div className="space-y-1" data-radar-members>
+      {row.members.map((member) => (
+        <div key={member.clientId} className="px-2 py-1.5" style={{ borderRadius: 8, backgroundColor: CARD }} data-radar-member={member.clientId}>
+          <div className="flex items-center justify-between gap-2">
+            <button type="button" onClick={() => onOpenClient?.({ id: member.clientId, name: member.name })} className="min-w-0 flex-1 truncate text-left font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
+              {member.name || "이름 모름"}{member.duet ? " · 듀엣" : ""}
+            </button>
+            {member.urgent ? chip("urgent", "급함") : null}
+          </div>
+          <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{radarPassLabel(member.forecast)}</div>
+          {member.signals.length ? (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {member.signals.map((signal) => (
+                <span key={signal.code} className="px-1.5 py-0.5" style={{ fontSize: TYPE.caption, borderRadius: 6, color: WARN, backgroundColor: WARN_S }} data-radar-signal={signal.code}>{radarSignalLabel(signal)}</span>
+              ))}
+            </div>
+          ) : <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>신호 없음</div>}
+        </div>
+      ))}
+      {!row.members.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>지금 곧 끝나는 회원은 없어요.</p> : null}
+    </div>
+  );
+  const radarDetail = (row) => {
+    const renewal = row.renewal ? renewalRateLabel(row.renewal) : null;
+    return (
+      <div data-radar-detail={row.instructorId || "none"}>
+        <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{row.name || row.instructorId || "담당 강사 없음"}{row.active ? "" : " · 소속 아님"}</p>
+        <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{row.record.label}{renewal ? ` · ${renewal.label}` : ""}</p>
+        <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>코드 {row.record.code}{renewal ? ` · ${renewal.code}` : ""}</p>
+        <div className="mt-2">{radarMemberList(row)}</div>
+      </div>
+    );
+  };
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-renewal-radar>
       <div className="flex items-center justify-between">
@@ -27146,11 +27333,12 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
         {" "}신호가 많은 회원이 위에 있어요. 회원별 수업기록 공백은 수업기록 서버 저장을 켜면 함께 보여요.
       </p>
       {view && view.rows.length ? (
-        <div className="mt-2 flex flex-wrap gap-1.5" data-radar-summary>
-          {chip("calm", `대상 ${summary.total}명`)}
-          {chip("urgent", `급함 ${summary.urgent}명`)}
-          {chip("risk", `신호 있음 ${summary.atRisk}명`)}
-        </div>
+        <SummaryTiles items={[
+          { label: "곧 끝나는 회원", value: `${summary.total}명`, code: "radar_total" },
+          { label: "급함", value: `${summary.urgent}명`, color: summary.urgent ? BAD : INK, code: "radar_urgent" },
+          { label: "신호 있음", value: `${summary.atRisk}명`, color: summary.atRisk ? WARN : INK, code: "radar_at_risk" },
+          { label: `재등록 · 최근 ${RATE_WINDOW_DAYS}일`, value: overallRenewal ? renewalRateLabel(overallRenewal).label.replace(/^재등록 /, "") : "—", code: "radar_renewal" },
+        ]} />
       ) : null}
       {!view && data.coreError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>재등록 레이더를 읽지 못했어요 (코드 {data.coreError})</p> : null}
       {warnings.map((line) => <p key={line} className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{line}</p>)}
@@ -27168,52 +27356,44 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
       {!view && !data.coreError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>회원 · 회원권을 읽는 중…</p> : null}
       {view && !view.rows.length ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>곧 끝나는 회원권이 없어요.</p> : null}
       {view ? <BranchTabs groups={view.groups} selected={selectedBranch} onSelect={(id) => { setBranch(id); setOpen(""); }} countLabel={(group) => `${group.rows.reduce((sum, row) => sum + row.members.length, 0)}명`} /> : null}
-      <div className="mt-3 space-y-2">
-        {shown.map((row) => {
-          const expanded = open === row.instructorId;
-          const renewal = row.renewal ? renewalRateLabel(row.renewal) : null;
-          return (
-            <div key={row.instructorId || "none"} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-radar-row={row.instructorId || "none"}>
-              {/* 강사는 하나씩 -- 다른 강사를 열면 앞의 것은 닫힌다 (대표 2026-11-21). */}
-              <button type="button" onClick={() => setOpen(expanded ? "" : row.instructorId)} className="flex w-full items-center justify-between gap-2 text-left" aria-expanded={expanded}>
-                <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>
-                  {row.name || (row.instructorId ? row.instructorId : "담당 강사 없음")}{row.active ? "" : " · 소속 아님"}
-                </span>
-                {row.urgent ? chip("urgent", `급함 ${row.urgent}`) : null}
-                {chip(row.atRisk ? "risk" : "calm", `대상 ${row.members.length}명`)}
-                <ChevronDown size={16} style={{ color: SUB, transform: expanded ? "rotate(180deg)" : "none" }} />
-              </button>
-              <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
-                {row.record.label}{renewal ? ` · ${renewal.label}` : ""}
-              </div>
-              <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>코드 {row.record.code}{renewal ? ` · ${renewal.code}` : ""}</div>
-              {expanded ? (
-                <div className="mt-2 space-y-1" data-radar-members>
-                  {row.members.map((member) => (
-                    <div key={member.clientId} className="px-2 py-1.5" style={{ borderRadius: 8, backgroundColor: CARD }} data-radar-member={member.clientId}>
-                      <div className="flex items-center justify-between gap-2">
-                        <button type="button" onClick={() => onOpenClient?.({ id: member.clientId, name: member.name })} className="min-w-0 flex-1 truncate text-left font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
-                          {member.name || "이름 모름"}{member.duet ? " · 듀엣" : ""}
-                        </button>
-                        {member.urgent ? chip("urgent", "급함") : null}
-                      </div>
-                      <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{radarPassLabel(member.forecast)}</div>
-                      {member.signals.length ? (
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {member.signals.map((signal) => (
-                            <span key={signal.code} className="px-1.5 py-0.5" style={{ fontSize: TYPE.caption, borderRadius: 6, color: WARN, backgroundColor: WARN_S }} data-radar-signal={signal.code}>{radarSignalLabel(signal)}</span>
-                          ))}
-                        </div>
-                      ) : <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>신호 없음</div>}
-                    </div>
-                  ))}
-                  {!row.members.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>지금 곧 끝나는 회원은 없어요.</p> : null}
+      {wide ? (
+        <AggregateSplit wide detail={selectedRow ? radarDetail(selectedRow) : null}>
+          <InstructorTable rows={shown} selected={selectedRow?.instructorId} onSelect={setOpen} columns={[
+            { key: "name", label: "강사", firstDir: "asc", sortValue: (row) => row.name || row.instructorId, render: (row) => <span className="font-bold">{row.name || row.instructorId || "담당 강사 없음"}{row.active ? "" : " · 소속 아님"}</span> },
+            { key: "members", label: "대상", align: "right", sortValue: (row) => row.members.length, render: (row) => `${row.members.length}명` },
+            { key: "urgent", label: "급함", align: "right", sortValue: (row) => row.urgent, render: (row) => (row.urgent ? <TonePill color={BAD} background={BAD_S}>{row.urgent}</TonePill> : "—") },
+            { key: "risk", label: "신호", align: "right", sortValue: (row) => row.atRisk, render: (row) => (row.atRisk ? row.atRisk : "—") },
+            { key: "record", label: "기록률", align: "right", sortValue: (row) => row.record.rate, render: (row) => (row.record.rate === null ? <span style={{ color: SUB }}>{row.record.label.replace(/^기록률 — /, "")}</span>
+              : <TonePill color={row.record.rate >= RECORD_RATE_GOOD ? GOOD : row.record.rate >= RECORD_RATE_LOW ? WARN : BAD} background={row.record.rate >= RECORD_RATE_GOOD ? GOOD_S : row.record.rate >= RECORD_RATE_LOW ? WARN_S : BAD_S}>{Math.round(row.record.rate * 100)}%</TonePill>) },
+            { key: "renewal", label: "재등록", align: "right", sortValue: (row) => (row.renewal?.decided ? row.renewal.rate : null), render: (row) => (row.renewal ? renewalRateLabel(row.renewal).label.replace(/^재등록 /, "") : "확인 중") },
+          ]} />
+        </AggregateSplit>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {shown.map((row) => {
+            const expanded = open === row.instructorId;
+            const renewal = row.renewal ? renewalRateLabel(row.renewal) : null;
+            return (
+              <div key={row.instructorId || "none"} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-radar-row={row.instructorId || "none"}>
+                {/* 강사는 하나씩 -- 다른 강사를 열면 앞의 것은 닫힌다 (대표 2026-11-21). */}
+                <button type="button" onClick={() => setOpen(expanded ? "" : row.instructorId)} className="flex w-full items-center justify-between gap-2 text-left" aria-expanded={expanded}>
+                  <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>
+                    {row.name || (row.instructorId ? row.instructorId : "담당 강사 없음")}{row.active ? "" : " · 소속 아님"}
+                  </span>
+                  {row.urgent ? chip("urgent", `급함 ${row.urgent}`) : null}
+                  {chip(row.atRisk ? "risk" : "calm", `대상 ${row.members.length}명`)}
+                  <ChevronDown size={16} style={{ color: SUB, transform: expanded ? "rotate(180deg)" : "none" }} />
+                </button>
+                <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+                  {row.record.label}{renewal ? ` · ${renewal.label}` : ""}
                 </div>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
+                <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>코드 {row.record.code}{renewal ? ` · ${renewal.code}` : ""}</div>
+                {expanded ? <div className="mt-2">{radarMemberList(row)}</div> : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
@@ -28475,9 +28655,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
      보게 되고, 그 차이는 아무 데도 적히지 않는다. 지난달 원장만 이 화면을
      열었을 때 따로 읽는다. */
   currentUserId = "", rosterClients = [], rosterPasses = [], monthReportState = null, onOpenPay,
-  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, onSnapshotBackup, snapshotBusy = false, onRosterChanged, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, onPreviewInstructorNames, onConfirmInstructorNames, noticeStore, onManageNotice, noticeWho = null, onOwnerMessageSaved, ownerMessageState = null, initialView = "hub", initialOpenGroups = null, nameConfirmState = null, noticeState = null, prefetchRadar = false }) {
+  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, onSnapshotBackup, snapshotBusy = false, onRosterChanged, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, onPreviewInstructorNames, onConfirmInstructorNames, noticeStore, onManageNotice, noticeWho = null, onOwnerMessageSaved, ownerMessageState = null, initialView = "hub", initialOpenGroups = null, nameConfirmState = null, noticeState = null, prefetchRadar = false, wideLayout = undefined }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
+  /* PC(1024px 이상)에서는 메뉴 | 화면 두 칸 (2026-11-21 대표 승인 "현황판 웹 배치안" 1단계). 견본 화면은 wideLayout 으로 못 박는다. */
+  const wideScreen = useWideViewport(wideLayout);
 
   /**
    * 이관 데이터 초기화. 서버가 전부 한다 -- 규칙을 건드리지 않으려고
@@ -28860,6 +29042,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     "member-app": "회원 앱",
     "member-app-status": "보니따 앱 설치 현황",
     audit: "감사 로그",
+    "renewal-radar": "재등록 레이더",
+    "record-board": "강사 기록 현황",
+    "before-after-board": "비포애프터 공유 현황",
+    "lesson-ratings": "수업 별점",
+    "phone-check": "번호 점검",
   };
   /* 센터를 운영하는 일과 이 기기를 쓰는 일은 다른 묶음이다. 한 그룹에 섞여
      있으면 목록이 길어지고, 강사에게는 그 목록의 절반이 보이지 않아 어디가 빈
@@ -28880,38 +29067,48 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
 
      **역할로 빈 묶음은 통째로 사라진다.** 머리글만 남기면 "여기 뭔가 있어야
      하는데 안 보인다" 가 되고, 그것은 권한이 없다는 말보다 나쁘다. */
+  /* 대표 · 총괄의 더보기는 만료 회원을 현황판에 둔다 (강사 · FC 는 업무 그대로). centreGroups 가 쓰므로 그 앞에서 정한다. */
+  const expiryItems = inOrganization ? [{ key: "expiry", title: "만료 회원", description: "이번 달 · 지난달 · 재등록률", Icon: Users }] : [];
+  const ownerLevelHub = inOrganization && isOwnerLevelRole(organization.role);
   const centreGroups = [
-    { label: "회원 · 회원권", items: [
-      ...(showClients ? [{ key: "pass-issue", title: "회원권 발급", description: "회원에게 회원권 발급", Icon: Ticket }] : []),
-      ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
+    /* 매일 보는 숫자 (2026-11-21 대표 승인 "현황판 웹 배치안" 1단계). 맨 위에 둔다. */
+    { label: "현황판", items: [
       /* 곧 끝나는 회원 · 위험 신호 · 강사별 기록률과 재등록률 (2026-11-21). 강사가 할 일은 없다 -- 대표 · 총괄만. */
       ...(showAudit ? [{ key: "renewal-radar", title: "재등록 레이더", description: "곧 끝나는 회원 · 위험 신호 · 강사별 재등록률", Icon: Activity }] : []),
-      ...(showClients ? [{ key: "branch-overview", title: "지점 회원 현황", description: "강사별 이름 · 연락처 · 잔여 한눈에", Icon: Users }] : []),
+      ...(showAudit ? [{ key: "record-board", title: "강사 기록 현황", description: "수업기록 · 회원에게 보낸 말 · 지점별", Icon: ClipboardList }] : []),
+      /* 기록 현황과 같은 화면에 붙어 있었다 -- 달이 따로 움직여 헷갈렸다. 메뉴를 나눈다 (대표 결정 2). */
+      ...(showAudit ? [{ key: "before-after-board", title: "비포애프터 공유 현황", description: "강사별 · 회원별 마지막으로 보낸 날", Icon: Camera }] : []),
+      ...(showRatings && isOwnerLevelRole(organization.role) ? [ratingsItem] : []),
+      ...(ownerLevelHub ? expiryItems : []),
+      /* 누가 보니따 앱을 깔았는지 · 아직인지 (2026-11-15 대표). 회원 앱 연결과 같은 사람(대표 · 총괄)만 본다. */
+      ...(showMemberApp ? [{ key: "member-app-status", title: "보니따 앱 설치 현황", description: "누가 깔았는지 · 아직 안 깔았는지", Icon: Smartphone }] : []),
+    ] },
+    /* 월말에 보는 돈. */
+    { label: "돈", items: [
+      ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 그룹 급여 포함", Icon: ArrowUpRight }] : []),
       /* 발급 내역도 대표만 본다. 급여와 같은 조건이다 -- 센터 전체의 매출은
          한 사람의 것이 아니고, FC매니저에게는 자기 실적만 보이는 화면이 따로
          필요하다 (아직 없다). */
       ...(showIssues ? [{ key: "issues", title: "발급 내역", description: "이달 판매 · 지점별 · 발급자별", Icon: Ticket }] : []),
+      /* "월말 정산"만으로는 위의 월간 리포트와 구별되지 않는다. 무엇을 세는지가
+         둘의 차이다 -- 이쪽은 회원권 원장, 그쪽은 기기에 저장된 일정이다. */
+      ...(showClients ? [{ key: "group-payroll", title: "그룹 급여 정산", description: "지점별 강사 풀방 · 빈방 횟수 입력", Icon: ClipboardList }] : []),
+    ] },
+    /* 회원 · 회원권 · 강사 · 상품을 다루는 일. */
+    { label: "관리", items: [
+      ...(showClients ? [{ key: "pass-issue", title: "회원권 발급", description: "회원에게 회원권 발급", Icon: Ticket }] : []),
+      ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
+      ...(showClients ? [{ key: "branch-overview", title: "지점 회원 현황", description: "강사별 이름 · 연락처 · 잔여 한눈에", Icon: Users }] : []),
       /* 회원이 자기 잔여를 보는 앱. 여기서는 연결만 다룬다 -- 자동으로 잇지
          못한 것과, 잘못 이은 것과, 화면의 숫자가 맞는지. */
       ...(showMemberApp ? [{ key: "member-app", title: "회원 앱", description: "연결 대기 · 끊기 · 점검", Icon: Users }] : []),
-      /* 누가 보니따 앱을 깔았는지 · 아직인지 (2026-11-15 대표). 회원 앱 연결과 같은 사람(대표 · 총괄)만 본다. */
-      ...(showMemberApp ? [{ key: "member-app-status", title: "보니따 앱 설치 현황", description: "누가 깔았는지 · 아직 안 깔았는지", Icon: Smartphone }] : []),
-    ] },
-    { label: "강사 · 급여", items: [
       ...(showInstructorAdmin ? [{ key: "instructor-admin", title: "강사 관리", description: "강사 추가 · 지점 · 직함 · 풀방금액", Icon: Users }] : []),
       /* 강사 관리와 따로 둔다. 한 강사의 회원권을 **전부** 옮기는 일이라
          직함을 고치는 일과 무게가 다르고, 되돌리려면 한 장씩 되돌려야 한다. */
       ...(showInstructorAdmin ? [{ key: "handover", title: "퇴사 인계", description: "그만두는 강사의 회원권을 한 번에 넘긴다", Icon: UserPlus }] : []),
-      /* "월말 정산"만으로는 위의 월간 리포트와 구별되지 않는다. 무엇을 세는지가
-         둘의 차이다 -- 이쪽은 회원권 원장, 그쪽은 기기에 저장된 일정이다. */
-      ...(showClients ? [{ key: "group-payroll", title: "그룹 급여 정산", description: "지점별 강사 풀방 · 빈방 횟수 입력", Icon: ClipboardList }] : []),
-      ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 그룹 급여 포함", Icon: ArrowUpRight }] : []),
-      ...(showRatings && isOwnerLevelRole(organization.role) ? [ratingsItem] : []),
       /* 담당 강사. 강사가 보는 회원의 범위가 여기서 정해진다 -- 점검이 아니라
          강사를 다루는 일이라 이 묶음이다. */
       ...(showAudit ? [{ key: "instructor-scope", title: "담당 강사", description: "강사별 담당 회원 · 재계산", Icon: Users }] : []),
-    ] },
-    { label: "상품", items: [
       ...(showProducts ? [{ key: "products", title: "회원권 상품", description: "이벤트 상품 추가 · 종료", Icon: Ticket }] : []),
     ] },
     /* 평소에 볼 것이 아니다. 셋 다 "무엇이 어긋나 있는지" 를 찾는 화면이고,
@@ -28920,7 +29117,6 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       ...(showAudit ? [{ key: "expiry-order", title: "만료일 순서 확인", description: "뒤 차수가 먼저 만료되는 회원", Icon: AlertTriangle }] : []),
       /* 확정된 듀엣인데 한 사람이 "예약" 으로 남은 수업. 고치지 않고 모아만 둔다. */
       ...(showAudit ? [{ key: "duet-unmarked", title: "듀엣 출석 확인", description: "확정됐는데 한 명이 미표시인 듀엣", Icon: Users }] : []),
-      ...(showAudit ? [{ key: "record-board", title: "강사 기록 현황", description: "수업기록 · 회원에게 보낸 말 · 비포애프터 공유", Icon: ClipboardList }] : []),
       ...(showAudit ? [{ key: "phone-check", title: "번호 점검", description: "010 열한 자리가 아닌 회원 찾기", Icon: AlertCircle }] : []),
       ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
     ] },
@@ -28950,7 +29146,6 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   /* 만료는 조용히 일어난다. 회원권이 끝나도 알림이 없고, 강사는 그 회원이
      안 온다는 것을 몇 주 뒤에 안다 -- 그때는 늦다. 개인 모드에는 회원권이
      없어 셀 것이 없다. */
-  const expiryItems = inOrganization ? [{ key: "expiry", title: "만료 회원", description: "이번 달 · 지난달 · 재등록률", Icon: Users }] : [];
   /* 공지는 **모두가 본다.** 쓰는 사람에게만 보이는 자리에 두면 강사는
      넘긴 공지를 다시 볼 길이 없다 -- 한 번 뜨고 끝나는 창이기 때문이다. */
   const noticeItems = inOrganization ? [{ key: "notices", title: "공지사항", description: "센터에서 알리는 글 · 다시 보기", Icon: Bell }] : [];
@@ -28999,7 +29194,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   const ownerLayout = inOrganization && isOwnerLevelRole(organization.role);
   const menuGroups = ownerLayout ? [
     ...centreGroups.filter((group) => group.label !== "점검" && group.label !== "대표 설정"),
-    { label: "업무", items: [...expiryItems, ...noticeItems] },
+    { label: "업무", items: [...noticeItems] },
     ...centreGroups.filter((group) => group.label === "대표 설정"),
     { label: "내 설정", items: [...centerItems, themeItem, dataItem, backupItem] },
     { label: "계정 · 앱", items: [accountItem, permissionsItem, appItem] },
@@ -29042,6 +29237,86 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       setBusy(false);
     }
   };
+  /* ── PC 두 칸 ─────────────────────────────────────────────────────────
+     대표 · 총괄만. 화면을 골라도 왼쪽 메뉴가 그대로 남아, 다른 현황판으로 옮길 때 뒤로 나오지 않는다.
+     폰 · 좁은 창 · 강사 · FC 는 지금처럼 한 칸 (메뉴를 누르면 화면이 바뀜). */
+  const wideHub = wideScreen && ownerLayout;
+  const menuNav = (
+    <nav aria-label="더보기 메뉴" className="space-y-3" data-wide-nav>
+      {menuGroups.map((group) => (
+        <section key={group.label}>
+          {group.collapsible ? (
+            <button type="button" onClick={() => toggleMenuGroup(group.label)} aria-expanded={openMenuGroups[group.label] === true}
+              className="flex w-full items-center gap-1.5" style={{ padding: "0 8px", minHeight: 26 }}>
+              <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>{group.label}</span>
+              <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: FAINT }}>{group.items.length}</span>
+              <ChevronDown size={13} style={{ color: SUB, marginLeft: "auto", transform: openMenuGroups[group.label] ? "rotate(180deg)" : "none" }} />
+            </button>
+          ) : (
+            <h2 style={{ padding: "0 8px", fontSize: TYPE.caption, fontWeight: 700, color: SUB, minHeight: 26, display: "flex", alignItems: "center" }}>{group.label}</h2>
+          )}
+          {group.collapsible && openMenuGroups[group.label] !== true ? null : (
+            <div className="mt-0.5 space-y-0.5">
+              {group.items.map((item) => {
+                const Icon = item.Icon;
+                const active = view === item.key;
+                return (
+                  <button key={item.key} type="button" onClick={() => openMenu(item)} aria-current={active ? "page" : undefined} data-wide-nav-item={item.key}
+                    className="flex w-full items-center gap-2 text-left" title={item.description}
+                    style={{ minHeight: 36, padding: "6px 8px", borderRadius: 8, backgroundColor: active ? TINT : "transparent", color: active ? BRAND_D : INK }}>
+                    <Icon size={15} strokeWidth={1.8} style={{ color: active ? BRAND_D : SUB, flexShrink: 0 }} />
+                    <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, fontWeight: active ? 700 : 500 }}>{item.title}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      ))}
+    </nav>
+  );
+  const wideShell = (content) => (
+    <div className="flex h-full min-h-0" style={{ backgroundColor: PAGE }} data-wide-centre>
+      <aside className="pt-scroll min-h-0 shrink-0 overflow-y-auto" style={{ width: 248, padding: "12px 8px 20px", backgroundColor: CARD, borderRight: `1px solid ${LINE}` }}>
+        <p style={{ padding: "4px 8px 10px", fontSize: TYPE.title, fontWeight: 600, color: INK }}>더보기</p>
+        {menuNav}
+      </aside>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">{content}</div>
+    </div>
+  );
+  if (view === "hub" && wideHub) {
+    const boardItems = menuGroups.find((group) => group.label === "현황판")?.items || [];
+    return wideShell(
+      <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "20px 24px" }} data-wide-hub>
+        {organizationUnknown ? (
+          <section className="mb-4" style={{ backgroundColor: WARN_S, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+            <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속 정보를 불러오지 못했습니다</h2>
+            <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 px-4 font-bold"
+              style={{ borderRadius: 10, backgroundColor: CARD, color: INK, fontSize: TYPE.caption, border: `1px solid ${LINE}` }}>다시 시도</button>
+          </section>
+        ) : null}
+        <h1 style={{ fontSize: TYPE.title, fontWeight: 600, color: INK }}>센터 운영</h1>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>왼쪽 메뉴에서 볼 화면을 고르세요. 화면을 열어도 메뉴는 그대로 남아요.</p>
+        {boardItems.length ? (
+          <div className="mt-4 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+            {boardItems.map((item) => {
+              const Icon = item.Icon;
+              return (
+                <button key={item.key} type="button" onClick={() => openMenu(item)} className="flex items-start gap-3 text-left" data-wide-hub-card={item.key}
+                  style={{ padding: 14, borderRadius: 12, border: `1px solid ${LINE}`, backgroundColor: CARD }}>
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND }}><Icon size={17} strokeWidth={1.8} /></span>
+                  <span className="min-w-0">
+                    <span className="block" style={{ fontSize: TYPE.body, fontWeight: 650, color: INK }}>{item.title}</span>
+                    <span className="mt-0.5 block" style={{ fontSize: TYPE.caption, lineHeight: 1.35, color: SUB }}>{item.description}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </main>,
+    );
+  }
   if (view === "hub") return (
     <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
       <header className="flex shrink-0 items-center" style={{ height: 52, padding: "0 14px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
@@ -29109,7 +29384,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       </main>
     </div>
   );
-  return (
+  const detailPage = (
     <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
       <header className="flex shrink-0 items-center gap-1" style={{ height: 52, padding: "0 8px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
         <button type="button" onClick={() => setView(view === "account-delete" ? "account" : "hub")} className="flex h-10 w-10 items-center justify-center" aria-label="이전 화면으로 돌아가기" style={{ color: INK2 }}><ArrowLeft size={18} /></button>
@@ -29476,10 +29751,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
             onOpenClient={(client) => onOpenClient?.({ id: client.id, name: client.name })} />
         )}
         {view === "record-board" && showAudit && (
-          <div>
-            <InstructorRecordBoard organization={organization} instructorStore={instructorStore} clientStore={clientStore} />
-            <BeforeAfterShareBoard organization={organization} instructorStore={instructorStore} clientStore={clientStore} passStore={passStore} />
-          </div>
+          <InstructorRecordBoard organization={organization} instructorStore={instructorStore} clientStore={clientStore} />
+        )}
+        {view === "before-after-board" && showAudit && (
+          <BeforeAfterShareBoard organization={organization} instructorStore={instructorStore} clientStore={clientStore} passStore={passStore} />
         )}
         {view === "phone-check" && showAudit && (
           <ClientPhoneCheck organization={organization}
@@ -29682,6 +29957,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       </main>
     </div>
   );
+  return wideHub ? wideShell(detailPage) : detailPage;
 }
 
 /* 검증용 fixture — 하루에 5개 유형과 기구 0/1/2/3개 이상이 한 화면에 모두 들어간다. */
@@ -30624,6 +30900,9 @@ export function createAppScreenSmokeCases() {
     /* 접는 묶음을 펼친 화면. 접힌 상태로는 그 항목이 한 번도 그려지지 않아,
        "대표에게만 보인다" 를 확인할 자리가 없다. */
     { name: "더보기 탭 · 묶음 펼침", element: settingsTab(smokeOwner, { initialOpenGroups: ALL_MENU_GROUPS_OPEN }) },
+    /* PC 두 칸 (2026-11-21 "현황판 웹 배치안" 1단계): 메뉴 | 화면. 화면을 골라도 메뉴가 남는다. */
+    { name: "더보기 탭 · PC", element: settingsTab(smokeOwner, { wideLayout: true }) },
+    { name: "더보기 탭 · PC · 화면 고름", element: settingsTab(smokeOwner, { wideLayout: true, initialView: "payroll" }) },
     /* 강사 이름 확정. 되돌리는 문이 없으므로 **무엇이 굳는지**가 누르기 전에
        화면에 있어야 한다 -- 이미 되돌아간 이름이 섞여 있으면 그것이 굳는다. */
     { name: "더보기 탭 · 강사 이름 확정", element: settingsTab(smokeOwner, {
@@ -31543,6 +31822,47 @@ export function createAppScreenSmokeCases() {
       <RenewalRadarScreen organization={readyOrganizationContext(smokeOwner)} onOpenClient={noop}
         initialState={{
           open: "u1",
+          data: {
+            core: {
+              now: new Date(2026, 10, 21, 12).getTime(), activityMonth: "2026-11",
+              clients: [
+                { id: "r1", name: "김하나", userId: "m1", instructorIds: ["u1"] },
+                { id: "r2", name: "이두리", instructorIds: ["u1"] },
+                { id: "r3", name: "박세나", instructorIds: ["u2"] },
+              ],
+              passes: [
+                { id: "rp1", clientId: "r1", instructorId: "u1", status: "active", remainingCount: 1, totalSessions: 30, createdAt: new Date(2026, 3, 1), expiresAt: new Date(2026, 11, 30) },
+                { id: "rp2", clientId: "r2", instructorId: "u1", status: "active", remainingCount: 6, totalSessions: 20, createdAt: new Date(2026, 6, 1), expiresAt: new Date(2026, 11, 2) },
+                { id: "rp3", clientId: "r3", instructorId: "u2", status: "active", remainingCount: 3, totalSessions: 10, createdAt: new Date(2026, 8, 1), expiresAt: new Date(2027, 1, 1) },
+              ],
+              ledger: [
+                { id: "d1", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 1) },
+                { id: "d2", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 8) },
+                { id: "d3", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 15) },
+                { id: "d4", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 10, 1) },
+                { id: "d5", type: "deduct", passId: "rp3", clientId: "r3", occurredAt: new Date(2026, 10, 18) },
+              ],
+            },
+            coreError: "",
+            notes: { items: [{ clientId: "r3", memberNote: "좋았어요", createdAt: new Date(2026, 10, 18) }], failed: false, errorCode: "" },
+            /* 비포애프터를 못 읽은 경우 -- 그 신호는 회원 줄에 나오지 않고 안내만 선다. */
+            shares: { rows: null, errorCode: "permission-denied" },
+            activities: { items: [{ userId: "u1", month: "2026-11", attended: 40, recorded: 31, checkedAt: new Date(2026, 10, 20) }], failed: false, errorCode: "" },
+            candidates: { rows: [
+              { instructorId: "u1", status: "renewed", decidedAt: new Date(2026, 9, 10) },
+              { instructorId: "u1", status: "lapsed", decidedAt: new Date(2026, 9, 20) },
+              { instructorId: "u2", status: "pending" },
+            ], errorCode: "" },
+            members: { items: smokeInstructors, failed: false, errorCode: "" },
+            locations: { items: [{ id: "bansong", name: "반송" }], failed: false, errorCode: "" },
+          },
+        }} />
+    )) },
+    /* 같은 숫자를 PC 배치로: 강사 표 + 오른쪽 상세 칸. */
+    { name: "재등록 레이더 · PC", element: providerWith(smokeOwner, (
+      <RenewalRadarScreen organization={readyOrganizationContext(smokeOwner)} onOpenClient={noop}
+        initialState={{
+          open: "u1", wide: true,
           data: {
             core: {
               now: new Date(2026, 10, 21, 12).getTime(), activityMonth: "2026-11",

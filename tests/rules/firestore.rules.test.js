@@ -6873,6 +6873,18 @@ describe("강사 개인매출 인센 -- 두 장부 · 서버 확정 · 잠금", 
     await assertFails(setDoc(monthRef(users.owner), base(users.owner, { status: "reopened", reopenReason: "다시", submittedSummary: summary })), "되돌리며 요약을 꾸밀 수 없다");
   });
 
+  /* 아직 아무도 쓰지 않은 달(문서 없음)을 읽는 것은 "없음" 이어야 한다 -- 거부되면 급여 · 매출 인센 화면이 "읽지 못했어요" 로 선다. */
+  test("문서가 없는 달: 강사 본인 · FC · 대표는 읽어서 없음을 본다, 남의 달은 못 본다", async () => {
+    const fcRef = (userId, instructorId = users.instructor) => doc(dbFor(userId), "organizations", ORG_A, "fcLessonMonths", `${instructorId}_${MONTH}`);
+    for (const userId of [users.instructor, users.manager, users.owner]) {
+      await assertSucceeds(getDoc(monthRef(userId)), `salesMonths ${userId}`);
+      await assertSucceeds(getDoc(fcRef(userId)), `fcLessonMonths ${userId}`);
+    }
+    await assertFails(getDoc(monthRef(OTHER)), "남의 달");
+    await assertFails(getDoc(fcRef(OTHER)), "남의 FC 달");
+    await assertFails(getDoc(monthRef(users.outsider)), "다른 센터");
+  });
+
   test("확정된 달의 줄은 아무도 못 넣고 · 고치고 · 지운다", async () => {
     await seedEntry("e1", users.instructor);
     await seedEntry("e2", users.owner);

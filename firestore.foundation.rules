@@ -1890,6 +1890,16 @@ service cloud.firestore {
         let path = /databases/$(database)/documents/organizations/$(organizationId)/salesMonths/$(instructorId + "_" + month);
         return !exists(path) || get(path).data.status != "confirmed";
       }
+      /* 달 문서 id = {강사}_{YYYY-MM}. 아직 없는 달을 읽을 때(resource == null) 누구의 달인지는 id 에서 읽는다 --
+         resource.data 를 보면 Null value error 로 거부돼, 강사 · FC 화면이 "없음" 대신 "읽지 못했어요" 로 섰다 (2026-11-21 확인). */
+      function salesMonthOwnerId(monthId) {
+        return monthId.replace("_[0-9]{4}-[0-9]{2}$", "");
+      }
+      function salesMonthReadable(organizationId, instructorId) {
+        return salesOffice(organizationId, instructorId)
+          || hasRole(organizationId, ownerLevel())
+          || salesOwnBook(organizationId, instructorId);
+      }
       function salesMonthString(value) {
         return value is string && value.matches("^[0-9]{4}-[0-9]{2}$");
       }
@@ -1960,9 +1970,10 @@ service cloud.firestore {
           && salesMonthOpen(organizationId, resource.data.instructorId, resource.data.month);
       }
       match /salesMonths/{monthId} {
-        allow get, list: if salesOffice(organizationId, resource.data.instructorId)
-          || hasRole(organizationId, ownerLevel())
-          || salesOwnBook(organizationId, resource.data.instructorId);
+        allow get: if resource == null
+          ? salesMonthReadable(organizationId, salesMonthOwnerId(monthId))
+          : salesMonthReadable(organizationId, resource.data.instructorId);
+        allow list: if salesMonthReadable(organizationId, resource.data.instructorId);
         /* 앱이 쓰는 것은 둘뿐: 강사 제출, 확정한 쪽의 되돌림. 확정(confirmed)은 서버 함수만. lastCheck 는 서버가 남긴다. */
         allow create, update: if request.resource.data.keys().hasOnly([
               "organizationId", "instructorId", "month", "status", "updatedBy", "updatedAt",
@@ -2019,9 +2030,10 @@ service cloud.firestore {
         allow delete: if false;
       }
       match /fcLessonMonths/{monthId} {
-        allow get, list: if salesOffice(organizationId, resource.data.instructorId)
-          || hasRole(organizationId, ownerLevel())
-          || salesOwnBook(organizationId, resource.data.instructorId);
+        allow get: if resource == null
+          ? salesMonthReadable(organizationId, salesMonthOwnerId(monthId))
+          : salesMonthReadable(organizationId, resource.data.instructorId);
+        allow list: if salesMonthReadable(organizationId, resource.data.instructorId);
         allow create, update: if request.resource.data.keys().hasOnly([
               "organizationId", "instructorId", "month", "status", "done", "cancel", "updatedBy", "updatedAt",
               "submittedAt", "confirmedBy", "confirmedAt", "snapshot", "reopenReason", "lastCheck"

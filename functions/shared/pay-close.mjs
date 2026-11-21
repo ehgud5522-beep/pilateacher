@@ -57,6 +57,30 @@ export function lessonTotalsByInstructor({ organizationId, month, entries, group
 }
 
 /**
+ * 확정 대조 기록 (외부 검토: "급여 대상 차감 건수 · 금액과 명세에 반영된 금액의 대조를 남기라"). lessonTotalsByInstructor 와 같은 거르기.
+ * @param {{ organizationId: string, month: string, entries: any[], groupRows?: any[], excludedClientIds?: Set<string> }} input
+ */
+export function lessonSourceSummary({ organizationId, month, entries, groupRows = [], excludedClientIds = new Set() }) {
+  const { start, end } = kstMonthRange(month);
+  const out = { deducts: 0, corrections: 0, ledgerAmount: 0, excludedDemo: 0, groupRows: 0, groupAmount: 0 };
+  for (const entry of entries || []) {
+    if (!PAYROLL_LEDGER_TYPES.includes(text(entry?.type)) || text(entry?.organizationId) !== text(organizationId)) continue;
+    const at = millisOf(entry.occurredAt);
+    if (!Number.isFinite(at) || at < start.getTime() || at >= end.getTime()) continue;
+    if (excludedClientIds.has(text(entry.clientId))) { out.excludedDemo += 1; continue; }
+    if (text(entry.type) === "deduct") out.deducts += 1; else out.corrections += 1;
+    out.ledgerAmount += -(Number(entry.delta) || 0) * (Number(entry.unitPrice) || 0);
+  }
+  for (const row of groupRows || []) {
+    const count = (Number(row.fullCount) || 0) + (Number(row.emptyCount) || 0);
+    if (!count) continue;
+    out.groupRows += 1;
+    out.groupAmount += (Number(row.fullCount) || 0) * (Number(row.fullRate) || 0) + (Number(row.emptyCount) || 0) * GROUP_EMPTY_ROOM_RATE;
+  }
+  return out;
+}
+
+/**
  * 확정 명세 전부. 줄 = 수업료가 있는 강사 + 수업료 외가 있는 강사 + 조정이 있는 강사.
  * @param {{ lessons: Map<string, number>, salesMonths?: any[], fcMonths?: any[], adjustments?: any[], tax?: any, canonicalInstructorId?: (id: unknown) => string }} input
  */

@@ -1871,7 +1871,49 @@ exports.confirmSalesMonth = onCall(CLIENT_PHONE_OPTIONS, async (request) => {
 
 /* ── 서버 급여 확정 (2026-11-22 외부 검토 2차) ── 원자료로 다시 계산 · 대표가 본 실수령 합계와 대조 · 회차 이력. 대표 · 총괄만. */
 const { createPayCloseService } = require("./pay-close");
-const payCloseService = createPayCloseService({ firestore, membershipId, isOwnerLevel });
+const { createPayCheckService, nightlyMonths } = require("./pay-check");
+const payCheckService = createPayCheckService({ firestore, membershipId, isOwnerLevel });
+const payCloseService = createPayCloseService({ firestore, membershipId, isOwnerLevel, payCheck: payCheckService });
+
+/* ── 정산 점검 (2026-11-22) ── 밤 점검 · [다시 점검]. 결과는 organizations/{센터}/payChecks/{달} (대표급만 읽음). */
+exports.payCheckNightly = onSchedule({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  schedule: "every day 03:00",
+  timeZone: "Asia/Seoul",
+  memory: "1GiB",
+  timeoutSeconds: 540,
+}, async () => {
+  const organizations = await firestore.collection("organizations").select().get();
+  const months = nightlyMonths(new Date());
+  for (const snapshot of organizations.docs) {
+    for (const month of months) {
+      try {
+        const result = await payCheckService.check(snapshot.id, month, "nightly");
+        logger.info("pay_check_nightly", { feature: "pay_check", stage: "nightly", organizationId: snapshot.id, month, complete: result.complete, block: result.counts.block, warn: result.counts.warn, failures: result.failures.length });
+      } catch (error) {
+        /* 한 센터가 실패해도 나머지는 돈다. 문서를 못 썼으면 카드는 지난 점검 시각을 그대로 보인다. */
+        logger.error("pay_check_nightly_failed", { feature: "pay_check", stage: "nightly", organizationId: snapshot.id, month, errorDomain: "firestore", errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200) });
+      }
+    }
+  }
+});
+exports.runPayCheck = onCall(CLIENT_PHONE_OPTIONS, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const month = String(request?.data?.month || "").trim();
+  const fields = { feature: "pay_check", organizationId, month };
+  try {
+    const result = await payCheckService.runNow({ callerUid: request?.auth?.uid, organizationId, month });
+    logger.info("pay_check_manual", { ...fields, stage: "manual", complete: result.complete, block: result.counts.block, warn: result.counts.warn });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      logger.warn("pay_check_refused", { ...fields, stage: "manual", errorDomain: "pay_check", errorCode: error.reason });
+      throw new HttpsError(error.httpsCode, error.reason, { reason: error.reason, ...(error.details || {}) });
+    }
+    logger.error("pay_check_failed", { ...fields, stage: "manual", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200) });
+    throw new HttpsError("internal", "pay_check_failed", { reason: "pay_check_failed" });
+  }
+});
 exports.closePayMonth = onCall(CLIENT_PHONE_OPTIONS, async (request) => {
   const organizationId = String(request?.data?.organizationId || "").trim();
   const month = String(request?.data?.month || "").trim();

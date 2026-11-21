@@ -7056,3 +7056,43 @@ describe("강사 급여 명세 -- 대표급 조정 · 취소 기록 · 서버 �
     await assertFails(setDoc(doc(dbFor(users.owner), "organizations", ORG_A, "payrollSettings", "other"), data(users.owner)));
   });
 });
+
+/* ── 정산 점검 (2026-11-22) ── 결과는 서버만 쓰고 대표급만 읽는다, 확인함은 대표급 · 사유 필수 · 지우지 않음. */
+describe("정산 점검 -- 결과는 서버만 · 대표급만 읽음 · 확인함은 사유와 함께", () => {
+  const MONTH = "2026-11";
+  const checkRef = (userId) => doc(dbFor(userId), "organizations", ORG_A, "payChecks", MONTH);
+  const key = "completed_no_deduct:L3";
+  const ackRef = (userId, id = `${MONTH}__${key}`) => doc(dbFor(userId), "organizations", ORG_A, "payCheckAcks", id);
+  const ack = (userId, extra = {}) => ({ organizationId: ORG_A, month: MONTH, key, kind: "completed_no_deduct", signature: "1|1|0", reason: "옛 앱에서 처리", ackedBy: userId, ackedAt: serverTimestamp(), ...extra });
+
+  test("점검 결과: 앱은 못 쓰고, 대표 · 총괄만 읽는다", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => { await setDoc(doc(context.firestore(), "organizations", ORG_A, "payChecks", MONTH), { month: MONTH, items: [] }); });
+    await assertFails(setDoc(checkRef(users.owner), { month: MONTH, items: [] }));
+    await assertSucceeds(getDoc(checkRef(users.owner)));
+    await assertSucceeds(getDoc(checkRef(users.area_manager)));
+    await assertFails(getDoc(checkRef(users.manager)));
+    await assertFails(getDoc(checkRef(users.instructor)));
+  });
+
+  test("확인함: 대표급만 · 사유 필수 · id 는 달__key · 다시 확인은 덮어쓰기 · 지우기 없음", async () => {
+    await assertSucceeds(setDoc(ackRef(users.owner), ack(users.owner)));
+    await assertSucceeds(setDoc(ackRef(users.area_manager), ack(users.area_manager, { signature: "1|2|0", reason: "듀엣 회원 추가 확인" })));
+    await assertFails(setDoc(ackRef(users.manager), ack(users.manager)), "FC 는 못 함");
+    await assertFails(setDoc(ackRef(users.instructor), ack(users.instructor)));
+    await assertFails(setDoc(ackRef(users.owner), ack(users.owner, { reason: "" })), "사유 없음");
+    await assertFails(setDoc(ackRef(users.owner, "2026-11__other"), ack(users.owner)), "id 와 key 가 다름");
+    await assertFails(deleteDoc(ackRef(users.owner)));
+    await assertSucceeds(getDoc(ackRef(users.owner)));
+    await assertFails(getDoc(ackRef(users.instructor)));
+  });
+
+  test("확인 이력: 덧붙이기만 -- 고치기 · 지우기 없음, 대표급만", async () => {
+    const logRef = (userId, id) => doc(dbFor(userId), "organizations", ORG_A, "payCheckAckLog", id);
+    await assertSucceeds(setDoc(logRef(users.owner, "l1"), ack(users.owner)));
+    await assertFails(setDoc(logRef(users.manager, "l2"), ack(users.manager)));
+    await assertFails(updateDoc(logRef(users.owner, "l1"), { reason: "바꿈" }), "이력은 못 고친다");
+    await assertFails(deleteDoc(logRef(users.owner, "l1")), "이력은 못 지운다");
+    await assertSucceeds(getDoc(logRef(users.owner, "l1")));
+    await assertFails(getDoc(logRef(users.instructor, "l1")));
+  });
+});

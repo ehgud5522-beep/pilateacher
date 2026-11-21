@@ -128,6 +128,15 @@ function GroupPayrollEditor({ organizationId, month, locationId, instructors, bu
   );
 }
 
+/** "YYYY-MM" 에서 n 달 옮긴 달. */
+export function shiftMonthKey(month, delta) {
+  const [year, value] = String(month).split("-").map(Number);
+  const at = new Date(year, value - 1 + delta, 1);
+  return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}`;
+}
+/** "2026년 11월". */
+export const monthTitle = (month) => { const [year, value] = String(month).split("-").map(Number); return `${year}년 ${value}월`; };
+
 export default function GroupPayrollAdmin({ organization, locationStore, instructorStore }) {
   const { organizationId, role } = organization;
   const [month, setMonth] = useState(() => currentMonth());
@@ -162,17 +171,29 @@ export default function GroupPayrollAdmin({ organization, locationStore, instruc
   return (
     <div className="space-y-3">
       <div className={panelClass}>
-        <div className="grid grid-cols-2 gap-2">
-          <label className="min-w-0 text-xs">정산 월
-            <input type="month" className={inputClass} value={month} max={currentMonth()} disabled={busy}
-              onChange={(event) => { if (event.target.value && event.target.value <= currentMonth()) setMonth(event.target.value); }} />
-          </label>
-          <label className="min-w-0 text-xs">지점
-            <select className={inputClass} value={selected.id} onChange={(event) => setLocationId(event.target.value)} disabled={busy}>
-              {locations.map((location) => <option key={location.id} value={location.id}>{location.name || location.id}</option>)}
-            </select>
-          </label>
+        {/* 현황판 웹 배치 2단계 (2026-11-21): 다른 집계 화면과 같은 ‹ 달 › 와 지점 칩. 전에는 달력 칸 · 고르기 칸이라
+            이 화면에서만 조작이 달랐다. 아직 오지 않은 달로는 못 간다 (전과 같다). */}
+        <div className="flex items-center gap-2" data-group-payroll-month={month}>
+          <button type="button" aria-label="이전 달" disabled={busy} onClick={() => setMonth(shiftMonthKey(month, -1))}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg font-bold disabled:opacity-30" style={{ backgroundColor: "var(--canvas)", color: "var(--ink2)" }}>‹</button>
+          <span className="min-w-0 flex-1 text-center font-extrabold tabular-nums" style={{ color: "var(--ink)" }}>{monthTitle(month)}</span>
+          <button type="button" aria-label="다음 달" disabled={busy || month >= currentMonth()} onClick={() => setMonth(shiftMonthKey(month, 1))}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg font-bold disabled:opacity-30" style={{ backgroundColor: "var(--canvas)", color: "var(--ink2)" }}>›</button>
         </div>
+        {locations.length > 1 ? (
+          <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="지점" data-branch-tabs>
+            {locations.map((location) => {
+              const active = location.id === selected.id;
+              return (
+                <button key={location.id} type="button" role="tab" aria-selected={active} disabled={busy} data-branch-tab={location.id}
+                  onClick={() => setLocationId(location.id)} className="min-h-9 rounded-full px-3 text-xs font-bold disabled:opacity-50"
+                  style={{ backgroundColor: active ? "var(--ink)" : "var(--canvas)", color: active ? "var(--card)" : "var(--ink2)" }}>
+                  {location.name || location.id}
+                </button>
+              );
+            })}
+          </div>
+        ) : <p className="text-xs font-bold" style={{ color: "var(--ink2)" }}>{selected.name || selected.id}</p>}
         <p className="text-xs">강사별 해당 월의 전체 횟수를 입력해 주세요. 같은 월과 지점을 다시 저장하면 변경한 강사의 횟수가 갱신됩니다.</p>
       </div>
       <GroupPayrollEditor key={JSON.stringify([organizationId, month, selected.id])} organizationId={organizationId}

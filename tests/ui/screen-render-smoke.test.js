@@ -483,6 +483,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원 앱 · 조회 실패",
     "회원 앱 · 점검 어긋남",
     "발급 내역",
+    "발급 내역 · PC",
     "발급 내역 · 취소 · 이관 제외",
     "발급 내역 · 빈 달",
     "발급 내역 · 조회 실패",
@@ -492,6 +493,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "급여 집계 · 회원별",
     "급여 집계 · 회원별 · 날짜",
     "급여 집계 · 두 지점",
+    "급여 집계 · 두 지점 · PC",
     "급여 집계 · 이관 전",
     "급여 집계 · 빈 달",
     "급여 집계 · 조회 실패",
@@ -3325,6 +3327,23 @@ test("PC 에서는 메뉴 | 화면 두 칸, 현황판은 강사 표 + 오른쪽 
   assert.match(radar, /data-summary-tile="radar_urgent"/);
   assert.doesNotMatch(radar, /data-radar-row=/, "PC 에서는 카드 대신 표");
   assert.match(markupOf("재등록 레이더"), /data-radar-row="u1"/, "폰은 카드 그대로");
+});
+
+test("돈 화면도 PC 에서는 지점 칩 · 표 · 오른쪽 상세 (2026-11-21 현황판 웹 배치안 2단계)", async (t) => {
+  const markupOf = await issueScreens(t);
+  const pay = markupOf("급여 집계 · 두 지점 · PC");
+  assert.match(pay, /data-payroll-wide/);
+  assert.match(pay, /data-branch-tab="all"/, "전 지점 합계가 첫 칩");
+  assert.match(pay, /data-branch-tab="centum"/);
+  assert.match(pay, /data-instructor-table/);
+  assert.match(pay, /data-payroll-detail=/, "고른 강사의 단가별 · 회원별이 오른쪽에");
+  assert.match(pay, /센터 전체 CSV/);
+  assert.doesNotMatch(markupOf("급여 집계 · 두 지점"), /data-payroll-wide/, "폰은 그대로");
+  const issue = markupOf("발급 내역 · PC");
+  assert.match(issue, /data-issue-wide/);
+  assert.match(issue, /data-issue-detail=/);
+  assert.match(issue, /CSV 내려받기/);
+  assert.doesNotMatch(markupOf("발급 내역"), /data-issue-wide/, "폰은 그대로");
 });
 
 test("the member tab separates ongoing from expired, and says why it ended", async (t) => {

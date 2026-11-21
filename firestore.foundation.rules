@@ -1873,7 +1873,7 @@ service cloud.firestore {
          salesMonths/{강사}_{YYYY-MM}: 강사 제출(submitted) · 서버 확정(confirmed) · 되돌림(reopened, 사유).
          **확정은 서버 함수 confirmSalesMonth 만** -- 두 쪽이 한 줄도 빠짐없이 같을 때. 앱은 confirmed 를 못 쓴다.
          확정된 달의 줄은 아무도 못 넣고 · 고치고 · 지운다. 강사는 자기 장부만 읽는다 (사무실 장부는 FC · 대표 · 총괄만).
-         금액은 실제로 받은 현금가만 (결정 6). 반반 매출은 share 0.5 (결정 4). 그룹 수강권은 kind group · group_refund (0.5%, 결정 9). */
+         금액은 실제로 받은 현금가만 (결정 6). 반반 매출은 share 0.5 (결정 4). 그룹 수강권은 kind group · group_refund (5%, 결정 9). */
       function salesOffice(organizationId, instructorId) {
         return instructorId != request.auth.uid
           && (hasRole(organizationId, ownerLevel())
@@ -1946,7 +1946,7 @@ service cloud.firestore {
           && (data.kind in ["refund", "group_refund"]
             ? (data.refundOfMonth == "" || (salesMonthString(data.refundOfMonth) && data.refundOfMonth <= data.month))
             : data.refundOfMonth == "")
-          /* 그룹 수강권(0.5%)에는 OT 인센이 없다. */
+          /* 그룹 수강권(5%)에는 OT 인센이 없다. */
           && (!(data.kind in ["group", "group_refund"]) || data.ot == false)
           && data.updatedBy == request.auth.uid
           && data.updatedAt == request.time;

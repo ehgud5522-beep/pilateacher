@@ -55,7 +55,7 @@ import {
   fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone, fbDeleteArchivedClient,
-  fbBeforeAfterShareStats,
+  fbBeforeAfterShareStats, fbConfirmSalesMonth, fbConfirmFcLessonMonth,
   fbVerifyMemberViews, fbMemberAppStatus,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
@@ -81,7 +81,8 @@ import {
   careChoices, careMinutesOfGrade, careOnlyClient, settlementSkipMessage,
 } from "./features/schedule/care-options.js";
 import GroupPayrollAdmin from "./features/schedule/GroupPayrollAdmin.jsx";
-import { useNarrowViewport } from "./features/ui/viewport.js";
+import { useNarrowViewport, useWideViewport } from "./features/ui/viewport.js";
+import { installTapLatencyProbe } from "./features/ui/tap-latency.js";
 import { upcomingPayPreview, upcomingPayRows } from "./features/schedule/upcoming-pay.js";
 import {
   PAY_FILTERS as MY_PAY_FILTERS, PAY_STATUS_LABEL as MY_PAY_STATUS_LABEL, myPayModel, myPayWeeks, whenLabel,
@@ -419,7 +420,7 @@ import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/serve
 import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
 import { listLessonNotesBetween, listRecordActivity, writeRecordActivity } from "./data/repositories/record-activity-repository.js";
 import {
-  RECORD_TONE, countDeviceRecordActivity, instructorRecordBoard, monthOf as monthOfRecord, previousRecordMonth,
+  RECORD_RATE_GOOD, RECORD_RATE_LOW, RECORD_TONE, countDeviceRecordActivity, instructorRecordBoard, monthOf as monthOfRecord, previousRecordMonth,
   recordActivityDocument, recordActivitySignature, recordBoardSummary, recordRowView,
 } from "./features/records/record-activity.js";
 import { beforeAfterBoard, shareInstructorView, shareMemberLabel } from "./features/records/before-after-board.js";
@@ -427,6 +428,21 @@ import { beforeAfterNudge, lastSentAtOf, recordNudge } from "./features/records/
 import {
   RADAR_EXPIRY_DAYS, RADAR_REMAINING_MAX, RATE_WINDOW_DAYS, radarPassLabel, radarSignalLabel, radarSummary, renewalRadar, renewalRateLabel,
 } from "./features/records/renewal-radar.js";
+import { groupRowsByBranch, pickBranch } from "./features/records/branch-groups.js";
+import {
+  CONFIRM_NOTICE_HINT, SALES_KIND_CHOICES, blankEntry, confirmFailureText, entryErrors, entryFromSuggestion, entryLine, kstDate, monthStatusView, mySalesView, salesBoardRows,
+  submissionChangeText, submittedSummaryOf,
+} from "./features/sales/sales-board.js";
+import { MATCH_VIEW, PAIR, PAIR_VIEW, SALES_KIND_LABELS, isGroup, matchEntry, salesRecordsOf, suggestionsFor } from "../functions/shared/sales-incentive.mjs";
+import { FC_LESSON_MONTHLY_CAP, FC_LESSON_RATE, fcLessonTotals } from "../functions/shared/fc-lessons.mjs";
+import { fcConfirmFailureText, fcCountErrors, myFcLessonView } from "./features/sales/fc-lesson-view.js";
+import {
+  listFcLessonMonths, readFcDesignation, readFcLessonMonth, reopenFcLessonMonth, saveFcCounts, saveFcDesignation,
+} from "./data/repositories/fc-lesson-repository.js";
+import {
+  addSalesEntry, deleteSalesEntry, listSalesEntries, listSalesEntriesOfMonth, listSalesLedger, listSalesMonths, readSalesMonth, reopenSalesMonth, submitSalesMonth, updateSalesEntry,
+} from "./data/repositories/sales-repository.js";
+import { nextAggregateSort, sortAggregateRows } from "./features/records/aggregate-table.js";
 import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
 import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js";
 import { RENEWAL_ALERT, livePassesOf, renewalForecast, renewalLine, renewalRates } from "../functions/shared/renewal-forecast.mjs";
@@ -3676,6 +3692,8 @@ function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatu
   /* 알림 하나를 누름: 읽음(안 읽은 것만) → 그 수업을 연다. 기기 일정에 아직 없으면 말한다. */
   const pickInboxItem = (item) => {
     if (!item?.readAt) inbox?.onRead?.(item);
+    /* 수업이 없는 알림(매출 인센 확정 · FC 발급)은 읽음만 -- "일정에 아직 없어요" 를 띄우지 않는다. */
+    if (!String(item?.lessonId || "").trim()) return;
     const lesson = lessonForInboxItem(item, db.schedule);
     if (!lesson) { onToast?.({ ok: false, msg: INBOX_COPY.NOT_SYNCED }); return; }
     setInboxOpen(false);
@@ -24143,6 +24161,9 @@ function IssueReport({
   const [namesFailed, setNamesFailed] = useState(initialState?.namesFailed || "");
   const [loading, setLoading] = useState(!initialState);
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
+  const wide = useWideViewport(initialState?.wide);
+  const [issueBranch, setIssueBranch] = useState(initialState?.branch || "");
+  const [issueSelected, setIssueSelected] = useState(initialState?.selected || "");
   const organizationId = organization?.organizationId || "";
   const locked = organization?.status === "unknown";
   const thisMonth = `${now().getFullYear()}-${String(now().getMonth() + 1).padStart(2, "0")}`;
@@ -24233,6 +24254,51 @@ function IssueReport({
 
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
   const totals = summary?.totals;
+  /* ── PC (2026-11-21 "현황판 웹 배치안" 2단계): 지점 칩 → 발급자 표 → 오른쪽에 그 발급자의 발급 목록. 폰은 그대로. ── */
+  const issueGroups = summary ? summary.byLocation.map((location) => ({ id: location.locationId || "none", name: nameOfLocation(location.locationId), rows: location.byIssuer })) : [];
+  const issueGroup = issueGroups.find((group) => group.id === issueBranch) || issueGroups[0] || null;
+  const issueRow = issueGroup ? (issueGroup.rows.find((row) => (row.issuedBy || "none") === issueSelected) || issueGroup.rows[0] || null) : null;
+  const issueRows = (issuer) => issuer.rows.map((row) => (
+    <div key={row.entryId} style={{ padding: "9px 0", borderTop: `1px solid ${LINE}`, opacity: row.cancelled ? 0.5 : 1 }}>
+      <p className="flex items-center gap-1.5" style={{ fontSize: TYPE.caption, color: INK, textDecoration: row.cancelled ? "line-through" : "none" }}>
+        <span className="tabular-nums" style={{ color: SUB }}>{dayLabel(row.occurredAt)}</span>
+        <span style={{ fontWeight: 650 }}>{nameOfClient(row.clientId)}</span>
+        {row.isNew ? <span style={{ padding: "1px 5px", borderRadius: 5, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption, fontWeight: 700 }}>신규</span> : null}
+      </p>
+      <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+        {nameOfProduct(row.productId)}{" · "}{row.totalCount}회{" · "}{row.contractPrice === null ? "금액 확인 불가" : `₩${won(row.contractPrice)}`}
+        {row.paymentMethod ? ` · ${labelOf(PAYMENT_METHOD_LABELS, row.paymentMethod)}` : ""}{" · "}{labelOf(PAY_CATEGORY_LABELS, row.category)}
+      </p>
+      {row.cancelled ? <p className="mt-0.5" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>{row.cancelledAtLabel ? `${row.cancelledAtLabel} 취소` : "취소됨"}</p> : null}
+    </div>
+  ));
+  const issueWide = wide && summary && issueGroup ? (
+    <section style={sectionStyle} data-issue-wide>
+      <SummaryTiles items={[
+        { label: "발급", value: `${totals.count}건`, code: "issue_count" },
+        { label: "금액", value: `₩${won(totals.amount)}`, code: "issue_amount" },
+        { label: "그중 신규", value: `${totals.newCount}건 · ₩${won(totals.newAmount)}`, color: BRAND_D, code: "issue_new" },
+        { label: "취소 (합계에서 제외)", value: `${totals.cancelledCount || 0}건`, color: totals.cancelledCount ? BAD : INK, code: "issue_cancelled" },
+      ]} />
+      <BranchTabs groups={issueGroups} selected={issueGroup.id} onSelect={(id) => { setIssueBranch(id); setIssueSelected(""); }} countLabel={(group) => `${group.rows.reduce((sum, row) => sum + row.count, 0)}건`} />
+      <AggregateSplit wide detail={issueRow ? (
+        <div data-issue-detail={issueRow.issuedBy || "none"}>
+          <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{nameOfIssuer(issueRow.issuedBy)}</p>
+          <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{issueRow.count}건 · ₩{won(issueRow.amount)}{issueRow.newCount ? ` · 신규 ${issueRow.newCount}건` : ""}</p>
+          <div className="mt-1">{issueRows(issueRow)}</div>
+        </div>
+      ) : null}>
+        <InstructorTable rows={issueGroup.rows} rowKey={(row) => row.issuedBy || "none"} selected={issueRow ? (issueRow.issuedBy || "none") : ""} onSelect={setIssueSelected} columns={[
+          { key: "name", label: "발급자", firstDir: "asc", sortValue: (row) => nameOfIssuer(row.issuedBy), render: (row) => <span className="font-bold">{nameOfIssuer(row.issuedBy)}</span> },
+          { key: "count", label: "건수", align: "right", sortValue: (row) => row.count, render: (row) => `${row.count}건` },
+          { key: "new", label: "신규", align: "right", sortValue: (row) => row.newCount || 0, render: (row) => (row.newCount ? `${row.newCount}건` : "—") },
+          { key: "amount", label: "금액", align: "right", sortValue: (row) => row.amount, render: (row) => <span className="font-bold">₩{won(row.amount)}</span> },
+        ]} />
+      </AggregateSplit>
+      <button type="button" onClick={download} disabled={!summary.rows.length} className="mt-3 h-10 px-4 font-bold"
+        style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption, opacity: summary.rows.length ? 1 : 0.4 }}>CSV 내려받기</button>
+    </section>
+  ) : null;
   const notices = [];
   if (totals?.migratedCount) notices.push(`이관 ${totals.migratedCount}건 제외`);
   if (totals?.priorMonthCancelCount) notices.push(`이전 달 발급 취소 ${totals.priorMonthCancelCount}건`);
@@ -24286,7 +24352,8 @@ function IssueReport({
         </section>
       ) : null}
 
-      {!loading && !loadError && summary ? (
+      {!loading && !loadError && summary && issueWide ? issueWide : null}
+      {!loading && !loadError && summary && !issueWide ? (
         <>
           <section style={sectionStyle}>
             <div className="flex items-baseline justify-between">
@@ -24685,6 +24752,10 @@ function PayrollSummary({
   const [loading, setLoading] = useState(!initialState);
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
   const [open, setOpen] = useState(initialState?.open || "");
+  /* PC 배치 (2026-11-21 "현황판 웹 배치안" 2단계): 지점 칩 → 강사 표 → 오른쪽 상세. 폰은 지금 그대로. */
+  const wide = useWideViewport(initialState?.wide);
+  const [payBranch, setPayBranch] = useState(initialState?.branch || "all");
+  const [paySelected, setPaySelected] = useState(initialState?.selected || "");
   const organizationId = organization?.organizationId || "";
   const locked = organization?.status === "unknown";
   const thisMonth = `${now().getFullYear()}-${String(now().getMonth() + 1).padStart(2, "0")}`;
@@ -24820,6 +24891,69 @@ function PayrollSummary({
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
   const toggle = (key) => setOpen(open === key ? "" : key);
 
+  /* ── PC: 지점 칩 · 강사 표 · 오른쪽 상세 ──
+     "전 지점 합계" 가 처음이다 -- 지급은 지점을 가로지른 합계로 한다 (아래 폰 화면의 설명과 같다).
+     지점을 고르면 그 지점 안의 수업만. 상세 칸은 폰에서 펼치던 그 줄(단가별 · 회원별 · CSV)을 그대로 쓴다. */
+  const payGroups = summary ? [
+    { id: "all", name: multiLocation ? "전 지점 합계" : "강사별", rows: summary.byInstructor, sessions: summary.sessions, total: summary.total },
+    ...(multiLocation ? summary.byLocation.map((location) => ({
+      id: location.locationId || "none", locationId: location.locationId, name: nameOfLocation(location.locationId),
+      rows: location.byInstructor, sessions: location.sessions, total: location.total,
+    })) : []),
+  ] : [];
+  const payGroup = payGroups.find((group) => group.id === payBranch) || payGroups[0] || null;
+  const payRow = payGroup ? (payGroup.rows.find((row) => row.instructorId === paySelected) || payGroup.rows[0] || null) : null;
+  const payScope = (row) => ({ ...(payGroup?.id === "all" ? {} : { locationId: payGroup.locationId }), ...(row ? { instructorId: row.instructorId } : {}) });
+  const payWide = wide && summary && summary.byInstructor.length > 0 ? (
+    <div data-payroll-wide>
+      <SummaryTiles items={[
+        { label: `${payGroup.name} 수업료`, value: `₩${won(payGroup.total)}`, code: "payroll_total" },
+        { label: "수업", value: `${payGroup.sessions}회`, code: "payroll_sessions" },
+        { label: "강사", value: `${payGroup.rows.length}명`, code: "payroll_instructors" },
+        { label: "평균 회당", value: payGroup.sessions ? `₩${won(Math.round(payGroup.total / payGroup.sessions))}` : "—", code: "payroll_average" },
+      ]} />
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <BranchTabs groups={payGroups} selected={payGroup.id} onSelect={(id) => { setPayBranch(id); setPaySelected(""); }} countLabel={(group) => `₩${won(group.total)}`} />
+        </div>
+        <button type="button" onClick={() => download(payGroup.id === "all" ? {} : { locationId: payGroup.locationId }, payGroup.id === "all" ? "" : payGroup.name)}
+          className="mt-3 flex h-9 items-center gap-1.5 px-3 font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>
+          <Download size={13} />{payGroup.id === "all" ? "센터 전체 CSV" : `${payGroup.name} CSV`}
+        </button>
+      </div>
+      {payGroup.id === "all" && multiLocation ? (
+        <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>지점을 가로지른 합계입니다. 지급은 이 금액으로 합니다.</p>
+      ) : null}
+      <AggregateSplit wide detail={payRow ? (
+        <div data-payroll-detail={payRow.instructorId}>
+          <PayrollInstructorRow key={`${payGroup.id}/${payRow.instructorId}`} row={payRow}
+            name={nameOfInstructor(payRow.instructorId)} badge={badgeOfInstructor(payRow.instructorId)}
+            nameOfClient={nameOfClient} nameOfPass={nameOfPass} nameOfLocation={nameOfLocation}
+            open onToggle={() => {}}
+            initialView={initialState?.view || PAYROLL_VIEW.PRICE} initialOpenClient={initialState?.openClient || ""}
+            onDownload={() => download(payScope(payRow), nameOfInstructor(payRow.instructorId))} />
+        </div>
+      ) : null}>
+        <InstructorTable rows={payGroup.rows} selected={payRow?.instructorId} onSelect={setPaySelected} columns={[
+          { key: "name", label: "강사", firstDir: "asc", sortValue: (row) => nameOfInstructor(row.instructorId), render: (row) => {
+            const badge = badgeOfInstructor(row.instructorId);
+            return <span className="font-bold">{nameOfInstructor(row.instructorId)}{badge ? <span className="ml-1.5 rounded-full px-1.5 py-0.5" style={{ fontSize: TYPE.caption, backgroundColor: badge.bg, color: badge.color }}>{badge.label}</span> : null}</span>;
+          } },
+          { key: "sessions", label: "수업", align: "right", sortValue: (row) => row.sessions, render: (row) => `${row.sessions}회` },
+          { key: "clients", label: "회원", align: "right", sortValue: (row) => new Set((row.byClient || []).map((item) => item.clientId)).size, render: (row) => `${new Set((row.byClient || []).map((item) => item.clientId)).size}명` },
+          { key: "average", label: "회당", align: "right", sortValue: (row) => (row.sessions ? row.total / row.sessions : null), render: (row) => (row.sessions ? `₩${won(Math.round(row.total / row.sessions))}` : "—") },
+          { key: "total", label: "금액", align: "right", sortValue: (row) => row.total, render: (row) => <span className="font-bold">₩{won(row.total)}</span> },
+        ]} />
+      </AggregateSplit>
+      {summary.corrections?.priorMonth?.sessions ? (
+        <p className="mt-2 tabular-nums" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN }}>
+          지난달 차감 {summary.corrections.priorMonth.sessions}회를 이 달에서 뺐습니다
+          {" ("}−₩{won(Math.abs(summary.corrections.priorMonth.amount))}{"). "}이미 지급된 달은 고치지 않습니다.
+        </p>
+      ) : null}
+    </div>
+  ) : null;
+
   return (
     <div className="space-y-3">
       <section style={sectionStyle}>
@@ -24902,7 +25036,8 @@ function PayrollSummary({
             </section>
           ) : null}
 
-          {multiLocation ? summary.byLocation.map((location) => (
+          {payWide ? <section style={sectionStyle}>{payWide}</section> : null}
+          {!payWide && multiLocation ? summary.byLocation.map((location) => (
             <section key={location.locationId} style={sectionStyle}>
               <div className="flex items-center gap-2">
                 <h3 className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>
@@ -24939,7 +25074,7 @@ function PayrollSummary({
             </section>
           )) : null}
 
-          {summary.byInstructor.length > 0 ? (
+          {!payWide && summary.byInstructor.length > 0 ? (
             <section style={sectionStyle}>
               <h3 style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>
                 {multiLocation ? "강사별 합계 (전 지점)" : "강사별"}
@@ -24969,7 +25104,7 @@ function PayrollSummary({
             </section>
           ) : null}
 
-          <section style={sectionStyle}>
+          {payWide ? null : <section style={sectionStyle}>
             <div className="flex items-end gap-2">
               <p className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, color: SUB }}>
                 {monthLabel(`${summary.month}-01`)} 수업료 합계
@@ -25003,7 +25138,7 @@ function PayrollSummary({
               {" "}소계는 엑셀의 피벗으로 만드세요 -- 반대 방향은 할 수 없습니다.
               {" "}강사별·지점별은 각 묶음 안의 버튼으로 받습니다.
             </p>
-          </section>
+          </section>}
         </>
       ) : null}
     </div>
@@ -26756,7 +26891,10 @@ const recordCheckedLabel = (millis) => {
 function InstructorRecordBoard({ organization, instructorStore, clientStore, initialState = null, initialMonth = null }) {
   const thisMonth = currentRatingMonth();
   const [month, setMonth] = useState(initialMonth || thisMonth);
-  const [state, setState] = useState(() => initialState || { rows: null, error: "", notesError: "", namesError: "" });
+  const [state, setState] = useState(() => initialState || { rows: null, error: "", notesError: "", namesError: "", instructors: [], locations: [] });
+  const [branch, setBranch] = useState("");
+  const [selected, setSelected] = useState("");
+  const wide = useWideViewport(initialState?.wide);
   const organizationId = organization?.organizationId || "";
   const load = useCallback(async () => {
     if (!organizationId) return;
@@ -26765,22 +26903,23 @@ function InstructorRecordBoard({ organization, instructorStore, clientStore, ini
     /* 회원에게 보낸 말은 수업 뒤 며칠 지나 쓰기도 한다 -- 만든 시각으로 15일 더 읽고, 짝은 수업 · 회원으로 맞춘다. */
     const notesEnd = new Date(end.getTime() + 15 * 24 * 60 * 60e3);
     try {
-      const [ledger, activities, notes, members, clients] = await Promise.all([
+      const [ledger, activities, notes, members, clients, locations] = await Promise.all([
         loadOrganizationLedger(organizationId, { start, end }),
         listRecordActivity(organizationId, month),
         toleratingReadFailure(listLessonNotesBetween(organizationId, start, notesEnd)),
         toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
         toleratingReadFailure(listClients(organizationId, { store: clientStore })),
+        toleratingReadFailure(listLocations(organizationId)),
       ]);
       const rows = instructorRecordBoard({
         ledger, activities, lessonNotes: notes.items, instructors: members.items,
         canonicalInstructorId: canonicalInstructorIdFrom(members.items),
         excludedClientIds: reviewDemoClientIds(clients.items),
       });
-      setState({ rows, error: "", notesError: notes.errorCode, namesError: members.errorCode || clients.errorCode });
+      setState({ rows, error: "", notesError: notes.errorCode, namesError: members.errorCode || clients.errorCode || locations.errorCode, instructors: members.items, locations: locations.items });
     } catch (thrown) {
       const code = String(thrown?.code || "unknown");
-      setState({ rows: [], error: `기록 현황을 읽지 못했어요 (코드 ${code})`, notesError: "", namesError: "" });
+      setState({ rows: [], error: `기록 현황을 읽지 못했어요 (코드 ${code})`, notesError: "", namesError: "", instructors: [], locations: [] });
       deviceLog("record_board_read_failed", {
         feature: "record_activity", stage: thrown?.feature ? `${thrown.feature}:${thrown.stage || "list"}` : "board_read",
         errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200),
@@ -26789,11 +26928,34 @@ function InstructorRecordBoard({ organization, instructorStore, clientStore, ini
     }
   }, [organizationId, month, instructorStore, clientStore, organization?.role]);
   useEffect(() => { if (!initialState) load(); }, [load, initialState]);
-  const summary = recordBoardSummary(state.rows || []);
+  /* 지점별로 (2026-11-21 대표: "취합하는 거 나올 땐 지점별로 강사 하나씩"). */
+  const recordGroups = groupRowsByBranch(state.rows || [], { instructors: state.instructors || [], locations: state.locations || [], canonicalInstructorId: canonicalInstructorIdFrom(state.instructors || []) });
+  const recordBranch = pickBranch(recordGroups, branch);
+  const recordShown = recordGroups.length > 1 ? (recordGroups.find((group) => group.id === recordBranch)?.rows || []) : (state.rows || []);
+  const summary = recordBoardSummary(recordShown);
+  const recordSelected = recordShown.find((row) => row.instructorId === selected) || (wide ? recordShown[0] : null) || null;
+  /* 강사 한 줄의 자세한 숫자 -- 폰은 카드 안, PC 는 오른쪽 칸. */
+  const recordCard = (row) => {
+    const view = recordRowView(row);
+    return (
+      <div data-record-detail={row.instructorId}>
+        <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+          {row.attended === null
+            ? `수업기록 — ${view.detail || ""}`
+            : `수업기록 ${row.recorded}/${row.attended}건${row.draft ? ` · 확인 안 한 AI 기록 ${row.draft}건` : ""}${view.detail ? ` · ${view.detail}` : ""}`}
+        </div>
+        <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>
+          {state.notesError
+            ? `확정 수업 ${row.confirmed}건`
+            : `확정 수업 ${row.confirmed}건 · 회원에게 보낸 말 ${row.withNote}건${row.noteRate === null ? "" : ` (${Math.round(row.noteRate * 100)}%)`}`}
+        </div>
+        <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>
+          {row.checkedAt ? `${recordCheckedLabel(row.checkedAt)}${row.appBuild ? ` · 앱 ${row.appBuild}` : ""} · ` : ""}코드 {view.code}
+        </div>
+      </div>
+    );
+  };
   const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
-  const chip = (tone, label, value) => (
-    <span className="px-2 py-1 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: RECORD_TONE_COLOR[tone](), backgroundColor: RECORD_TONE_BG[tone]() }}>{label} {value}</span>
-  );
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-record-board>
       <div className="flex items-center justify-between">
@@ -26810,47 +26972,49 @@ function InstructorRecordBoard({ organization, instructorStore, clientStore, ini
         {" "}<b style={{ color: INK }}>회원에게 보낸 말</b>은 확정한 수업 중 회원 앱으로 한마디를 보낸 수업이에요.
         {" "}기록 내용 · 회원 이름은 여기 오지 않아요. 기록이 적은 강사가 위에 있어요.
       </p>
+      <BranchTabs groups={recordGroups} selected={recordBranch} onSelect={(id) => { setBranch(id); setSelected(""); }} countLabel={(group) => `${group.rows.length}명`} />
       {state.rows && state.rows.length ? (
-        <div className="mt-2 flex flex-wrap gap-1.5" data-record-summary>
-          {chip(RECORD_TONE.GOOD, "잘함", summary.good)}
-          {chip(RECORD_TONE.WARN, "보통", summary.partial)}
-          {chip(RECORD_TONE.BAD, "부족", summary.low)}
-          {chip(RECORD_TONE.MUTED, "앱 보고 없음", summary.unknown)}
-        </div>
+        <SummaryTiles items={[
+          { label: "잘함", value: `${summary.good}명`, color: summary.good ? GOOD : INK, code: "record_good" },
+          { label: "보통", value: `${summary.partial}명`, color: summary.partial ? WARN : INK, code: "record_partial" },
+          { label: "부족", value: `${summary.low}명`, color: summary.low ? BAD : INK, code: "record_low" },
+          { label: "앱 보고 없음", value: `${summary.unknown}명`, code: "no_device_report" },
+        ]} />
       ) : null}
       {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
       {state.notesError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>회원에게 보낸 말을 읽지 못해 그 칸은 비어 있어요 (코드 {state.notesError})</p> : null}
       {state.namesError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>강사 이름 · 회원 명부 일부를 읽지 못했어요 (코드 {state.namesError})</p> : null}
       {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
       {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>이 달에 확정한 수업 · 보고가 없어요.</p> : null}
-      <div className="mt-3 space-y-2">
-        {(state.rows || []).map((row) => {
-          const view = recordRowView(row);
-          return (
-            <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-record-row={view.code}>
-              <div className="flex items-center justify-between gap-2">
-                <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>
-                  {row.name || row.instructorId}{row.active ? "" : " · 소속 아님"}
-                </span>
-                <span className="shrink-0 px-2 py-0.5 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: RECORD_TONE_COLOR[view.tone](), backgroundColor: RECORD_TONE_BG[view.tone]() }}>{view.label}</span>
+      {wide ? (
+        <AggregateSplit wide detail={recordSelected ? <div className="space-y-2"><p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{recordSelected.name || recordSelected.instructorId}</p>{recordCard(recordSelected)}</div> : null}>
+          <InstructorTable rows={recordShown} selected={recordSelected?.instructorId} onSelect={setSelected} columns={[
+            { key: "name", label: "강사", firstDir: "asc", sortValue: (row) => row.name || row.instructorId, render: (row) => <span className="font-bold">{row.name || row.instructorId}{row.active ? "" : " · 소속 아님"}</span> },
+            { key: "rate", label: "수업기록", align: "right", sortValue: (row) => row.rate, render: (row) => { const view = recordRowView(row); return <TonePill color={RECORD_TONE_COLOR[view.tone]()} background={RECORD_TONE_BG[view.tone]()}>{view.label}</TonePill>; } },
+            { key: "recorded", label: "기록 / 출석", align: "right", sortValue: (row) => row.attended, render: (row) => (row.attended === null ? "—" : `${row.recorded}/${row.attended}`) },
+            { key: "draft", label: "확인 안 한 AI", align: "right", sortValue: (row) => row.draft, render: (row) => (row.draft ? row.draft : "—") },
+            { key: "confirmed", label: "확정 수업", align: "right", sortValue: (row) => row.confirmed, render: (row) => row.confirmed },
+            { key: "notes", label: "보낸 말", align: "right", sortValue: (row) => (state.notesError ? null : row.noteRate), render: (row) => (state.notesError ? "—" : `${row.withNote}${row.noteRate === null ? "" : ` (${Math.round(row.noteRate * 100)}%)`}`) },
+          ]} />
+        </AggregateSplit>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {recordShown.map((row) => {
+            const view = recordRowView(row);
+            return (
+              <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-record-row={view.code}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>
+                    {row.name || row.instructorId}{row.active ? "" : " · 소속 아님"}
+                  </span>
+                  <span className="shrink-0 px-2 py-0.5 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: RECORD_TONE_COLOR[view.tone](), backgroundColor: RECORD_TONE_BG[view.tone]() }}>{view.label}</span>
+                </div>
+                {recordCard(row)}
               </div>
-              <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
-                {row.attended === null
-                  ? `수업기록 — ${view.detail || ""}`
-                  : `수업기록 ${row.recorded}/${row.attended}건${row.draft ? ` · 확인 안 한 AI 기록 ${row.draft}건` : ""}${view.detail ? ` · ${view.detail}` : ""}`}
-              </div>
-              <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>
-                {state.notesError
-                  ? `확정 수업 ${row.confirmed}건`
-                  : `확정 수업 ${row.confirmed}건 · 회원에게 보낸 말 ${row.withNote}건${row.noteRate === null ? "" : ` (${Math.round(row.noteRate * 100)}%)`}`}
-              </div>
-              <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>
-                {row.checkedAt ? `${recordCheckedLabel(row.checkedAt)}${row.appBuild ? ` · 앱 ${row.appBuild}` : ""} · ` : ""}코드 {view.code}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
@@ -26867,28 +27031,31 @@ const SHARE_TONE_BG = { good: () => GOOD_S, warn: () => WARN_S, bad: () => BAD_S
 function BeforeAfterShareBoard({ organization, instructorStore, clientStore, passStore, onLoad = fbBeforeAfterShareStats, initialState = null }) {
   const thisMonth = currentRatingMonth();
   const [month, setMonth] = useState(thisMonth);
-  const [state, setState] = useState(() => initialState || { rows: null, error: "", namesError: "", truncated: false });
+  const [state, setState] = useState(() => initialState || { rows: null, error: "", namesError: "", truncated: false, instructors: [], locations: [] });
   const [open, setOpen] = useState("");
+  const [branch, setBranch] = useState("");
+  const wide = useWideViewport(initialState?.wide);
   const organizationId = organization?.organizationId || "";
   const load = useCallback(async () => {
     if (!organizationId) return;
     setState((current) => ({ ...current, rows: null, error: "" }));
     try {
-      const [stats, clients, passes, members] = await Promise.all([
+      const [stats, clients, passes, members, locations] = await Promise.all([
         onLoad({ organizationId }),
         toleratingReadFailure(listClients(organizationId, { store: clientStore })),
         toleratingReadFailure(listPasses(organizationId, { store: passStore })),
         toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
+        toleratingReadFailure(listLocations(organizationId)),
       ]);
       const rows = beforeAfterBoard({
         rows: Array.isArray(stats?.rows) ? stats.rows : [], clients: clients.items, passes: passes.items, instructors: members.items,
         canonicalInstructorId: canonicalInstructorIdFrom(members.items), excludedClientIds: reviewDemoClientIds(clients.items),
         month, now: new Date(),
       });
-      setState({ rows, error: "", namesError: clients.errorCode || passes.errorCode || members.errorCode, truncated: Boolean(stats?.truncated) });
+      setState({ rows, error: "", namesError: clients.errorCode || passes.errorCode || members.errorCode || locations.errorCode, truncated: Boolean(stats?.truncated), instructors: members.items, locations: locations.items });
     } catch (thrown) {
       const code = serverCodeOf(thrown) || "unknown";
-      setState({ rows: [], error: `비포애프터 공유 현황을 읽지 못했어요 (코드 ${code})`, namesError: "", truncated: false });
+      setState({ rows: [], error: `비포애프터 공유 현황을 읽지 못했어요 (코드 ${code})`, namesError: "", truncated: false, instructors: [], locations: [] });
       deviceLog("before_after_stats_failed", {
         feature: "before_after_stats", stage: "callable", errorDomain: "functions_callable",
         errorCode: String(thrown?.code || "unknown"), serverCode: code, message: String(thrown?.message || "").slice(0, 200),
@@ -26900,6 +27067,27 @@ function BeforeAfterShareBoard({ organization, instructorStore, clientStore, pas
   const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
   const badge = (view) => (
     <span className="shrink-0 px-2 py-0.5 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: SHARE_TONE_COLOR[view.tone](), backgroundColor: SHARE_TONE_BG[view.tone]() }}>{view.label}</span>
+  );
+  /* 지점별로 · 강사는 하나씩 펼친다 (2026-11-21 대표). */
+  const shareGroups = groupRowsByBranch(state.rows || [], { instructors: state.instructors || [], locations: state.locations || [], canonicalInstructorId: canonicalInstructorIdFrom(state.instructors || []) });
+  const shareBranch = pickBranch(shareGroups, branch);
+  const shareShown = shareGroups.length > 1 ? (shareGroups.find((group) => group.id === shareBranch)?.rows || []) : (state.rows || []);
+  const shareSelected = shareShown.find((row) => row.instructorId === open) || (wide ? shareShown[0] : null) || null;
+  const shareTotals = shareShown.reduce((sum, row) => ({ linked: sum.linked + row.linked, everSent: sum.everSent + row.everSent, neverSent: sum.neverSent + row.neverSent, sentThisMonth: sum.sentThisMonth + row.sentThisMonth }), { linked: 0, everSent: 0, neverSent: 0, sentThisMonth: 0 });
+  /* 회원별 마지막으로 보낸 날 -- 폰은 펼침, PC 는 오른쪽 칸. */
+  const shareMemberList = (row) => (
+    <div className="space-y-1" data-share-members>
+      {row.members.map((member) => {
+        const label = shareMemberLabel(member);
+        return (
+          <div key={member.clientId} className="flex items-center justify-between gap-2 px-2 py-1.5" style={{ borderRadius: 8, backgroundColor: CARD }} data-share-member={label.code}>
+            <span className="min-w-0 flex-1 truncate font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{member.name || "이름 모름"}</span>
+            <span className="min-w-0 text-right" style={{ fontSize: TYPE.caption, color: SHARE_TONE_COLOR[label.tone]() }}>{label.label}</span>
+          </div>
+        );
+      })}
+      {!row.members.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>담당 회원이 없어요.</p> : null}
+    </div>
   );
   return (
     <section className="mt-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-before-after-board>
@@ -26921,8 +27109,35 @@ function BeforeAfterShareBoard({ organization, instructorStore, clientStore, pas
       {state.truncated ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>카드가 너무 많아 일부만 셌어요 (코드 share_stats_truncated)</p> : null}
       {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
       {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>담당 회원 · 보낸 카드가 없어요.</p> : null}
+      <BranchTabs groups={shareGroups} selected={shareBranch} onSelect={(id) => { setBranch(id); setOpen(""); }} countLabel={(group) => `${group.rows.length}명`} />
+      {state.rows && state.rows.length ? (
+        <SummaryTiles items={[
+          { label: "앱 연결 담당 회원", value: `${shareTotals.linked}명`, code: "share_linked" },
+          { label: "한 번이라도 받음", value: `${shareTotals.everSent}명`, color: GOOD, code: "share_ever_sent" },
+          { label: "보낸 적 없음", value: `${shareTotals.neverSent}명`, color: shareTotals.neverSent ? BAD : INK, code: "share_never_sent" },
+          { label: "이 달 보낸 카드", value: `${shareTotals.sentThisMonth}장`, code: "share_this_month" },
+        ]} />
+      ) : null}
+      {wide ? (
+        <AggregateSplit wide detail={shareSelected ? (
+          <div data-share-detail={shareSelected.instructorId}>
+            <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{shareSelected.name || shareSelected.instructorId}</p>
+            <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{`받은 회원 ${shareSelected.everSent}/${shareSelected.linked}명 · 이 달 보낸 카드 ${shareSelected.sentThisMonth}장 · 회원 열람 ${shareSelected.readThisMonth}장`}</p>
+            <div className="mt-2">{shareMemberList(shareSelected)}</div>
+          </div>
+        ) : null}>
+          <InstructorTable rows={shareShown} selected={shareSelected?.instructorId} onSelect={setOpen} columns={[
+            { key: "name", label: "강사", firstDir: "asc", sortValue: (row) => row.name || row.instructorId, render: (row) => <span className="font-bold">{row.name || row.instructorId}{row.active ? "" : " · 소속 아님"}</span> },
+            { key: "rate", label: "받음", align: "right", sortValue: (row) => (row.linked ? row.everSent / row.linked : null), render: (row) => { const view = shareInstructorView(row); return <TonePill color={SHARE_TONE_COLOR[view.tone]()} background={SHARE_TONE_BG[view.tone]()}>{view.label}</TonePill>; } },
+            { key: "ever", label: "받은 회원", align: "right", sortValue: (row) => row.everSent, render: (row) => `${row.everSent}/${row.linked}` },
+            { key: "never", label: "보낸 적 없음", align: "right", sortValue: (row) => row.neverSent, render: (row) => (row.neverSent || "—") },
+            { key: "unlinked", label: "앱 미연결", align: "right", sortValue: (row) => row.notLinked, render: (row) => (row.notLinked || "—") },
+            { key: "month", label: "이 달 보냄 · 열람", align: "right", sortValue: (row) => row.sentThisMonth, render: (row) => `${row.sentThisMonth} · ${row.readThisMonth}` },
+          ]} />
+        </AggregateSplit>
+      ) : (
       <div className="mt-3 space-y-2">
-        {(state.rows || []).map((row) => {
+        {shareShown.map((row) => {
           const view = shareInstructorView(row);
           const expanded = open === row.instructorId;
           return (
@@ -26939,24 +27154,12 @@ function BeforeAfterShareBoard({ organization, instructorStore, clientStore, pas
                 {`이 달 보낸 카드 ${row.sentThisMonth}장 · 회원 열람 ${row.readThisMonth}장${row.unsent ? ` · 만들고 안 보낸 카드 ${row.unsent}장` : ""}`}
               </div>
               <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>코드 {view.code}</div>
-              {expanded ? (
-                <div className="mt-2 space-y-1" data-share-members>
-                  {row.members.map((member) => {
-                    const label = shareMemberLabel(member);
-                    return (
-                      <div key={member.clientId} className="flex items-center justify-between gap-2 px-2 py-1.5" style={{ borderRadius: 8, backgroundColor: CARD }} data-share-member={label.code}>
-                        <span className="min-w-0 flex-1 truncate font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{member.name || "이름 모름"}</span>
-                        <span className="min-w-0 text-right" style={{ fontSize: TYPE.caption, color: SHARE_TONE_COLOR[label.tone]() }}>{label.label}</span>
-                      </div>
-                    );
-                  })}
-                  {!row.members.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>담당 회원이 없어요.</p> : null}
-                </div>
-              ) : null}
+              {expanded ? <div className="mt-2">{shareMemberList(row)}</div> : null}
             </div>
           );
         })}
       </div>
+      )}
     </section>
   );
 }
@@ -26972,146 +27175,1104 @@ const RADAR_TONE = { urgent: () => BAD, risk: () => WARN, calm: () => SUB };
 const RADAR_TONE_BG = { urgent: () => BAD_S, risk: () => WARN_S, calm: () => CANVAS };
 const RADAR_LEDGER_DAYS = 56;
 const RADAR_NOTES_DAYS = 45;
+/* 이 시간 안에 읽은 결과는 다시 열어도 새로 읽지 않는다. [새로고침] 은 언제든 새로 읽는다. */
+const RADAR_FRESH_MS = 5 * 60e3;
+
+/* ── 바로 뜨게 (2026-11-21 대표: "읽는 중이 왜 이렇게 오래 걸려? 누르면 바로 뜨게") ──
+   전에는 여덟 가지를 다 받은 뒤에야 그렸다. 이제는
+    1. 센터 운영 메뉴를 열 때 미리 읽기 시작한다 (prefetchRenewalRadar)
+    2. 지난 결과를 기억해 두었다가 다시 열면 바로 보이고, 뒤에서 새로 읽는다
+    3. 회원 · 회원권 · 차감이 오면 바로 그린다. 나머지 신호는 오는 대로 채운다 -- 그 사이 모르는 신호는 신호로 치지 않는다
+   기억은 메모리에만 둔다 (앱을 닫으면 사라진다) -- 기기 저장소에 회원 이름을 따로 남기지 않는다. */
+const radarCache = new Map();
+function radarEntry(organizationId) {
+  if (!radarCache.has(organizationId)) radarCache.set(organizationId, { data: {}, at: 0, loading: false, listeners: new Set() });
+  return radarCache.get(organizationId);
+}
+function startRadarLoad({ organizationId, clientStore, passStore, instructorStore, onLoadShares = fbBeforeAfterShareStats, role = "" }, { force = false } = {}) {
+  const entry = radarEntry(organizationId);
+  if (!organizationId || entry.loading || (!force && entry.at && Date.now() - entry.at < RADAR_FRESH_MS)) return entry;
+  entry.loading = true;
+  const now = new Date();
+  const thisMonth = currentRatingMonth();
+  /* 달 초에는 이 달 숫자가 아직 적다 -- 10일까지는 지난달 기록률을 쓴다. */
+  const activityMonth = now.getDate() <= 10 ? previousRecordMonth(thisMonth) : thisMonth;
+  const notify = () => entry.listeners.forEach((listener) => listener(entry));
+  const put = (key, value) => { entry.data = { ...entry.data, [key]: value }; notify(); };
+  const day = 86400000;
+  const jobs = [
+    /* 차감 · 되돌림만 읽는다 (급여가 쓰는 색인). 원장 전체를 읽으면 발급 · 담당 교체까지 딸려 와 몇 배가 된다. */
+    Promise.all([
+      listClients(organizationId, { store: clientStore }),
+      listPasses(organizationId, { store: passStore }),
+      listRecentDeductions({ organizationId, now, days: RADAR_LEDGER_DAYS }),
+    ]).then(([clients, passes, ledger]) => { put("core", { clients, passes, ledger, now: now.getTime(), activityMonth }); put("coreError", ""); })
+      .catch((thrown) => {
+        const code = String(thrown?.code || "unknown");
+        put("coreError", code);
+        deviceLog("renewal_radar_read_failed", {
+          feature: "renewal_radar", stage: thrown?.feature ? `${thrown.feature}:${thrown.stage || "list"}` : "radar_read",
+          errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200),
+          role, appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+        });
+      }),
+    toleratingReadFailure(listLessonNotesBetween(organizationId, new Date(now.getTime() - RADAR_NOTES_DAYS * day), new Date(now.getTime() + day))).then((value) => put("notes", value)),
+    Promise.resolve().then(() => onLoadShares({ organizationId }))
+      .then((result) => ({ rows: Array.isArray(result?.rows) ? result.rows : [], errorCode: "" }))
+      .catch((thrown) => ({ rows: null, errorCode: serverCodeOf(thrown) || String(thrown?.code || "unknown") }))
+      .then((value) => put("shares", value)),
+    toleratingReadFailure(listRecordActivity(organizationId, activityMonth)).then((value) => put("activities", value)),
+    listRenewalCandidates(organizationId)
+      .then((rows) => ({ rows, errorCode: "" }))
+      .catch((thrown) => ({ rows: null, errorCode: String(thrown?.code || "unknown").replace("firestore/", "") }))
+      .then((value) => put("candidates", value)),
+    toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })).then((value) => put("members", value)),
+    toleratingReadFailure(listLocations(organizationId)).then((value) => put("locations", value)),
+  ];
+  Promise.allSettled(jobs).then(() => { entry.loading = false; entry.at = Date.now(); notify(); });
+  notify();
+  return entry;
+}
+/** 센터 운영 메뉴가 열릴 때 미리 읽는다. 5분 안에 읽었으면 아무것도 안 한다. */
+function prefetchRenewalRadar(params) {
+  /* 브라우저가 한가할 때 (늦어도 3초 안). 더보기를 열자마자 읽기 시작하면 수천 건을 푸는 일이 첫 몇 번의 누름과 겹친다
+     (2026-11-21 대표: "눌렀을 때 반응이 0.5초 느림"). 그 사이 화면을 열면 화면이 바로 읽는다. */
+  const run = () => { try { startRadarLoad(params); } catch (_ignored) { /* 미리 읽기가 메뉴를 깨뜨리면 안 된다 -- 화면을 열면 다시 읽는다. */ } };
+  if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") window.requestIdleCallback(run, { timeout: 3000 });
+  else setTimeout(run, 1500);
+}
+
+/* ── 현황판 틀 (2026-11-21 대표 승인 "현황판 웹 배치안" 1단계) ───────────────
+   강사별 현황판은 모두 같은 다섯 줄이다: 도구 줄 · 요약 · 지점 · 강사 · 상세.
+   PC(1024px 이상)는 강사 표 + 오른쪽 상세 칸, 폰은 지금처럼 카드 + 펼침. 판정 · 숫자는 화면마다 그대로이고
+   여기는 보이는 틀만 맡는다. 줄 세우기 규칙은 features/records/aggregate-table.js. */
+
+/** 요약 숫자 줄. 폰 두 칸, PC 네 칸. */
+function SummaryTiles({ items }) {
+  const list = (items || []).filter(Boolean);
+  if (!list.length) return null;
+  return (
+    <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4" data-summary-tiles>
+      {list.map((item) => (
+        <div key={item.label} style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: "8px 12px", backgroundColor: CARD }} data-summary-tile={item.code || item.label}>
+          <p style={{ fontSize: TYPE.caption, color: SUB }}>{item.label}</p>
+          <p className="tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: item.color || INK }}>{item.value}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 강사 표 (PC). columns: [{ key, label, render(row), sortValue?(row), firstDir?, align? }]. 머리를 누르면 그 열로 줄을 세운다
+ * (한 번 더 누르면 반대로). 줄을 누르면 onSelect -- 오른쪽 상세 칸이 그 강사로 바뀐다.
+ */
+function InstructorTable({ columns, rows, rowKey = (row) => row.instructorId, selected, onSelect }) {
+  const [sort, setSort] = useState(null);
+  const sorted = useMemo(() => sortAggregateRows(rows, columns, sort), [rows, columns, sort]);
+  const headerFor = (column) => {
+    const active = sort?.key === column.key;
+    const label = `${column.label}${active ? (sort.dir === "asc" ? " ↑" : " ↓") : ""}`;
+    if (!column.sortValue) return label;
+    return (
+      <button type="button" onClick={() => setSort(nextAggregateSort(sort, column.key, column.firstDir))} className="font-bold" style={{ color: active ? INK : SUB }}>{label}</button>
+    );
+  };
+  return (
+    <div className="overflow-x-auto" style={{ border: `1px solid ${LINE}`, borderRadius: 10, backgroundColor: CARD }} data-instructor-table>
+      <table className="w-full" style={{ borderCollapse: "collapse", fontSize: TYPE.caption }}>
+        <thead>
+          <tr>
+            {columns.map((column) => (
+              <th key={column.key} scope="col" aria-sort={sort?.key === column.key ? (sort.dir === "asc" ? "ascending" : "descending") : undefined}
+                style={{ textAlign: column.align || "left", padding: "8px 10px", fontWeight: 700, color: SUB, backgroundColor: CANVAS, whiteSpace: "nowrap", borderBottom: `1px solid ${LINE}` }}>
+                {headerFor(column)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((row) => {
+            const key = rowKey(row);
+            const active = key === selected;
+            return (
+              <tr key={key || "none"} onClick={() => onSelect?.(key)} tabIndex={0} aria-selected={active}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect?.(key); } }}
+                className="cursor-pointer" style={{ backgroundColor: active ? TINT : "transparent" }} data-table-row={key || "none"}>
+                {columns.map((column) => (
+                  <td key={column.key} className="tabular-nums" style={{ textAlign: column.align || "left", padding: "8px 10px", color: INK, borderBottom: `1px solid ${LINE}`, verticalAlign: "top" }}>
+                    {column.render(row)}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** PC: 왼쪽 표 + 오른쪽 상세 칸. 폰: 안의 것만 (상세는 화면이 펼침으로 그린다). */
+function AggregateSplit({ wide, detail, children }) {
+  if (!wide) return children;
+  return (
+    <div className="mt-3 grid items-start gap-3" style={{ gridTemplateColumns: "minmax(0, 1fr) 340px" }} data-aggregate-split>
+      <div className="min-w-0">{children}</div>
+      <aside style={{ position: "sticky", top: 0, border: `1px solid ${LINE}`, borderRadius: 12, backgroundColor: CANVAS, padding: 12 }} data-aggregate-detail>
+        {detail || <p style={{ fontSize: TYPE.caption, color: SUB }}>표에서 강사를 고르면 여기에 자세히 보여요.</p>}
+      </aside>
+    </div>
+  );
+}
+
+/** 표 칸 안의 작은 판정 칩. */
+function TonePill({ color, background, children }) {
+  return <span className="inline-block px-2 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color, backgroundColor: background, whiteSpace: "nowrap" }}>{children}</span>;
+}
+
+/** 지점 칩 (2026-11-21 대표: "취합하는 거 나올 땐 지점별로 강사 하나씩"). 강사별 집계 화면이 같이 쓴다. */
+function BranchTabs({ groups, selected, onSelect, countLabel = (group) => `${group.rows.length}` }) {
+  if (!Array.isArray(groups) || groups.length < 2) return null;
+  return (
+    <div className="mt-3 flex flex-wrap gap-1.5" role="tablist" aria-label="지점" data-branch-tabs>
+      {groups.map((group) => {
+        const active = group.id === selected;
+        return (
+          <button key={group.id} type="button" role="tab" aria-selected={active} data-branch-tab={group.id} onClick={() => onSelect(group.id)}
+            className="min-h-9 px-3 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 999, backgroundColor: active ? INK : CANVAS, color: active ? CARD : INK2 }}>
+            {group.name} <span style={{ opacity: 0.7 }}>{countLabel(group)}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 function RenewalRadarScreen({ organization, instructorStore, clientStore, passStore, onOpenClient, onLoadShares = fbBeforeAfterShareStats, initialState = null }) {
-  const [state, setState] = useState(() => initialState || { rows: null, error: "", warnings: [], candidatesEmpty: false, activityMonth: "" });
-  const [open, setOpen] = useState(() => new Set(initialState?.open || []));
   const organizationId = organization?.organizationId || "";
-  const load = useCallback(async () => {
-    if (!organizationId) return;
-    setState((current) => ({ ...current, rows: null, error: "" }));
-    const now = new Date();
-    const thisMonth = currentRatingMonth();
-    /* 달 초에는 이 달 숫자가 아직 적다 -- 10일까지는 지난달 기록률을 쓴다. */
-    const activityMonth = now.getDate() <= 10 ? previousRecordMonth(thisMonth) : thisMonth;
-    try {
-      const [clients, passes, ledger, notes, shares, activities, candidates, members] = await Promise.all([
-        listClients(organizationId, { store: clientStore }),
-        listPasses(organizationId, { store: passStore }),
-        loadOrganizationLedger(organizationId, { start: new Date(now.getTime() - RADAR_LEDGER_DAYS * 86400000), end: new Date(now.getTime() + 86400000) }),
-        toleratingReadFailure(listLessonNotesBetween(organizationId, new Date(now.getTime() - RADAR_NOTES_DAYS * 86400000), new Date(now.getTime() + 86400000))),
-        Promise.resolve().then(() => onLoadShares({ organizationId }))
-          .then((result) => ({ rows: Array.isArray(result?.rows) ? result.rows : [], errorCode: "" }))
-          .catch((thrown) => ({ rows: null, errorCode: serverCodeOf(thrown) || String(thrown?.code || "unknown") })),
-        toleratingReadFailure(listRecordActivity(organizationId, activityMonth)),
-        listRenewalCandidates(organizationId)
-          .then((rows) => ({ rows, errorCode: "" }))
-          .catch((thrown) => ({ rows: null, errorCode: String(thrown?.code || "unknown").replace("firestore/", "") })),
-        toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
-      ]);
-      const rows = renewalRadar({
-        clients, passes, ledger, lessonNotes: notes.failed ? [] : notes.items,
-        shares: shares.rows, activities: activities.items, activityMonth, candidates: candidates.rows,
-        instructors: members.items, canonicalInstructorId: canonicalInstructorIdFrom(members.items),
-        excludedClientIds: reviewDemoClientIds(clients), now,
-      });
-      const warnings = [
-        notes.failed ? `회원에게 보낸 말을 읽지 못해 그 신호는 빠졌어요 (코드 ${notes.errorCode})` : "",
-        shares.rows === null ? `비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 (코드 ${shares.errorCode})` : "",
-        activities.failed ? `강사 기록 숫자를 읽지 못했어요 (코드 ${activities.errorCode})` : "",
-        candidates.rows === null ? `재등록 결과를 읽지 못했어요 (코드 ${candidates.errorCode})` : "",
-        members.failed ? `강사 이름을 읽지 못했어요 (코드 ${members.errorCode})` : "",
-      ].filter(Boolean);
-      setState({ rows, error: "", warnings, candidatesEmpty: Array.isArray(candidates.rows) && !candidates.rows.length, activityMonth });
-    } catch (thrown) {
-      const code = String(thrown?.code || "unknown");
-      setState({ rows: [], error: `재등록 레이더를 읽지 못했어요 (코드 ${code})`, warnings: [], candidatesEmpty: false, activityMonth });
-      deviceLog("renewal_radar_read_failed", {
-        feature: "renewal_radar", stage: thrown?.feature ? `${thrown.feature}:${thrown.stage || "list"}` : "radar_read",
-        errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200),
-        role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
-      });
-    }
-  }, [organizationId, clientStore, passStore, instructorStore, onLoadShares, organization?.role]);
-  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
-  const summary = radarSummary(state.rows || []);
-  const toggle = (id) => setOpen((current) => {
-    const next = new Set(current);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
+  const params = useMemo(() => ({ organizationId, clientStore, passStore, instructorStore, onLoadShares, role: organization?.role || "" }),
+    [organizationId, clientStore, passStore, instructorStore, onLoadShares, organization?.role]);
+  const [snapshot, setSnapshot] = useState(() => {
+    if (initialState) return { data: initialState.data || {}, loading: false };
+    const entry = organizationId ? radarEntry(organizationId) : null;
+    return { data: entry?.data || {}, loading: Boolean(entry?.loading) };
   });
+  const [open, setOpen] = useState(initialState?.open || "");
+  const [branch, setBranch] = useState(initialState?.branch || "");
+  const wide = useWideViewport(initialState?.wide);
+  useEffect(() => {
+    if (initialState || !organizationId) return undefined;
+    const entry = radarEntry(organizationId);
+    const listener = (current) => setSnapshot({ data: current.data, loading: current.loading });
+    entry.listeners.add(listener);
+    startRadarLoad(params);
+    listener(entry);
+    return () => { entry.listeners.delete(listener); };
+  }, [initialState, organizationId, params]);
+  const refresh = () => { if (!initialState) startRadarLoad(params, { force: true }); };
+  const data = snapshot.data;
+  const members = data.members && !data.members.failed ? data.members.items : null;
+  const view = useMemo(() => {
+    if (!data.core) return null;
+    const instructors = members || [];
+    const canonical = canonicalInstructorIdFrom(instructors);
+    const rows = renewalRadar({
+      clients: data.core.clients, passes: data.core.passes, ledger: data.core.ledger,
+      lessonNotes: data.notes && !data.notes.failed ? data.notes.items : null,
+      shares: data.shares ? data.shares.rows : null,
+      activities: data.activities && !data.activities.failed ? data.activities.items : null,
+      activityMonth: data.core.activityMonth,
+      candidates: data.candidates ? data.candidates.rows : null,
+      instructors, canonicalInstructorId: canonical,
+      excludedClientIds: reviewDemoClientIds(data.core.clients), now: data.core.now,
+    });
+    /* 강사 명부가 오기 전에는 지점을 모른다 -- 칩 없이 전부 보이고, 명부가 오면 지점으로 나눈다. */
+    const groups = members
+      ? groupRowsByBranch(rows, { instructors, locations: data.locations && !data.locations.failed ? data.locations.items : [], canonicalInstructorId: canonical })
+      : [{ id: "", name: "", rows }];
+    return { rows, groups };
+  }, [data, members]);
+  const summary = radarSummary(view?.rows || []);
+  const selectedBranch = view ? pickBranch(view.groups, branch) : "";
+  const shown = view ? (view.groups.find((group) => group.id === selectedBranch)?.rows || []) : [];
+  /* 센터 전체 재등록률 -- 강사 줄의 결과를 더한다 (같은 90일 · 같은 판정). */
+  const overallRenewal = (view?.rows || []).reduce((sum, row) => (row.renewal
+    ? { renewed: sum.renewed + row.renewal.renewed, decided: sum.decided + row.renewal.decided, pending: sum.pending + row.renewal.pending, rate: null }
+    : sum), { renewed: 0, decided: 0, pending: 0, rate: null });
+  if (overallRenewal.decided) overallRenewal.rate = overallRenewal.renewed / overallRenewal.decided;
+  /* PC 는 고른 강사 하나를 오른쪽 칸에. 고른 강사가 이 지점에 없으면 첫 강사. */
+  const selectedRow = shown.find((row) => row.instructorId === open) || (wide ? shown[0] : null) || null;
   const chip = (tone, label) => (
     <span className="px-2 py-0.5 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: RADAR_TONE[tone](), backgroundColor: RADAR_TONE_BG[tone]() }}>{label}</span>
   );
-  const monthLabel = state.activityMonth ? `${Number(state.activityMonth.slice(5, 7))}월` : "";
+  const warnings = [
+    data.core && data.coreError ? `새로 읽지 못해 지난 결과를 보여 드려요 (코드 ${data.coreError})` : "",
+    data.notes?.failed ? `회원에게 보낸 말을 읽지 못해 그 신호는 빠졌어요 (코드 ${data.notes.errorCode})` : "",
+    data.shares && data.shares.rows === null ? `비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 (코드 ${data.shares.errorCode})` : "",
+    data.activities?.failed ? `강사 기록 숫자를 읽지 못했어요 (코드 ${data.activities.errorCode})` : "",
+    data.candidates && data.candidates.rows === null ? `재등록 결과를 읽지 못했어요 (코드 ${data.candidates.errorCode})` : "",
+    data.members?.failed ? `강사 명부를 읽지 못해 지점으로 나누지 못했어요 (코드 ${data.members.errorCode})` : "",
+    data.locations?.failed ? `지점 이름을 읽지 못했어요 (코드 ${data.locations.errorCode})` : "",
+  ].filter(Boolean);
+  const pending = [
+    data.notes ? "" : "보낸 말", data.shares ? "" : "비포애프터", data.activities ? "" : "기록률", data.candidates ? "" : "재등록률",
+  ].filter(Boolean);
+  const candidatesEmpty = Array.isArray(data.candidates?.rows) && !data.candidates.rows.length;
+  const monthLabel = data.core?.activityMonth ? `${Number(data.core.activityMonth.slice(5, 7))}월` : "";
+  /* 회원 목록 -- 폰은 강사 카드 펼침, PC 는 오른쪽 칸에서 같은 것을 그린다. */
+  const radarMemberList = (row) => (
+    <div className="space-y-1" data-radar-members>
+      {row.members.map((member) => (
+        <div key={member.clientId} className="px-2 py-1.5" style={{ borderRadius: 8, backgroundColor: CARD }} data-radar-member={member.clientId}>
+          <div className="flex items-center justify-between gap-2">
+            <button type="button" onClick={() => onOpenClient?.({ id: member.clientId, name: member.name })} className="min-w-0 flex-1 truncate text-left font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
+              {member.name || "이름 모름"}{member.duet ? " · 듀엣" : ""}
+            </button>
+            {member.urgent ? chip("urgent", "급함") : null}
+          </div>
+          <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{radarPassLabel(member.forecast)}</div>
+          {member.signals.length ? (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {member.signals.map((signal) => (
+                <span key={signal.code} className="px-1.5 py-0.5" style={{ fontSize: TYPE.caption, borderRadius: 6, color: WARN, backgroundColor: WARN_S }} data-radar-signal={signal.code}>{radarSignalLabel(signal)}</span>
+              ))}
+            </div>
+          ) : <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>신호 없음</div>}
+        </div>
+      ))}
+      {!row.members.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>지금 곧 끝나는 회원은 없어요.</p> : null}
+    </div>
+  );
+  const radarDetail = (row) => {
+    const renewal = row.renewal ? renewalRateLabel(row.renewal) : null;
+    return (
+      <div data-radar-detail={row.instructorId || "none"}>
+        <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{row.name || row.instructorId || "담당 강사 없음"}{row.active ? "" : " · 소속 아님"}</p>
+        <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{row.record.label}{renewal ? ` · ${renewal.label}` : ""}</p>
+        <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>코드 {row.record.code}{renewal ? ` · ${renewal.code}` : ""}</p>
+        <div className="mt-2">{radarMemberList(row)}</div>
+      </div>
+    );
+  };
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-renewal-radar>
       <div className="flex items-center justify-between">
         <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>재등록 레이더</h2>
-        <button type="button" onClick={load} className="h-9 px-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
+        <span className="flex items-center gap-2">
+          {snapshot.loading && view ? <span style={{ fontSize: TYPE.caption, color: FAINT }} data-radar-refreshing>새로 읽는 중…</span> : null}
+          <button type="button" onClick={refresh} disabled={snapshot.loading} className="h-9 px-2 font-bold disabled:opacity-40" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
+        </span>
       </div>
       <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
         잔여 {RADAR_REMAINING_MAX}회 이하이거나 만료 {RADAR_EXPIRY_DAYS}일 안쪽, 또는 지금 속도로 다 못 쓸 회원이에요.
         {" "}신호는 출석 · 회원에게 보낸 말 · 비포애프터에서 저절로 나와요 — <b style={{ color: INK }}>강사가 따로 할 일은 없어요.</b>
         {" "}신호가 많은 회원이 위에 있어요. 회원별 수업기록 공백은 수업기록 서버 저장을 켜면 함께 보여요.
       </p>
-      {state.rows && state.rows.length ? (
-        <div className="mt-2 flex flex-wrap gap-1.5" data-radar-summary>
-          {chip("calm", `대상 ${summary.total}명`)}
-          {chip("urgent", `급함 ${summary.urgent}명`)}
-          {chip("risk", `신호 있음 ${summary.atRisk}명`)}
-        </div>
+      {view && view.rows.length ? (
+        <SummaryTiles items={[
+          { label: "곧 끝나는 회원", value: `${summary.total}명`, code: "radar_total" },
+          { label: "급함", value: `${summary.urgent}명`, color: summary.urgent ? BAD : INK, code: "radar_urgent" },
+          { label: "신호 있음", value: `${summary.atRisk}명`, color: summary.atRisk ? WARN : INK, code: "radar_at_risk" },
+          { label: `재등록 · 최근 ${RATE_WINDOW_DAYS}일`, value: overallRenewal ? renewalRateLabel(overallRenewal).label.replace(/^재등록 /, "") : "—", code: "radar_renewal" },
+        ]} />
       ) : null}
-      {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
-      {state.warnings.map((line) => <p key={line} className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{line}</p>)}
-      {state.candidatesEmpty ? (
+      {!view && data.coreError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>재등록 레이더를 읽지 못했어요 (코드 {data.coreError})</p> : null}
+      {warnings.map((line) => <p key={line} className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{line}</p>)}
+      {view && pending.length ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: FAINT }} data-radar-pending>{pending.join(" · ")} 확인 중… 오는 대로 채워져요</p> : null}
+      {candidatesEmpty ? (
         <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }} data-radar-hint="renewal_candidates_empty">
           재등록률이 아직 비어 있어요. 운영 스위치에서 <b style={{ color: INK }}>재등록 알림</b>을 켠 뒤 만료 회원 현황의 [지난 6달 채우기]를 누르면 채워져요 (코드 renewal_candidates_empty)
         </p>
       ) : null}
-      {state.rows && state.rows.length ? (
+      {view && view.rows.length ? (
         <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: FAINT }}>
           강사 줄의 기록률({monthLabel})과 재등록률(최근 {RATE_WINDOW_DAYS}일)은 나란히 보는 참고 숫자예요. 대상이 적으면 크게 흔들리고, 같이 움직여도 그것이 원인이라고 단정할 수는 없어요.
         </p>
       ) : null}
-      {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
-      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>곧 끝나는 회원권이 없어요.</p> : null}
-      <div className="mt-3 space-y-2">
-        {(state.rows || []).map((row) => {
-          const expanded = open.has(row.instructorId);
-          const renewal = row.renewal ? renewalRateLabel(row.renewal) : null;
-          return (
-            <div key={row.instructorId || "none"} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-radar-row={row.instructorId || "none"}>
-              <button type="button" onClick={() => toggle(row.instructorId)} className="flex w-full items-center justify-between gap-2 text-left" aria-expanded={expanded}>
-                <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>
-                  {row.name || (row.instructorId ? row.instructorId : "담당 강사 없음")}{row.active ? "" : " · 소속 아님"}
-                </span>
-                {row.urgent ? chip("urgent", `급함 ${row.urgent}`) : null}
-                {chip(row.atRisk ? "risk" : "calm", `대상 ${row.members.length}명`)}
-                <ChevronDown size={16} style={{ color: SUB, transform: expanded ? "rotate(180deg)" : "none" }} />
-              </button>
-              <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
-                {row.record.label}{renewal ? ` · ${renewal.label}` : ""}
-              </div>
-              <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>코드 {row.record.code}{renewal ? ` · ${renewal.code}` : ""}</div>
-              {expanded ? (
-                <div className="mt-2 space-y-1" data-radar-members>
-                  {row.members.map((member) => (
-                    <div key={member.clientId} className="px-2 py-1.5" style={{ borderRadius: 8, backgroundColor: CARD }} data-radar-member={member.clientId}>
-                      <div className="flex items-center justify-between gap-2">
-                        <button type="button" onClick={() => onOpenClient?.({ id: member.clientId, name: member.name })} className="min-w-0 flex-1 truncate text-left font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
-                          {member.name || "이름 모름"}{member.duet ? " · 듀엣" : ""}
-                        </button>
-                        {member.urgent ? chip("urgent", "급함") : null}
-                      </div>
-                      <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{radarPassLabel(member.forecast)}</div>
-                      {member.signals.length ? (
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {member.signals.map((signal) => (
-                            <span key={signal.code} className="px-1.5 py-0.5" style={{ fontSize: TYPE.caption, borderRadius: 6, color: WARN, backgroundColor: WARN_S }} data-radar-signal={signal.code}>{radarSignalLabel(signal)}</span>
-                          ))}
-                        </div>
-                      ) : <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>신호 없음</div>}
-                    </div>
-                  ))}
-                  {!row.members.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>지금 곧 끝나는 회원은 없어요.</p> : null}
+      {!view && !data.coreError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>회원 · 회원권을 읽는 중…</p> : null}
+      {view && !view.rows.length ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>곧 끝나는 회원권이 없어요.</p> : null}
+      {view ? <BranchTabs groups={view.groups} selected={selectedBranch} onSelect={(id) => { setBranch(id); setOpen(""); }} countLabel={(group) => `${group.rows.reduce((sum, row) => sum + row.members.length, 0)}명`} /> : null}
+      {wide ? (
+        <AggregateSplit wide detail={selectedRow ? radarDetail(selectedRow) : null}>
+          <InstructorTable rows={shown} selected={selectedRow?.instructorId} onSelect={setOpen} columns={[
+            { key: "name", label: "강사", firstDir: "asc", sortValue: (row) => row.name || row.instructorId, render: (row) => <span className="font-bold">{row.name || row.instructorId || "담당 강사 없음"}{row.active ? "" : " · 소속 아님"}</span> },
+            { key: "members", label: "대상", align: "right", sortValue: (row) => row.members.length, render: (row) => `${row.members.length}명` },
+            { key: "urgent", label: "급함", align: "right", sortValue: (row) => row.urgent, render: (row) => (row.urgent ? <TonePill color={BAD} background={BAD_S}>{row.urgent}</TonePill> : "—") },
+            { key: "risk", label: "신호", align: "right", sortValue: (row) => row.atRisk, render: (row) => (row.atRisk ? row.atRisk : "—") },
+            { key: "record", label: "기록률", align: "right", sortValue: (row) => row.record.rate, render: (row) => (row.record.rate === null ? <span style={{ color: SUB }}>{row.record.label.replace(/^기록률 — /, "")}</span>
+              : <TonePill color={row.record.rate >= RECORD_RATE_GOOD ? GOOD : row.record.rate >= RECORD_RATE_LOW ? WARN : BAD} background={row.record.rate >= RECORD_RATE_GOOD ? GOOD_S : row.record.rate >= RECORD_RATE_LOW ? WARN_S : BAD_S}>{Math.round(row.record.rate * 100)}%</TonePill>) },
+            { key: "renewal", label: "재등록", align: "right", sortValue: (row) => (row.renewal?.decided ? row.renewal.rate : null), render: (row) => (row.renewal ? renewalRateLabel(row.renewal).label.replace(/^재등록 /, "") : "확인 중") },
+          ]} />
+        </AggregateSplit>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {shown.map((row) => {
+            const expanded = open === row.instructorId;
+            const renewal = row.renewal ? renewalRateLabel(row.renewal) : null;
+            return (
+              <div key={row.instructorId || "none"} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-radar-row={row.instructorId || "none"}>
+                {/* 강사는 하나씩 -- 다른 강사를 열면 앞의 것은 닫힌다 (대표 2026-11-21). */}
+                <button type="button" onClick={() => setOpen(expanded ? "" : row.instructorId)} className="flex w-full items-center justify-between gap-2 text-left" aria-expanded={expanded}>
+                  <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>
+                    {row.name || (row.instructorId ? row.instructorId : "담당 강사 없음")}{row.active ? "" : " · 소속 아님"}
+                  </span>
+                  {row.urgent ? chip("urgent", `급함 ${row.urgent}`) : null}
+                  {chip(row.atRisk ? "risk" : "calm", `대상 ${row.members.length}명`)}
+                  <ChevronDown size={16} style={{ color: SUB, transform: expanded ? "rotate(180deg)" : "none" }} />
+                </button>
+                <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+                  {row.record.label}{renewal ? ` · ${renewal.label}` : ""}
                 </div>
-              ) : null}
-            </div>
-          );
+                <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>코드 {row.record.code}{renewal ? ` · ${renewal.code}` : ""}</div>
+                {expanded ? <div className="mt-2">{radarMemberList(row)}</div> : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* ── 강사 개인매출 · 그룹 인센 화면 (2026-11-21 대표 승인 2단계) ─────────────────────────
+   판정 · 문구는 features/sales/sales-board.js, 계산 · 대조는 functions/shared/sales-incentive.mjs.
+   강사(내 매출 인센)와 FC · 대표 · 총괄(매출 인센)이 같은 결제를 **따로** 넣고, 두 장부가 같아야 서버가 확정한다.
+   FC 가 확정하면 대표님 알림함에 한 줄이 간다 (서버 confirmSalesMonth). */
+const SALES_TONE = { good: () => [GOOD, GOOD_S], warn: () => [WARN, WARN_S], bad: () => [BAD, BAD_S], muted: () => [SUB, CANVAS] };
+const salesPill = (tone, label, extra = {}) => {
+  const [color, background] = (SALES_TONE[tone] || SALES_TONE.muted)();
+  return <span className="inline-block px-2 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color, backgroundColor: background, whiteSpace: "nowrap" }} {...extra}>{label}</span>;
+};
+const salesWon = (value) => `${Math.round(Number(value) || 0).toLocaleString("ko-KR")}원`;
+const salesMonthOptions = (month, count = 12) => Array.from({ length: count }, (_, index) => shiftRatingMonth(month, -index));
+
+/** 결제 한 줄 입력 · 고치기. 그룹 회원은 명부에 없어 이름을 글자로 (대표: "회원은 그룹이라서 필라티쳐에는 조회가 안됨"). */
+function SalesEntryEditor({ draft, onChange, onSave, onCancel, clients, busy, month }) {
+  const errors = entryErrors(draft);
+  const group = draft.kind === "group" || draft.kind === "group_refund";
+  const refund = draft.kind === "refund" || draft.kind === "group_refund";
+  const fromRecord = Boolean(draft.recordId);
+  const clientName = (clients || []).find((item) => String(item.id) === String(draft.clientId))?.name || "";
+  const [lastDay] = useState(() => { const [y, m] = String(month).split("-").map(Number); return new Date(y, m, 0).getDate(); });
+  const set = (patch) => onChange({ ...draft, ...patch });
+  const input = { height: 40, borderRadius: 8, border: `1px solid ${LINE}`, padding: "0 10px", fontSize: TYPE.caption, color: INK, backgroundColor: CARD, width: "100%" };
+  const [tried, setTried] = useState(false);
+  return (
+    <div className="space-y-2 p-3" style={{ borderRadius: 10, border: `1px solid ${LINE}`, backgroundColor: CARD }} data-sales-editor>
+      <div className="flex flex-wrap gap-1.5" role="group" aria-label="구분">
+        {SALES_KIND_CHOICES.map((kind) => {
+          const active = draft.kind === kind;
+          return <button key={kind} type="button" aria-pressed={active} onClick={() => set({ kind, ot: kind === "group" || kind === "group_refund" ? false : draft.ot, refundOfMonth: kind === "refund" || kind === "group_refund" ? draft.refundOfMonth : "" })}
+            className="min-h-9 px-3 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 999, backgroundColor: active ? INK : CANVAS, color: active ? CARD : INK2 }}>{SALES_KIND_LABELS[kind]}</button>;
         })}
       </div>
+      {fromRecord ? (
+        <p style={{ fontSize: TYPE.caption, color: SUB }}>회원 <b style={{ color: INK }}>{clientName || draft.clientId}</b> · 앱 발급 기록에서 가져옴</p>
+      ) : (
+        <label className="block" style={{ fontSize: TYPE.caption, color: SUB }}>{group ? "그룹 회원 이름 (명부에 없어요)" : "회원 이름"}
+          <input style={input} list={group ? undefined : "sales-client-names"} value={group ? draft.memberLabel : (clientName || draft.memberLabel)} maxLength={40}
+            onChange={(event) => {
+              const value = event.target.value;
+              const found = group ? null : (clients || []).find((item) => String(item.name || "").trim() === value.trim());
+              set(found ? { clientId: String(found.id), memberLabel: "" } : { clientId: "", memberLabel: value });
+            }} />
+          {group ? null : <datalist id="sales-client-names">{(clients || []).slice(0, 500).map((item) => <option key={item.id} value={item.name || ""} />)}</datalist>}
+        </label>
+      )}
+      <div className="grid grid-cols-2 gap-2">
+        <label style={{ fontSize: TYPE.caption, color: SUB }}>결제일
+          <input type="date" style={input} value={draft.paidOn} min={`${month}-01`} max={`${month}-${String(lastDay).padStart(2, "0")}`} onChange={(event) => set({ paidOn: event.target.value })} />
+        </label>
+        <label style={{ fontSize: TYPE.caption, color: SUB }}>실제로 받은 금액 (현금가)
+          <input inputMode="numeric" style={input} value={draft.amount ? String(draft.amount) : ""} placeholder="0"
+            onChange={(event) => set({ amount: Number.parseInt(event.target.value.replace(/[^0-9]/g, "") || "0", 10) })} />
+        </label>
+      </div>
+      <p style={{ fontSize: TYPE.caption, color: FAINT }}>카드 · 이체는 부가세를 뺀 금액(÷1.1), 현금은 그대로. 잔금은 받은 달에 새 줄로.</p>
+      {refund ? (
+        <label className="block" style={{ fontSize: TYPE.caption, color: SUB }}>환불한 결제의 달 (지난달 결제면 그 달 인센에서 환수돼요)
+          <select style={input} value={draft.refundOfMonth || month} onChange={(event) => set({ refundOfMonth: event.target.value === month ? "" : event.target.value })}>
+            {salesMonthOptions(month).map((value) => <option key={value} value={value}>{ratingMonthLabel(value)}</option>)}
+          </select>
+        </label>
+      ) : null}
+      <label className="block" style={{ fontSize: TYPE.caption, color: SUB }}>수강권 · 계약세션 (메모)
+        <input style={input} value={draft.productLabel} maxLength={60} onChange={(event) => set({ productLabel: event.target.value })} />
+      </label>
+      <div className="flex flex-wrap gap-3">
+        <label className="flex items-center gap-1.5" style={{ fontSize: TYPE.caption, color: INK }}>
+          <input type="checkbox" checked={Number(draft.share) === 0.5} onChange={(event) => set({ share: event.target.checked ? 0.5 : 1 })} />FC 가 대신 상담 (반반 매출)
+        </label>
+        {group ? null : (
+          <label className="flex items-center gap-1.5" style={{ fontSize: TYPE.caption, color: INK }}>
+            <input type="checkbox" checked={draft.ot === true} onChange={(event) => set({ ot: event.target.checked })} />OT 인센 (+10%)
+          </label>
+        )}
+      </div>
+      {tried && errors.length ? <p style={{ fontSize: TYPE.caption, color: WARN }}>{errors.map((item) => `${item.text} (${item.code})`).join(" · ")}</p> : null}
+      <div className="flex gap-2">
+        <button type="button" onClick={onCancel} disabled={busy} className="h-10 flex-1 font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+        <button type="button" disabled={busy} onClick={() => { setTried(true); if (!errors.length) onSave(draft); }} className="h-10 flex-1 font-bold disabled:opacity-40"
+          style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>{busy ? "저장 중…" : "저장"}</button>
+      </div>
+    </div>
+  );
+}
+
+/** 결제 줄 한 개 (목록). */
+function SalesEntryRow({ entry, name, flagged = false, locked, onEdit, onDelete, extra = null }) {
+  const [asking, setAsking] = useState(false);
+  return (
+    <div className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: flagged ? WARN_S : CANVAS, border: flagged ? `1px solid ${WARN}` : "none" }} data-sales-entry={entry.id}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0 flex-1 truncate font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{name || "이름 모름"} <span className="font-normal tabular-nums" style={{ color: SUB }}>{entry.paidOn}</span></span>
+        {flagged ? salesPill("warn", "두 장부 다름") : null}
+        {extra}
+      </div>
+      <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{entryLine(entry, SALES_KIND_LABELS)}{entry.productLabel ? ` · ${entry.productLabel}` : ""}</p>
+      {locked ? null : (
+        <div className="mt-1 flex gap-3">
+          <button type="button" onClick={onEdit} className="font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>고치기</button>
+          {asking
+            ? <><button type="button" onClick={onDelete} className="font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>정말 지우기</button><button type="button" onClick={() => setAsking(false)} style={{ fontSize: TYPE.caption, color: SUB }}>그만두기</button></>
+            : <button type="button" onClick={() => setAsking(true)} style={{ fontSize: TYPE.caption, color: SUB }}>지우기</button>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function salesStatementTiles(statement) {
+  return [
+    /* 개인 매출 인센과 그룹 인센은 다른 칸 (2026-11-21 대표: "그룹이랑 개인매출인센이랑 다른 칸에"). */
+    { label: "개인 매출 합계", value: salesWon(statement.total), code: "sales_total" },
+    { label: `개인 인센 (구간${statement.otBonus ? ` + OT ${salesWon(statement.otBonus)}` : ""})`, value: salesWon((statement.bracket?.amount ?? statement.bracketAmount ?? 0) + (statement.otBonus || 0)), code: "sales_personal" },
+    { label: `그룹 인센 (그룹 매출 ${salesWon(statement.groupBase)} · 0.5%)`, value: salesWon(statement.groupBonus), code: "sales_group" },
+    { label: statement.clawbackTotal ? `지급 예정 (환수 −${salesWon(statement.clawbackTotal)})` : "지급 예정", value: salesWon(statement.payout), color: statement.payout < 0 ? BAD : INK, code: "sales_payout" },
+  ];
+}
+
+/** 제출 뒤 바뀐 줄 표시 (2026-11-21 대표: "제출 이후에도 다시 수정하거나 어떤 내용을 제출했는지 확인이 돼야 함"). */
+function submissionPill(submission, entry) {
+  const change = submission?.dirty ? submission.changeOf.get(String(entry?.id || "")) : "";
+  if (change === "added") return salesPill("warn", "제출 뒤 추가");
+  if (change === "edited") return salesPill("warn", "제출 뒤 고침");
+  return null;
+}
+
+/** 강사: 내가 제출한 내용 (제출 시각 · 그때 합계) + 그 뒤에 바뀐 것. */
+function SubmittedSummaryCard({ submission, locked }) {
+  const summary = submission.summary;
+  const changes = submissionChangeText(submission);
+  return (
+    <div className="mt-3 px-3 py-2" style={{ borderRadius: 10, backgroundColor: submission.dirty ? WARN_S : CANVAS, border: submission.dirty ? `1px solid ${WARN}` : "none" }} data-sales-submitted={submission.dirty ? "changed" : "same"}>
+      <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>제출한 내용 · {submission.label}</p>
+      {summary ? (
+        <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+          {summary.lines}줄 · 개인 매출 {salesWon(summary.total)} · 그룹 매출 {salesWon(summary.groupBase)} · 지급 예정 {salesWon(summary.payout)}
+        </p>
+      ) : <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>이 제출은 합계를 남기기 전이라 시각만 있어요. 다시 제출하면 합계가 남아요.</p>}
+      {locked ? null : submission.dirty ? (
+        <p className="mt-1 font-bold" style={{ fontSize: TYPE.caption, color: WARN }}>제출한 뒤 바뀌었어요 · {changes}. 다 고쳤으면 [다시 제출]을 눌러 주세요.</p>
+      ) : <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>제출한 뒤 바뀐 줄 없음 · 확정 전까지는 고치고 다시 제출할 수 있어요.</p>}
+    </div>
+  );
+}
+
+/** 강사: 이번 달 매출 인센 (자기 장부). */
+function MySalesScreen({ organization, currentUserId, passStore, clientStore, initialState = null }) {
+  const organizationId = organization?.organizationId || "";
+  const thisMonth = currentRatingMonth();
+  const [month, setMonth] = useState(initialState?.month || thisMonth);
+  const [data, setData] = useState(() => initialState?.data || null);
+  const [error, setError] = useState("");
+  const [draft, setDraft] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const load = useCallback(async () => {
+    if (!organizationId || !currentUserId) return;
+    setData(null); setError("");
+    try {
+      const [entries, monthDoc, ledger, passes, clients] = await Promise.all([
+        listSalesEntries(organizationId, { instructorId: currentUserId, month, side: "instructor" }),
+        readSalesMonth(organizationId, currentUserId, month),
+        toleratingReadFailure(listSalesLedger(organizationId, month)),
+        toleratingReadFailure(listPasses(organizationId, { store: passStore })),
+        toleratingReadFailure(listClients(organizationId, { store: clientStore, ...clientScopeFor(organization, currentUserId) })),
+      ]);
+      const refundMonths = [...new Set(entries.filter((entry) => String(entry.refundOfMonth || "") && entry.refundOfMonth < month).map((entry) => entry.refundOfMonth))];
+      const prior = (await Promise.all(refundMonths.map((value) => listSalesEntries(organizationId, { instructorId: currentUserId, month: value, side: "instructor" })))).flat();
+      setData({ entries, prior, monthDoc, records: salesRecordsOf({ passes: passes.items, ledger: ledger.items, month }), clients: clients.items,
+        warning: ledger.errorCode || passes.errorCode ? `앱 기록을 읽지 못해 후보가 비어 있어요 (코드 ${ledger.errorCode || passes.errorCode})` : "" });
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setError(`매출 인센을 읽지 못했어요 (코드 ${code})`);
+      deviceLog("sales_mine_read_failed", { feature: "sales_incentive", stage: "mine_read", errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200), appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform() });
+    }
+  }, [organizationId, currentUserId, month, passStore, clientStore, organization]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const view = data ? mySalesView({ entries: data.entries, priorEntries: data.prior, records: data.records, instructorId: currentUserId, month, monthDoc: data.monthDoc }) : null;
+  const nameOf = (entry) => (entry.clientId ? (data?.clients || []).find((item) => String(item.id) === String(entry.clientId))?.name : "") || entry.memberLabel || "";
+  const save = async (entry) => {
+    setBusy(true); setMessage("");
+    try {
+      if (entry.id) await updateSalesEntry(organizationId, entry.id, entry, { uid: currentUserId });
+      else await addSalesEntry(organizationId, entry, { uid: currentUserId, role: organization?.role || "" });
+      setDraft(null); await load();
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setMessage(`저장하지 못했어요 -- 입력은 그대로 있어요 (코드 ${code})`);
+      deviceLog("sales_entry_save_failed", { feature: "sales_incentive", stage: entry.id ? "update" : "create", errorDomain: "firestore", errorCode: code, appBuild: APP_BUILD_LABEL });
+    } finally { setBusy(false); }
+  };
+  const remove = async (entry) => {
+    try { await deleteSalesEntry(organizationId, entry.id); await load(); }
+    catch (thrown) { setMessage(`지우지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
+  };
+  const submit = async () => {
+    setBusy(true); setMessage("");
+    try {
+      await submitSalesMonth(organizationId, currentUserId, month, { uid: currentUserId }, submittedSummaryOf({ entries: data.entries, statement: view.statement }));
+      setMessage("제출했어요. 확정 전까지는 고치고 다시 제출할 수 있어요. FC · 대표가 같은 결제를 따로 넣고 맞춰 본 뒤 확정해요."); await load();
+    }
+    catch (thrown) { setMessage(`제출하지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
+    finally { setBusy(false); }
+  };
+  const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-sales-mine>
+      <div className="flex items-center gap-2">
+        <button type="button" aria-label="이전 달" onClick={() => { setMonth((current) => shiftRatingMonth(current, -1)); setDraft(null); }} className="flex items-center justify-center" style={navButton}><ChevronLeft size={16} /></button>
+        <span className="min-w-0 flex-1 text-center font-extrabold tabular-nums" style={{ fontSize: TYPE.body, color: INK }}>{ratingMonthLabel(month)}</span>
+        <button type="button" aria-label="다음 달" disabled={month >= thisMonth} onClick={() => { setMonth((current) => shiftRatingMonth(current, 1)); setDraft(null); }} className="flex items-center justify-center disabled:opacity-30" style={navButton}><ChevronRight size={16} /></button>
+      </div>
+      <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        <b style={{ color: INK }}>내가 낸 매출만</b> 넣어요. FC · 대표도 같은 결제를 따로 넣고, 두 쪽이 같아야 확정돼요. 금액은 실제로 받은 현금가.
+      </p>
+      {error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{error}</p> : null}
+      {!view && !error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+      {view ? (
+        <>
+          <SummaryTiles items={salesStatementTiles(view.statement)} />
+          <p className="mt-3 rounded-lg px-3 py-2 font-bold" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: BRAND_D, backgroundColor: TINT }} data-sales-cheer={view.cheer.code}>{view.cheer.text}</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {salesPill(view.status.tone, view.status.label, { "data-sales-status": view.status.code })}
+            {view.check ? <span style={{ fontSize: TYPE.caption, color: WARN }}>{view.check.text} (코드 {view.check.code})</span> : null}
+          </div>
+          {view.submission.submitted ? <SubmittedSummaryCard submission={view.submission} locked={view.locked} /> : null}
+          {data.warning ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{data.warning}</p> : null}
+          {message ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: message.startsWith("제출했어요") ? GOOD : WARN }}>{message}</p> : null}
+          {draft ? <div className="mt-3"><SalesEntryEditor draft={draft} onChange={setDraft} onSave={save} onCancel={() => setDraft(null)} clients={data.clients} busy={busy} month={month} /></div> : null}
+          {!view.locked && !draft && view.suggestions.length ? (
+            <div className="mt-3 space-y-1.5" data-sales-suggestions>
+              <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>앱이 찾은 이번 달 내 담당 결제 · 내가 낸 매출이면 넣어 주세요</p>
+              {view.suggestions.map((item) => (
+                <div key={item.recordId} className="flex items-center justify-between gap-2 px-3 py-2" style={{ borderRadius: 10, border: `1px dashed ${LINE}` }}>
+                  <span className="min-w-0 flex-1 truncate tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>{nameOf(item)} · {salesWon(item.amount)} · {kstDate(item.occurredAt)}{item.kind ? ` · ${SALES_KIND_LABELS[item.kind]}` : ""}</span>
+                  <button type="button" onClick={() => setDraft(entryFromSuggestion(item, { side: "instructor", instructorId: currentUserId, month }))} className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>넣기</button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {[["개인 매출", false, "아직 넣은 개인 매출이 없어요."], ["그룹 매출 · 0.5% · 개인 인센과 따로", true, "아직 넣은 그룹 매출이 없어요."]].map(([title, group, empty]) => {
+            const list = view.rows.filter((entry) => isGroup(entry) === group);
+            return (
+              <div key={title} className="mt-3 space-y-1.5" data-sales-section={group ? "group" : "personal"}>
+                <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{title}</p>
+                {list.map((entry) => (
+                  <SalesEntryRow key={entry.id} entry={entry} name={nameOf(entry)} flagged={entry.flagged} locked={view.locked}
+                    extra={submissionPill(view.submission, entry)} onEdit={() => setDraft({ ...entry })} onDelete={() => remove(entry)} />
+                ))}
+                {!list.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>{empty}</p> : null}
+              </div>
+            );
+          })}
+          {view.locked ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>확정된 달이라 고칠 수 없어요. 고칠 것이 있으면 FC · 대표에게 말해 주세요.</p> : (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button type="button" disabled={Boolean(draft)} onClick={() => setDraft(blankEntry({ side: "instructor", instructorId: currentUserId, month }))} className="h-10 px-3 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>+ 직접 추가</button>
+              <button type="button" disabled={Boolean(draft)} onClick={() => setDraft(blankEntry({ side: "instructor", instructorId: currentUserId, month, kind: "group" }))} className="h-10 px-3 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>+ 그룹 회원</button>
+              <button type="button" disabled={busy || Boolean(draft)} onClick={submit} className="ml-auto h-10 px-4 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>{view.status.code === "submitted" ? "다시 제출" : "제출"}</button>
+            </div>
+          )}
+        </>
+      ) : null}
+      <FcLessonSection key={month} organization={organization} currentUserId={currentUserId} month={month} initialState={initialState?.fc || null} />
     </section>
+  );
+}
+
+/** FC · 대표 · 총괄: 매출 인센 -- 강사별 두 장부 대조 · 사무실 장부 · 확정. */
+function SalesBoardScreen({ organization, currentUserId, instructorStore, passStore, clientStore, onConfirm = fbConfirmSalesMonth, initialState = null }) {
+  const organizationId = organization?.organizationId || "";
+  const ownerView = isOwnerLevelRole(organization?.role);
+  const thisMonth = currentRatingMonth();
+  const [month, setMonth] = useState(initialState?.month || thisMonth);
+  const [data, setData] = useState(() => initialState?.data || null);
+  const [error, setError] = useState("");
+  const [selected, setSelected] = useState(initialState?.selected || "");
+  const [branch, setBranch] = useState("");
+  const [draft, setDraft] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const [reopenReason, setReopenReason] = useState("");
+  /* 지우기는 두 번 눌러야 (사용자가 만든 데이터는 명시적으로 고를 때만 지운다 -- CLAUDE.md 5). */
+  const [askDelete, setAskDelete] = useState("");
+  const wide = useWideViewport(initialState?.wide);
+  const load = useCallback(async () => {
+    if (!organizationId) return;
+    setData(null); setError("");
+    try {
+      const [members, locations, ledger, passes, clients, fcLessons] = await Promise.all([
+        listMemberships(organizationId, { store: instructorStore }),
+        toleratingReadFailure(listLocations(organizationId)),
+        toleratingReadFailure(listSalesLedger(organizationId, month)),
+        toleratingReadFailure(listPasses(organizationId, { store: passStore })),
+        toleratingReadFailure(listClients(organizationId, { store: clientStore })),
+        ownerView ? toleratingReadFailure(listFcLessonMonths(organizationId, month)) : Promise.resolve({ items: [] }),
+      ]);
+      /* FC 는 맡은 지점 강사만 (규칙 · 서버와 같은 판단: 내 지점이 비었으면 전부, 강사 지점이 비었으면 보임). */
+      const mine = scopedLocationIds(organization);
+      const teachers = members.filter((member) => String(member.status || "active") === "active" && ["instructor", "manager", "owner", "area_manager"].includes(String(member.role || "")))
+        .filter((member) => ownerView || !mine.length || !scopedLocationIds(member).length || scopedLocationIds(member).some((id) => mine.includes(id)));
+      let entries = [];
+      let months = [];
+      if (ownerView) {
+        [entries, months] = await Promise.all([listSalesEntriesOfMonth(organizationId, month), listSalesMonths(organizationId, month)]);
+      } else {
+        const per = await Promise.all(teachers.filter((member) => member.userId !== currentUserId).map(async (member) => {
+          const [rows, monthDoc] = await Promise.all([listSalesEntries(organizationId, { instructorId: member.userId, month }), readSalesMonth(organizationId, member.userId, month)]);
+          return { rows, monthDoc };
+        }));
+        entries = per.flatMap((item) => item.rows);
+        months = per.map((item) => item.monthDoc).filter(Boolean);
+      }
+      const entriesByInstructor = new Map();
+      for (const entry of entries) {
+        const key = String(entry.instructorId);
+        if (!entriesByInstructor.has(key)) entriesByInstructor.set(key, []);
+        entriesByInstructor.get(key).push(entry);
+      }
+      setData({
+        teachers, locations: locations.items, entriesByInstructor,
+        monthsByInstructor: new Map(months.map((item) => [String(item.instructorId), item])),
+        records: salesRecordsOf({ passes: passes.items, ledger: ledger.items, month }), clients: clients.items,
+        fcInstructorIds: new Set((fcLessons.items || []).filter((item) => (Number(item.done) || 0) + (Number(item.cancel) || 0) > 0).map((item) => String(item.instructorId))),
+        warning: ledger.errorCode || passes.errorCode ? `앱 기록을 읽지 못해 대조 근거 · 후보가 비어 있어요 (코드 ${ledger.errorCode || passes.errorCode})` : "",
+      });
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setError(`매출 인센을 읽지 못했어요 (코드 ${code})`);
+      deviceLog("sales_board_read_failed", { feature: "sales_incentive", stage: "board_read", errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200), role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform() });
+    }
+  }, [organizationId, month, instructorStore, passStore, clientStore, organization, ownerView, currentUserId]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const rows = data ? salesBoardRows({ instructors: data.teachers, entriesByInstructor: data.entriesByInstructor, monthsByInstructor: data.monthsByInstructor, month, viewerUid: currentUserId, alsoInclude: data.fcInstructorIds }) : [];
+  const groups = data ? groupRowsByBranch(rows, { instructors: data.teachers, locations: data.locations || [], canonicalInstructorId: canonicalInstructorIdFrom(data.teachers) }) : [];
+  const branchId = pickBranch(groups, branch);
+  const shown = groups.length > 1 ? (groups.find((group) => group.id === branchId)?.rows || []) : rows;
+  const current = shown.find((row) => row.instructorId === selected) || (wide ? shown[0] : null) || null;
+  const nameOf = (entry) => (entry?.clientId ? (data?.clients || []).find((item) => String(item.id) === String(entry.clientId))?.name : "") || entry?.memberLabel || "";
+  const officeOf = (row) => (data?.entriesByInstructor.get(row.instructorId) || []).filter((entry) => entry.side === "office");
+  const save = async (entry) => {
+    setBusy(true); setNotice(null);
+    try {
+      if (entry.id) await updateSalesEntry(organizationId, entry.id, entry, { uid: currentUserId });
+      else await addSalesEntry(organizationId, entry, { uid: currentUserId, role: organization?.role || "" });
+      setDraft(null); await load();
+    } catch (thrown) {
+      setNotice({ tone: "warn", text: `저장하지 못했어요 -- 입력은 그대로 있어요 (코드 ${String(thrown?.code || "unknown")})` });
+    } finally { setBusy(false); }
+  };
+  const remove = async (entry) => {
+    try { await deleteSalesEntry(organizationId, entry.id); await load(); }
+    catch (thrown) { setNotice({ tone: "warn", text: `지우지 못했어요 (코드 ${String(thrown?.code || "unknown")})` }); }
+  };
+  const confirm = async (row) => {
+    setBusy(true); setNotice(null);
+    try {
+      const result = await onConfirm({ organizationId, instructorId: row.instructorId, month });
+      setNotice({ tone: "good", text: `확정했어요 · 지급 ${salesWon(result?.snapshot?.payout)}${result?.notified?.sent ? ` · 대표님에게 알림을 보냈어요` : ""}` });
+      await load();
+    } catch (thrown) {
+      const failure = confirmFailureText(thrown);
+      setNotice({ tone: failure.kind === "network" ? "warn" : "bad", text: failure.text });
+      deviceLog("sales_confirm_failed", { feature: "sales_incentive", stage: "confirm", errorDomain: "functions_callable", errorCode: String(thrown?.code || "unknown"), serverCode: failure.code, appBuild: APP_BUILD_LABEL });
+      await load();
+    } finally { setBusy(false); }
+  };
+  const reopen = async (row) => {
+    if (!reopenReason.trim()) { setNotice({ tone: "warn", text: "되돌리는 사유를 적어 주세요 (코드 reopen_reason_required)" }); return; }
+    setBusy(true);
+    try { await reopenSalesMonth(organizationId, row.instructorId, month, reopenReason, { uid: currentUserId }); setReopenReason(""); setNotice({ tone: "good", text: "되돌렸어요. 두 장부를 고친 뒤 다시 확정해 주세요." }); await load(); }
+    catch (thrown) { setNotice({ tone: "warn", text: `되돌리지 못했어요 (코드 ${String(thrown?.code || "unknown")})` }); }
+    finally { setBusy(false); }
+  };
+  const detail = (row) => {
+    const office = officeOf(row);
+    const suggestions = suggestionsFor({ instructorId: row.instructorId, records: data.records, claims: office });
+    return (
+      <div className="space-y-2" data-sales-detail={row.instructorId}>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{row.name}</span>
+          {salesPill(row.status.tone, row.status.label)}
+        </div>
+        <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>강사 장부 {salesWon(row.mineTotal)} ({row.mineCount}줄) · 사무실 장부 {salesWon(row.officeTotal)} ({row.officeCount}줄) · 지급 예정 {salesWon(row.statement.payout)}</p>
+        {row.submission.submitted ? (
+          <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: row.submission.dirty ? WARN : SUB }} data-sales-board-submitted={row.submission.dirty ? "changed" : "same"}>
+            강사 제출 {row.submission.label}{row.submission.summary ? ` · 그때 ${row.submission.summary.lines}줄 · 개인 ${salesWon(row.submission.summary.total)} · 그룹 ${salesWon(row.submission.summary.groupBase)}` : ""}
+            {row.submission.dirty ? ` · 제출 뒤 바뀜: ${submissionChangeText(row.submission)}` : ""}
+          </p>
+        ) : null}
+        <div className="space-y-3" data-sales-pairs>
+          {[["개인 매출", false], ["그룹 매출 · 0.5% · 개인 인센과 따로", true]].map(([title, group]) => {
+            const list = row.pairing.pairs.filter((pair) => isGroup(pair.instructor || pair.office) === group);
+            if (!list.length) return null;
+            return (
+              <div key={title} className="space-y-1.5" data-sales-section={group ? "group" : "personal"}>
+                <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{title}</p>
+                {list.map((pair, index) => {
+            const view = PAIR_VIEW[pair.code];
+            const source = pair.office || pair.instructor;
+            const evidence = pair.office ? MATCH_VIEW[matchEntry(pair.office, { records: data.records, claims: [] }).code] : null;
+            return (
+              <div key={`${pair.instructor?.id || ""}-${pair.office?.id || ""}-${index}`} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: pair.code === PAIR.AGREED ? CANVAS : WARN_S }} data-sales-pair={pair.code}>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {salesPill(view.tone, view.label)}
+                  <span className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{nameOf(source)}</span>
+                </div>
+                {pair.instructor ? <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>강사: {pair.instructor.paidOn} · {entryLine(pair.instructor, SALES_KIND_LABELS)} {submissionPill(row.submission, pair.instructor)}</p> : null}
+                {pair.office ? <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>사무실: {pair.office.paidOn} · {entryLine(pair.office, SALES_KIND_LABELS)}</p> : null}
+                {pair.diffs.length ? <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: BAD }}>다른 칸: {pair.diffs.map((item) => item.label).join(" · ")}</p> : null}
+                {evidence ? <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>앱 기록: {evidence.label}</p> : null}
+                {pair.office && !row.confirmed ? (
+                  <div className="mt-1 flex gap-3">
+                    <button type="button" onClick={() => setDraft({ ...pair.office })} className="font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>사무실 줄 고치기</button>
+                    {askDelete === pair.office.id
+                      ? <><button type="button" onClick={() => { setAskDelete(""); remove(pair.office); }} className="font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>정말 지우기</button>
+                        <button type="button" onClick={() => setAskDelete("")} style={{ fontSize: TYPE.caption, color: SUB }}>그만두기</button></>
+                      : <button type="button" onClick={() => setAskDelete(pair.office.id)} style={{ fontSize: TYPE.caption, color: SUB }}>사무실 줄 지우기</button>}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+              </div>
+            );
+          })}
+          {!row.pairing.pairs.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>두 장부 모두 비어 있어요 -- 이 달 매출이 없으면 그대로 확정할 수 있어요.</p> : null}
+        </div>
+        {draft && draft.instructorId === row.instructorId ? <SalesEntryEditor draft={draft} onChange={setDraft} onSave={save} onCancel={() => setDraft(null)} clients={data.clients} busy={busy} month={month} /> : null}
+        {!row.confirmed && !draft && !row.ownSales ? (
+          <div className="space-y-1.5">
+            {suggestions.length ? <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>앱 기록에서 사무실 장부로 넣기</p> : null}
+            {suggestions.map((item) => (
+              <div key={item.recordId} className="flex items-center justify-between gap-2 px-3 py-2" style={{ borderRadius: 10, border: `1px dashed ${LINE}` }}>
+                <span className="min-w-0 flex-1 truncate tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>{nameOf(item)} · {salesWon(item.amount)} · {kstDate(item.occurredAt)}</span>
+                <button type="button" onClick={() => setDraft(entryFromSuggestion(item, { side: "office", instructorId: row.instructorId, month }))} className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>넣기</button>
+              </div>
+            ))}
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => setDraft(blankEntry({ side: "office", instructorId: row.instructorId, month }))} className="h-9 px-3 font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>+ 직접 추가</button>
+              <button type="button" onClick={() => setDraft(blankEntry({ side: "office", instructorId: row.instructorId, month, kind: "group" }))} className="h-9 px-3 font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>+ 그룹 회원</button>
+            </div>
+          </div>
+        ) : null}
+        {row.confirmed ? (
+          <div className="space-y-1.5" data-sales-reopen>
+            <input value={reopenReason} onChange={(event) => setReopenReason(event.target.value)} maxLength={200} placeholder="되돌리는 사유 (필수)"
+              className="h-10 w-full px-3" style={{ borderRadius: 8, border: `1px solid ${LINE}`, fontSize: TYPE.caption, backgroundColor: CARD, color: INK }} />
+            <button type="button" disabled={busy || row.ownSales} onClick={() => reopen(row)} className="h-10 w-full font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: BAD, fontSize: TYPE.caption }}>확정 되돌리기</button>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            <button type="button" disabled={busy || row.ownSales || !row.pairing.canConfirm} onClick={() => confirm(row)} className="h-11 w-full font-extrabold disabled:opacity-40"
+              style={{ borderRadius: 10, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }} data-sales-confirm={row.instructorId}>
+              {busy ? "확인 중…" : row.pairing.canConfirm ? `확정 · 지급 ${salesWon(row.statement.payout)}` : `두 장부가 같아야 확정할 수 있어요 (어긋남 ${row.attention}건)`}
+            </button>
+            {row.ownSales ? <p style={{ fontSize: TYPE.caption, color: SUB }}>자기 매출은 다른 사람이 확정해요 (코드 own_sales)</p>
+              : !ownerView ? <p style={{ fontSize: TYPE.caption, color: SUB }} data-sales-confirm-hint>{CONFIRM_NOTICE_HINT}</p> : null}
+          </div>
+        )}
+        <FcLessonBoardSection key={`${row.instructorId}-${month}`} organization={organization} instructorId={row.instructorId} month={month} currentUserId={currentUserId}
+          initialState={initialState?.fcByInstructor?.[row.instructorId] || null} />
+      </div>
+    );
+  };
+  const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
+  const summary = rows.reduce((sum, row) => ({ confirmed: sum.confirmed + Number(row.confirmed), attention: sum.attention + (row.confirmed ? 0 : Number(row.attention > 0)), payout: sum.payout + (row.statement.payout || 0) }), { confirmed: 0, attention: 0, payout: 0 });
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-sales-board>
+      <div className="flex items-center gap-2">
+        <button type="button" aria-label="이전 달" onClick={() => { setMonth((value) => shiftRatingMonth(value, -1)); setDraft(null); setNotice(null); }} className="flex items-center justify-center" style={navButton}><ChevronLeft size={16} /></button>
+        <span className="min-w-0 flex-1 text-center font-extrabold tabular-nums" style={{ fontSize: TYPE.body, color: INK }}>{ratingMonthLabel(month)}</span>
+        <button type="button" aria-label="다음 달" disabled={month >= thisMonth} onClick={() => { setMonth((value) => shiftRatingMonth(value, 1)); setDraft(null); setNotice(null); }} className="flex items-center justify-center disabled:opacity-30" style={navButton}><ChevronRight size={16} /></button>
+        <button type="button" onClick={load} className="h-9 px-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
+      </div>
+      <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        강사가 넣은 <b style={{ color: INK }}>강사 장부</b>와 FC · 대표가 따로 넣은 <b style={{ color: INK }}>사무실 장부</b>가 한 줄도 빠짐없이 같아야 확정돼요.
+        {" "}강사 장부는 여기서 고칠 수 없어요 -- 다르면 강사에게 알려 주세요.{ownerView ? "" : " FC 가 확정하면 대표님에게 알림이 가요."}
+      </p>
+      {error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{error}</p> : null}
+      {!data && !error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+      {data?.warning ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{data.warning}</p> : null}
+      {notice ? <p className="mt-2 font-bold" style={{ fontSize: TYPE.caption, color: notice.tone === "good" ? GOOD : notice.tone === "bad" ? BAD : WARN }} data-sales-notice>{notice.text}</p> : null}
+      {data && ownerView ? <FcDesignationEditor key={month} organization={organization} month={month} teachers={data.teachers} locations={data.locations} currentUserId={currentUserId} initialState={initialState?.designation || null} /> : null}
+      {data ? (
+        <>
+          <SummaryTiles items={[
+            { label: "강사", value: `${rows.length}명`, code: "sales_board_instructors" },
+            { label: "확정", value: `${summary.confirmed}명`, color: GOOD, code: "sales_board_confirmed" },
+            { label: "두 장부 어긋남", value: `${summary.attention}명`, color: summary.attention ? BAD : INK, code: "sales_board_attention" },
+            { label: "지급 예정 합계", value: salesWon(summary.payout), code: "sales_board_payout" },
+          ]} />
+          <BranchTabs groups={groups} selected={branchId} onSelect={(id) => { setBranch(id); setSelected(""); setDraft(null); }} countLabel={(group) => `${group.rows.length}명`} />
+          {!rows.length ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>이 달에 넣은 매출이 없어요.</p> : null}
+          {wide ? (
+            <AggregateSplit wide detail={current ? detail(current) : null}>
+              <InstructorTable rows={shown} selected={current?.instructorId} onSelect={(id) => { setSelected(id); setDraft(null); setNotice(null); }} columns={[
+                { key: "name", label: "강사", firstDir: "asc", sortValue: (row) => row.name, render: (row) => <span className="font-bold">{row.name}</span> },
+                { key: "status", label: "상태", render: (row) => salesPill(row.status.tone, row.status.label) },
+                { key: "mine", label: "강사 장부", align: "right", sortValue: (row) => row.mineTotal, render: (row) => salesWon(row.mineTotal) },
+                { key: "office", label: "사무실 장부", align: "right", sortValue: (row) => row.officeTotal, render: (row) => salesWon(row.officeTotal) },
+                { key: "pairs", label: "대조", align: "right", sortValue: (row) => row.attention, render: (row) => (row.attention ? salesPill("bad", `어긋남 ${row.attention}`) : salesPill("good", "같음")) },
+                { key: "payout", label: "지급 예정", align: "right", sortValue: (row) => row.statement.payout, render: (row) => <span className="font-bold">{salesWon(row.statement.payout)}</span> },
+              ]} />
+            </AggregateSplit>
+          ) : (
+            <div className="mt-3 space-y-2">
+              {shown.map((row) => {
+                const expanded = selected === row.instructorId;
+                return (
+                  <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-sales-row={row.instructorId}>
+                    <button type="button" onClick={() => { setSelected(expanded ? "" : row.instructorId); setDraft(null); setNotice(null); }} className="flex w-full items-center gap-2 text-left" aria-expanded={expanded}>
+                      <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>{row.name}</span>
+                      {row.attention && !row.confirmed ? salesPill("bad", `어긋남 ${row.attention}`) : null}
+                      {salesPill(row.status.tone, row.status.label)}
+                      <ChevronDown size={16} style={{ color: SUB, transform: expanded ? "rotate(180deg)" : "none" }} />
+                    </button>
+                    <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>지급 예정 {salesWon(row.statement.payout)} · 강사 {row.mineCount}줄 · 사무실 {row.officeCount}줄</p>
+                    {expanded ? <div className="mt-2">{detail(row)}</div> : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+/* ── 강사 FC 복지 수업료 화면 (2026-11-21 대표 결정 · 횟수만 · 지점마다 한 명) ─────────────
+   진행 25,000 · 캔슬 15,000, 한 달 진행 + 캔슬 8회. FC 가 모두 앱에 있지 않아 누구에게 했는지는 받지 않는다.
+   대표 · 총괄이 그 달 지점마다 강사 한 명을 정하면, 그 강사가 횟수만 넣고(이번 달 매출 인센 화면 아래)
+   FC · 대표 · 총괄이 확정한다(매출 인센 화면의 강사 상세). 확정은 서버만. */
+function FcCountStepper({ label, rate, value, onChange, disabled, max }) {
+  const button = { width: 40, height: 40, borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.body, fontWeight: 700 };
+  return (
+    <div className="flex items-center gap-2" data-fc-stepper={label}>
+      <span className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, color: INK }}><b>{label}</b> <span style={{ color: SUB }}>{salesWon(rate)}</span></span>
+      <button type="button" aria-label={`${label} 하나 빼기`} disabled={disabled || value <= 0} onClick={() => onChange(value - 1)} className="disabled:opacity-40" style={button}>−</button>
+      <span className="w-8 text-center font-extrabold tabular-nums" style={{ fontSize: TYPE.body, color: INK }}>{value}</span>
+      <button type="button" aria-label={`${label} 하나 더하기`} disabled={disabled || value >= max} onClick={() => onChange(value + 1)} className="disabled:opacity-40" style={button}>+</button>
+    </div>
+  );
+}
+
+function FcLessonSection({ organization, currentUserId, month, initialState = null }) {
+  const organizationId = organization?.organizationId || "";
+  const [state, setState] = useState(() => initialState || null);
+  const [error, setError] = useState("");
+  const [draft, setDraft] = useState(() => (initialState?.monthDoc ? { done: Number(initialState.monthDoc.done) || 0, cancel: Number(initialState.monthDoc.cancel) || 0 } : null));
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const load = useCallback(async () => {
+    if (!organizationId || !currentUserId) return;
+    setState(null); setError("");
+    try {
+      const [designation, monthDoc] = await Promise.all([readFcDesignation(organizationId, month), readFcLessonMonth(organizationId, currentUserId, month)]);
+      setState({ designation, monthDoc });
+      setDraft({ done: Number(monthDoc?.done) || 0, cancel: Number(monthDoc?.cancel) || 0 });
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setError(`FC 복지 수업을 읽지 못했어요 (코드 ${code})`);
+      deviceLog("fc_lessons_read_failed", { feature: "fc_lessons", stage: "mine_read", errorDomain: "firestore", errorCode: code, appBuild: APP_BUILD_LABEL });
+    }
+  }, [organizationId, currentUserId, month]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const view = state ? myFcLessonView({ instructorId: currentUserId, designation: state.designation, monthDoc: state.monthDoc }) : null;
+  const counts = draft || view?.counts || { done: 0, cancel: 0 };
+  const totals = view?.locked ? view.totals : fcLessonTotals(counts);
+  const errors = state ? fcCountErrors(counts, { designation: state.designation, instructorId: currentUserId }) : [];
+  const changed = Boolean(view) && (counts.done !== view.counts.done || counts.cancel !== view.counts.cancel);
+  const save = async () => {
+    if (errors.length) return;
+    setBusy(true); setMessage("");
+    try {
+      await saveFcCounts(organizationId, currentUserId, month, counts, { uid: currentUserId });
+      setMessage("제출했어요. FC · 대표 · 총괄이 확인 뒤 확정해요.");
+      await load();
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setMessage(`저장하지 못했어요 -- 넣은 횟수는 그대로 있어요 (코드 ${code})`);
+      deviceLog("fc_lessons_save_failed", { feature: "fc_lessons", stage: "save_counts", errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200), appBuild: APP_BUILD_LABEL });
+    } finally { setBusy(false); }
+  };
+  /* 지정되지 않았고 넣은 것도 없으면 칸을 아예 보이지 않는다 -- 강사 대부분에게 이 칸은 없다. */
+  if (view && !view.designated && !view.hasCounts) return null;
+  const left = Math.max(0, FC_LESSON_MONTHLY_CAP - counts.done - counts.cancel);
+  return (
+    <div className="mt-4 pt-3" style={{ borderTop: `1px solid ${LINE}` }} data-fc-lessons>
+      <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>FC 복지 수업</p>
+      <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>이번 달 FC 수업 담당이에요 · 한 달 진행 + 캔슬 {FC_LESSON_MONTHLY_CAP}회까지 · 매출 인센과 따로 정산</p>
+      {error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{error}</p> : null}
+      {!state && !error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+      {view ? (
+        <>
+          <div className="mt-2 space-y-1.5">
+            <FcCountStepper label="진행" rate={FC_LESSON_RATE.done} value={counts.done} max={counts.done + left} disabled={busy || view.locked || !view.designated} onChange={(done) => setDraft({ ...counts, done })} />
+            <FcCountStepper label="캔슬" rate={FC_LESSON_RATE.cancel} value={counts.cancel} max={counts.cancel + left} disabled={busy || view.locked || !view.designated} onChange={(cancel) => setDraft({ ...counts, cancel })} />
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="font-bold tabular-nums" style={{ fontSize: TYPE.caption, color: INK }} data-fc-total={totals.amount}>진행 {totals.done}회 · 캔슬 {totals.cancel}회 · {salesWon(totals.amount)}</span>
+            {salesPill(monthStatusView(state.monthDoc).tone, monthStatusView(state.monthDoc).label)}
+            {view.locked ? null : <span style={{ fontSize: TYPE.caption, color: SUB }}>남은 {left}회</span>}
+          </div>
+          {errors.length ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{errors.map((item) => `${item.text} (코드 ${item.code})`).join(" · ")}</p> : null}
+          {message ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: message.startsWith("제출했어요") ? GOOD : WARN }}>{message}</p> : null}
+          {view.locked ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>확정된 달이라 고칠 수 없어요.</p> : (
+            <button type="button" disabled={busy || Boolean(errors.length) || !(changed || (view.hasCounts && state.monthDoc?.status !== "submitted")) || !(counts.done + counts.cancel)} onClick={save}
+              className="mt-2 h-10 w-full font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>{busy ? "저장 중…" : "횟수 저장 · 제출"}</button>
+          )}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/** FC · 대표 · 총괄: 강사 상세 안의 FC 복지 수업 -- 횟수 보기 · 확정 · 되돌림. 강사 횟수는 고치지 않는다. */
+function FcLessonBoardSection({ organization, instructorId, month, currentUserId, onConfirm = fbConfirmFcLessonMonth, initialState = null }) {
+  const organizationId = organization?.organizationId || "";
+  const ownerView = isOwnerLevelRole(organization?.role);
+  const [state, setState] = useState(() => initialState || null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const [reason, setReason] = useState("");
+  const load = useCallback(async () => {
+    if (!organizationId || !instructorId) return;
+    setState(null); setError("");
+    try {
+      const [designation, monthDoc] = await Promise.all([readFcDesignation(organizationId, month), readFcLessonMonth(organizationId, instructorId, month)]);
+      setState({ designation, monthDoc });
+    } catch (thrown) { setError(`FC 복지 수업을 읽지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
+  }, [organizationId, instructorId, month]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const view = state ? myFcLessonView({ instructorId, designation: state.designation, monthDoc: state.monthDoc }) : null;
+  const confirm = async () => {
+    setBusy(true); setNotice(null);
+    try {
+      const result = await onConfirm({ organizationId, instructorId, month });
+      setNotice({ tone: "good", text: `FC 수업료를 확정했어요 · ${salesWon(result?.snapshot?.amount)}${result?.notified?.sent ? " · 대표님에게 알림을 보냈어요" : ""}` });
+      await load();
+    } catch (thrown) {
+      const failure = fcConfirmFailureText(thrown);
+      setNotice({ tone: failure.kind === "network" ? "warn" : "bad", text: failure.text });
+      deviceLog("fc_lessons_confirm_failed", { feature: "fc_lessons", stage: "confirm", errorDomain: "functions_callable", errorCode: String(thrown?.code || "unknown"), serverCode: failure.code, appBuild: APP_BUILD_LABEL });
+      await load();
+    } finally { setBusy(false); }
+  };
+  const reopen = async () => {
+    if (!reason.trim()) { setNotice({ tone: "warn", text: "되돌리는 사유를 적어 주세요 (코드 reopen_reason_required)" }); return; }
+    setBusy(true);
+    try { await reopenFcLessonMonth(organizationId, instructorId, month, view.counts, reason, { uid: currentUserId }); setReason(""); await load(); }
+    catch (thrown) { setNotice({ tone: "warn", text: `되돌리지 못했어요 (코드 ${String(thrown?.code || "unknown")})` }); }
+    finally { setBusy(false); }
+  };
+  if (error) return <p className="mt-3" style={{ fontSize: TYPE.caption, color: WARN }}>{error}</p>;
+  if (!view) return <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>FC 복지 수업 불러오는 중…</p>;
+  if (!view.hasCounts) return view.designated ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: FAINT }} data-fc-board-empty>FC 복지 수업 담당 · 아직 횟수 안 넣음</p> : null;
+  const over = view.counts.done + view.counts.cancel > FC_LESSON_MONTHLY_CAP;
+  return (
+    <div className="mt-3 space-y-1.5 pt-3" style={{ borderTop: `1px solid ${LINE}` }} data-fc-board={instructorId}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-bold tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>FC 복지 수업 · 진행 {view.totals.done}회 · 캔슬 {view.totals.cancel}회 · {salesWon(view.totals.amount)}</span>
+        {salesPill(monthStatusView(state.monthDoc).tone, monthStatusView(state.monthDoc).label)}
+        {over ? salesPill("warn", `${FC_LESSON_MONTHLY_CAP}회 넘음`) : null}
+        {view.designated ? null : salesPill("warn", "이번 달 지정 강사 아님")}
+      </div>
+      {notice ? <p className="font-bold" style={{ fontSize: TYPE.caption, color: notice.tone === "good" ? GOOD : notice.tone === "bad" ? BAD : WARN }}>{notice.text}</p> : null}
+      {view.locked ? (
+        <div className="space-y-1.5">
+          <input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={200} placeholder="되돌리는 사유 (필수)" className="h-10 w-full px-3" style={{ borderRadius: 8, border: `1px solid ${LINE}`, fontSize: TYPE.caption, backgroundColor: CARD, color: INK }} />
+          <button type="button" disabled={busy} onClick={reopen} className="h-10 w-full font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: BAD, fontSize: TYPE.caption }}>FC 수업료 확정 되돌리기</button>
+        </div>
+      ) : (
+        <div className="space-y-1">
+          <button type="button" disabled={busy || instructorId === currentUserId} onClick={confirm} className="h-10 w-full font-extrabold disabled:opacity-40"
+            style={{ borderRadius: 10, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }} data-fc-confirm={instructorId}>{busy ? "확인 중…" : `FC 수업료 확정 · ${salesWon(view.totals.amount)}`}</button>
+          {instructorId === currentUserId ? <p style={{ fontSize: TYPE.caption, color: SUB }}>자기 수업료는 다른 사람이 확정해요 (코드 own_lessons)</p>
+            : !ownerView ? <p style={{ fontSize: TYPE.caption, color: SUB }}>{CONFIRM_NOTICE_HINT}</p> : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 대표 · 총괄: 그 달 지점마다 FC 수업 담당 강사 한 명. 그 지점에 소속된 강사 중에서 고른다 (소속이 비었으면 누구나). */
+function FcDesignationEditor({ organization, month, teachers, locations, currentUserId, initialState = null }) {
+  const organizationId = organization?.organizationId || "";
+  const [branches, setBranches] = useState(() => ({ ...(initialState?.branches || {}) }));
+  const [loaded, setLoaded] = useState(Boolean(initialState));
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (initialState || !organizationId) return undefined;
+    let alive = true;
+    setLoaded(false);
+    readFcDesignation(organizationId, month)
+      .then((found) => { if (alive) { setBranches({ ...(found?.branches || {}) }); setLoaded(true); } })
+      .catch((thrown) => { if (alive) { setMessage(`지정 강사를 읽지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); setLoaded(true); } });
+    return () => { alive = false; };
+  }, [organizationId, month, initialState]);
+  const instructors = (teachers || []).filter((member) => String(member.role || "") === "instructor");
+  const places = (locations || []).length ? locations : [{ id: "all", name: "센터" }];
+  const optionsFor = (branchId) => {
+    const inBranch = instructors.filter((member) => !scopedLocationIds(member).length || scopedLocationIds(member).includes(branchId));
+    return inBranch.length ? inBranch : instructors;
+  };
+  const save = async () => {
+    setBusy(true); setMessage("");
+    try {
+      await saveFcDesignation(organizationId, month, branches, { uid: currentUserId });
+      setMessage(`저장했어요 · ${Object.values(branches).filter(Boolean).length}개 지점`);
+    } catch (thrown) { setMessage(`저장하지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
+    finally { setBusy(false); }
+  };
+  const select = { height: 36, borderRadius: 8, border: `1px solid ${LINE}`, padding: "0 8px", fontSize: TYPE.caption, color: INK, backgroundColor: CARD, minWidth: 0, flex: 1 };
+  return (
+    <div className="mt-3 p-3" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-fc-designation>
+      <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{ratingMonthLabel(month)} FC 복지 수업 담당 (지점마다 한 명)</p>
+      <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>정한 강사만 그 달 FC 수업 진행 · 캔슬 횟수를 넣을 수 있어요.</p>
+      {!loaded ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : (
+        <div className="mt-2 space-y-1.5">
+          {places.map((place) => (
+            <label key={place.id} className="flex items-center gap-2" style={{ fontSize: TYPE.caption, color: INK2 }} data-fc-designate-branch={place.id}>
+              <span className="w-16 shrink-0 font-bold">{place.name || place.id}</span>
+              <select style={select} value={branches[place.id] || ""} onChange={(event) => setBranches((current) => ({ ...current, [place.id]: event.target.value }))}>
+                <option value="">지정 안 함</option>
+                {optionsFor(place.id).map((member) => <option key={member.userId} value={member.userId}>{member.displayName || member.userId}</option>)}
+              </select>
+            </label>
+          ))}
+        </div>
+      )}
+      <div className="mt-2 flex items-center gap-2">
+        <button type="button" disabled={busy || !loaded} onClick={save} className="h-9 px-3 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>지정 저장</button>
+        {message ? <span style={{ fontSize: TYPE.caption, color: message.startsWith("저장했어요") ? GOOD : WARN }}>{message}</span> : null}
+      </div>
+    </div>
   );
 }
 
@@ -28372,9 +29533,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
      보게 되고, 그 차이는 아무 데도 적히지 않는다. 지난달 원장만 이 화면을
      열었을 때 따로 읽는다. */
   currentUserId = "", rosterClients = [], rosterPasses = [], monthReportState = null, onOpenPay,
-  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, onSnapshotBackup, snapshotBusy = false, onRosterChanged, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, onPreviewInstructorNames, onConfirmInstructorNames, noticeStore, onManageNotice, noticeWho = null, onOwnerMessageSaved, ownerMessageState = null, initialView = "hub", initialOpenGroups = null, nameConfirmState = null, noticeState = null }) {
+  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, onSnapshotBackup, snapshotBusy = false, onRosterChanged, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, onPreviewInstructorNames, onConfirmInstructorNames, noticeStore, onManageNotice, noticeWho = null, onOwnerMessageSaved, ownerMessageState = null, initialView = "hub", initialOpenGroups = null, nameConfirmState = null, noticeState = null, prefetchRadar = false, wideLayout = undefined }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
+  /* PC(1024px 이상)에서는 메뉴 | 화면 두 칸 (2026-11-21 대표 승인 "현황판 웹 배치안" 1단계). 견본 화면은 wideLayout 으로 못 박는다. */
+  const wideScreen = useWideViewport(wideLayout);
 
   /**
    * 이관 데이터 초기화. 서버가 전부 한다 -- 규칙을 건드리지 않으려고
@@ -28490,6 +29653,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   const showAudit = organization.ready
     && !organization.isLegacy
     && isOwnerLevelRole(organization.role);
+  /* 재등록 레이더를 미리 읽는다 (2026-11-21 대표: "누르면 바로 뜨게"). 운영 앱만 -- 견본 화면 · 테스트는 읽지 않는다. */
+  useEffect(() => {
+    if (!prefetchRadar || !showAudit || !organization.organizationId) return;
+    prefetchRenewalRadar({ organizationId: organization.organizationId, clientStore, passStore, instructorStore, role: organization.role || "" });
+  }, [prefetchRadar, showAudit, organization.organizationId, organization.role, clientStore, passStore, instructorStore]);
   /* 수업 별점 (2026-11-16 대표: "별점 항목을 따로 빼고, 점장이 자기 지점 강사들 몇 점 받는지"). 운영 스위치
      화면 안에 있던 집계를 따로 뺐다. 대표 · 총괄은 전부, 점장(직함)은 자기 지점 강사만 -- 서버가 다시 거른다. */
   const showRatings = organization.ready
@@ -28752,6 +29920,13 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     "member-app": "회원 앱",
     "member-app-status": "보니따 앱 설치 현황",
     audit: "감사 로그",
+    "renewal-radar": "재등록 레이더",
+    "record-board": "강사 기록 현황",
+    "before-after-board": "비포애프터 공유 현황",
+    "lesson-ratings": "수업 별점",
+    "phone-check": "번호 점검",
+    "sales-mine": "이번 달 매출 인센",
+    "sales-board": "매출 인센",
   };
   /* 센터를 운영하는 일과 이 기기를 쓰는 일은 다른 묶음이다. 한 그룹에 섞여
      있으면 목록이 길어지고, 강사에게는 그 목록의 절반이 보이지 않아 어디가 빈
@@ -28772,38 +29947,52 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
 
      **역할로 빈 묶음은 통째로 사라진다.** 머리글만 남기면 "여기 뭔가 있어야
      하는데 안 보인다" 가 되고, 그것은 권한이 없다는 말보다 나쁘다. */
+  /* 대표 · 총괄의 더보기는 만료 회원을 현황판에 둔다 (강사 · FC 는 업무 그대로). centreGroups 가 쓰므로 그 앞에서 정한다. */
+  const expiryItems = inOrganization ? [{ key: "expiry", title: "만료 회원", description: "이번 달 · 지난달 · 재등록률", Icon: Users }] : [];
+  const ownerLevelHub = inOrganization && isOwnerLevelRole(organization.role);
+  /* 매출 인센 확정 화면: 대표 · 총괄 · FC매니저 (규칙 · 서버와 같은 선). */
+  const showSalesBoard = organization.ready && !organization.isLegacy && (isOwnerLevelRole(organization.role) || organization.role === ROLES.MANAGER);
   const centreGroups = [
-    { label: "회원 · 회원권", items: [
-      ...(showClients ? [{ key: "pass-issue", title: "회원권 발급", description: "회원에게 회원권 발급", Icon: Ticket }] : []),
-      ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
+    /* 매일 보는 숫자 (2026-11-21 대표 승인 "현황판 웹 배치안" 1단계). 맨 위에 둔다. */
+    { label: "현황판", items: [
       /* 곧 끝나는 회원 · 위험 신호 · 강사별 기록률과 재등록률 (2026-11-21). 강사가 할 일은 없다 -- 대표 · 총괄만. */
       ...(showAudit ? [{ key: "renewal-radar", title: "재등록 레이더", description: "곧 끝나는 회원 · 위험 신호 · 강사별 재등록률", Icon: Activity }] : []),
-      ...(showClients ? [{ key: "branch-overview", title: "지점 회원 현황", description: "강사별 이름 · 연락처 · 잔여 한눈에", Icon: Users }] : []),
+      ...(showAudit ? [{ key: "record-board", title: "강사 기록 현황", description: "수업기록 · 회원에게 보낸 말 · 지점별", Icon: ClipboardList }] : []),
+      /* 기록 현황과 같은 화면에 붙어 있었다 -- 달이 따로 움직여 헷갈렸다. 메뉴를 나눈다 (대표 결정 2). */
+      ...(showAudit ? [{ key: "before-after-board", title: "비포애프터 공유 현황", description: "강사별 · 회원별 마지막으로 보낸 날", Icon: Camera }] : []),
+      ...(showRatings && isOwnerLevelRole(organization.role) ? [ratingsItem] : []),
+      ...(ownerLevelHub ? expiryItems : []),
+      /* 누가 보니따 앱을 깔았는지 · 아직인지 (2026-11-15 대표). 회원 앱 연결과 같은 사람(대표 · 총괄)만 본다. */
+      ...(showMemberApp ? [{ key: "member-app-status", title: "보니따 앱 설치 현황", description: "누가 깔았는지 · 아직 안 깔았는지", Icon: Smartphone }] : []),
+    ] },
+    /* 월말에 보는 돈. */
+    { label: "돈", items: [
+      /* 강사 개인매출 · 그룹 인센 (2026-11-21). 두 장부 대조 · 확정은 FC(맡은 지점) · 대표 · 총괄 -- FC 가 확정하면 대표에게 알림. */
+      ...(showSalesBoard ? [{ key: "sales-board", title: "매출 인센", description: "강사 · 사무실 두 장부 대조 · 확정", Icon: Ticket }] : []),
+      ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 그룹 급여 포함", Icon: ArrowUpRight }] : []),
       /* 발급 내역도 대표만 본다. 급여와 같은 조건이다 -- 센터 전체의 매출은
          한 사람의 것이 아니고, FC매니저에게는 자기 실적만 보이는 화면이 따로
          필요하다 (아직 없다). */
       ...(showIssues ? [{ key: "issues", title: "발급 내역", description: "이달 판매 · 지점별 · 발급자별", Icon: Ticket }] : []),
+      /* "월말 정산"만으로는 위의 월간 리포트와 구별되지 않는다. 무엇을 세는지가
+         둘의 차이다 -- 이쪽은 회원권 원장, 그쪽은 기기에 저장된 일정이다. */
+      ...(showClients ? [{ key: "group-payroll", title: "그룹 급여 정산", description: "지점별 강사 풀방 · 빈방 횟수 입력", Icon: ClipboardList }] : []),
+    ] },
+    /* 회원 · 회원권 · 강사 · 상품을 다루는 일. */
+    { label: "관리", items: [
+      ...(showClients ? [{ key: "pass-issue", title: "회원권 발급", description: "회원에게 회원권 발급", Icon: Ticket }] : []),
+      ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
+      ...(showClients ? [{ key: "branch-overview", title: "지점 회원 현황", description: "강사별 이름 · 연락처 · 잔여 한눈에", Icon: Users }] : []),
       /* 회원이 자기 잔여를 보는 앱. 여기서는 연결만 다룬다 -- 자동으로 잇지
          못한 것과, 잘못 이은 것과, 화면의 숫자가 맞는지. */
       ...(showMemberApp ? [{ key: "member-app", title: "회원 앱", description: "연결 대기 · 끊기 · 점검", Icon: Users }] : []),
-      /* 누가 보니따 앱을 깔았는지 · 아직인지 (2026-11-15 대표). 회원 앱 연결과 같은 사람(대표 · 총괄)만 본다. */
-      ...(showMemberApp ? [{ key: "member-app-status", title: "보니따 앱 설치 현황", description: "누가 깔았는지 · 아직 안 깔았는지", Icon: Smartphone }] : []),
-    ] },
-    { label: "강사 · 급여", items: [
       ...(showInstructorAdmin ? [{ key: "instructor-admin", title: "강사 관리", description: "강사 추가 · 지점 · 직함 · 풀방금액", Icon: Users }] : []),
       /* 강사 관리와 따로 둔다. 한 강사의 회원권을 **전부** 옮기는 일이라
          직함을 고치는 일과 무게가 다르고, 되돌리려면 한 장씩 되돌려야 한다. */
       ...(showInstructorAdmin ? [{ key: "handover", title: "퇴사 인계", description: "그만두는 강사의 회원권을 한 번에 넘긴다", Icon: UserPlus }] : []),
-      /* "월말 정산"만으로는 위의 월간 리포트와 구별되지 않는다. 무엇을 세는지가
-         둘의 차이다 -- 이쪽은 회원권 원장, 그쪽은 기기에 저장된 일정이다. */
-      ...(showClients ? [{ key: "group-payroll", title: "그룹 급여 정산", description: "지점별 강사 풀방 · 빈방 횟수 입력", Icon: ClipboardList }] : []),
-      ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 그룹 급여 포함", Icon: ArrowUpRight }] : []),
-      ...(showRatings && isOwnerLevelRole(organization.role) ? [ratingsItem] : []),
       /* 담당 강사. 강사가 보는 회원의 범위가 여기서 정해진다 -- 점검이 아니라
          강사를 다루는 일이라 이 묶음이다. */
       ...(showAudit ? [{ key: "instructor-scope", title: "담당 강사", description: "강사별 담당 회원 · 재계산", Icon: Users }] : []),
-    ] },
-    { label: "상품", items: [
       ...(showProducts ? [{ key: "products", title: "회원권 상품", description: "이벤트 상품 추가 · 종료", Icon: Ticket }] : []),
     ] },
     /* 평소에 볼 것이 아니다. 셋 다 "무엇이 어긋나 있는지" 를 찾는 화면이고,
@@ -28812,7 +30001,6 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       ...(showAudit ? [{ key: "expiry-order", title: "만료일 순서 확인", description: "뒤 차수가 먼저 만료되는 회원", Icon: AlertTriangle }] : []),
       /* 확정된 듀엣인데 한 사람이 "예약" 으로 남은 수업. 고치지 않고 모아만 둔다. */
       ...(showAudit ? [{ key: "duet-unmarked", title: "듀엣 출석 확인", description: "확정됐는데 한 명이 미표시인 듀엣", Icon: Users }] : []),
-      ...(showAudit ? [{ key: "record-board", title: "강사 기록 현황", description: "수업기록 · 회원에게 보낸 말 · 비포애프터 공유", Icon: ClipboardList }] : []),
       ...(showAudit ? [{ key: "phone-check", title: "번호 점검", description: "010 열한 자리가 아닌 회원 찾기", Icon: AlertCircle }] : []),
       ...(showAudit ? [{ key: "audit", title: "감사 로그", description: "이상한 건만 모아 보기 · 전체 이력", Icon: AlertCircle }] : []),
     ] },
@@ -28842,10 +30030,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   /* 만료는 조용히 일어난다. 회원권이 끝나도 알림이 없고, 강사는 그 회원이
      안 온다는 것을 몇 주 뒤에 안다 -- 그때는 늦다. 개인 모드에는 회원권이
      없어 셀 것이 없다. */
-  const expiryItems = inOrganization ? [{ key: "expiry", title: "만료 회원", description: "이번 달 · 지난달 · 재등록률", Icon: Users }] : [];
   /* 공지는 **모두가 본다.** 쓰는 사람에게만 보이는 자리에 두면 강사는
      넘긴 공지를 다시 볼 길이 없다 -- 한 번 뜨고 끝나는 창이기 때문이다. */
   const noticeItems = inOrganization ? [{ key: "notices", title: "공지사항", description: "센터에서 알리는 글 · 다시 보기", Icon: Bell }] : [];
+  /* 내가 낸 매출 · 다음 구간까지 · 제출 (2026-11-21). 소속 강사 누구나 -- 자기 장부만. */
+  const salesMineItems = inOrganization && organization.ready && !organization.isLegacy ? [{ key: "sales-mine", title: "이번 달 매출 인센", description: "내가 낸 매출 · 다음 구간까지 · 제출", Icon: ArrowUpRight }] : [];
   const assessmentItem = { key: "assessment", title: "비포애프터 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity };
   /* 이름은 "센터"지만 센터의 설정이 아니다. 이 세 값은 기기에 저장되고 이
      기기의 일정과 레거시 급여 추정에만 쓰인다 -- 소속 센터의 이름도 단가도
@@ -28891,7 +30080,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   const ownerLayout = inOrganization && isOwnerLevelRole(organization.role);
   const menuGroups = ownerLayout ? [
     ...centreGroups.filter((group) => group.label !== "점검" && group.label !== "대표 설정"),
-    { label: "업무", items: [...expiryItems, ...noticeItems] },
+    { label: "업무", items: [...salesMineItems, ...noticeItems] },
     ...centreGroups.filter((group) => group.label === "대표 설정"),
     { label: "내 설정", items: [...centerItems, themeItem, dataItem, backupItem] },
     { label: "계정 · 앱", items: [accountItem, permissionsItem, appItem] },
@@ -28900,7 +30089,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       hint: "강사 계정에서 보이는 항목입니다. 대표 업무에는 필요 없어 접어 두었어요.",
       items: [scheduleItem, recordsItem, reportItem, assessmentItem, scheduleColorsItem, onboardingItem, lessonExamplesItem, knowledgeItem] },
   ].filter((group) => group.items.length > 0) : [
-    { label: "업무", items: [scheduleItem, recordsItem, reportItem, ...(showRatings ? [ratingsItem] : []), ...expiryItems, ...noticeItems] },
+    { label: "업무", items: [scheduleItem, recordsItem, reportItem, ...salesMineItems, ...(showRatings ? [ratingsItem] : []), ...expiryItems, ...noticeItems] },
     ...centreGroups,
     { label: "내 설정", items: [assessmentItem, ...centerItems, scheduleColorsItem, themeItem, dataItem, backupItem] },
     { label: "기타", items: [onboardingItem, permissionsItem, lessonExamplesItem, knowledgeItem, accountItem, appItem] },
@@ -28934,6 +30123,86 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       setBusy(false);
     }
   };
+  /* ── PC 두 칸 ─────────────────────────────────────────────────────────
+     대표 · 총괄만. 화면을 골라도 왼쪽 메뉴가 그대로 남아, 다른 현황판으로 옮길 때 뒤로 나오지 않는다.
+     폰 · 좁은 창 · 강사 · FC 는 지금처럼 한 칸 (메뉴를 누르면 화면이 바뀜). */
+  const wideHub = wideScreen && ownerLayout;
+  const menuNav = (
+    <nav aria-label="더보기 메뉴" className="space-y-3" data-wide-nav>
+      {menuGroups.map((group) => (
+        <section key={group.label}>
+          {group.collapsible ? (
+            <button type="button" onClick={() => toggleMenuGroup(group.label)} aria-expanded={openMenuGroups[group.label] === true}
+              className="flex w-full items-center gap-1.5" style={{ padding: "0 8px", minHeight: 26 }}>
+              <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>{group.label}</span>
+              <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: FAINT }}>{group.items.length}</span>
+              <ChevronDown size={13} style={{ color: SUB, marginLeft: "auto", transform: openMenuGroups[group.label] ? "rotate(180deg)" : "none" }} />
+            </button>
+          ) : (
+            <h2 style={{ padding: "0 8px", fontSize: TYPE.caption, fontWeight: 700, color: SUB, minHeight: 26, display: "flex", alignItems: "center" }}>{group.label}</h2>
+          )}
+          {group.collapsible && openMenuGroups[group.label] !== true ? null : (
+            <div className="mt-0.5 space-y-0.5">
+              {group.items.map((item) => {
+                const Icon = item.Icon;
+                const active = view === item.key;
+                return (
+                  <button key={item.key} type="button" onClick={() => openMenu(item)} aria-current={active ? "page" : undefined} data-wide-nav-item={item.key}
+                    className="flex w-full items-center gap-2 text-left" title={item.description}
+                    style={{ minHeight: 36, padding: "6px 8px", borderRadius: 8, backgroundColor: active ? TINT : "transparent", color: active ? BRAND_D : INK }}>
+                    <Icon size={15} strokeWidth={1.8} style={{ color: active ? BRAND_D : SUB, flexShrink: 0 }} />
+                    <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, fontWeight: active ? 700 : 500 }}>{item.title}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      ))}
+    </nav>
+  );
+  const wideShell = (content) => (
+    <div className="flex h-full min-h-0" style={{ backgroundColor: PAGE }} data-wide-centre>
+      <aside className="pt-scroll min-h-0 shrink-0 overflow-y-auto" style={{ width: 248, padding: "12px 8px 20px", backgroundColor: CARD, borderRight: `1px solid ${LINE}` }}>
+        <p style={{ padding: "4px 8px 10px", fontSize: TYPE.title, fontWeight: 600, color: INK }}>더보기</p>
+        {menuNav}
+      </aside>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">{content}</div>
+    </div>
+  );
+  if (view === "hub" && wideHub) {
+    const boardItems = menuGroups.find((group) => group.label === "현황판")?.items || [];
+    return wideShell(
+      <main className="pt-scroll min-h-0 flex-1 overflow-y-auto" style={{ padding: "20px 24px" }} data-wide-hub>
+        {organizationUnknown ? (
+          <section className="mb-4" style={{ backgroundColor: WARN_S, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }}>
+            <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>소속 정보를 불러오지 못했습니다</h2>
+            <button type="button" onClick={() => onRetryOrganization?.()} className="mt-3 h-11 px-4 font-bold"
+              style={{ borderRadius: 10, backgroundColor: CARD, color: INK, fontSize: TYPE.caption, border: `1px solid ${LINE}` }}>다시 시도</button>
+          </section>
+        ) : null}
+        <h1 style={{ fontSize: TYPE.title, fontWeight: 600, color: INK }}>센터 운영</h1>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>왼쪽 메뉴에서 볼 화면을 고르세요. 화면을 열어도 메뉴는 그대로 남아요.</p>
+        {boardItems.length ? (
+          <div className="mt-4 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+            {boardItems.map((item) => {
+              const Icon = item.Icon;
+              return (
+                <button key={item.key} type="button" onClick={() => openMenu(item)} className="flex items-start gap-3 text-left" data-wide-hub-card={item.key}
+                  style={{ padding: 14, borderRadius: 12, border: `1px solid ${LINE}`, backgroundColor: CARD }}>
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center" style={{ borderRadius: 10, backgroundColor: TINT, color: BRAND }}><Icon size={17} strokeWidth={1.8} /></span>
+                  <span className="min-w-0">
+                    <span className="block" style={{ fontSize: TYPE.body, fontWeight: 650, color: INK }}>{item.title}</span>
+                    <span className="mt-0.5 block" style={{ fontSize: TYPE.caption, lineHeight: 1.35, color: SUB }}>{item.description}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </main>,
+    );
+  }
   if (view === "hub") return (
     <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
       <header className="flex shrink-0 items-center" style={{ height: 52, padding: "0 14px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
@@ -29001,7 +30270,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       </main>
     </div>
   );
-  return (
+  const detailPage = (
     <div className="flex h-full min-h-0 flex-col" style={{ backgroundColor: PAGE }}>
       <header className="flex shrink-0 items-center gap-1" style={{ height: 52, padding: "0 8px", backgroundColor: CARD, borderBottom: `1px solid ${LINE}` }}>
         <button type="button" onClick={() => setView(view === "account-delete" ? "account" : "hub")} className="flex h-10 w-10 items-center justify-center" aria-label="이전 화면으로 돌아가기" style={{ color: INK2 }}><ArrowLeft size={18} /></button>
@@ -29367,11 +30636,17 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
           <RenewalRadarScreen organization={organization} instructorStore={instructorStore} clientStore={clientStore} passStore={passStore}
             onOpenClient={(client) => onOpenClient?.({ id: client.id, name: client.name })} />
         )}
+        {view === "sales-mine" && salesMineItems.length > 0 && (
+          <MySalesScreen organization={organization} currentUserId={account?.id || ""} passStore={passStore} clientStore={clientStore} />
+        )}
+        {view === "sales-board" && showSalesBoard && (
+          <SalesBoardScreen organization={organization} currentUserId={account?.id || ""} instructorStore={instructorStore} passStore={passStore} clientStore={clientStore} />
+        )}
         {view === "record-board" && showAudit && (
-          <div>
-            <InstructorRecordBoard organization={organization} instructorStore={instructorStore} clientStore={clientStore} />
-            <BeforeAfterShareBoard organization={organization} instructorStore={instructorStore} clientStore={clientStore} passStore={passStore} />
-          </div>
+          <InstructorRecordBoard organization={organization} instructorStore={instructorStore} clientStore={clientStore} />
+        )}
+        {view === "before-after-board" && showAudit && (
+          <BeforeAfterShareBoard organization={organization} instructorStore={instructorStore} clientStore={clientStore} passStore={passStore} />
         )}
         {view === "phone-check" && showAudit && (
           <ClientPhoneCheck organization={organization}
@@ -29574,6 +30849,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       </main>
     </div>
   );
+  return wideHub ? wideShell(detailPage) : detailPage;
 }
 
 /* 검증용 fixture — 하루에 5개 유형과 기구 0/1/2/3개 이상이 한 화면에 모두 들어간다. */
@@ -30516,6 +31792,9 @@ export function createAppScreenSmokeCases() {
     /* 접는 묶음을 펼친 화면. 접힌 상태로는 그 항목이 한 번도 그려지지 않아,
        "대표에게만 보인다" 를 확인할 자리가 없다. */
     { name: "더보기 탭 · 묶음 펼침", element: settingsTab(smokeOwner, { initialOpenGroups: ALL_MENU_GROUPS_OPEN }) },
+    /* PC 두 칸 (2026-11-21 "현황판 웹 배치안" 1단계): 메뉴 | 화면. 화면을 골라도 메뉴가 남는다. */
+    { name: "더보기 탭 · PC", element: settingsTab(smokeOwner, { wideLayout: true }) },
+    { name: "더보기 탭 · PC · 화면 고름", element: settingsTab(smokeOwner, { wideLayout: true, initialView: "payroll" }) },
     /* 강사 이름 확정. 되돌리는 문이 없으므로 **무엇이 굳는지**가 누르기 전에
        화면에 있어야 한다 -- 이미 되돌아간 이름이 섞여 있으면 그것이 굳는다. */
     { name: "더보기 탭 · 강사 이름 확정", element: settingsTab(smokeOwner, {
@@ -31434,41 +32713,124 @@ export function createAppScreenSmokeCases() {
     { name: "재등록 레이더", element: providerWith(smokeOwner, (
       <RenewalRadarScreen organization={readyOrganizationContext(smokeOwner)} onOpenClient={noop}
         initialState={{
-          error: "", candidatesEmpty: false, activityMonth: "2026-11", open: ["u1", "u2"],
-          warnings: ["비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 (코드 permission-denied)"],
-          rows: renewalRadar({
-            now: new Date(2026, 10, 21, 12),
-            clients: [
-              { id: "r1", name: "김하나", userId: "m1", instructorIds: ["u1"] },
-              { id: "r2", name: "이두리", instructorIds: ["u1"] },
-              { id: "r3", name: "박세나", instructorIds: ["u2"] },
-            ],
-            passes: [
-              { id: "rp1", clientId: "r1", instructorId: "u1", status: "active", remainingCount: 1, totalSessions: 30, createdAt: new Date(2026, 3, 1), expiresAt: new Date(2026, 11, 30) },
-              { id: "rp2", clientId: "r2", instructorId: "u1", status: "active", remainingCount: 6, totalSessions: 20, createdAt: new Date(2026, 6, 1), expiresAt: new Date(2026, 11, 2) },
-              { id: "rp3", clientId: "r3", instructorId: "u2", status: "active", remainingCount: 3, totalSessions: 10, createdAt: new Date(2026, 8, 1), expiresAt: new Date(2027, 1, 1) },
-            ],
-            ledger: [
-              { id: "d1", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 1) },
-              { id: "d2", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 8) },
-              { id: "d3", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 15) },
-              { id: "d4", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 10, 1) },
-              { id: "d5", type: "deduct", passId: "rp3", clientId: "r3", occurredAt: new Date(2026, 10, 18) },
-            ],
-            lessonNotes: [{ clientId: "r3", memberNote: "좋았어요", createdAt: new Date(2026, 10, 18) }],
-            /* 비포애프터를 못 읽은 경우 -- 위 안내와 짝. 그 신호는 회원 줄에 나오지 않아야 한다. */
-            shares: null,
-            activities: [{ userId: "u1", month: "2026-11", attended: 40, recorded: 31, checkedAt: new Date(2026, 10, 20) }],
-            activityMonth: "2026-11",
-            candidates: [
+          open: "u1",
+          data: {
+            core: {
+              now: new Date(2026, 10, 21, 12).getTime(), activityMonth: "2026-11",
+              clients: [
+                { id: "r1", name: "김하나", userId: "m1", instructorIds: ["u1"] },
+                { id: "r2", name: "이두리", instructorIds: ["u1"] },
+                { id: "r3", name: "박세나", instructorIds: ["u2"] },
+              ],
+              passes: [
+                { id: "rp1", clientId: "r1", instructorId: "u1", status: "active", remainingCount: 1, totalSessions: 30, createdAt: new Date(2026, 3, 1), expiresAt: new Date(2026, 11, 30) },
+                { id: "rp2", clientId: "r2", instructorId: "u1", status: "active", remainingCount: 6, totalSessions: 20, createdAt: new Date(2026, 6, 1), expiresAt: new Date(2026, 11, 2) },
+                { id: "rp3", clientId: "r3", instructorId: "u2", status: "active", remainingCount: 3, totalSessions: 10, createdAt: new Date(2026, 8, 1), expiresAt: new Date(2027, 1, 1) },
+              ],
+              ledger: [
+                { id: "d1", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 1) },
+                { id: "d2", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 8) },
+                { id: "d3", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 15) },
+                { id: "d4", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 10, 1) },
+                { id: "d5", type: "deduct", passId: "rp3", clientId: "r3", occurredAt: new Date(2026, 10, 18) },
+              ],
+            },
+            coreError: "",
+            notes: { items: [{ clientId: "r3", memberNote: "좋았어요", createdAt: new Date(2026, 10, 18) }], failed: false, errorCode: "" },
+            /* 비포애프터를 못 읽은 경우 -- 그 신호는 회원 줄에 나오지 않고 안내만 선다. */
+            shares: { rows: null, errorCode: "permission-denied" },
+            activities: { items: [{ userId: "u1", month: "2026-11", attended: 40, recorded: 31, checkedAt: new Date(2026, 10, 20) }], failed: false, errorCode: "" },
+            candidates: { rows: [
               { instructorId: "u1", status: "renewed", decidedAt: new Date(2026, 9, 10) },
               { instructorId: "u1", status: "lapsed", decidedAt: new Date(2026, 9, 20) },
               { instructorId: "u2", status: "pending" },
-            ],
-            instructors: smokeInstructors,
-          }),
+            ], errorCode: "" },
+            members: { items: smokeInstructors, failed: false, errorCode: "" },
+            locations: { items: [{ id: "bansong", name: "반송" }], failed: false, errorCode: "" },
+          },
         }} />
     )) },
+    /* 같은 숫자를 PC 배치로: 강사 표 + 오른쪽 상세 칸. */
+    { name: "재등록 레이더 · PC", element: providerWith(smokeOwner, (
+      <RenewalRadarScreen organization={readyOrganizationContext(smokeOwner)} onOpenClient={noop}
+        initialState={{
+          open: "u1", wide: true,
+          data: {
+            core: {
+              now: new Date(2026, 10, 21, 12).getTime(), activityMonth: "2026-11",
+              clients: [
+                { id: "r1", name: "김하나", userId: "m1", instructorIds: ["u1"] },
+                { id: "r2", name: "이두리", instructorIds: ["u1"] },
+                { id: "r3", name: "박세나", instructorIds: ["u2"] },
+              ],
+              passes: [
+                { id: "rp1", clientId: "r1", instructorId: "u1", status: "active", remainingCount: 1, totalSessions: 30, createdAt: new Date(2026, 3, 1), expiresAt: new Date(2026, 11, 30) },
+                { id: "rp2", clientId: "r2", instructorId: "u1", status: "active", remainingCount: 6, totalSessions: 20, createdAt: new Date(2026, 6, 1), expiresAt: new Date(2026, 11, 2) },
+                { id: "rp3", clientId: "r3", instructorId: "u2", status: "active", remainingCount: 3, totalSessions: 10, createdAt: new Date(2026, 8, 1), expiresAt: new Date(2027, 1, 1) },
+              ],
+              ledger: [
+                { id: "d1", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 1) },
+                { id: "d2", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 8) },
+                { id: "d3", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 15) },
+                { id: "d4", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 10, 1) },
+                { id: "d5", type: "deduct", passId: "rp3", clientId: "r3", occurredAt: new Date(2026, 10, 18) },
+              ],
+            },
+            coreError: "",
+            notes: { items: [{ clientId: "r3", memberNote: "좋았어요", createdAt: new Date(2026, 10, 18) }], failed: false, errorCode: "" },
+            /* 비포애프터를 못 읽은 경우 -- 그 신호는 회원 줄에 나오지 않고 안내만 선다. */
+            shares: { rows: null, errorCode: "permission-denied" },
+            activities: { items: [{ userId: "u1", month: "2026-11", attended: 40, recorded: 31, checkedAt: new Date(2026, 10, 20) }], failed: false, errorCode: "" },
+            candidates: { rows: [
+              { instructorId: "u1", status: "renewed", decidedAt: new Date(2026, 9, 10) },
+              { instructorId: "u1", status: "lapsed", decidedAt: new Date(2026, 9, 20) },
+              { instructorId: "u2", status: "pending" },
+            ], errorCode: "" },
+            members: { items: smokeInstructors, failed: false, errorCode: "" },
+            locations: { items: [{ id: "bansong", name: "반송" }], failed: false, errorCode: "" },
+          },
+        }} />
+    )) },
+    /* 매출 인센 (2026-11-21 2단계). 강사: 내 장부 · 응원 · 후보 · 어긋난 줄 / FC · 대표: 두 장부 대조 · 확정 버튼 · 알림 문구. */
+    ...(() => {
+      const month = "2026-11";
+      const at = new Date(2026, 10, 5, 10);
+      const passes = [
+        { id: "sp1", clientId: "r1", instructorId: "u1", contractPrice: 1320000, paymentMethod: "card", status: "active" },
+        { id: "sp2", clientId: "r2", instructorId: "u1", contractPrice: 3300000, paymentMethod: "card", status: "active" },
+      ];
+      const records = salesRecordsOf({ passes, month, ledger: [
+        { id: "sp1_issue", type: "issue", passId: "sp1", clientId: "r1", occurredAt: at },
+        { id: "sp2_issue", type: "issue", passId: "sp2", clientId: "r2", occurredAt: at },
+      ] });
+      const clients = [{ id: "r1", name: "김하나" }, { id: "r2", name: "이두리" }];
+      const line = (id, side, extra = {}) => ({ id, side, instructorId: "u1", month, paidOn: "2026-11-05", kind: "repurchase", amount: 1200000, share: 1, ot: false,
+        clientId: "r1", memberLabel: "", productLabel: "1:1 20회", recordId: "sp1_issue", passId: "sp1", refundOfMonth: "", ...extra });
+      const entries = [
+        line("e1", "instructor"),
+        line("e2", "instructor", { kind: "group", amount: 900000, clientId: "", memberLabel: "박그룹 회원", recordId: "", passId: "", updatedAt: new Date(2026, 10, 12) }),
+        line("o1", "office"),
+        line("o2", "office", { kind: "group", amount: 800000, clientId: "", memberLabel: "박그룹", recordId: "", passId: "" }),
+      ];
+      /* 11월 10일에 제출하고, 12일에 그룹 줄을 고쳤다 -- "제출 뒤 고침". */
+      const monthDoc = { status: "submitted", submittedAt: new Date("2026-11-10T00:30:00Z"), submittedSummary: { lines: 2, total: 1200000, groupBase: 800000, payout: 54000, entryIds: ["e1", "e2"] }, lastCheck: { differs: 1, instructorOnly: 0, officeOnly: 0, instructorEntryIds: ["e2"], officeEntryIds: ["o2"] } };
+      /* FC 복지 수업: 반송 담당 u1 이 진행 3회 · 캔슬 1회를 제출했다. */
+      const designation = { branches: { bansong: "u1" }, instructorIds: ["u1"] };
+      const fc = { designation, monthDoc: { status: "submitted", done: 3, cancel: 1 } };
+      return [
+        { name: "매출 인센 · 강사", element: providerWith(smokeInstructorOrg, (
+          <MySalesScreen organization={readyOrganizationContext(smokeInstructorOrg)} currentUserId="u1"
+            initialState={{ month, fc, data: { entries: entries.filter((item) => item.side === "instructor"), prior: [], monthDoc, records, clients, warning: "" } }} />
+        )) },
+        { name: "매출 인센 · FC · PC", element: providerWith(smokeManagerOrg, (
+          <SalesBoardScreen organization={readyOrganizationContext(smokeManagerOrg)} currentUserId="smoke-fc" onConfirm={asyncNoop}
+            initialState={{ month, wide: true, selected: "u1", fcByInstructor: { u1: fc }, designation, data: {
+              teachers: smokeInstructors, locations: [{ id: "bansong", name: "반송" }],
+              entriesByInstructor: new Map([["u1", entries]]), monthsByInstructor: new Map([["u1", monthDoc]]), records, clients, warning: "",
+            } }} />
+        )) },
+      ];
+    })(),
     /* 담당 강사. 셋을 나눈다 -- 정상, 빠진 회원이 있음, 아직 안 돌았음.
        셋 다 "재계산을 누른다" 로 끝나지만 대표가 읽는 뜻이 다르다. */
     { name: "담당 강사", element: providerWith(smokeOwner, (
@@ -31550,6 +32912,14 @@ export function createAppScreenSmokeCases() {
       })]),
       issuers: smokeInstructors, locations: smokeLocations, clients: smokeClients, products: smokeProducts,
     }) },
+    { name: "발급 내역 · PC", element: issueReport(smokeOwner, {
+      wide: true,
+      summary: smokeIssueSummary([smokeIssueRow(), smokeIssueRow({
+        entryId: "e-2", passId: "pass-2", clientId: "smoke-client-c",
+        category: "pt_1_1_repurchase_event", contractPrice: 900000, isNew: false,
+      })]),
+      issuers: smokeInstructors, locations: smokeLocations, clients: smokeClients, products: smokeProducts,
+    }) },
     /* 취소는 줄을 긋고 합계에서 뺀다. 지우지 않는 이유는 대표가 "분명 팔았는데"
        를 찾게 되기 때문이다. */
     { name: "발급 내역 · 취소 · 이관 제외", element: issueReport(smokeOwner, {
@@ -31590,6 +32960,13 @@ export function createAppScreenSmokeCases() {
     }) },
     { name: "급여 집계 · 두 지점", element: payrollSummary(smokeOwner, {
       ...smokePayrollNames,
+      summary: smokePayrollOf(smokePayrollEntries.map((entry) => (
+        entry.instructorId === "u2" ? { ...entry, locationId: "centum" } : entry
+      ))),
+    }) },
+    /* PC 배치 (2026-11-21 현황판 웹 배치안 2단계): 지점 칩 · 강사 표 · 오른쪽 상세. */
+    { name: "급여 집계 · 두 지점 · PC", element: payrollSummary(smokeOwner, {
+      ...smokePayrollNames, wide: true,
       summary: smokePayrollOf(smokePayrollEntries.map((entry) => (
         entry.instructorId === "u2" ? { ...entry, locationId: "centum" } : entry
       ))),
@@ -32266,6 +33643,14 @@ export default function App() {
   const [scheduleOpenLessonId, setScheduleOpenLessonId] = useState(null);
   const [demoMode, setDemoMode] = useState(false);
   const [mobileView, setMobileView] = useState("list");
+  /* 누름 반응 시간 (2026-11-21 대표: "눌렀을 때 반응이 0.5초 느림"). 느린 누름만 진단에 남긴다 -- 손 뗌 → 누름 대기와
+     누름 → 그림을 따로. 누른 것의 글자는 남기지 않는다 (features/ui/tap-latency.js). */
+  useEffect(() => installTapLatencyProbe({
+    report: ({ target, tapDelayMs, renderMs }) => deviceLog("ui_tap_slow", {
+      feature: "ui_latency", stage: target, tapDelayMs, renderMs,
+      appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+    }),
+  }), []);
   const briefing = false;
   const [savedAt, setSavedAt] = useState(null);
   const [cloudBackupStatus, setCloudBackupStatus] = useState({ state: "idle", counts: {}, pendingPhotos: 0, localPhotoCount: 0, storageUsage: {}, photoEnabled: false, lastBackupAt: null });
@@ -33652,7 +35037,9 @@ export default function App() {
      고른 지점을 듣는다. 대표 · 총괄의 "전체" 칩은 듣지 않는다 (1단계가 맡는다). */
   /* 강사 알림함 (2026-11-07). 회원 앱 취소가 켜진 강사만 듣는다 -- 알림이 올 일이 없는 계정에
      듣기를 열지 않는다. 규칙이 아직 안 나갔으면 permission-denied 로 끝나고 띠가 코드를 말한다. */
-  const inboxOn = Boolean(organizationRoster) && Boolean(account?.id) && memberCancelEnabledFor(scheduleSyncConfig, account?.id);
+  /* 2026-11-21: 대표 · 총괄도 듣는다 -- FC 의 매출 인센 확정 · 회원권 발급 알림이 대표 알림함으로 온다 (서버 confirmSalesMonth · notifyOwnerOnFcIssue). */
+  const inboxOn = Boolean(organizationRoster) && Boolean(account?.id)
+    && (memberCancelEnabledFor(scheduleSyncConfig, account?.id) || isOwnerLevelRole(organizationContext.role));
   const [inboxItems, setInboxItems] = useState([]);
   const [inboxError, setInboxError] = useState(null);
   useEffect(() => {
@@ -36668,7 +38055,7 @@ export default function App() {
                   onSaveMarks={(view, photoId, marks, options) => saveMarks(id, view, photoId, marks, options)} onSaveAssessmentRole={(assessmentId, role) => saveAssessmentRole(id, assessmentId, role)} onToggleAssessmentFavorite={(assessmentId, favorite) => toggleAssessmentFavorite(id, assessmentId, favorite)}
                   onToast={setToast} onSaved={(mode) => setAnalysisDone({ id, mode })} /></Guard>;
               }} />}
-            {tab === "settings" && <ReferenceSettingsTab syncStatus={syncStatus} key={`settings-${settingsEntry.key}`} initialView={settingsEntry.view} onRosterChanged={() => setRosterRevision((value) => value + 1)} dataRevision={rosterRevision} db={db} photos={Object.fromEntries(Object.entries(photos).filter(([id]) => allowedPhotoMembers.has(id)))} account={account} savedAt={savedAt} demoMode={demoMode}
+            {tab === "settings" && <ReferenceSettingsTab syncStatus={syncStatus} prefetchRadar key={`settings-${settingsEntry.key}`} initialView={settingsEntry.view} onRosterChanged={() => setRosterRevision((value) => value + 1)} dataRevision={rosterRevision} db={db} photos={Object.fromEntries(Object.entries(photos).filter(([id]) => allowedPhotoMembers.has(id)))} account={account} savedAt={savedAt} demoMode={demoMode}
               instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError}
               currentUserId={account?.id || ""} rosterClients={rosterClients} rosterPasses={rosterPasses}
               onOpenPay={canSeeOwnPay ? () => setPayOpen(true) : undefined} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}

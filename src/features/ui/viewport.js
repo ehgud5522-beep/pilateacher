@@ -69,3 +69,46 @@ export function useNarrowViewport(initial = undefined) {
 
   return narrow;
 }
+
+/* ── 넓은 화면 (2026-11-21 대표 승인 "현황판 웹 배치안" 1단계) ──
+   PC 에서 센터 운영을 메뉴 | 화면 두 칸으로, 현황판을 강사 표 + 오른쪽 상세 칸으로 그리는 경계.
+   **SSR 에서는 좁은 쪽(false)** 이 기본이다 -- 위의 useNarrowViewport 와 반대다. 스모크 테스트가 그리는
+   화면은 지금까지의 한 칸 배치 그대로여야 하고, 브라우저에서는 첫 그림부터 matchMedia 를 읽으므로 깜빡이지 않는다. */
+export const WIDE_MIN_WIDTH = 1024;
+
+/** 이 폭이 넓은가. */
+export function isWideWidth(width) {
+  const value = Number(width);
+  return Number.isFinite(value) && value >= WIDE_MIN_WIDTH;
+}
+
+const wideQuery = `(min-width: ${WIDE_MIN_WIDTH}px)`;
+
+function readWide() {
+  if (typeof window === "undefined") return false;
+  try {
+    if (window.matchMedia) return window.matchMedia(wideQuery).matches === true;
+  } catch { /* 옛 WebView. 아래 innerWidth 로 떨어진다. */ }
+  return isWideWidth(window.innerWidth);
+}
+
+/** 폭이 넓어지거나 좁아지면 다시 그린다. initial 을 주면 그 값에 못 박는다 (견본 화면 · 테스트). */
+export function useWideViewport(initial = undefined) {
+  const [wide, setWide] = useState(() => (typeof initial === "boolean" ? initial : readWide()));
+  useEffect(() => {
+    if (typeof initial === "boolean") return undefined;
+    if (typeof window === "undefined") return undefined;
+    let media = null;
+    try { media = window.matchMedia ? window.matchMedia(wideQuery) : null; } catch { media = null; }
+    const apply = () => setWide(readWide());
+    apply();
+    if (!media) {
+      window.addEventListener("resize", apply);
+      return () => window.removeEventListener("resize", apply);
+    }
+    if (typeof media.addEventListener !== "function") return undefined;
+    media.addEventListener("change", apply);
+    return () => media.removeEventListener("change", apply);
+  }, [initial]);
+  return wide;
+}

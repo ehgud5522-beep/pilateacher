@@ -149,3 +149,14 @@ test("화면 배선: 메뉴 항목 · 대표 · 총괄 조건 · 코드 표시",
     assert.ok(app.includes(needle), `App.jsx 에 ${needle} 없음`);
   }
 });
+
+test("아직 모르는 것은 신호로 치지 않는다: 보낸 말 · 기록률 (먼저 온 것부터 보여 줄 때)", () => {
+  const rows = renewalRadar({
+    clients: [{ id: "c1", name: "가", instructorIds: ["a"] }],
+    passes: [pass("p1", "c1", { remainingCount: 2 })],
+    ledger: [deduct("p1", "c1", 3)],
+    lessonNotes: null, shares: null, activities: null, candidates: null, now: NOW,
+  });
+  assert.deepEqual(rows[0].members[0].signals, []);
+  assert.deepEqual(rows[0].record, { label: "기록률 확인 중", code: "record_rate_pending", rate: null });
+});

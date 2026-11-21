@@ -860,6 +860,10 @@ export const fbBackfillRenewalCandidates = callableAsOwner("backfillRenewalCandi
 
 /** 재등록 상담 소재 초안 (설계 문서 5단계). 담당 강사 · 대표가 누를 때만. 결과는 저장하지 않는다. */
 export const fbConsultTalkingPoints = callableAsOwner("consultTalkingPoints");
+/** 강사 개인매출 인센 확정 (2026-11-21). 서버가 두 장부(강사 · 사무실)를 다시 맞춰 보고 같을 때만 확정한다. FC(맡은 지점) · 대표 · 총괄. */
+export const fbConfirmSalesMonth = callableAsOwner("confirmSalesMonth");
+/** 강사 FC 복지 수업료 확정 (2026-11-21). 서버가 지정 강사 · FC 별 8회 · 받은 FC 본인 확정 금지를 다시 본다. */
+export const fbConfirmFcLessonMonth = callableAsOwner("confirmFcLessonMonth");
 
 /* 공지 쓰기 · 고치기 · 지우기. 대표 · 총괄매니저 (총괄매니저는 자기 공지만) --
    역할은 서버가 다시 읽는다. functions/src/notice-admin.js 머리말에 근거가 있다. */

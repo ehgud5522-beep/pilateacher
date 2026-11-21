@@ -147,8 +147,13 @@ async function writeMonth(organizationId, instructorId, month, fields, uid) {
   });
 }
 
-/** 강사(또는 대신 넣는 FC · 대표): 이 달 제출. 확정 전까지 다시 고칠 수 있다. */
-export const submitSalesMonth = (organizationId, instructorId, month, { uid }) => writeMonth(organizationId, instructorId, month, { status: "submitted", submittedAt: "now" }, uid);
+/**
+ * 강사: 이 달 제출. 확정 전까지 다시 고치고 다시 제출할 수 있다.
+ * summary = 제출한 순간의 줄 수 · 합계 · 줄 id (sales-board.js submittedSummaryOf) -- 제출 뒤 고친 줄을 가려 보이는 기준.
+ */
+export const submitSalesMonth = (organizationId, instructorId, month, { uid }, summary = null) => writeMonth(organizationId, instructorId, month, {
+  status: "submitted", submittedAt: "now", ...(summary ? { submittedSummary: summary } : {}),
+}, uid);
 
 /** FC · 대표 · 총괄: 확정 되돌림. 사유 필수 (규칙도 막는다). */
 export const reopenSalesMonth = (organizationId, instructorId, month, reason, { uid }) => writeMonth(organizationId, instructorId, month, {

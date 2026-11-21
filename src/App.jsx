@@ -431,6 +431,7 @@ import {
 import { groupRowsByBranch, pickBranch } from "./features/records/branch-groups.js";
 import {
   CONFIRM_NOTICE_HINT, SALES_KIND_CHOICES, blankEntry, confirmFailureText, entryErrors, entryFromSuggestion, entryLine, kstDate, monthStatusView, mySalesView, salesBoardRows,
+  submissionChangeText, submittedSummaryOf,
 } from "./features/sales/sales-board.js";
 import { MATCH_VIEW, PAIR, PAIR_VIEW, SALES_KIND_LABELS, isGroup, matchEntry, salesRecordsOf, suggestionsFor } from "../functions/shared/sales-incentive.mjs";
 import { FC_LESSON_MONTHLY_CAP, FC_LESSON_RATE, fcLessonTotals } from "../functions/shared/fc-lessons.mjs";
@@ -27652,6 +27653,33 @@ function salesStatementTiles(statement) {
   ];
 }
 
+/** 제출 뒤 바뀐 줄 표시 (2026-11-21 대표: "제출 이후에도 다시 수정하거나 어떤 내용을 제출했는지 확인이 돼야 함"). */
+function submissionPill(submission, entry) {
+  const change = submission?.dirty ? submission.changeOf.get(String(entry?.id || "")) : "";
+  if (change === "added") return salesPill("warn", "제출 뒤 추가");
+  if (change === "edited") return salesPill("warn", "제출 뒤 고침");
+  return null;
+}
+
+/** 강사: 내가 제출한 내용 (제출 시각 · 그때 합계) + 그 뒤에 바뀐 것. */
+function SubmittedSummaryCard({ submission, locked }) {
+  const summary = submission.summary;
+  const changes = submissionChangeText(submission);
+  return (
+    <div className="mt-3 px-3 py-2" style={{ borderRadius: 10, backgroundColor: submission.dirty ? WARN_S : CANVAS, border: submission.dirty ? `1px solid ${WARN}` : "none" }} data-sales-submitted={submission.dirty ? "changed" : "same"}>
+      <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>제출한 내용 · {submission.label}</p>
+      {summary ? (
+        <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+          {summary.lines}줄 · 개인 매출 {salesWon(summary.total)} · 그룹 매출 {salesWon(summary.groupBase)} · 지급 예정 {salesWon(summary.payout)}
+        </p>
+      ) : <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>이 제출은 합계를 남기기 전이라 시각만 있어요. 다시 제출하면 합계가 남아요.</p>}
+      {locked ? null : submission.dirty ? (
+        <p className="mt-1 font-bold" style={{ fontSize: TYPE.caption, color: WARN }}>제출한 뒤 바뀌었어요 · {changes}. 다 고쳤으면 [다시 제출]을 눌러 주세요.</p>
+      ) : <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>제출한 뒤 바뀐 줄 없음 · 확정 전까지는 고치고 다시 제출할 수 있어요.</p>}
+    </div>
+  );
+}
+
 /** 강사: 이번 달 매출 인센 (자기 장부). */
 function MySalesScreen({ organization, currentUserId, passStore, clientStore, initialState = null }) {
   const organizationId = organization?.organizationId || "";
@@ -27704,7 +27732,10 @@ function MySalesScreen({ organization, currentUserId, passStore, clientStore, in
   };
   const submit = async () => {
     setBusy(true); setMessage("");
-    try { await submitSalesMonth(organizationId, currentUserId, month, { uid: currentUserId }); setMessage("제출했어요. FC · 대표가 같은 결제를 따로 넣고 맞춰 본 뒤 확정해요."); await load(); }
+    try {
+      await submitSalesMonth(organizationId, currentUserId, month, { uid: currentUserId }, submittedSummaryOf({ entries: data.entries, statement: view.statement }));
+      setMessage("제출했어요. 확정 전까지는 고치고 다시 제출할 수 있어요. FC · 대표가 같은 결제를 따로 넣고 맞춰 본 뒤 확정해요."); await load();
+    }
     catch (thrown) { setMessage(`제출하지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
     finally { setBusy(false); }
   };
@@ -27729,6 +27760,7 @@ function MySalesScreen({ organization, currentUserId, passStore, clientStore, in
             {salesPill(view.status.tone, view.status.label, { "data-sales-status": view.status.code })}
             {view.check ? <span style={{ fontSize: TYPE.caption, color: WARN }}>{view.check.text} (코드 {view.check.code})</span> : null}
           </div>
+          {view.submission.submitted ? <SubmittedSummaryCard submission={view.submission} locked={view.locked} /> : null}
           {data.warning ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{data.warning}</p> : null}
           {message ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: message.startsWith("제출했어요") ? GOOD : WARN }}>{message}</p> : null}
           {draft ? <div className="mt-3"><SalesEntryEditor draft={draft} onChange={setDraft} onSave={save} onCancel={() => setDraft(null)} clients={data.clients} busy={busy} month={month} /></div> : null}
@@ -27750,7 +27782,7 @@ function MySalesScreen({ organization, currentUserId, passStore, clientStore, in
                 <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{title}</p>
                 {list.map((entry) => (
                   <SalesEntryRow key={entry.id} entry={entry} name={nameOf(entry)} flagged={entry.flagged} locked={view.locked}
-                    onEdit={() => setDraft({ ...entry })} onDelete={() => remove(entry)} />
+                    extra={submissionPill(view.submission, entry)} onEdit={() => setDraft({ ...entry })} onDelete={() => remove(entry)} />
                 ))}
                 {!list.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>{empty}</p> : null}
               </div>
@@ -27886,6 +27918,12 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
           {salesPill(row.status.tone, row.status.label)}
         </div>
         <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>강사 장부 {salesWon(row.mineTotal)} ({row.mineCount}줄) · 사무실 장부 {salesWon(row.officeTotal)} ({row.officeCount}줄) · 지급 예정 {salesWon(row.statement.payout)}</p>
+        {row.submission.submitted ? (
+          <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: row.submission.dirty ? WARN : SUB }} data-sales-board-submitted={row.submission.dirty ? "changed" : "same"}>
+            강사 제출 {row.submission.label}{row.submission.summary ? ` · 그때 ${row.submission.summary.lines}줄 · 개인 ${salesWon(row.submission.summary.total)} · 그룹 ${salesWon(row.submission.summary.groupBase)}` : ""}
+            {row.submission.dirty ? ` · 제출 뒤 바뀜: ${submissionChangeText(row.submission)}` : ""}
+          </p>
+        ) : null}
         <div className="space-y-3" data-sales-pairs>
           {[["개인 매출", false], ["그룹 매출 · 0.5% · 개인 인센과 따로", true]].map(([title, group]) => {
             const list = row.pairing.pairs.filter((pair) => isGroup(pair.instructor || pair.office) === group);
@@ -27903,7 +27941,7 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
                   {salesPill(view.tone, view.label)}
                   <span className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{nameOf(source)}</span>
                 </div>
-                {pair.instructor ? <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>강사: {pair.instructor.paidOn} · {entryLine(pair.instructor, SALES_KIND_LABELS)}</p> : null}
+                {pair.instructor ? <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>강사: {pair.instructor.paidOn} · {entryLine(pair.instructor, SALES_KIND_LABELS)} {submissionPill(row.submission, pair.instructor)}</p> : null}
                 {pair.office ? <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>사무실: {pair.office.paidOn} · {entryLine(pair.office, SALES_KIND_LABELS)}</p> : null}
                 {pair.diffs.length ? <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: BAD }}>다른 칸: {pair.diffs.map((item) => item.label).join(" · ")}</p> : null}
                 {evidence ? <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>앱 기록: {evidence.label}</p> : null}
@@ -32770,11 +32808,12 @@ export function createAppScreenSmokeCases() {
         clientId: "r1", memberLabel: "", productLabel: "1:1 20회", recordId: "sp1_issue", passId: "sp1", refundOfMonth: "", ...extra });
       const entries = [
         line("e1", "instructor"),
-        line("e2", "instructor", { kind: "group", amount: 900000, clientId: "", memberLabel: "박그룹 회원", recordId: "", passId: "" }),
+        line("e2", "instructor", { kind: "group", amount: 900000, clientId: "", memberLabel: "박그룹 회원", recordId: "", passId: "", updatedAt: new Date(2026, 10, 12) }),
         line("o1", "office"),
         line("o2", "office", { kind: "group", amount: 800000, clientId: "", memberLabel: "박그룹", recordId: "", passId: "" }),
       ];
-      const monthDoc = { status: "submitted", lastCheck: { differs: 1, instructorOnly: 0, officeOnly: 0, instructorEntryIds: ["e2"], officeEntryIds: ["o2"] } };
+      /* 11월 10일에 제출하고, 12일에 그룹 줄을 고쳤다 -- "제출 뒤 고침". */
+      const monthDoc = { status: "submitted", submittedAt: new Date("2026-11-10T00:30:00Z"), submittedSummary: { lines: 2, total: 1200000, groupBase: 800000, payout: 54000, entryIds: ["e1", "e2"] }, lastCheck: { differs: 1, instructorOnly: 0, officeOnly: 0, instructorEntryIds: ["e2"], officeEntryIds: ["o2"] } };
       /* FC 복지 수업: 반송 담당 u1 이 진행 3회 · 캔슬 1회를 제출했다. */
       const designation = { branches: { bansong: "u1" }, instructorIds: ["u1"] };
       const fc = { designation, monthDoc: { status: "submitted", done: 3, cancel: 1 } };

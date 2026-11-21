@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   CONFIRM_NOTICE_HINT, blankEntry, confirmFailureText, entryErrors, entryFromSuggestion, kstDate, lastCheckLine, monthStatusView, mySalesView, salesBoardRows,
+  kstDateTimeLabel, submissionChangeText, submissionView, submittedSummaryOf,
 } from "../../src/features/sales/sales-board.js";
 import { salesRecordsOf } from "../../functions/shared/sales-incentive.mjs";
 
@@ -100,4 +101,35 @@ test("대표 · 총괄도 알림함을 듣고, 수업 없는 알림은 눌러도
   const { PASS_ISSUED_INBOX_KIND } = await import("../../functions/shared/issue-notice.mjs");
   assert.equal(INBOX_KIND.SALES_CONFIRMED, SALES_CONFIRMED_INBOX_KIND);
   assert.equal(INBOX_KIND.PASS_ISSUED_BY_FC, PASS_ISSUED_INBOX_KIND);
+});
+
+/* 2026-11-21 대표: "강사가 제출 이후에도 다시 수정하거나 어떤 내용을 제출했는지 확인이 돼야 함" */
+test("제출한 내용: 요약을 남기고, 제출 뒤 고친 줄 · 새 줄 · 지운 줄을 가린다", () => {
+  const sentAt = new Date("2026-11-20T05:03:00Z");
+  const before = new Date("2026-11-19T00:00:00Z");
+  const after = new Date("2026-11-21T00:00:00Z");
+  const summary = submittedSummaryOf({ entries: [row("e1", "instructor"), row("e2", "instructor"), row("o1", "office")], statement: { total: 1200000.4, groupBase: 0, payout: 50000 } });
+  assert.deepEqual(summary, { lines: 2, total: 1200000, groupBase: 0, payout: 50000, entryIds: ["e1", "e2"] });
+  const entries = [
+    row("e1", "instructor", { createdAt: before, updatedAt: after }),
+    row("e3", "instructor", { createdAt: after, updatedAt: after }),
+  ];
+  const view = submissionView({ entries, monthDoc: { status: "submitted", submittedAt: sentAt, submittedSummary: summary } });
+  assert.equal(view.submitted, true);
+  assert.equal(view.label, "11월 20일 14:03");
+  assert.equal(view.changeOf.get("e1"), "edited");
+  assert.equal(view.changeOf.get("e3"), "added");
+  assert.equal(view.removed, 1, "e2 를 지웠다");
+  assert.equal(view.dirty, true);
+  assert.equal(submissionChangeText(view), "고친 줄 1개 · 새로 넣은 줄 1개 · 지운 줄 1개");
+  const clean = submissionView({ entries: [row("e1", "instructor", { createdAt: before, updatedAt: before })], monthDoc: { status: "submitted", submittedAt: sentAt, submittedSummary: { ...summary, lines: 1, entryIds: ["e1"] } } });
+  assert.equal(clean.dirty, false);
+  /* 요약이 없는 예전 제출: 시각으로만 가리고 지운 줄은 모른다. 작성 중 · 되돌림은 제출 아님. */
+  const legacy = submissionView({ entries, monthDoc: { status: "submitted", submittedAt: sentAt } });
+  assert.equal(legacy.changeOf.get("e3"), "added");
+  assert.equal(legacy.removed, 0);
+  assert.equal(submissionView({ entries, monthDoc: { status: "reopened" } }).submitted, false);
+  assert.equal(submissionView({ entries, monthDoc: null }).submitted, false);
+  assert.equal(kstDateTimeLabel("nope"), "");
+  assert.equal(mySalesView({ entries, records: [], instructorId: "t1", month: MONTH, monthDoc: { status: "submitted", submittedAt: sentAt, submittedSummary: summary } }).submission.dirty, true);
 });

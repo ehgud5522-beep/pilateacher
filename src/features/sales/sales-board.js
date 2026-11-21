@@ -41,6 +41,60 @@ export function monthStatusView(monthDoc) {
   return { code: "draft", label: "작성 중", tone: "muted" };
 }
 
+/** 제출 시각 → "11월 20일 14:03" (한국 시각). */
+export function kstDateTimeLabel(value) {
+  const at = millisOf(value);
+  if (!Number.isFinite(at)) return "";
+  const kst = new Date(at + KST_MS);
+  return `${kst.getUTCMonth() + 1}월 ${kst.getUTCDate()}일 ${String(kst.getUTCHours()).padStart(2, "0")}:${String(kst.getUTCMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * 제출할 때 남기는 요약 (규칙 salesSubmittedSummaryOk 와 같은 모양).
+ * @param {{ entries: any[], statement: any }} input  entries = 이 달 강사 장부, statement = 화면이 보여 주는 계산
+ */
+export function submittedSummaryOf({ entries, statement }) {
+  const mine = (entries || []).filter((entry) => text(entry.side) === SALES_SIDE.INSTRUCTOR && text(entry.id));
+  const whole = (value) => Math.round(Number(value) || 0);
+  return {
+    lines: mine.length, total: whole(statement?.total), groupBase: whole(statement?.groupBase), payout: whole(statement?.payout),
+    entryIds: mine.map((entry) => text(entry.id)).slice(0, 500),
+  };
+}
+
+/**
+ * 제출한 내용 vs 지금 (2026-11-21 대표: "제출 이후에도 다시 수정하거나 어떤 내용을 제출했는지 확인이 돼야 함").
+ * 제출 뒤 새로 넣은 줄(added) · 고친 줄(edited) · 지운 줄 수(removed). 요약이 없는 예전 제출은 시각으로만 가리고 지운 줄은 모른다.
+ * @param {{ entries: any[], monthDoc: any }} input  entries = 이 달 강사 장부
+ */
+export function submissionView({ entries, monthDoc }) {
+  const status = text(monthDoc?.status);
+  const at = millisOf(monthDoc?.submittedAt);
+  const summary = monthDoc?.submittedSummary && typeof monthDoc.submittedSummary === "object" ? monthDoc.submittedSummary : null;
+  const none = { submitted: false, submittedAt: NaN, label: "", summary: null, changeOf: new Map(), added: 0, edited: 0, removed: 0, dirty: false };
+  if (!["submitted", "confirmed"].includes(status) || !Number.isFinite(at)) return none;
+  const mine = (entries || []).filter((entry) => text(entry.side) === SALES_SIDE.INSTRUCTOR);
+  const sentIds = Array.isArray(summary?.entryIds) ? new Set(summary.entryIds.map(text)) : null;
+  /** @type {Map<string, "added" | "edited">} */
+  const changeOf = new Map();
+  for (const entry of mine) {
+    const id = text(entry.id);
+    const isNew = sentIds ? !sentIds.has(id) : millisOf(entry.createdAt) > at;
+    if (isNew) changeOf.set(id, "added");
+    else if (millisOf(entry.updatedAt) > at) changeOf.set(id, "edited");
+  }
+  const current = new Set(mine.map((entry) => text(entry.id)));
+  const removed = sentIds ? [...sentIds].filter((id) => !current.has(id)).length : 0;
+  const added = [...changeOf.values()].filter((value) => value === "added").length;
+  const edited = changeOf.size - added;
+  return { submitted: true, submittedAt: at, label: kstDateTimeLabel(at), summary, changeOf, added, edited, removed, dirty: status === "submitted" && Boolean(added || edited || removed) };
+}
+
+/** 바뀐 것 → 한 줄 ("고친 줄 1개 · 새로 넣은 줄 1개 · 지운 줄 1개"). */
+export function submissionChangeText(view) {
+  return [view.edited ? `고친 줄 ${view.edited}개` : "", view.added ? `새로 넣은 줄 ${view.added}개` : "", view.removed ? `지운 줄 ${view.removed}개` : ""].filter(Boolean).join(" · ");
+}
+
 /** 서버가 남긴 마지막 대조(lastCheck) → 한 줄. 없으면 null. */
 export function lastCheckLine(monthDoc) {
   const check = monthDoc?.lastCheck;
@@ -107,6 +161,7 @@ export function mySalesView({ entries, priorEntries = [], records, instructorId,
     status: monthStatusView(monthDoc),
     locked: text(monthDoc?.status) === "confirmed",
     check,
+    submission: submissionView({ entries: mine, monthDoc }),
     rows: mine.slice().sort((left, right) => text(right.paidOn).localeCompare(text(left.paidOn))).map((entry) => ({ ...entry, flagged: Boolean(check?.entryIds.has(text(entry.id))) })),
     suggestions: suggestionsFor({ instructorId, records, claims: mine, canonicalInstructorId }),
   };
@@ -142,6 +197,7 @@ export function salesBoardRows({ instructors, entriesByInstructor, monthsByInstr
       statement: text(monthDoc?.status) === "confirmed" && monthDoc?.snapshot ? { ...statement, ...monthDoc.snapshot } : statement,
       /* 자기 매출은 자기가 확정하지 못한다 -- 버튼을 처음부터 잠근다 (서버도 막는다). */
       ownSales: instructorId === text(viewerUid),
+      submission: submissionView({ entries: mine, monthDoc }),
       attention: pairing.pairs.filter((pair) => pair.code !== PAIR.AGREED).length,
     };
   }).filter((row) => row.mineCount || row.officeCount || row.monthDoc || alsoInclude.has(row.instructorId))

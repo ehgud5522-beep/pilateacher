@@ -1893,6 +1893,18 @@ service cloud.firestore {
       function salesMonthString(value) {
         return value is string && value.matches("^[0-9]{4}-[0-9]{2}$");
       }
+      /* 제출한 내용 요약 (2026-11-21 대표: "제출 이후에도 다시 수정하거나 어떤 내용을 제출했는지 확인이 돼야 함").
+         강사가 제출할 때 그 순간의 줄 수 · 합계 · 줄 id 를 남긴다 -- 제출 뒤 고친 줄 · 지운 줄을 가려 보이는 기준. 금액 판정에는 쓰지 않는다. */
+      function salesSubmittedSummaryOk(data) {
+        return !data.keys().hasAny(["submittedSummary"]) || (
+          data.submittedSummary is map
+          && data.submittedSummary.keys().hasAll(["lines", "total", "groupBase", "payout", "entryIds"])
+          && data.submittedSummary.keys().hasOnly(["lines", "total", "groupBase", "payout", "entryIds"])
+          && data.submittedSummary.lines is int && data.submittedSummary.lines >= 0 && data.submittedSummary.lines <= 500
+          && data.submittedSummary.total is number && data.submittedSummary.groupBase is number && data.submittedSummary.payout is number
+          && data.submittedSummary.entryIds is list && data.submittedSummary.entryIds.size() <= 500
+        );
+      }
       function salesShortText(value, max) {
         return value is string && value.size() <= max;
       }
@@ -1954,7 +1966,7 @@ service cloud.firestore {
         /* 앱이 쓰는 것은 둘뿐: 강사 제출, 확정한 쪽의 되돌림. 확정(confirmed)은 서버 함수만. lastCheck 는 서버가 남긴다. */
         allow create, update: if request.resource.data.keys().hasOnly([
               "organizationId", "instructorId", "month", "status", "updatedBy", "updatedAt",
-              "submittedAt", "confirmedBy", "confirmedAt", "snapshot", "reopenReason", "lastCheck"
+              "submittedAt", "confirmedBy", "confirmedAt", "snapshot", "reopenReason", "lastCheck", "submittedSummary"
             ])
           && request.resource.data.organizationId == organizationId
           && request.resource.data.instructorId is string
@@ -1967,8 +1979,10 @@ service cloud.firestore {
             (request.resource.data.status == "submitted"
               && salesOwnBook(organizationId, request.resource.data.instructorId)
               && (resource == null || resource.data.status != "confirmed")
-              && request.resource.data.submittedAt == request.time)
+              && request.resource.data.submittedAt == request.time
+              && salesSubmittedSummaryOk(request.resource.data))
             || (request.resource.data.status == "reopened"
+              && !request.resource.data.keys().hasAny(["submittedSummary"])
               && salesOffice(organizationId, request.resource.data.instructorId)
               && resource != null && resource.data.status == "confirmed"
               && request.resource.data.reopenReason is string

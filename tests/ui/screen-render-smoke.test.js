@@ -3377,6 +3377,13 @@ test("매출 인센: 강사는 응원 · 후보 · 어긋난 줄, FC 는 두 장
   assert.doesNotMatch(mine, /수업을 받은 FC/, "누구에게 했는지는 받지 않는다");
   assert.match(board, /data-sales-section="group"/);
   assert.match(board, /data-fc-board="u1"/);
+  /* 2026-11-21 대표: 제출 뒤에도 고치고, 무엇을 제출했는지 보인다 */
+  assert.match(mine, /data-sales-submitted="changed"/);
+  assert.match(mine, /제출한 내용 · 11월 10일 09:30/);
+  assert.match(mine, /제출 뒤 고침/);
+  assert.match(mine, /고친 줄 1개/);
+  assert.match(board, /data-sales-board-submitted="changed"/);
+  assert.match(board, /강사 제출 11월 10일 09:30/);
   assert.match(board, /FC 수업료 확정 · 90,000원/);
   assert.doesNotMatch(board, /data-fc-designation/, "지정 강사 편집은 대표 · 총괄만 -- 이 견본은 FC");
 });

@@ -424,6 +424,9 @@ import {
 } from "./features/records/record-activity.js";
 import { beforeAfterBoard, shareInstructorView, shareMemberLabel } from "./features/records/before-after-board.js";
 import { beforeAfterNudge, lastSentAtOf, recordNudge } from "./features/records/record-nudges.js";
+import {
+  RADAR_EXPIRY_DAYS, RADAR_REMAINING_MAX, RATE_WINDOW_DAYS, radarPassLabel, radarSignalLabel, radarSummary, renewalRadar, renewalRateLabel,
+} from "./features/records/renewal-radar.js";
 import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
 import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js";
 import { RENEWAL_ALERT, livePassesOf, renewalForecast, renewalLine, renewalRates } from "../functions/shared/renewal-forecast.mjs";
@@ -26959,6 +26962,160 @@ function BeforeAfterShareBoard({ organization, instructorStore, clientStore, pas
 }
 
 /**
+ * 재등록 레이더 (2026-11-21 대표). 회원권이 곧 끝나는 회원을 강사별로, 위험 신호가 많은 회원을 위로.
+ *
+ * 강사는 이 화면을 보지 않고, 새로 할 일도 없다 -- 신호는 출석 확정 · 회원에게 보낸 말 · 비포애프터 카드에서
+ * 저절로 나온다 (대표: "강사들이 하는 일이 많아지면 안 됨"). 판정 · 문구는 features/records/renewal-radar.js.
+ * 대표 · 총괄만 (원장 전체 · 비포애프터 집계 · 기록 숫자가 모두 그 선이다).
+ */
+const RADAR_TONE = { urgent: () => BAD, risk: () => WARN, calm: () => SUB };
+const RADAR_TONE_BG = { urgent: () => BAD_S, risk: () => WARN_S, calm: () => CANVAS };
+const RADAR_LEDGER_DAYS = 56;
+const RADAR_NOTES_DAYS = 45;
+
+function RenewalRadarScreen({ organization, instructorStore, clientStore, passStore, onOpenClient, onLoadShares = fbBeforeAfterShareStats, initialState = null }) {
+  const [state, setState] = useState(() => initialState || { rows: null, error: "", warnings: [], candidatesEmpty: false, activityMonth: "" });
+  const [open, setOpen] = useState(() => new Set(initialState?.open || []));
+  const organizationId = organization?.organizationId || "";
+  const load = useCallback(async () => {
+    if (!organizationId) return;
+    setState((current) => ({ ...current, rows: null, error: "" }));
+    const now = new Date();
+    const thisMonth = currentRatingMonth();
+    /* 달 초에는 이 달 숫자가 아직 적다 -- 10일까지는 지난달 기록률을 쓴다. */
+    const activityMonth = now.getDate() <= 10 ? previousRecordMonth(thisMonth) : thisMonth;
+    try {
+      const [clients, passes, ledger, notes, shares, activities, candidates, members] = await Promise.all([
+        listClients(organizationId, { store: clientStore }),
+        listPasses(organizationId, { store: passStore }),
+        loadOrganizationLedger(organizationId, { start: new Date(now.getTime() - RADAR_LEDGER_DAYS * 86400000), end: new Date(now.getTime() + 86400000) }),
+        toleratingReadFailure(listLessonNotesBetween(organizationId, new Date(now.getTime() - RADAR_NOTES_DAYS * 86400000), new Date(now.getTime() + 86400000))),
+        Promise.resolve().then(() => onLoadShares({ organizationId }))
+          .then((result) => ({ rows: Array.isArray(result?.rows) ? result.rows : [], errorCode: "" }))
+          .catch((thrown) => ({ rows: null, errorCode: serverCodeOf(thrown) || String(thrown?.code || "unknown") })),
+        toleratingReadFailure(listRecordActivity(organizationId, activityMonth)),
+        listRenewalCandidates(organizationId)
+          .then((rows) => ({ rows, errorCode: "" }))
+          .catch((thrown) => ({ rows: null, errorCode: String(thrown?.code || "unknown").replace("firestore/", "") })),
+        toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
+      ]);
+      const rows = renewalRadar({
+        clients, passes, ledger, lessonNotes: notes.failed ? [] : notes.items,
+        shares: shares.rows, activities: activities.items, activityMonth, candidates: candidates.rows,
+        instructors: members.items, canonicalInstructorId: canonicalInstructorIdFrom(members.items),
+        excludedClientIds: reviewDemoClientIds(clients), now,
+      });
+      const warnings = [
+        notes.failed ? `회원에게 보낸 말을 읽지 못해 그 신호는 빠졌어요 (코드 ${notes.errorCode})` : "",
+        shares.rows === null ? `비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 (코드 ${shares.errorCode})` : "",
+        activities.failed ? `강사 기록 숫자를 읽지 못했어요 (코드 ${activities.errorCode})` : "",
+        candidates.rows === null ? `재등록 결과를 읽지 못했어요 (코드 ${candidates.errorCode})` : "",
+        members.failed ? `강사 이름을 읽지 못했어요 (코드 ${members.errorCode})` : "",
+      ].filter(Boolean);
+      setState({ rows, error: "", warnings, candidatesEmpty: Array.isArray(candidates.rows) && !candidates.rows.length, activityMonth });
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setState({ rows: [], error: `재등록 레이더를 읽지 못했어요 (코드 ${code})`, warnings: [], candidatesEmpty: false, activityMonth });
+      deviceLog("renewal_radar_read_failed", {
+        feature: "renewal_radar", stage: thrown?.feature ? `${thrown.feature}:${thrown.stage || "list"}` : "radar_read",
+        errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200),
+        role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+      });
+    }
+  }, [organizationId, clientStore, passStore, instructorStore, onLoadShares, organization?.role]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const summary = radarSummary(state.rows || []);
+  const toggle = (id) => setOpen((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const chip = (tone, label) => (
+    <span className="px-2 py-0.5 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: RADAR_TONE[tone](), backgroundColor: RADAR_TONE_BG[tone]() }}>{label}</span>
+  );
+  const monthLabel = state.activityMonth ? `${Number(state.activityMonth.slice(5, 7))}월` : "";
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-renewal-radar>
+      <div className="flex items-center justify-between">
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>재등록 레이더</h2>
+        <button type="button" onClick={load} className="h-9 px-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
+      </div>
+      <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        잔여 {RADAR_REMAINING_MAX}회 이하이거나 만료 {RADAR_EXPIRY_DAYS}일 안쪽, 또는 지금 속도로 다 못 쓸 회원이에요.
+        {" "}신호는 출석 · 회원에게 보낸 말 · 비포애프터에서 저절로 나와요 — <b style={{ color: INK }}>강사가 따로 할 일은 없어요.</b>
+        {" "}신호가 많은 회원이 위에 있어요. 회원별 수업기록 공백은 수업기록 서버 저장을 켜면 함께 보여요.
+      </p>
+      {state.rows && state.rows.length ? (
+        <div className="mt-2 flex flex-wrap gap-1.5" data-radar-summary>
+          {chip("calm", `대상 ${summary.total}명`)}
+          {chip("urgent", `급함 ${summary.urgent}명`)}
+          {chip("risk", `신호 있음 ${summary.atRisk}명`)}
+        </div>
+      ) : null}
+      {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
+      {state.warnings.map((line) => <p key={line} className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{line}</p>)}
+      {state.candidatesEmpty ? (
+        <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }} data-radar-hint="renewal_candidates_empty">
+          재등록률이 아직 비어 있어요. 운영 스위치에서 <b style={{ color: INK }}>재등록 알림</b>을 켠 뒤 만료 회원 현황의 [지난 6달 채우기]를 누르면 채워져요 (코드 renewal_candidates_empty)
+        </p>
+      ) : null}
+      {state.rows && state.rows.length ? (
+        <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: FAINT }}>
+          강사 줄의 기록률({monthLabel})과 재등록률(최근 {RATE_WINDOW_DAYS}일)은 나란히 보는 참고 숫자예요. 대상이 적으면 크게 흔들리고, 같이 움직여도 그것이 원인이라고 단정할 수는 없어요.
+        </p>
+      ) : null}
+      {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
+      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>곧 끝나는 회원권이 없어요.</p> : null}
+      <div className="mt-3 space-y-2">
+        {(state.rows || []).map((row) => {
+          const expanded = open.has(row.instructorId);
+          const renewal = row.renewal ? renewalRateLabel(row.renewal) : null;
+          return (
+            <div key={row.instructorId || "none"} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-radar-row={row.instructorId || "none"}>
+              <button type="button" onClick={() => toggle(row.instructorId)} className="flex w-full items-center justify-between gap-2 text-left" aria-expanded={expanded}>
+                <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>
+                  {row.name || (row.instructorId ? row.instructorId : "담당 강사 없음")}{row.active ? "" : " · 소속 아님"}
+                </span>
+                {row.urgent ? chip("urgent", `급함 ${row.urgent}`) : null}
+                {chip(row.atRisk ? "risk" : "calm", `대상 ${row.members.length}명`)}
+                <ChevronDown size={16} style={{ color: SUB, transform: expanded ? "rotate(180deg)" : "none" }} />
+              </button>
+              <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
+                {row.record.label}{renewal ? ` · ${renewal.label}` : ""}
+              </div>
+              <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>코드 {row.record.code}{renewal ? ` · ${renewal.code}` : ""}</div>
+              {expanded ? (
+                <div className="mt-2 space-y-1" data-radar-members>
+                  {row.members.map((member) => (
+                    <div key={member.clientId} className="px-2 py-1.5" style={{ borderRadius: 8, backgroundColor: CARD }} data-radar-member={member.clientId}>
+                      <div className="flex items-center justify-between gap-2">
+                        <button type="button" onClick={() => onOpenClient?.({ id: member.clientId, name: member.name })} className="min-w-0 flex-1 truncate text-left font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
+                          {member.name || "이름 모름"}{member.duet ? " · 듀엣" : ""}
+                        </button>
+                        {member.urgent ? chip("urgent", "급함") : null}
+                      </div>
+                      <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{radarPassLabel(member.forecast)}</div>
+                      {member.signals.length ? (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {member.signals.map((signal) => (
+                            <span key={signal.code} className="px-1.5 py-0.5" style={{ fontSize: TYPE.caption, borderRadius: 6, color: WARN, backgroundColor: WARN_S }} data-radar-signal={signal.code}>{radarSignalLabel(signal)}</span>
+                          ))}
+                        </div>
+                      ) : <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>신호 없음</div>}
+                    </div>
+                  ))}
+                  {!row.members.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>지금 곧 끝나는 회원은 없어요.</p> : null}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/**
  * 회원 앱 수업 취소 (2026-11-07, 5차 1단계) — 대표 설정 · 강사별 추가 부여 현황.
  *
  * 켜는 범위는 강사 단위 시범(고른 강사만)부터. **그 강사의 일정 동기화가 켜져 있어야**
@@ -28619,6 +28776,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     { label: "회원 · 회원권", items: [
       ...(showClients ? [{ key: "pass-issue", title: "회원권 발급", description: "회원에게 회원권 발급", Icon: Ticket }] : []),
       ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
+      /* 곧 끝나는 회원 · 위험 신호 · 강사별 기록률과 재등록률 (2026-11-21). 강사가 할 일은 없다 -- 대표 · 총괄만. */
+      ...(showAudit ? [{ key: "renewal-radar", title: "재등록 레이더", description: "곧 끝나는 회원 · 위험 신호 · 강사별 재등록률", Icon: Activity }] : []),
       ...(showClients ? [{ key: "branch-overview", title: "지점 회원 현황", description: "강사별 이름 · 연락처 · 잔여 한눈에", Icon: Users }] : []),
       /* 발급 내역도 대표만 본다. 급여와 같은 조건이다 -- 센터 전체의 매출은
          한 사람의 것이 아니고, FC매니저에게는 자기 실적만 보이는 화면이 따로
@@ -29203,6 +29362,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
             productStore={productStore} passStore={passStore}
             auditStore={auditStore} ledgerStore={ledgerStore}
             onRetryOrganization={onRetryOrganization} />
+        )}
+        {view === "renewal-radar" && showAudit && (
+          <RenewalRadarScreen organization={organization} instructorStore={instructorStore} clientStore={clientStore} passStore={passStore}
+            onOpenClient={(client) => onOpenClient?.({ id: client.id, name: client.name })} />
         )}
         {view === "record-board" && showAudit && (
           <div>
@@ -31266,6 +31429,45 @@ export function createAppScreenSmokeCases() {
       <ExpiryReportScreen organization={readyOrganizationContext(smokeInstructorOrg)} currentUserId="u1"
         onRetryOrganization={noop}
         initialState={{ instructors: [], state: { stage: "failed", code: "permission-denied" } }} />
+    )) },
+    /* 재등록 레이더 (2026-11-21). 급한 회원 · 신호 · 강사 줄의 기록률과 재등록률 · 재등록 결과가 빈 안내. */
+    { name: "재등록 레이더", element: providerWith(smokeOwner, (
+      <RenewalRadarScreen organization={readyOrganizationContext(smokeOwner)} onOpenClient={noop}
+        initialState={{
+          error: "", candidatesEmpty: false, activityMonth: "2026-11", open: ["u1", "u2"],
+          warnings: ["비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 (코드 permission-denied)"],
+          rows: renewalRadar({
+            now: new Date(2026, 10, 21, 12),
+            clients: [
+              { id: "r1", name: "김하나", userId: "m1", instructorIds: ["u1"] },
+              { id: "r2", name: "이두리", instructorIds: ["u1"] },
+              { id: "r3", name: "박세나", instructorIds: ["u2"] },
+            ],
+            passes: [
+              { id: "rp1", clientId: "r1", instructorId: "u1", status: "active", remainingCount: 1, totalSessions: 30, createdAt: new Date(2026, 3, 1), expiresAt: new Date(2026, 11, 30) },
+              { id: "rp2", clientId: "r2", instructorId: "u1", status: "active", remainingCount: 6, totalSessions: 20, createdAt: new Date(2026, 6, 1), expiresAt: new Date(2026, 11, 2) },
+              { id: "rp3", clientId: "r3", instructorId: "u2", status: "active", remainingCount: 3, totalSessions: 10, createdAt: new Date(2026, 8, 1), expiresAt: new Date(2027, 1, 1) },
+            ],
+            ledger: [
+              { id: "d1", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 1) },
+              { id: "d2", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 8) },
+              { id: "d3", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 15) },
+              { id: "d4", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 10, 1) },
+              { id: "d5", type: "deduct", passId: "rp3", clientId: "r3", occurredAt: new Date(2026, 10, 18) },
+            ],
+            lessonNotes: [{ clientId: "r3", memberNote: "좋았어요", createdAt: new Date(2026, 10, 18) }],
+            /* 비포애프터를 못 읽은 경우 -- 위 안내와 짝. 그 신호는 회원 줄에 나오지 않아야 한다. */
+            shares: null,
+            activities: [{ userId: "u1", month: "2026-11", attended: 40, recorded: 31, checkedAt: new Date(2026, 10, 20) }],
+            activityMonth: "2026-11",
+            candidates: [
+              { instructorId: "u1", status: "renewed", decidedAt: new Date(2026, 9, 10) },
+              { instructorId: "u1", status: "lapsed", decidedAt: new Date(2026, 9, 20) },
+              { instructorId: "u2", status: "pending" },
+            ],
+            instructors: smokeInstructors,
+          }),
+        }} />
     )) },
     /* 담당 강사. 셋을 나눈다 -- 정상, 빠진 회원이 있음, 아직 안 돌았음.
        셋 다 "재계산을 누른다" 로 끝나지만 대표가 읽는 뜻이 다르다. */

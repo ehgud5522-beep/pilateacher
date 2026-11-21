@@ -11,8 +11,8 @@
  *  6. **실제로 받은 돈만** 입력한다. 잔금은 받을지 모르므로 받은 달에 새 줄로
  *  7. 환불은 환불 줄로 넣는다. 이미 인센을 받은 달의 결제를 환불하면, 그만큼 덜 받았어야 할 인센(환수)을 다음 달에 알린다
  *  8. 강사에게 "N원 더 하면 다음 구간 인센 M원" 을 보여 주고 응원한다
- *  9. 그룹 인센: 강사가 판 그룹 수강권은 현금가의 0.5% (같은 날 대표). 두 장부가 같아야 지급되는 것도 같다.
- *     개인 인센 구간 합계에는 넣지 않는다 -- 그룹은 따로 0.5% 다.
+ *  9. 그룹 인센: 강사가 판 그룹 수강권은 현금가의 5% (같은 날 대표: "0.5 가 아니라 5% -- 잘못 말함"). 두 장부가 같아야 지급되는 것도 같다.
+ *     개인 인센 구간 합계에는 넣지 않는다 -- 그룹은 따로 5% 다.
  *     그룹 회원은 필라티쳐 명부에 없다 (대표: "회원은 그룹이라서 필라티쳐에는 조회가 안됨") -- 이름을 글자로 넣고(memberLabel),
  *     앱 기록 대조는 없이 두 장부 대조로만 확인한다. 이름은 띄어쓰기 · "회원" · "님" 을 빼고 맞춘다.
  *
@@ -35,8 +35,8 @@ export const SALES_BRACKETS = Object.freeze([
   Object.freeze([10000000, 1000000]),
 ]);
 export const OT_BONUS_RATE = 0.1;
-/** 그룹 수강권 인센 -- 현금가의 0.5%. */
-export const GROUP_BONUS_RATE = 0.005;
+/** 그룹 수강권 인센 -- 현금가의 5% (2026-11-21 대표 정정, 처음엔 0.5% 로 들었다). */
+export const GROUP_BONUS_RATE = 0.05;
 /** FC 가 대신 상담한 결제 -- 강사에게 반만. */
 export const HALF_SHARE = 0.5;
 export const SALES_SHARES = Object.freeze([1, HALF_SHARE]);
@@ -71,7 +71,7 @@ export const isSalesMonth = (month) => MONTH.test(text(month));
 const REFUND_KINDS = /** @type {string[]} */ ([SALES_KIND.REFUND, SALES_KIND.GROUP_REFUND]);
 const GROUP_KINDS = /** @type {string[]} */ ([SALES_KIND.GROUP, SALES_KIND.GROUP_REFUND]);
 export const isRefund = (entry) => REFUND_KINDS.includes(text(entry?.kind));
-/** 그룹 수강권 줄(판매 · 환불). 개인 구간 합계에 들지 않고 0.5% 만 받는다. */
+/** 그룹 수강권 줄(판매 · 환불). 개인 구간 합계에 들지 않고 5% 만 받는다. */
 export const isGroup = (entry) => GROUP_KINDS.includes(text(entry?.kind));
 
 /** 한 줄이 인센 합계에 더하는 금액. 반반이면 반(원 단위 반올림), 환불이면 음수. */

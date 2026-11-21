@@ -27652,7 +27652,7 @@ function salesStatementTiles(statement) {
     /* 개인 매출 인센과 그룹 인센은 다른 칸 (2026-11-21 대표: "그룹이랑 개인매출인센이랑 다른 칸에"). */
     { label: "개인 매출 합계", value: salesWon(statement.total), code: "sales_total" },
     { label: `개인 인센 (구간${statement.otBonus ? ` + OT ${salesWon(statement.otBonus)}` : ""})`, value: salesWon((statement.bracket?.amount ?? statement.bracketAmount ?? 0) + (statement.otBonus || 0)), code: "sales_personal" },
-    { label: `그룹 인센 (그룹 매출 ${salesWon(statement.groupBase)} · 0.5%)`, value: salesWon(statement.groupBonus), code: "sales_group" },
+    { label: `그룹 인센 (그룹 매출 ${salesWon(statement.groupBase)} · 5%)`, value: salesWon(statement.groupBonus), code: "sales_group" },
     { label: statement.clawbackTotal ? `지급 예정 (환수 −${salesWon(statement.clawbackTotal)})` : "지급 예정", value: salesWon(statement.payout), color: statement.payout < 0 ? BAD : INK, code: "sales_payout" },
   ];
 }
@@ -27778,7 +27778,7 @@ function MySalesScreen({ organization, currentUserId, passStore, clientStore, in
                   <div>
                     <p className="font-extrabold" style={{ fontSize: TYPE.body, color: INK }}>{group ? "그룹 인센" : "개인 매출 인센"}</p>
                     <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-                      {group ? `그룹 매출 ${salesWon(statement.groupBase)} × 0.5% = ${salesWon(statement.groupBonus)} · 개인 구간과 따로`
+                      {group ? `그룹 매출 ${salesWon(statement.groupBase)} × 5% = ${salesWon(statement.groupBonus)} · 개인 구간과 따로`
                         : `합계 ${salesWon(statement.total)} · 구간 인센 ${salesWon(bracketAmount)} · OT 10% ${salesWon(statement.otBonus)}`}
                     </p>
                   </div>
@@ -27942,7 +27942,7 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
           </p>
         ) : null}
         <div className="space-y-3" data-sales-pairs>
-          {[["개인 매출", false], ["그룹 매출 · 0.5% · 개인 인센과 따로", true]].map(([title, group]) => {
+          {[["개인 매출", false], ["그룹 매출 · 5% · 개인 인센과 따로", true]].map(([title, group]) => {
             const list = row.pairing.pairs.filter((pair) => isGroup(pair.instructor || pair.office) === group);
             if (!list.length) return null;
             return (

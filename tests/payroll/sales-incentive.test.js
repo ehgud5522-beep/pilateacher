@@ -150,7 +150,7 @@ test("저장소가 쓰는 칸 목록은 규칙의 hasOnly 와 같다", async () 
   }
 });
 
-test("9. 그룹 수강권은 현금가의 0.5% -- 개인 구간 합계에는 안 든다, 그룹 환불도 같은 셈", () => {
+test("9. 그룹 수강권은 현금가의 5% (2026-11-21 대표 정정) -- 개인 구간 합계에는 안 든다, 그룹 환불도 같은 셈", () => {
   const result = incentiveOf([
     sale(4000000),
     sale(3000000, { kind: SALES_KIND.GROUP, clientId: "", memberLabel: "김민지" }),
@@ -159,8 +159,8 @@ test("9. 그룹 수강권은 현금가의 0.5% -- 개인 구간 합계에는 안
   ]);
   assert.equal(result.total, 4000000, "그룹은 구간 합계에 안 든다");
   assert.equal(result.groupBase, 3100000, "300만 + 반반 50만 - 환불 40만");
-  assert.equal(result.groupBonus, 15500);
-  assert.equal(result.incentive, 160000 + 15500);
+  assert.equal(result.groupBonus, 155000);
+  assert.equal(result.incentive, 160000 + 155000);
   assert.equal(matchEntry(sale(3000000, { kind: SALES_KIND.GROUP, clientId: "", memberLabel: "김민지" }), { records: [], claims: [] }).code, MATCH.GROUP_MANUAL, "그룹 회원은 앱 기록이 없다");
   assert.equal(MATCH_VIEW[MATCH.GROUP_MANUAL].attention, false);
 });
@@ -191,7 +191,7 @@ test("두 장부 대조: 같음 · 다름(어느 칸) · 한쪽만 · 그룹 이
 
 test("확정 숫자에 그룹 인센이 함께 남는다", () => {
   const statement = monthStatement({ month: "2026-11", entries: [sale(5000000), sale(2000000, { kind: SALES_KIND.GROUP, clientId: "", memberLabel: "김민지" })] });
-  assert.deepEqual(confirmSnapshot(statement, 2), { total: 5000000, otBonus: 0, groupBase: 2000000, groupBonus: 10000, bracketAmount: 250000, incentive: 260000, clawbackTotal: 0, payout: 260000, entryCount: 2 });
+  assert.deepEqual(confirmSnapshot(statement, 2), { total: 5000000, otBonus: 0, groupBase: 2000000, groupBonus: 100000, bracketAmount: 250000, incentive: 350000, clawbackTotal: 0, payout: 350000, entryCount: 2 });
 });
 
 test("FC 단독 확정 + 대표 알림: 버튼 옆 문구 · 알림 본문 (그룹 · 환수 포함, 회원 이름 없음)", async () => {

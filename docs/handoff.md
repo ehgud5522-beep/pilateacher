@@ -1,3 +1,467 @@
+## 2026-11-21 — #262 강사 FC 복지 수업료 · 그룹 인센 칸 분리 (PR 만 · 병합 · 배포 전) · 1.1.59 보류
+
+- 1.1.59 빌드 브랜치를 만들던 중 대표가 멈추고 새 요청 → 로컬 브랜치 지우고(올린 것 없음) #262 먼저. **#262 배포 뒤 1.1.59 다시 만들 것** (대표 "이번 것까지 넣고 빌드")
+- 대표: "그룹이랑 개인매출인센이랑 다른 칸" · "강사 FC 복지 수업료, 진행 25,000 / 캔슬 15,000, 한 달에 FC 가 받을 수 있는 횟수 총 8회, 따로 입력하는 칸, 한 달에 지정한 강사만"
+  + 질문 답: 강사 입력 + FC · 대표 · 총괄 확정 / FC 1명당 진행 + 캔슬 8회 / 대표 · 총괄이 달마다 지정
+- **#262** (`feat/fc-welfare-lessons`): functions/shared/fc-lessons.mjs · functions/src/fc-lesson-confirm.js(`confirmFcLessonMonth`) · src/data/repositories/fc-lesson-repository.js ·
+  src/features/sales/fc-lesson-view.js. 규칙 fcLessons · fcLessonDesignations(instructorIds + fcUserIds · fcNames -- 강사는 memberships 를 못 읽음) · fcLessonMonths
+- 그룹 칸: 요약 개인 인센(구간 + OT) / 그룹 인센 따로, 줄 · 짝도 두 칸
+- 테스트: test:rules 470 · functions 440 · build 3969. **배포 순서: 규칙 → 함수 confirmFcLessonMonth → 웹 → 앱 1.1.59**
+
+## 2026-11-21 — #261 매출 인센 2단계 화면 + FC 회원권 발급 알림 · 병합 · 규칙 · 함수 · 웹 배포
+
+- **대표 "병합하고 배포"** → #261 병합(c20e745) → deploy-main test:rules 465 → **규칙 배포**(firestore:rules, foundation) → functions 436 → **함수 confirmSalesMonth · notifyOwnerOnFcIssue 새로 만듦**(비로그인 401 확인) → **웹 배포**(3962 통과, 운영 번들 index-D3Q5lIWd.js 에 새 문구 확인). **앱 빌드는 지시 대기** -- 강사 폰 · 대표 폰 알림함은 새 빌드부터. 실계정 화면 · 실제 확정 · 알림 도착 미확인
+- 대표: "2단계 시작하고 FC 가 수강권 발급 때도 알림이 가게"
+- **FC 발급 알림**: 트리거 `notifyOwnerOnFcIssue`(functions/src/issue-notice.js, 문구 shared/issue-notice.mjs) -- passes 생성 · 만든 사람 role manager 만 ·
+  이관 제외 · 대표 · 총괄 inbox `issue_{회원권}`. 서비스 회차 · 단가 직접 입력 · 잔금이면 제목에 "확인". 실패해도 발급 그대로(issue_notice_failed)
+- **화면**: 강사 `MySalesScreen`(업무 → 이번 달 매출 인센) · FC/대표 `SalesBoardScreen`(돈 → 매출 인센). 판정 src/features/sales/sales-board.js,
+  저장소 listSalesLedger(이 달 issue · sessionup · handover). 지우기 두 번, 확정 버튼은 두 장부가 같을 때만, FC 에게 "확정하면 대표님에게 알림이 갑니다"
+- **알림함 변경**: 대표 · 총괄도 inbox 를 듣는다(전에는 회원 앱 취소 켠 강사만) -- 띠는 일정 탭 위. 수업 없는 알림은 읽음만(NOT_SYNCED 안 띄움)
+- 테스트: test:rules 465 · functions 436 · build 3964 · typecheck. 견본 폰 · PC 로 확인. **실계정 · 알림 도착 · 확정 미확인**
+- **배포 순서: 규칙 → 함수(confirmSalesMonth · notifyOwnerOnFcIssue) → 웹 → 앱**. 대표 지시 대기
+- 남은 것: 확정된 인센을 급여 집계에 별도 칸으로(3단계) · 대표 폰 푸시(teacherPush) · 지난달 엑셀과 한 달 나란히 시범
+
+## 2026-11-21 — #261 갱신: FC 단독 확정 + 대표 알림 · 그룹 인센 개별 확정 (PR 만)
+
+- 대표 결정: "FC 단독 확정 + 대표에게 알림, 대표님에게 알림 간다고 하면 될 듯" · "그룹 인센은 개별, 개인 매출에 포함 안 됨"
+- confirmSalesMonth 확정 → 대표 · 총괄(본인 제외) `users/{uid}/inbox` 에 kind `sales_confirmed` 한 줄(누가 · 강사 · 월 · 지급액 내역 · 매출, 회원 이름 없음).
+  알림 실패해도 확정 유지 + 진단 `sales_confirm_notice_failed`. 버튼 옆 문구 `CONFIRM_NOTICE_HINT` "확정하면 대표님에게 알림이 갑니다"
+- 앱 알림함(teacher-inbox.js 의 inboxRow)은 title · body 를 그대로 그리므로 새 kind 도 보인다 -- 다만 지금 알림함 화면이 대표 계정에도
+  뜨는지는 2단계에서 확인할 것. 폰 푸시는 붙이지 않음(teacherPush 스위치 · 앱 빌드 필요)
+- 발급 이상 신호 알림(서비스 회차 · 할인 · 표값 다른 단가 등)은 제안만 -- 대표가 고르지 않음, 만들지 않음
+- 테스트: 서버 9 · 단위 16 / functions 432 · build 3953 (규칙 변경 없음, test:rules 465 는 앞 커밋 기준)
+
+## 2026-11-21 — #261 갱신: 두 장부가 같아야 확정 · 서버 확정 · 그룹 인센 0.5% (PR 만)
+
+- 대표: "강사 입력 + FC · 대표 입력이 같아야 확정이 되는 구조" → 줄에 side(instructor | office). 강사 본인은 사무실 장부 못 채움.
+  확정은 서버 함수 `confirmSalesMonth`(functions/src/sales-confirm.js)만 -- 두 장부를 다시 짝짓고(pairSalesEntries) 같을 때만, 다르면 sides_differ +
+  salesMonths.lastCheck(어긋난 줄 id). 자기 매출 확정 금지(own_sales). 규칙: 앱은 confirmed 못 씀, 강사는 자기 장부만 읽음
+- 대표: "그룹 인센도 현금가 0.5%, 두 쪽 일치하면 지급" + "회원은 그룹이라서 필라티쳐에는 조회가 안됨" → kind group · group_refund,
+  개인 구간 합계에 안 듦(**대표 확인 대기**), OT 없음, 이름 글자 입력(띄어쓰기 · 회원 · 님 무시하고 짝), 앱 기록 대조 없이 두 장부 대조(group_manual)
+- 테스트: 단위 15 · 서버 7 · 규칙 8 / test:rules 465 · functions 430 · build 3952. **배포: 규칙 + 함수 필요, 화면(2단계)과 함께 권장**
+- 대표 질문 "FC 에게 급여를 온전히 맡기려면 · 수강권을 실수로 더 줄까 걱정 · 대표 알림 → 확정 버튼은?" → 제안: FC 검토 완료 → 대표 알림함(users/{uid}/inbox,
+  서버가 씀, 이미 있음) → 대표 지급 확정 + 발급 이상 신호 알림(서비스 회차 · 할인 · 표값 다른 단가 · 기간 예외 · 발급 직후 취소 · 같은 날 두 장). **대표 결정 대기**
+
+## 2026-11-21 — #261 강사 개인매출 인센 1단계 (계산 · 대조 · 저장소 · 규칙, PR 만 · 화면 없음)
+
+- 대표 결정 (기획안 https://claude.ai/artifact/A6Y72EhG13oSxANcm4Xsu5 v2 에 반영): 1 구간 **정액**("400인데 490이여도 400인센") · 2 OT 도 합계 + 10% ·
+  3 FC · 대표도 입력 · 4 강사가 낸 매출만, FC 대신 상담은 **반반** · 5 확정 FC · 대표 · 총괄 · 6 **받은 돈만**(잔금은 받은 달에) ·
+  7 환불 줄, 지난달 결제 환불은 다음 달 환수 알림 · 8 다음 구간 응원 문구
+- **#261** (`feat/sales-incentive-core`): `functions/shared/sales-incentive.mjs`(구간 · OT · 반반 · 환불 · 환수 · cheerLine · 받은 현금가 · 대조 matchEntry · suggestionsFor),
+  `src/data/repositories/sales-repository.js`, 규칙 salesEntries · salesMonths(확정 snapshot, 확정 달 잠금, 되돌림 사유). 단위 12 · 규칙 7 · test:rules 464 · build 3949
+- 세션업은 원장 `sessionup`(addedPrice · paymentMethod) -- 발급 내역에 줄로 안 나와 대조에 따로 넣음. 양도 회원권은 회원권에 표시 없음 → 같은 배치 `handover.toPassId`
+- **배포 대기**: 규칙 배포 필요하지만 화면이 없어 지금은 쓸 사람 없음. 2단계와 함께 규칙 → 웹 → 앱 권장
+- **다음(2단계)**: 강사 입력 화면(내 급여 아래, 후보 · 반반 · OT · 환불 줄 · 응원 문구 · 제출) + 대표/FC 확정 화면(현황판 → 돈 → 매출 인센, 대조) · 급여 집계 별도 칸
+
+## 2026-11-21 — #260 발급 내역 최신순 (PR 만) · 강사 매출 인센 기획안
+
+- 대표: "발급내역 이름별로 누가 어떻게 최신이 맨위로" → **#260** (`feat/issue-latest-first`): 발급자 안의 줄은 새것부터, 발급자는 최근에 판 사람부터.
+  CSV 는 오래된 것부터 그대로. build 3938 통과. 병합 · 배포 전
+- 대표: 엑셀(개인 결제 매출 입력 · 개인매출 인센 기준표) 사진 + "강사 매출 인센 집계 화면, 인센은 강사가 직접 입력, OT 인센이면 매출 10% 추가,
+  기준은 무조건 현금가, 기존 규칙과 달라지는지 대표 입장에서 더블체크 · FC 고려해서 생각해줘"
+  → 기획안 https://claude.ai/artifact/A6Y72EhG13oSxANcm4Xsu5 (원본 docs/proposals/sales-incentive.html, 커밋 안 함). 코드 안 고침
+- 조사 결과: 인센은 지금 앱 밖(급여 집계의 PAYROLL_EXCLUDED "개인매출 인센 · OT 인센 … 별도 정산"). 현금가 = 회원권의 netContractPrice
+  (카드 · 이체 · 기타 ÷1.1, 현금 그대로, 복합은 나눠서). 세션업은 같은 회원권에 회차 · 금액(addedPrice)을 더하는 원장 기록이라 **발급 내역에 줄로 안 나옴**.
+  "판 강사" 기록은 없음(발급자 = FC, 담당 강사만). OT 표시 근거 없음
+- 기획 요지: 앱이 내 담당 회원의 이달 발급 · 세션업을 먼저 채움 → 강사는 확인 · 구분 · OT 만 → 제출 → 대표 대조(matched · amount_mismatch · no_record ·
+  double_claim · cancelled_pass · not_a_sale · ot_unverified · unclaimed) → 확정 잠금 → 급여 집계에 별도 칸
+- **대표 결정 7개 대기**: 구간표 정액/비율(450만 → 16만/18만) · OT 결제도 구간 합계에 포함 · 앱이 먼저 채움 · FC 발급분도 강사 인센 · 확정은 대표 · 총괄 ·
+  잔금 처리 · 확정 뒤 취소는 다음 달에서 차감. 구현은 규칙 배포 + 폰 앱 빌드 필요
+
+## 2026-11-21 — #258 누름 반응 · #259 현황판 웹 배치 2단계 · 병합 · 웹 배포
+
+- **대표 "병합하고 웹 배포"** → #258 병합(39f18ae) → #259 에 main 합침(충돌 0, 3937 통과) → 병합(bb33967) → deploy-main `npm run deploy:web`(3935 통과), 운영 번들 index-Cxgb_2nV.js 에 ui_tap_slow · 급여 PC · 발급 PC · 그룹 급여 달 칸, CSS 에 touch-action 확인. 규칙 · 함수 없음. 폰은 다음 앱 빌드 때. **다음: 대표 기기 진단의 ui_tap_slow 로 0.5초 원인 확정**
+- 대표: "2단계 진행해주고 눌렀을 때 뭔가 반응이 0.5초 느림" + "강사 쪽에서 변경될 게 있나?" → 2단계는 강사 화면 변화 없음
+  (급여 · 발급은 대표 · 총괄, 그룹 급여 정산은 FC 도 봄). 강사에게 보이는 것은 #255 권장 문구뿐(폰 1.1.58)
+- **#258** (`perf/tap-latency`): 견본 화면을 브라우저에 띄워 재니 메뉴 전환 0.01~0.02초 -- 화면 코드는 빠름, 실기기 원인 **미확정**.
+  `touch-action: manipulation`(두 번 누르기 확대 대기 차단) · 버튼 :active 흐려짐 · 레이더 미리 읽기 requestIdleCallback ·
+  진단 `ui_tap_slow`(feature ui_latency, tapDelayMs/renderMs 따로, 200ms 이상, 글자 대신 data 열쇠). **배포 뒤 진단 숫자로 원인 확정할 것**
+- 실계정 없이 띄우는 법: 개발 서버도 로그인 화면이 뜬다(설정이 박혀 있음). 견본 화면(createAppScreenSmokeCases)을 임시 html 로 띄워 쟀다 -- 임시 파일은 지움
+- **#259** (`feat/aggregate-stage2`): 급여 집계 PC(요약 4칸 · 지점 칩 "전 지점 합계" 먼저 · 강사 표 · 오른쪽 상세 = PayrollInstructorRow 그대로),
+  발급 내역 PC(지점 칩 · 발급자 표 · 오른쪽 발급 목록), 그룹 급여 정산 달력 칸 → ‹ 달 ›, 고르기 칸 → 지점 칩. 폰 급여 · 발급은 그대로
+- build: #258 3934 · #259 3933 통과. PC 견본 확인, 실계정 · 그룹 급여 정산 화면 미확인. 둘 다 main 기준, 따로 병합 가능
+- **다음(3단계)**: 별점 · 만료 회원 · 앱 설치 현황 · 감사 로그 기간 · 문구 통일, 강사 한 장
+
+## 2026-11-21 — #256 · #257 레이더 바로 뜨게 · 현황판 웹 배치 1단계 · 병합 · 웹 배포
+
+- **대표 "병합하고 웹 배포"** → #256 병합(f7c2901) → #257 대상 main 으로 바꿔 병합(3d85431) → deploy-main `npm run deploy:web`(3928 통과), 운영 번들 index-BmS9hGwE.js 에 새 문구 확인. 규칙 · 함수 없음. 폰은 다음 앱 빌드 때 (release/1-1-58 에는 없음). 실계정 화면 미확인
+- 대표 "추천대로 1단계" (제안 페이지 https://claude.ai/artifact/MFYw7pnRXq3HTYs17NvG3D 의 결정 4개 추천안 승인).
+  **#257 은 #256(perf/radar-instant) 기준** -- #256 먼저 병합
+- 메뉴(대표 · 총괄): 현황판(레이더 · 기록 현황 · 비포애프터 공유 · 별점 · 만료 회원 · 앱 설치) · 돈(급여 · 발급 · 그룹 급여) · 관리 · 점검 · 대표 설정.
+  기록 현황 / 비포애프터 공유 메뉴 분리(`before-after-board`). 강사 · FC 업무 묶음 그대로
+- PC(1024px 이상, `useWideViewport`, SSR 기본은 좁은 쪽): 더보기가 메뉴 | 화면 두 칸 (`wideShell`, 견본은 `wideLayout`)
+- 현황판 틀: `SummaryTiles` · `BranchTabs` · `InstructorTable`(정렬 `features/records/aggregate-table.js`) · `AggregateSplit`(오른쪽 상세) -- 세 화면 적용, 폰은 카드 그대로
+- build 3930 통과, typecheck 0. PC 견본 1280 너비로 확인, 실계정 미확인
+- **다음(2단계)**: 급여 집계 · 발급 내역을 표로, 그룹 급여 정산의 달력 칸 · 고르기 칸을 공용 기간 · 지점 칩으로
+
+## 2026-11-21 — #256 레이더 바로 뜨게 · 지점별 · 웹 취합 화면 배치 제안 (PR 만 · 병합 · 배포 전)
+
+- 대표: "읽는 중이 왜 이렇게 오래 걸려? 누르면 바로 뜨게" -- 원인: 레이더가 열 때마다 회원 · 회원권 · 두 달치 원장 전부를 새로 읽고 여덟 가지를 다 받은 뒤 그림.
+  비포애프터 집계 함수는 서버 기록상 0.2초(처음 깨어날 때 3초)라 주범 아님
+- **#256** (`perf/radar-instant`, 웹만): 센터 운영 메뉴가 열리면 미리 읽기(운영 앱만, `prefetchRadar`, 5분) · 지난 결과 메모리 기억 · 회원 · 회원권 · 차감이 오면 바로 그림 ·
+  원장 대신 차감 · 되돌림만. 모르는 신호는 신호로 안 침(`record_rate_pending`). 실계정 속도 미확인
+- 대표: "항상 취합하는 거 나올 땐 지점별로 강사 하나씩" → 같은 PR 에 레이더 · 강사 기록 현황 · 비포애프터 공유 현황 지점 칩 + 강사 하나씩.
+  공용 `features/records/branch-groups.js`. 메모리 branch-first-aggregates
+- 대표: "급여 집계나 여러 취합 화면 웹 기준으로 깔끔하게 -- 구조 · 배치 제안부터" → 제안 페이지 https://claude.ai/artifact/MFYw7pnRXq3HTYs17NvG3D
+  (원본 docs/proposals/aggregate-web-layout.html, 커밋 안 함). PC 메뉴 | 화면 | 상세 세 칸, 모든 현황판 같은 다섯 줄(도구 줄 · 요약 · 지점 · 강사 표 · 상세),
+  메뉴 재묶음(현황판 · 돈 · 관리 · 점검 · 대표 설정), 3단계. **대표 결정 4개 대기** (묶음 이름 · 기록/비포애프터 나누기 · 오른쪽 칸 · 강사 한 장)
+- 조사 메모: 취합 화면 11개, 달 고르기 5종, 표는 담당 강사의 서비스 보정 표 하나뿐, 센터 운영은 PC 에서도 한 칸(최대 1,280px)
+
+## 2026-11-21 — release/1-1-58 (빌드 · 업로드는 대표)
+
+- 대표: "앱빌드하게 해줘". release/1-1-57 + main ecbde01(#254 · #255) + 버전: 강사 1.1.58 · versionCode 81 · iOS MARKETING_VERSION 1.1.58 · 허용 브랜치 추가 (3501508). 병합 충돌 0
+- 들어간 것: **권장 문구(#255, 수업 후 탭 일지 칸 위 -- 수업기록 3번에 1번 · 비포애프터 한 달에 한 장)** · 재등록 레이더(#254, 대표 화면)
+- test:android-release 11 · build 3918 0 fail, typecheck 0. 네이티브 설정 · 의존성 변화 없음 (웹 코드만)
+- Codemagic 시작 · 스토어 업로드는 대표. 1.1.57 을 아직 안 올렸으면 1.1.58 만 올리면 된다 (81 이라 겹치지 않음)
+
+## 2026-11-21 — #254 재등록 레이더 · #255 권장 문구 · 병합 · 웹 배포
+
+- 대표가 붙여 넣은 기획 둘(재등록 레이더 · 재등록 상담 준비 카드) → 조사 뒤 추천안 승인("추천대로 진행"). 결정 넷:
+  레이더 1차는 서버에 있는 신호만 / 회원별 수업기록 공백은 서버 저장 켤 때 / 상담 카드는 법률 검토 → 서버 저장 뒤 / 재등록률은 대표 · 총괄 · 점장만
+- **대표 원칙 (같은 날)**: "강사들이 추가로 뭘 하지 않아도 그냥 하다 보면 알려주는 느낌. 강사 일이 많아지면 안 됨. 수업일지를 꼼꼼히 적을수록 AI 가 할 말이 많아지게."
+  → 강사용 새 화면 · 새 입력 금지, 이미 보는 자리에 얹는다. 메모리 no-extra-instructor-work
+- **#254 재등록 레이더** (`feat/renewal-radar`, 웹만): 더보기 → 센터 운영 → 회원 · 회원권 → 재등록 레이더 (대표 · 총괄). 판정 `features/records/renewal-radar.js`
+  - 대상: 잔여 3회 이하 · 만료 14일 안 · 다 못 씀 (`renewal-forecast.mjs` 재사용). 신호: 출석 줄어듦(4주 대비 절반 이하) · 14일 넘게 출석 없음 ·
+    비포애프터 60일 넘음/받은 적 없음(앱 연결 회원만) · 30일 보낸 말 없음. 강사 줄: 기록률(폰 보고, 10일까지 지난달) · 재등록률(90일, 5명 미만이면 명수)
+  - 못 읽은 신호는 빼고 코드로 말함. 재등록 결과가 비면 `renewal_candidates_empty` 안내 → **대표가 재등록 알림 스위치 켜고 [지난 6달 채우기]**
+  - 점장 · 강사용 레이더는 안 만듦 (강사는 브리핑 한 줄만). 견본 화면 폰 너비로 확인, 실계정 미확인
+- **#255 권장 문구** (`feat/record-nudges`, 웹 + 앱 빌드): 수업 관리 수업 후 탭 · 완료 화면, 일지 칸 위에 저절로. 판정 `features/records/record-nudges.js`
+  - 수업기록 3번에 1번: 앞 출석 2번이 기록 없이 지나갔고 이번도 없으면 (`record_every_3`). 기기 일정 · 기록만
+  - 비포애프터 한 달에 한 장: 첫 출석 30일 이상 + 이 강사가 보낸 카드 없음/30일 지남 (`before_after_never_sent` · `before_after_monthly`).
+    `teacherList` 회원마다 10분에 한 번, 공유 꺼짐이면 안 뜸, 실패는 진단 `before_after_nudge_read_failed` 만
+  - 문구가 뜬 화면 · 실기기 미확인
+- **대표 "병합하고 웹 배포"** → #254 병합(2b8bd68) → #255 에 main 합침(App.jsx import 한 줄 충돌, 둘 다 남김, 3918 통과) → 병합(ecbde01) → deploy-main 에서 `npm run deploy:web`(3916 통과), 운영 번들 index-CCF0_4i2.js 에 새 문구 셋 확인. 규칙 · 함수 없음. **#255 는 폰 앱 다음 빌드에 들어가야 강사 폰에 뜬다** (release/1-1-57 에는 없음). #255 Vercel 미리보기는 병합 때 아직 배포 중이었음
+- 둘 다 main 기준이라 따로 병합 가능. 테스트: #254 3913 · #255 3907 통과 0 실패, typecheck 통과
+- **남은 것**: 상담 준비 카드(처음 vs 지금, 강사 문장을 골라 오고 서버가 원본 대조, 브리핑에 저절로 · 기록 많을수록 풍성) -- 법률 검토 → 서버 저장 뒤.
+  회원별 기록 공백 신호도 그때
+
+## 2026-11-21 — release/1-1-57 (빌드 · 업로드는 대표)
+
+- release/1-1-56 + main 90f70a7(#249 ~ #253) + 버전: 강사 1.1.57 · versionCode 80 · iOS MARKETING_VERSION 1.1.57 · 허용 브랜치 추가 (14bc9de)
+- 들어간 것: 누적 넣기(#249) · 동기화 14일 · 상태 표시(#250 · #251) · **수업기록 숫자 보고(#252, 폰 앱만)** · 비포애프터 현황(#253, 웹 전용)
+- test:android-release 11 · test:node 3900 0 fail, typecheck 0, vite build 통과. 1.1.56 을 이미 올렸더라도 80 이라 겹치지 않음
+
+## 2026-11-21 — #253 비포애프터 공유 현황 · 병합 · 함수 · 웹 배포
+
+- 대표: "비포애프터도 회원별로 잘 보내고 있는지". 강사 기록 현황 화면 아래 칸. 판정 `features/records/before-after-board.js`
+- 서버 `beforeAfterShareStats` (대표 · 총괄만) -- 카드마다 강사 · 회원 id · 상태 · 시각 · 열람만, 사진 · 코멘트 · 회원 계정 · 이름 없음
+- 담당 회원 = 보관 아님 + instructorIds + 쓸 수 있는 회원권. 앱 미연결은 "안 보냄" 과 따로. 보낸 뒤 거둔 카드도 보낸 것
+- **배포 순서: 함수(beforeAfterShareStats) → 웹**. 앱 빌드 · 규칙 불필요. functions 423 · test:node 3900 0 fail. 화면은 아직 안 봄
+- 대표 지시로 병합 90f70a7 → 함수 beforeAfterShareStats 새로 만듦(asia-northeast3) → 웹 배포(index-DVQkoUg5.js, 3900 pass)
+
+## 2026-11-21 — #252 강사 기록 현황 · 병합 · 규칙 · 웹 배포
+
+- 대표: "강사들 회원관리 기록 남기는지, 누가 안 하고 누가 잘하는지 대표 화면에서". 더보기 → 센터 운영 → **강사 기록 현황** (대표 · 총괄)
+- 수업기록 원문은 폰에만 있다(서버 저장 스위치 꺼짐). 그래서 폰 앱이 **숫자만** `recordActivity/{uid}_{YYYY-MM}` 에 올린다
+  (이 달 · 지난달, 출석 done 회원 1명 = 1건, 확정 기록 / AI 초안 / 없음). 웹은 안 올린다. 판정 `features/records/record-activity.js`
+- 회원에게 보낸 말: 서버 원장 차감(보정 · 심사용 제외)과 lessonNotes 를 수업 · 회원으로 맞춤 -- 앱 빌드 없이 바로 보인다
+- 1.1.57 의 탭 ~ 앱이 숫자를 올리기 전까지 줄에 "폰 앱이 아직 알려주지 않음 (no_device_report)". release/1-1-56 에는 없다
+- **배포 순서: 규칙(recordActivity) → 웹 → 앱 1.1.57**. 규칙 테스트 0 fail, test:node 0 fail. 화면은 브라우저에서 아직 안 봄
+- 처음 Vercel 이 실패: 저장소(src/data)가 features 모듈을 불러와 typecheck 범위로 record-store.js 등이 끌려 들어옴 →
+  저장소에 값 두 개를 따로 두고 테스트로 같은지 고정 (9a745b3)
+- 대표 지시로 병합 09e86ab → 규칙 배포 → 웹 배포(번들 index-CWTMY-kG.js, 테스트 3897 pass). **남은 것: 앱 1.1.57 빌드(수업기록 칸)**
+- 대표 추가 질문: 비포애프터도 회원별로 보내는지 -- beforeAfterShares 는 서버 전용(규칙 read false)이라 대표용 callable 이 필요
+
+## 2026-11-20 — #250 · #251 일정 동기화 범위 14일 · 상태 표시 · 병합 · 웹 배포
+
+- 율하 보현 점장 · 현지 부원장 웹에 수업 0. 확인한 것: 일정 동기화 스위치 "전체", 김보현 폰 1.1.55(247) 최신, 같은 계정,
+  PC 시간 정상(11/20 16:56), 데이터 상태의 로그인 · Firebase 정상. **원인 미확정** -- 앱이 받기 상태를 화면에 안 보여 줬다
+- #250: `SYNC_WINDOW.pastDays` 7 → 14 (확정 기간과 같게, 테스트가 두 숫자를 견준다)
+- #251: `sync-status-view.js` -- 꺼짐 · 준비 중 · 받는 중 · 받지 못함(원본 코드) · 받음 0건(`server_empty`) ·
+  명부에서 못 찾은 회원(`unmatched_clients`) · 받음 N건. 일정 탭 빈 화면에 늘, 수업 있으면 오류 · 경고만 맨 위, 데이터 상태에 칸
+- 배포: main 1962b5d → 웹(테스트 3892). **다음 할 일: 보현 점장 웹의 그 한 줄을 받아 원인 확정**
+- 앞서 "스위치가 꺼졌다" · "PC 시간" 두 추측은 틀렸다 (스위치 전체, 시간 정상)
+
+## 2026-11-20 — #249 누적 넣기 · 병합 · 웹 배포 / 폰 일정이 웹에 안 보이는 이유
+
+- #249 병합(27014d1) → 웹 배포, 운영 번들 index-Cq8Fo6SZ.js (CDN 캐시 때문에 잠깐 옛 번들이 보였다). 누적 문서가 없는 강사 줄에
+  "누적 넣기" -- `adjustInstructorTotal(createIfMissing)`, 규칙 변경 없음. release/1-1-56 에는 없다
+- 율하 보현 점장: 앱 수업을 웹에서 확정하려니 "등록된 수업이 없다". 원인(코드): 폰 일정은 **일정 동기화 스위치
+  (runtimeConfig/scheduleSync)가 켜진 계정만** 서버로 보내고(`schedulePublishAllowed`), 웹도 켜진 계정만 받는다. 켜져 있어도
+  받는 범위가 지난 7일(`SYNC_WINDOW.pastDays`)이라 11/12 는 안 온다. **앞서 "웹에서 확정하라" 고 한 안내는 틀렸다.**
+  대안: 웹 **출석 체크**(강사도 됨, instructorId = 로그인한 강사, 날짜 칩 14개)로 11/12 차감. 그 뒤 폰에서 같은 수업을 또
+  확정하지 않게 할 것. 스위치 상태는 브라우저 창이 숨겨져 확인 못 함
+
+## 2026-11-20 — 앱 빌드 브랜치 `release/1-1-56` (대표: "지금까지 수정한걸로 앱빌드할게")
+
+- `release/1-1-56` = release/1-1-55 + main 7fe1d29(#240 ~ #248) + 버전(강사 1.1.56 · versionCode 79 · 허용 브랜치). 보니따 그대로.
+  커밋 719d854. 병합 충돌 0, `test:android-release` 11 · build(테스트 3885) 통과
+- 폰에 들어가는 것: 듀엣 짝 "이번 회원권" 칸(#240), 급여 기준 누적 칸(#241 · #242), 보관 회원 삭제 · 연락처 실패 사유(#243),
+  강사 관리 이메일(#244), "계정 교체됨"(#247), **확정 기간 14일(#248)** -- 폰은 이 빌드부터 14일
+- Codemagic 빌드 · 스토어 업로드는 대표. 1.1.55 를 아직 안 올렸으면 1.1.56 만 올리면 된다
+- 율하 11/12 김민정 · 성승현(듀엣, 김보현): 서버 이력에 11/12 차감 없음(11/2 · 5 · 9 · 16 · 19 만) -- 확정이 저장 안 됨.
+  실패 이유는 화면이 없어 미확정. 웹에서 11/26 저녁까지 확정 가능
+
+## 2026-11-20 — #248 수업 확정 기간 7일 → 14일 · 병합 · 규칙 · 웹 배포
+
+- 율하 김혜은 11/6 수업이 `occurred_at_too_old` -- 규칙이 대표에게도 7일을 적용해 늦은 확정 길이 없었다. 대표 "기간을 14일로"
+- 규칙 원장 `occurredAt` 창 14d · 앱 `DEDUCT_BACKDATE_LIMIT_DAYS = 14`(확정 검사 · 큐 마감 · 출석 체크 날짜 칩 14개) · 거절 문구 14일
+- 배포: 병합 7fe1d29 → 규칙(452 통과) → 웹(운영 번들 index-C74vae9B.js 일치). **폰 앱은 새 빌드 전까지 7일** -- 앱이 서버에
+  보내기 전에 7일을 먼저 검사한다. 김혜은 11/6 건은 14일 마감이 11/20 이라 웹에서만 확정 가능
+- 11/12 김민정 · 성승현 "확정 눌렀는데 대기": 원인 미확정. 누른 직후 화면(문구 · 코드)을 받기로 함. "대기" 는 기기 일정에
+  `orgSettledAt` 이 없다는 뜻 -- 확정이 저장되지 않았다
+
+## 2026-11-19 — #247 "swapped" 상태 문구 · 병합 · 웹 배포 / 안혜원 급여 조사
+
+- 대표 "병합하고 웹 배포" → #247 병합(2f1ae1b), 웹 배포, 운영 번들 index-B5nVbAvY.js 일치. `MEMBERSHIP_STATUS_LABELS` 에
+  `swapped: "계정 교체됨"` (교체 함수가 적는 값이 빠져 강사 관리에 영어로 보였다)
+- 안혜원(좌동) 조사, 대표 웹 화면 보기만: 계정 3개(현재 hyewon006400 · 교체된 jgandhw74 · "안혜원 (삭제된 옛 계정)").
+  대표 급여 집계 11월 91회 · ₩2,500,000(30,000×45 + 25,000×46)으로 한 줄. 강사 앱 영상(18:17)은 ₩2,060,000 --
+  **44만 원 차이 원인 미확정**. 강사 앱 "자세히 보기" 캡처를 받기로 함. 데이터 직접 읽기는 이 PC 에 Admin 자격이 없고,
+  브라우저에서 SDK 를 따로 띄우는 것은 권한 확인이 막았다
+
+## 2026-11-19 — #243 ~ #246 병합 · 규칙 · 함수 · 웹 배포
+
+- 대표 "모두다 병합및 배포" → #243 · #244 · #245 병합. 웹 배포를 막은 테스트 줄바꿈 수정 #246 은 "병합하고 웹배표" 로 따로 지시
+- **#243 보관된 빈 회원 삭제**: 정미혜 회원 두 벌 -- 보관된 쪽이 맞는 번호(4915)를 들고 있어 번호 변경이 `phone_duplicate`.
+  화면은 `functions/invalid-argument` 만 보였다(겉 code 를 details.code 보다 먼저 읽음 → `serverCodeOf`).
+  callable `deleteArchivedClient`: 대표 · 총괄만, `archived === true` 이고 회원권(clientId · clientIds) · lessons · lessonRecords ·
+  lessonNotes · memberCancellations · memberSummaries 가 0 일 때만. 회원 앱 연결은 끊고, `clientDeletions` 에 사본(규칙 catch-all 로 닫힘).
+  **정미혜 정리는 대표가 할 일**: 보관된 쪽 삭제 → 쓰는 쪽 번호를 010-4915-5730 으로
+- **#244 강사 관리 이메일**: callable `listCentreMemberEmails`(대표 · 총괄, 이 센터 소속 uid 만, 100개). 목록 · 수정 · 계정 교체 고르기 ·
+  강사 추가(같은 이름 경고를 재직자까지)에 로그인 이메일
+- **#245 교체 강사 내 급여 permission-denied** (장유점 이예진 강사): 급여 화면이 `previousUids` 원장도 읽는데 원장 그룹 규칙이
+  본인 uid 만 열어 둠 → **교체한 강사 전부** 막혀 있었다. 규칙에 `previousUidsOf` 추가. 이예진 강사가 교체 계정인지는 데이터로 미확인
+- **#246**: #243 배선 테스트 정규식이 `\n` 만 받아 CRLF 체크아웃(deploy-main)의 prebuild 에서 실패 → `\r?\n`.
+  **교훈: 배선 테스트 정규식의 줄바꿈은 `\s*` 나 `\r?\n`**
+- 배포: 규칙(`firestore:rules`, 451 통과) → 함수 `deleteArchivedClient` · `listCentreMemberEmails` 생성(`firebase.ai-gateway.json`) →
+  웹(main 503bad3, 운영 번들 index-DUKzEc-z.js 일치). 실제 화면 · 실기기 전부 미확인. 폰 앱에는 #240 ~ #246 화면 변경이 다음 빌드에
+  (급여 규칙은 앱 빌드 없이 적용)
+
+## 2026-11-18 — #242 "급여 기준 누적" 칸이 실제 화면에서 안 보이던 것 · 병합 · 웹 배포
+
+- 대표 스크린샷(황혜린): 회원권과 이력 사이에 칸이 없음. 더보기 → 회원 상세(ClientDetail)는 passStore 를 넘기지 않는데 #241 칸은
+  넘겨받은 저장소에 read 가 있을 때만 그렸다 (스모크는 넘겨서 못 잡음) → 없으면 createFirestorePassStore() 사용
+- #242 병합(dc6b2ad) → 배포 성공, 운영 번들 index-DY1OzdE9.js. 실제 화면 미확인
+- **교훈:** 새 칸이 기본값 없는 prop 에 기대면, 운영 호출부가 그 prop 을 넘기는지 먼저 본다
+
+## 2026-11-18 — #241 급여 기준 누적 고치기 · 병합 · 웹 배포 (대표: "병합하고 배포해줘")
+
+- 대표: 율하 · 김진희 · 황혜린은 이미 20회 이상 수업했는데 "20회 미만 신규 단가"로 차감됨 → 강사-회원 누적(instructorClientTotals)이 앱 이전 수업을 덜 담고 있음
+- 고치는 통로 `adjustInstructorTotal`(누적 + 감사 한 배치, expectedSessions, 사유 열거값)과 규칙은 이미 있었고 화면만 없었다 →
+  센터 회원 상세(대표 · 총괄매니저)에 "급여 기준 누적" 칸 + [누적 고치기]. 듀엣은 짝 누적도 함께 (판정은 둘 중 적은 쪽). 규칙 변경 없음
+- #241 병합(3a62e08) → `npm run deploy:web` 성공, 운영 번들 index-BzvyvOVz.js 에 새 문구 확인
+- **남은 것:** 세 회원의 실제 횟수 입력은 대표가 화면에서 (운영 데이터 직접 수정 안 함). 이미 신규 단가로 확정된 지난 급여는 그대로 -- 차액 처리는 대표 결정. 실제 화면 미확인
+
+## 2026-11-18 — #240 2:1 짝 회원 카드 "이번 회원권" 막대 · 병합 · 웹 배포 (대표: "병합웹배포해줘")
+
+- 현장 제보: 양홍순 · 강태임 듀엣인데 강태임 카드에만 "이번 회원권 · 4번째 등록 · 70회 중 15회 사용" 막대가 보임
+- 원인: `journeyForClient` 가 회원권을 `clientId` 로만 골랐다. 2:1 은 한 사람 이름으로 발급되고 짝은 `clientIds` 에 붙는다.
+  회원권 카드(`passCardsForClient`)는 이미 `passBelongsTo` 라 상세 화면은 맞았다 → 같은 기준으로 바꿈. 테스트 `tests/membership/duet-partner-journey.test.js`
+- #240 병합(4cb571d) → `npm run deploy:web` 성공, 운영 번들 index-BWH9uU3P.js = 새 빌드. 실제 계정 화면은 미확인. 앱(폰)은 다음 빌드에 들어간다 (release/1-1-55 에는 없음)
+- **남은 것:** 카드의 "다음 예약" 은 보는 사람 기기의 일정에서만 찾는다 -- 매니저 · 대표가 보면 다른 강사 담당 회원은 예약이 있어도 "없음". 손대지 않음
+
+## 2026-11-17 — #239 병합 · 웹 배포 · 앱 빌드 브랜치 `release/1-1-55` (대표: "병합웹배포하고 앱빌드바로해줘")
+
+- #239 병합(a747093) → `npm run deploy:web` 성공, 운영 번들 index-BIfII89z.js 에 새 등록 · AI 카드 · 수업 관리 문구 확인
+- `release/1-1-55` = release/1-1-54 + main a747093(#237 ~ #239) + 버전(강사 1.1.55 · versionCode 78 · 허용 브랜치). 보니따 그대로.
+  충돌 3 파일은 main 쪽으로 -- release 에만 있던 34311c8(옛 듀엣 출석 버튼 하나로)은 #237 이 바꾼 옛 화면 수정이라 웹과 앱을 같게 둠
+- 3,870 + 안드로이드 릴리스 검사 11 통과. 네이티브 · 의존성 변화 없음. codemagic.yaml 자동 시작이 꺼져 있어 **Codemagic 시작 · 스토어 업로드는 대표**
+- 1.1.54 를 아직 올리지 않았다면 1.1.55 만 올리면 된다 (1.1.54 내용이 모두 들어 있다)
+
+## 2026-11-17 — #239 일정 등록 개편 · 회원 상세 AI 요약 카드 (병합됨)
+
+- 제안 페이지(https://claude.ai/artifact/X1B3mZ53G2EG8xHimPDzge) 네 가지 그대로 대표 승인. 브랜치 `feat/register-member-ai`
+- 등록: 회원 → 날짜·시간·길이 한 줄 → 유형(개인·듀엣·그룹 + 관리 30·50, 상담·휴무는 링크) → 기구 접힘 → 아래 고정 버튼.
+  새 일정만 회원권으로 유형 채움(2:1 → 듀엣+짝, 관리권만 → 관리). 시 → 분 이어 고르기. 지난 수업 시간은 버튼으로만
+- 회원 상세: "AI 요약" 카드(꼭 기억할 것 · 최근 흐름 · 계속 확인 중, 근거 날짜 · 기록 N건 · 업데이트 날짜). 동의 카드 · 상담 소재 버튼을
+  카드 안으로. 보이는 조건 = 동의 카드와 같음 → 스위치 꺼진 지금은 변화 없음. 색 토큰 aiInk · aiSurface · aiLine 추가
+- 중복 정리 4건(동의 문구 · 상담 소재 버튼 · AI 표시 · 새 일정 부제 날짜). 모션은 transform · opacity, 펼치기만 grid-rows + contain
+- `npm run build` 3,870 통과. 실기기 미확인
+
+## 2026-11-17 — #237 수업 관리 화면 개편 (대표 지시서 + 목업) · 병합 · 웹 배포됨
+
+- 대표 지시 "Pr병합배포바로해줘" → #237 병합(47e4464). 첫 배포가 lint:runtime 에서 멈춤 -- 설정에 없는 규칙
+  `react-hooks/exhaustive-deps` 를 가리키는 eslint 주석 한 줄. #238 로 고침, 대표 "병합하고웹배포" → 병합(ae23b35) · `npm run deploy:web` 성공.
+  운영 번들 index-De1P4w5C.js 에 새 화면 문구 확인. **교훈: PR 전에 vite build 가 아니라 `npm run build`(린트 포함)를 돌린다**
+- #237 의 Vercel 미리보기 실패는 로그(로그인 필요)를 못 봄. Firebase 미리보기 · deploy 검사는 통과
+- 앱(폰)에는 아직 없다 -- 다음 앱 빌드에 들어간다. release/1-1-54 에는 없음
+
+- 브랜치 `feat/lesson-manage-redesign`(작업 폴더 `.codex-worktrees/lesson-manage`). 기능은 그대로, 배치 · 기본값만:
+  회원 요약 카드 → [수업 전 | 수업 후] 탭 → 하단 고정 버튼. 완료 화면(다음 주 같은 시간 등록 · 나중에 할게요 · 작은 처리 되돌리기)
+- **동작이 바뀌는 곳 둘** (지시서대로, 대표 확인 필요): 출석이 기본값(안 고른 회원은 확정할 때 출석으로 적힘),
+  노쇼는 기본 1회 차감(전에는 고르기 전까지 확정 잠김 -- 11-06 결정). 출석 화면 · 처리 큐 쪽 안전망은 그대로
+  → **대표 확인 "지시서대로해줘" (11-17)**: 둘 다 지시서대로 간다
+- 확정 순서: 안 고른 사람 → 노쇼 차감 → 저장 뒤 확정 (`lesson-manage-view.js` 의 nextConfirmStep, 6초 넘게 멈추면 `confirm_*_stalled`)
+- 브리핑은 이제 스위치와 상관없이 세 덩어리. 회원 요약(서버 · AI)만 lessonBriefingV2 가 켜진 계정에 얹힘
+- 잔여 · 만료는 이번에 빠질 회원권에서 읽는다. 회원 카드 잔여는 관리권까지 합친 값이라 다르면 "전체 합계" 도 적음 ("잔여 160회" 의 유력한 원인)
+- **남은 불일치**: 재등록 알림 줄의 만료 = 쓸 수 있는 회원권 중 가장 늦은 것, 회원 카드 만료 = 다음에 쓰일(가장 이른) 것. 안 바꿈 -- 서버 알림 기준도 함께 바뀐다
+- 테스트 3,855 통과. 폰 크기 미리보기로 확인, **실기기 · 실계정 미확인**
+
+## 2026-11-16 밤 — 앱 빌드 브랜치 `release/1-1-54` (대표: "지금바로 시작해줘")
+
+- release/1-1-53 + main 3af0df6(#215 ~ #236) 합침(충돌 0) + 버전: 강사 1.1.54 · versionCode 77 · 허용 브랜치 추가. 보니따 그대로
+- 강사 테스트 3843 통과. 1.1.53 이후 네이티브 설정 · 의존성 변화 없음 (웹 코드만)
+- Codemagic 시작 · 스토어 업로드는 대표. 새 기능은 전부 스위치 꺼진 채 들어간다
+- 동의 방식은 대표 결정으로 "강사가 안내하고 기록" 그대로. 문구 · 처리방침(#235)은 동의 받기 시작 전에 확정
+
+## 2026-11-16 밤 — #236 AI 로 보내는 기록 번호를 임시 번호로 (병합 · Functions 4개 재배포됨)
+
+- 서버 기록ID(강사계정_기기기록_지문)가 근거용으로 OpenAI 에 가던 것을 r1, r2 … 로 바꿔 보내고 서버에서 되돌림
+- main `3af0df6`, Functions 411 통과 뒤 refreshMemberSummaryOnRecord · sweepMemberSummaries · rebuildMemberSummary ·
+  consultTalkingPoints 재배포 성공. 스위치가 꺼져 있어 운영에서 계정 번호가 실제로 나간 적은 없다
+- 남는 것: 강사가 쓴 본문 속 신상 정보(다른 사람 이름 · 직장)는 기계로 다 못 막음 -- 강사 안내로 보완
+
+## 2026-11-16 저녁 — 권한 규칙 · 서버 함수 배포됨 (대표 지시 "규칙서버함수도배포")
+
+- main `f1ec2b4`, deploy-main 에서 `npm run test:rules` 449 통과 뒤 규칙 배포 (10:38:30Z 릴리스)
+- Functions 9개 성공: aiGateway · updateRuntimeConfig (update), 회원 요약 3 · 재등록 3 · consultTalkingPoints (create). 직후 오류 로그 없음.
+  docs/ai-gateway-deploy-log.md 에 기록
+- 이제 운영 스위치 화면에서 새 스위치(수업기록 서버 저장 · 서버 읽기 · AI 회원 요약 · 새 브리핑 · 재등록 알림 · 상담 소재)를 저장할 수 있다.
+  **전부 꺼진 채.** 켜는 순서는 대표 확인 뒤: 동의 문구 법률 검토 → 서버 저장(시범 1~2명) → 비교 일치 → 읽기 → 요약 판정 → 브리핑 → 상담 소재.
+  재등록 알림은 일찍 켜도 됨 -- 켠 뒤 [지난 6달 채우기]
+- 밤 정리(sweepRenewalCandidatesNightly 04:30 · sweepMemberSummaries 15분)는 스위치가 꺼져 있으면 아무것도 안 한다
+- 폰 앱은 새 빌드(1.1.54) 전까지 이번 기능 없음
+
+## 2026-11-16 저녁 — #222 ~ #234 병합 · 강사 웹 배포됨 (대표 지시 "병합및 웹배포 다진행해줘")
+
+- #222 ~ #233 을 차례로 merge commit 으로 병합 (쌓인 PR 은 main 으로 다시 겨눈 뒤). #233 = 회원 목표 · 주의사항 서버 사본
+  (clients.careNotes, 동의한 회원만) + 재등록 알림 줄의 [상담 소재]
+- 병합 뒤 deploy-main(Windows CRLF 체크아웃)에서 테스트 1건이 LF 를 가정해 실패 → #234 로 테스트만 고쳐 병합
+- `npm run deploy:web` (main f1ec2b4) 성공, 운영 주소가 새 묶음(index-DWtVK_l6.js)을 내보내는 것 확인. 앱 3843 통과
+- **배포하지 않은 것**: 권한 규칙(lessonRecords · lessonRecordParity · memberSummaries · clients.aiConsent/careNotes · renewalCandidates),
+  Functions(aiGateway · updateRuntimeConfig · 요약 3 · 재등록 3 · consultTalkingPoints). 그 전까지 운영 스위치 화면의 새 카드는
+  "읽지 못했어요 (코드)" 로, 새 스위치는 저장이 안 된다. 스위치가 전부 꺼져 있어 강사 화면은 그대로. 폰 앱은 새 빌드가 필요
+- #235 처리방침 개정안 (Draft) -- **법률 검토 뒤 병합**
+- 하주은 강사 "잔여 0" 제보: 서버 회원권은 정상(사용 중 18장 · 잔여 671). 오늘 배포 영향 아님(제보 시점엔 배포 없음).
+  앱이 회원권을 못 읽은 것으로 보임 -- 폰 진단 화면 대기
+
+## 2026-11-16 — 설계 3~5단계: 브리핑 개편 · 재등록 알림 · 상담 소재 (#230 · #231 · #232, PR 만 · 병합 · 배포 전)
+
+#229 위에 차례로 쌓음 (#230 → #231 → #232). 전부 스위치(scheduleSync)로 꺼진 채.
+- #230 수업 전 브리핑 `lessonBriefingV2`: 시트 위 세 덩어리, 지난 수업은 연 수업보다 앞선 기록만, 같은 문장 한 번. 스크린샷은
+  `docs/screenshots/lesson-briefing-v2/`. 실제 앱 시트 화면은 아직 못 봄
+- #231 재등록 알림 `renewalAlerts` (규칙 계산, AI 아님): `functions/shared/renewal-forecast.mjs` 를 앱 · 서버가 같이 씀.
+  서버 `renewalCandidates` (밤 04:30 · 새 회원권 트리거 · 대표 [지난 6달 채우기]). 운영 데이터 재등록률 대조는 배포 뒤
+- #232 상담 소재 `consultPoints` (AI, 누를 때만): callable `consultTalkingPoints`, 효과 보장 · 가격 말 서버가 버림.
+  설계와 다른 점: 게이트웨이 대신 callable, 목표는 서버 저장 안 하고 누를 때 보냄
+- 강사용 안내 문서: https://claude.ai/artifact/4smYVvnNK8UaeV3Ji4q6HA (공유는 대표가)
+
+남은 것: 동의 문구 법률 검토 → 처리방침 · 버전 올림, 회원 목표 서버 저장(결정 2), 실제 OpenAI 결과 시범 판정(요약 · 상담 소재),
+배포 순서(규칙 → Functions → 웹) 지시 대기.
+
+## 2026-11-16 — 수업기록 서버 저장 · AI 회원 요약 · 회원 동의 (#222 ~ #229, PR 만 · 병합 · 배포 전)
+
+설계 문서: https://claude.ai/artifact/FmYAG8gfqADfrF4GSmCRmG (대표 "다진행해줘" 로 결정 1~6 추천안 승인).
+PR 은 앞 PR 위에 차례로 쌓았다 -- **#222 은 main 기준, #223 → #224 → … → #229 는 앞 PR 브랜치 기준**. 병합도 그 순서.
+
+- #222 AI 로 회원 이름이 가던 두 곳 막음 (STT 힌트 · 음성 경로 이름 지우기). 배포: aiGateway
+- #223 저장 계층 한 곳으로 (1-1, 동작 없음)
+- #224 기기 · 서버 동시 저장, 스위치 `scheduleSync.lessonRecordServer`, 보낼 줄(outbox) -- 서버가 받기 전엔 안 지움
+- #225 기존 확정 기록 이관 (상담 · 인바디 제외)
+- #226 비교 검증 (6시간, 차이는 다시 보냄) + 대표 카드
+- #227 서버 기록 읽기, 스위치 `lessonRecordServerRead`. 서버 기록은 화면에만, 고치기 대상 아님
+- #228 AI 회원 요약 (2단계): 트리거 `refreshMemberSummaryOnRecord` · 15분 `sweepMemberSummaries` · `rebuildMemberSummary`,
+  스위치 `memberSummary`, 대표 "AI 회원 요약 점검" 카드. 문장마다 근거, 서버가 진단 말 · 좌우 · 기구 이름 검사
+- #229 회원 단위 동의 `clients.aiConsent` (결정 4). 동의 없는 회원은 서버로 안 보냄. **문구는 초안 -- 법률 검토 필요**
+  (`docs/member-data-consent-draft.md`), 처리방침(`public/privacy.html`)은 아직 안 바꿈. #224 의 빈 명부 붙잡기 버그도 여기서 고침
+
+배포할 것(지시 시): 규칙(lessonRecords · lessonRecordParity · memberSummaries · clients.aiConsent),
+Functions(aiGateway · updateRuntimeConfig · 요약 3개), 웹. 스위치는 전부 꺼진 채로 나간다.
+켜는 순서: 동의 문구 확정 → 서버 저장(강사 1~2명) → 비교 '일치' 확인 → 서버 읽기 → AI 요약(시범 회원 20명 대표 판정).
+
+남은 단계: 3 브리핑 개편 · 4 재등록 알림 · 5 상담 소재 · 끝나면 직원용 변경 요약 시트.
+
+## 2026-11-16 — 수업 별점 메뉴 따로 · 월별 · 누적 · 점장은 자기 지점 강사만 (#221 병합 · Functions · 강사 웹 · 보니따 웹 배포됨)
+
+- **배포 (대표 지시 "모두 진행해줘")**: 병합 main `a42ab49` → deploy-main fast-forward → Functions `lessonRatingStats` 갱신(`--config firebase.ai-gateway.json`,
+  서버 테스트 379 통과, 비로그인 → 401 확인) → `npm run deploy:web`(3793 통과, 운영 `mwis7r4d-a42ab49`) → 보니따 웹 자동 배포 성공(run 43805515210).
+  운영 보니따 번들에 새 문구 "담당 선생님에게는 공개되지 않아요 · 센터 관리자만…" 있고 옛 문구 없음 확인. 규칙 변경 없음. 설치형 앱 · 실제 점장 계정 미확인
+
+- 대표: "별점 항목을 따로 빼고 점장이 자기 지점 강사들 몇 점 받는지 · 한 달 단위로 누적". 추천안 채택: 점장 본인 점수 제외 + 회원 문구 사실대로
+- 서버 `lessonRatingStats`: month `YYYY-MM`(수업 시각 · KST, 개별 문서 모아 셈) / `all`(누적) / 없으면 이번 달. 대표 · 총괄 전부(전에는 대표만),
+  점장(역할 instructor + 직함 branch_manager) 지점 겹치는 강사만 · 본인 제외, 그 밖 `not_allowed`. 개별 응답 · 회원은 안 돌려줌
+- 앱: 더보기 "수업 별점" (대표 · 총괄 = 강사 · 급여, 점장 = 업무). 운영 스위치 화면에서 집계 뺌
+- 회원 문구: "담당 선생님에게는 공개되지 않아요 · 센터 관리자만 더 좋은 수업을 위해 확인해요" (점장도 강사라 옛 문구는 거짓)
+- **배포 순서(지시 뒤)**: Functions `lessonRatingStats` → 강사 웹 → 보니따 웹 자동(`functions/shared/lesson-rating.mjs` 는 배포 경로에 있음).
+  옛 서버 + 새 화면이면 월 무시 · 총괄/점장 `not_owner`. 설치형 앱은 새 빌드부터
+- 확인: Functions 379 · 앱 3793 / 0 실패 · 보니따 빌드. 미리보기 lesson-ratings(화면만). 실기기 · 점장 계정 미확인
+
+## 2026-11-16 — "기록" 화면의 기록이 수업과 안 이어져 계속 미기록 (#220 병합 · 강사 웹 배포됨)
+
+- **배포 (대표 지시 "병합하고 운영배포")**: 미리보기 record-link 확인 → 병합 main `b7d3047` → deploy-main fast-forward → `npm run deploy:web`.
+  배포 전 3790 통과 / 0 실패, 운영 `version.json` = `mwiqy8os-b7d3047`. 설치형 앱은 다음 빌드부터(release/1-1-53 에는 없음)
+
+- 제보: 하주은 강사 · 이희주 회원 "AI 말하기로 기록했는데 계속 미기록 알림"
+- 원인(코드 확인): `NoteForm` 저장이 sid 를 `noteSid` 에서 읽는데 그 값을 넣는 곳이 없었다 -- 여기서 쓴 기록은 언제나 sid 없음 → 그 수업은 영영 미기록.
+  하주은 강사가 이 화면을 썼는지는 **추정**(강사 기기 · 클라우드 백업은 대표 허락 없이 열지 않음)
+- 고침: 수업 고르기 칸 · 고른 수업을 sid 로(없으면 칸 없음) · 앱을 열 때 `linkOrphanLessonNotes` 가 틀릴 수 없는 경우만 잇는다
+  (한 회원 · 한 날짜에 sid 없는 기록 하나 + 출석한 미기록 수업 하나) · 진단 `hasLessonLink` · `lesson_note_relinked`
+- 미리보기 record-link (11-23 만료). 실기기 미확인
+
+## 2026-11-16 — 회원 상세 회원권 칸: N회 남음 크게 · 한 회 = 한 칸 · 회원권마다 한 줄 (#219 병합 · 강사 웹 배포됨)
+
+- 대표: "남은 횟수 그래프가 이해하기 힘듦, 더 직관적이고 쉽게". 옛 여정 선 + 점(PassJourneyBar)을 `MemberPassProgress` 로 바꿈 (회원 상세만, 회원 카드의 PassUsageBar 는 그대로)
+- 지금 회원권: "N회 남음" 크게(TYPE.display), 40회 이하는 한 회 = 한 칸, 넘으면 막대, "사용 · 전체", 미리 끊은 것은 "다음 회원권 · N회 대기"
+- 등록 이력(접힘): 회원권마다 한 줄 -- 남음 / 대기 / 다 씀 / 끝남 · N회 못 씀, 최근 것이 위, 앱 이전 기록 맨 아래 (`pass-usage.js passHistoryRows`)
+- #216 의 상태 세 칸 글자를 픽셀 대신 TYPE 단계로 (type-scale 테스트가 픽셀 숫자를 막는다)
+- 배포 (대표 지시 "병합하고 운영배포"): 미리보기 채널 pass-progress 로 대표 확인 → 병합 main `38d644a` → deploy-main fast-forward → `npm run deploy:web`.
+  배포 전 3786 통과 / 0 실패, 운영 `version.json` = `mwip9d8r-38d644a`. 실기기 미확인. 설치형 앱은 다음 빌드부터
+- 주의: `.env.production` 은 **저장소에 올라가 있는 파일**이다(무시 목록 아님). 임시 폴더에서 빌드할 때 지우지 말 것
+
+## 2026-11-16 — 회원 상세 정리 · 일정 등록 이름 잘림 · 더보기 대표용 순서 (#216 · #217 · #218, 병합 · 강사 웹 배포됨)
+
+- **배포 (대표 지시 "병합하고 운영배포해줘")**: 먼저 세 PR 을 합친 빌드를 미리보기 채널 `pr216-218` (https://pilateacher--pr216-218-1th6nffl.web.app, 11-23 만료)에
+  올려 대표가 확인 → #216 → #217 → #218 병합, main `de2babb` → `deploy-main` fast-forward(앞선 로컬 커밋 0) → `npm run deploy:web`. 배포 전 테스트 3782 통과 / 0 실패.
+  운영 `version.json` = `mwiob9lm-de2babb` 확인. 보니따 웹은 member/** 변경 없어 배포 대상 아님. 규칙 · Functions 변경 없음
+- 앱(설치형)은 다음 빌드부터 -- `release/1-1-53` 에는 아직 없다
+
+- **#216 `feat/member-detail-clean`**: 체형 변화 카드를 `MEMBER_DETAIL_BODY_CARD = false` 로 끔(지우지 않음, 360° 바디뷰와 같은 방식),
+  상태를 잔여 · 다음 예약 · 만료 세 칸, 이용권 카드 상자 한 겹, 센터 회원권엔 회당 금액 설명 없음, 비어 있는 변경 이력 칸 숨김
+- **#218 `fix/schedule-member-name-fit`**: 듀엣 회원 두 칸이 폰에서도 나란히라 이름 칸이 ~90px. 안드로이드 글자 크기 키움(130%)에서
+  4글자 이름 끝이 "…" 로 잘림(더 짧은 이름을 고르면 다시 보임 -- 제보와 같음). 폰에서는 위아래로 쌓고 640px 부터 나란히. 유형 버튼 min-h.
+  헤드리스 Chrome 320~412px · 글자 100/130/160% 캡처로 확인, **실기기 미확인** -- 보통 글자 크기 · 개인 수업에서도 잘리면 다른 원인
+- **#217 `feat/settings-owner-first`**: 대표 · 총괄의 더보기 = 회원·회원권 → 강사·급여 → 상품 → 업무(만료 · 공지) → 대표 설정(접힘) → 내 설정 →
+  계정·앱 → 점검(접힘) → "강사 메뉴 · 강사 화면에 보이는 항목"(접힘). 강사 · FC · 개인 모드는 그대로
+- 셋을 한꺼번에 합쳐도 충돌 0, 관련 테스트 452 통과(시험 병합만)
+- 작업 중 #218 커밋 · PR 이 도우미 작업 폴더에서 도우미 자신의 명령보다 먼저 만들어진 일이 있었다 -- 내용은 도우미 작업과 같음(3 파일)
+
+## 2026-11-16 — 긴급: 스스로 계정 삭제한 강사(안혜원) 회원 다시 잇기 (대표 지시)
+
+- 원인: 강사가 앱에서 계정 삭제 → `account-deletion.js` 가 그 사람의 **소속 문서를 지운다**. 회원권 23장(사용 중, 한 지점)의
+  `instructorId` 는 옛 uid 로 남아 담당이 끊김. 대표가 [강사 추가] 로 새 계정을 만들었지만 [계정 교체] 는 옛 소속 문서가 있어야 돈다
+- 조치 (대표 승인 "네, 되살려"): 옛 소속 문서 `memberships/bonita_<옛 uid>` 를 **create 전용**으로 되살림 --
+  role instructor · status revoked · displayName "안혜원 (삭제된 옛 계정)" · 같은 지점 · `restoredReason`. firebase CLI 인증 Firestore REST
+- 대표가 앱 더보기 → 강사 관리 → 옛 계정 → [계정 교체] → 새 안혜원 → 실행. 확인(읽기): 새 계정 회원권 23장 · 담당 회원 19명 · 누적 19명,
+  옛 계정 회원권 0 · 담당 0 · 누적 문서는 0 으로 내려 남김(설계), 옛 소속 status swapped, 새 소속 previousUids = [옛 uid]. 지난 수업 68건은 옛 uid 그대로
+  (급여는 previousUids 로 한 사람으로 센다)
+- **재발 막을 것 (후속)**: 소속된 강사가 스스로 계정을 지우면 소속 문서가 사라져 이 일이 다시 난다. 강사 계정 삭제 때 소속 문서를 지우지 않고
+  `status: deleted` 로 남기거나, 회원권이 걸린 강사는 삭제 전에 대표 인계를 요구하는 쪽을 검토할 것
+
+## 2026-11-16 — 보니따 강제 업데이트: Android 21 · iOS 26 (대표 지시 "강제 업데이트 켜줘 1.1.5로")
+
+- **iOS 도 켬** (대표: "출시됨, 켜줘"): Remote Config 버전 2 에 `member_ios_min_build = "26"` · `member_ios_latest_build = "26"` 추가.
+  아래는 버전 1(Android 만) 때의 기록
+
+- Firebase Remote Config(프로젝트 pilateacher)에 처음으로 값을 넣었다 -- 전에는 템플릿이 비어 있었다. 버전 1:
+  `member_force_update_enabled = "true"` · `member_android_min_build = "21"` · `member_android_latest_build = "21"` (1.1.5 의 Play versionCode 21)
+- **iOS 는 넣지 않았다.** 대표 화면 캡처에서 iOS 빌드 26(1.1.5)이 App Store Connect "제출 준비 완료" -- 아직 심사 · 출시 전이다.
+  지금 iOS 최소를 26 으로 두면 앱스토어에 1.1.4 만 있는 동안 아이폰 회원이 업데이트 화면에 갇힌다(iOS 에는 Android 의
+  store_behind_minimum 같은 안전장치가 없다). **iOS 1.1.5 출시 뒤** `member_ios_min_build = "26"` · `member_ios_latest_build = "26"` 을 더한다
+- 값 넣기: firebase CLI 로그인 계정으로 Remote Config REST(GET 으로 ETag → PUT If-Match). 판정 모의: Android 20 → required,
+  21 → none, 스토어 확인 실패 → 권유만, iOS → 스토어에 새 버전 있을 때 권유만
+- 되돌리기: Firebase 콘솔 → Remote Config → 버전 기록에서 이전(빈 템플릿)으로, 또는 `member_force_update_enabled` 를 "false"
+- 운영 설정은 앱이 최소 10분 간격으로 새로 받는다. 강제 화면은 업데이트 플러그인이 들어간 설치본에서만 뜬다
+
+## 2026-11-15 — 배포 기록: #208 ~ #214 · #207 병합 · 강사 웹 · 1.1.53 빌드 브랜치 (대표 지시 "병합 웹배포해")
+
+- **병합**: #208 → #209 → #210 → #211 → #212 → #213 → #214 → #207 차례로. main `7a0ba08`
+- **강사 웹**: `deploy-main` 로컬 main 을 origin/main 으로 fast-forward 만(앞선 로컬 커밋 0) 한 뒤 `npm run deploy:web`. 배포 전 테스트 3771 통과 / 0 실패.
+  운영 `version.json` = `mwht99tq-7a0ba08` 확인. 보니따 웹은 member/** 변경이 없어 자동 배포 대상 아님
+- **#213 규칙 · Functions 배포 (대표 지시 "FC 지점 확인 후 배포")** -- 21:44 KST 무렵
+  - FC 지점 확인(운영 읽기만, firebase CLI 인증으로 Firestore REST): manager 소속 **5개** --
+    안나리(양산점, 옛 칸만) · 안나리1(양산점 + 좌동점) · 강채련(율하점 + 대원점) · 진현령(반송점 + 토월점 + 장유점) · 황라연(삼계점).
+    활성 회원권 1262장 전부 지점 있음(지점 없는 것 0). **대방점(136장)은 맡은 FC가 없다** -- 대표 · 총괄만 고친다.
+    화면은 10-26 부터 같은 지점 판정이라 FC가 실제로 할 수 있던 범위는 바뀌지 않는다
+  - **확인할 것(대표)**: 안나리 계정이 둘이다. "안나리"(양산점만)로 로그인하면 좌동점 회원권은 못 고친다. 대방점 담당 FC 지정 여부
+  - 규칙: 배포 전 운영본 = main #213 직전 파일(차이 0) 확인 → main 7a0ba08 에서 `npm run test:rules` 432 통과 / 0 실패 →
+    `npx firebase deploy --only firestore:rules --project pilateacher --config firebase.foundation.json`. 배포 뒤 운영본 = main 파일 확인
+    (ruleset cfdda4f7). Storage 규칙 변경 없음
+  - Functions(`--config firebase.ai-gateway.json`): sessionUpPass · handoverPass · managePassHold 갱신. 비로그인 호출 → UNAUTHENTICATED 확인
+  - 실제 FC 계정으로 다른 지점 회원권 거절은 아직 못 봄
+- **앱 빌드 브랜치 `release/1-1-53`** (대표: "1.1.53으로 새로운 빌드"): release/1-1-52 + main 7a0ba08 합침(충돌 0) + 버전.
+  강사 1.1.53 · versionCode 76 · 허용 브랜치 추가, 보니따 1.1.5. 강사 테스트 3773 · 두 앱 빌드 통과. Codemagic 시작 · 스토어 업로드는 대표
+
 ## 2026-11-15 — FC매니저는 맡은 지점의 회원권만 (#213, 병합 · 배포 전, 규칙 배포 필요)
 
 - 대표: "네, PR까지" (FC 권한 정리에서 찾은 구멍). 규칙 `passInManagerScope` · 서버 `passInManagerScope`(pass-admin.js) ·

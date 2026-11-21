@@ -6885,6 +6885,12 @@ describe("강사 개인매출 인센 -- 두 장부 · 서버 확정 · 잠금", 
     await assertFails(getDoc(monthRef(users.outsider)), "다른 센터");
   });
 
+  test("그룹 수강권 줄은 FC 반반(share 0.5)을 받지 않는다 -- 개인은 그대로", async () => {
+    await assertFails(setDoc(entryRef(users.instructor, "g-half"), row(users.instructor, { kind: "group", clientId: "", memberLabel: "박그룹", recordId: "", passId: "", share: 0.5 })));
+    await assertSucceeds(setDoc(entryRef(users.instructor, "g-full"), row(users.instructor, { kind: "group", clientId: "", memberLabel: "박그룹", recordId: "", passId: "", share: 1 })));
+    await assertSucceeds(setDoc(entryRef(users.instructor, "p-half"), row(users.instructor, { share: 0.5 })));
+  });
+
   test("확정된 달의 줄은 아무도 못 넣고 · 고치고 · 지운다", async () => {
     await seedEntry("e1", users.instructor);
     await seedEntry("e2", users.owner);

@@ -82,6 +82,30 @@ export function creditOf(entry) {
   return isRefund(entry) ? -credited : credited;
 }
 
+/**
+ * 환수 계산에 읽어야 하는 지난 달들: 이 달 환불이 가리키는 가장 이른 달부터 지난달까지 (그 사이 달의 환불도 깎아야 한다).
+ * 너무 멀리 가지 않게 24 달까지.
+ * @param {any[]} entries  이 달 줄 (+ 입력 중인 줄)
+ * @param {string} month
+ */
+export function refundRangeMonths(entries, month, limit = 24) {
+  const key = text(month);
+  const earliest = (Array.isArray(entries) ? entries : [])
+    .filter((entry) => isRefund(entry) && isSalesMonth(entry?.refundOfMonth) && text(entry.refundOfMonth) < key)
+    .map((entry) => text(entry.refundOfMonth)).sort()[0];
+  if (!earliest) return [];
+  const months = [];
+  let [year, monthNumber] = earliest.split("-").map(Number);
+  while (months.length < limit) {
+    const value = `${year}-${String(monthNumber).padStart(2, "0")}`;
+    if (value >= key) break;
+    months.push(value);
+    monthNumber += 1;
+    if (monthNumber > 12) { monthNumber = 1; year += 1; }
+  }
+  return months;
+}
+
 /** 정액 구간 인센. 합계가 첫 구간 아래면 0. */
 export function bracketOf(total) {
   const value = intOf(total);
@@ -142,10 +166,14 @@ export function monthStatement({ entries, month }) {
     if (!byOriginal.has(original)) byOriginal.set(original, []);
     byOriginal.get(original).push(refund);
   }
+  /* 여러 달에 걸친 환불 (2026-11-22 검토 지적 · 재현: 9월 500만 → 10월 · 11월 100만씩 환불이면 9만 + 9만 = 18만만 환수, 맞는 값 25만).
+     그 사이 달(원래 달 < m < 이 달)에 이미 환수한 환불을 먼저 깎은 금액이 "지금까지 받은 인센" 이다 -- entries 에 그 사이 달 줄이 있어야
+     한다 (refundRangeMonths 로 읽는다). */
   const clawbacks = [...byOriginal.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([original, refunds]) => {
     const originalEntries = list.filter((entry) => text(entry.month) === original && (!isRefund(entry) || refundsOwnMonth(entry, original)));
-    const paid = incentiveOf(originalEntries).incentive;
-    const corrected = incentiveOf([...originalEntries, ...refunds]).incentive;
+    const earlierRefunds = list.filter((entry) => isRefund(entry) && text(entry.refundOfMonth) === original && text(entry.month) > original && text(entry.month) < key);
+    const paid = incentiveOf([...originalEntries, ...earlierRefunds]).incentive;
+    const corrected = incentiveOf([...originalEntries, ...earlierRefunds, ...refunds]).incentive;
     return { month: original, refunded: refunds.reduce((sum, entry) => sum - creditOf(entry), 0), amount: Math.max(0, paid - corrected) };
   });
   const clawbackTotal = clawbacks.reduce((sum, item) => sum + item.amount, 0);
@@ -347,6 +375,8 @@ export function entryProblems(entry) {
   if (isRefund(entry) && text(entry?.refundOfMonth) && !isSalesMonth(entry.refundOfMonth)) problems.push("refund_month_invalid");
   if (isRefund(entry) && text(entry?.refundOfMonth) > text(entry?.month)) problems.push("refund_month_future");
   if (isGroup(entry) && entry?.ot === true) problems.push("ot_not_for_group");
+  /* 그룹은 FC 반반 매출이 없다 (2026-11-22 대표). 화면 · 규칙 · 서버 확정이 같이 막는다. */
+  if (isGroup(entry) && Number(entry?.share) === HALF_SHARE) problems.push("share_not_for_group");
   return problems;
 }
 

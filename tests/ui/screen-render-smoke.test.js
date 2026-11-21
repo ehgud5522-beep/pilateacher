@@ -359,6 +359,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "이달 예상 급여 · 빈 달",
     "이달 예상 급여 · 조회 실패",
     "예상 급여 카드",
+    "예상 급여 카드 · 자료 누락",
     "예상 급여 카드 · 인센",
     "이달 예상 급여 · 수업료 외",
     "이달 예상 급여 · 명세",
@@ -473,6 +474,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "재등록 레이더 · PC",
     "매출 인센 · 강사",
     "매출 인센 · 강사 · 그룹 입력",
+    "매출 인센 · 강사 · 예전 메모 고치기",
     "매출 인센 · FC · PC",
     "담당 강사",
     "담당 강사 · 빠진 회원",
@@ -504,6 +506,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "급여 집계 · 수업료 외",
     "급여 집계 · 명세 · PC",
     "급여 집계 · 확정됨",
+    "급여 집계 · 자료 누락",
     "급여 집계 · 이관 전",
     "급여 집계 · 빈 달",
     "급여 집계 · 조회 실패",
@@ -3897,4 +3900,26 @@ test("매출 인센 입력: 그룹은 반반 없음 · 수강권 횟수 · 금�
   assert.match(html, /그룹 매출 ₩140,000 × 5%/);
   assert.match(html, /data-sales-section-amount="group"[^>]*>₩45,000/, "그룹 칸 머리에 예상 그룹 인센이 크게 (90만 × 5%)");
   assert.match(html, /data-sales-section-amount="personal"/);
+});
+
+/* 2026-11-22 외부 검토 1차: 자료를 못 읽으면 확정 · 실수령을 막는다, 확정된 달은 확정 명세만, 예전 메모 횟수 */
+test("급여 무결성: 자료 누락이면 확정 잠금 · 강사 실수령 대신 안내 · 확정된 달은 명세 없는 강사를 지금 숫자로 채우지 않는다", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+  const blocked = markupOf("급여 집계 · 자료 누락");
+  assert.match(blocked, /data-pay-close-blocked/);
+  assert.match(blocked, /매출 인센 · FC 수업료를 읽지 못했어요 \(코드 permission-denied\)/);
+  assert.match(blocked, /<button[^>]*disabled=""[^>]*data-pay-close/, "확정 버튼이 잠긴다");
+  assert.doesNotMatch(blocked, /data-pay-adjust-editor/, "자료가 빠진 채로 조정도 넣지 않는다");
+  const card = markupOf("예상 급여 카드 · 자료 누락");
+  assert.match(card, /data-pay-net-missing/);
+  assert.doesNotMatch(card, /실수령 ₩/);
+  const closed = markupOf("급여 집계 · 확정됨");
+  assert.match(closed, /명세 없음/, "u2 는 확정 명세가 없다 -- 지금 원장으로 채우지 않는다");
+  assert.match(closed, /확정 명세가 없는 강사 1명은 합계에 넣지 않았어요/);
+  const legacy = markupOf("매출 인센 · 강사 · 예전 메모 고치기");
+  assert.match(legacy, /aria-label="수강권 횟수"[^>]*value="20"|value="20"[^>]*aria-label="수강권 횟수"/);
+  assert.match(legacy, /기존 메모: 1:1 20회/);
+  assert.doesNotMatch(legacy, /value="1120"/);
 });

@@ -407,6 +407,15 @@ test("the csv is one row per lesson, readable by Excel", () => {
   assert.equal(lines.length, 3, "한 줄이 수업 한 회다");
 });
 
+/* 2026-11-22 검토 지적: 이름이 = 로 시작하면 엑셀이 수식으로 읽는다. 글자만 ' 로 막고 숫자(금액 · 정정)는 그대로. */
+test("csv cells that look like formulas stay text, numbers stay numbers", () => {
+  const summary = summarizeOrganizationPay([orgEntry({ id: "f", instructorId: "u1", locationId: "bansong", clientId: "client-a", passId: "pass-a" })]);
+  const names = { ...csvNames, nameOfInstructor: () => "=1+1", nameOfClient: () => "@SUM(A1)", nameOfLocation: () => "-지점" };
+  const line = payrollClientCsv({ ...summary, month: "2026-09" }, names).slice(1).split("\n")[1];
+  assert.match(line, /^2026-09,'-지점,'=1\+1,'@SUM\(A1\),/);
+  assert.doesNotMatch(line, /,'\d/, "숫자 칸은 그대로");
+});
+
 test("the csv can be cut to one instructor or one location", () => {
   /* 대표가 강사에게 보내는 것은 그 사람 것뿐이고, 지점장에게 보내는 것은 그
      지점 것뿐이다. 한 장으로만 뽑히면 남의 급여가 함께 나간다. */

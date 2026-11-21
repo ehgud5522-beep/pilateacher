@@ -206,3 +206,22 @@ test("FC 단독 확정 + 대표 알림: 버튼 옆 문구 · 알림 본문 (그�
     body: "박에프씨 님이 정예진 강사의 2026년 11월 매출 인센을 확정했어요 · 지급 150,000원 (개인 250,000원 · 그룹 10,000원 · 지난달 환수 −110,000원) · 매출 5,000,000원",
   });
 });
+
+/* 2026-11-22 검토 지적 · 재현: 여러 달에 걸친 환불, 그룹 반반 */
+test("여러 달 환불: 그 사이 달에 이미 환수한 몫을 빼고 센다 -- 9월 500만, 10월 · 11월 100만씩 환불이면 9만 + 16만 = 25만", async () => {
+  const { monthStatement, refundRangeMonths, entryProblems } = await import("../../functions/shared/sales-incentive.mjs");
+  const e = (id, month, extra = {}) => ({ id, side: "instructor", month, paidOn: `${month}-05`, kind: "repurchase", amount: 5000000, share: 1, ot: false, clientId: "c1", memberLabel: "", refundOfMonth: "", ...extra });
+  const sep = e("s", "2026-09");
+  const oct = e("r1", "2026-10", { kind: "refund", amount: 1000000, refundOfMonth: "2026-09" });
+  const nov = e("r2", "2026-11", { kind: "refund", amount: 1000000, refundOfMonth: "2026-09" });
+  const october = monthStatement({ month: "2026-10", entries: [sep, oct] }).clawbackTotal;
+  const november = monthStatement({ month: "2026-11", entries: [sep, oct, nov] }).clawbackTotal;
+  assert.equal(october, 90000, "500만 → 400만: 25만 → 16만");
+  assert.equal(november, 160000, "400만 → 300만: 16만 → 0");
+  assert.equal(october + november, 250000, "9월에 받은 25만을 다 돌려받는다");
+  assert.deepEqual(refundRangeMonths([nov], "2026-11"), ["2026-09", "2026-10"], "그 사이 달까지 읽는다");
+  assert.deepEqual(refundRangeMonths([e("x", "2027-01", { kind: "refund", refundOfMonth: "2026-11" })], "2027-01"), ["2026-11", "2026-12"]);
+  assert.deepEqual(refundRangeMonths([sep], "2026-11"), []);
+  assert.ok(entryProblems({ ...e("g", "2026-11"), kind: "group", memberLabel: "박그룹", clientId: "", share: 0.5 }).includes("share_not_for_group"));
+  assert.ok(!entryProblems({ ...e("p", "2026-11"), share: 0.5 }).includes("share_not_for_group"), "개인은 반반 그대로");
+});

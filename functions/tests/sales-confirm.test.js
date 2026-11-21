@@ -8,7 +8,7 @@ const { createSalesConfirmService } = require("../src/sales-confirm");
 function fake(seed) {
   const docs = new Map(Object.entries(seed));
   const writes = [];
-  const snap = (path) => ({ id: path.split("/").pop(), exists: docs.has(path), data: () => docs.get(path) });
+  const snap = (path) => ({ id: path.split("/").pop(), path, exists: docs.has(path), data: () => docs.get(path) });
   const query = (path, filters) => ({
     where: (field, _op, value) => query(path, [...filters, [field, value]]),
     get: async () => ({ docs: [...docs.keys()]
@@ -25,8 +25,29 @@ function fake(seed) {
     collection: (name) => collectionRef(`${path}/${name}`),
   });
   let failPrefix = "";
+  let beforeCommit = null;
+  /* Firestore 트랜잭션 흉내: 읽은 문서가 커밋 전에 바뀌었으면 처음부터 다시 돈다 (최대 5번). 쓰기는 커밋 때 한 번에. */
+  const runTransaction = async (fn) => {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const reads = new Map();
+      const pending = [];
+      const remember = (row) => reads.set(row.path, JSON.stringify(docs.get(row.path) ?? null));
+      const tx = {
+        get: async (target) => { const result = await target.get(); (result.docs || [result]).forEach(remember); return result; },
+        set: (ref, data, options) => { pending.push([ref, data, options]); },
+      };
+      const value = await fn(tx);
+      if (beforeCommit) beforeCommit(attempt);
+      if ([...reads].some(([path, json]) => JSON.stringify(docs.get(path) ?? null) !== json)) continue;
+      for (const [ref, data, options] of pending) await ref.set(data, options);
+      return value;
+    }
+    throw Object.assign(new Error("aborted"), { code: "aborted" });
+  };
   return {
     writes, docs, failWritesTo: (prefix) => { failPrefix = prefix; },
+    onBeforeCommit: (hook) => { beforeCommit = hook; },
+    runTransaction,
     doc: docRef,
     collection: collectionRef,
   };
@@ -148,4 +169,29 @@ test("대표가 확정하면 총괄에게만 알림 · 알림을 못 보내도 �
   assert.equal(broken.docs.get(`organizations/${ORG}/salesMonths/t1_2026-11`).status, "confirmed");
   assert.equal(logs[0].event, "sales_confirm_notice_failed");
   assert.equal(logs[0].fields.errorCode, "unavailable");
+});
+
+/* 2026-11-22 검토 지적: 읽은 뒤 저장 사이에 장부가 바뀌면 이전 금액으로 확정됐다 · 여러 달 환불 · 그룹 반반 */
+test("확정 중에 강사 장부가 바뀌면 다시 읽어 대조한다 -- 달라졌으면 확정하지 않는다", async () => {
+  const store = fake(base(Object.fromEntries([entry("a", "instructor"), entry("b", "office")])));
+  store.onBeforeCommit((attempt) => {
+    if (attempt === 0) store.docs.set(`organizations/${ORG}/salesEntries/a`, { ...store.docs.get(`organizations/${ORG}/salesEntries/a`), amount: 4300000 });
+  });
+  await assert.rejects(confirm(store, "owner"), (error) => error.reason === "sides_differ");
+  assert.notEqual(store.docs.get(`organizations/${ORG}/salesMonths/t1_2026-11`)?.status, "confirmed");
+});
+
+test("여러 달 환불: 11월 확정이 그 사이(10월) 환불까지 읽어 9월 인센을 다 돌려받는다", async () => {
+  const sept = (id, side) => entry(id, side, { month: "2026-09", paidOn: "2026-09-05", amount: 5000000 });
+  const refund = (id, side, month) => entry(id, side, { month, paidOn: `${month}-10`, kind: "refund", amount: 1000000, refundOfMonth: "2026-09" });
+  const store = fake(base(Object.fromEntries([sept("s1", "instructor"), sept("s2", "office"), refund("o1", "instructor", "2026-10"), refund("o2", "office", "2026-10"),
+    refund("n1", "instructor", "2026-11"), refund("n2", "office", "2026-11")])));
+  const result = await confirm(store, "owner");
+  assert.equal(result.snapshot.clawbackTotal, 160000, "400만 → 300만: 16만 (10월에 9만은 이미 환수)");
+});
+
+test("그룹 반반 줄이 남아 있으면 확정하지 않는다", async () => {
+  const group = (id, side) => entry(id, side, { kind: "group", amount: 2000000, clientId: "", memberLabel: "김민지", recordId: "", share: 0.5 });
+  const store = fake(base(Object.fromEntries([group("g1", "instructor"), group("g2", "office")])));
+  await assert.rejects(confirm(store, "owner"), (error) => error.reason === "group_half_share");
 });

@@ -72,15 +72,24 @@ export function extraPayOf({ salesMonth = null, fcMonth = null } = {}) {
  */
 export function extrasByInstructor({ salesMonths = [], fcMonths = [], canonicalInstructorId = (id) => text(id) } = {}) {
   const keyOf = (doc) => text(canonicalInstructorId(text(doc?.instructorId))) || text(doc?.instructorId);
-  /** @type {Map<string, { salesMonth: any, fcMonth: any }>} */
+  /* 계정을 바꾼 강사는 옛 계정 · 새 계정 문서가 둘 다 있을 수 있다 -- 덮어쓰지 않고 줄을 모두 모아 더한다
+     (2026-11-22 검토 지적 · 재현: 16만 + 25만이 41만이 아니라 어느 한쪽만 남았다). */
+  /** @type {Map<string, { salesMonths: any[], fcMonths: any[] }>} */
   const docs = new Map();
-  const slot = (key) => { if (!docs.has(key)) docs.set(key, { salesMonth: null, fcMonth: null }); return docs.get(key); };
-  for (const doc of salesMonths || []) if (keyOf(doc)) slot(keyOf(doc)).salesMonth = doc;
-  for (const doc of fcMonths || []) if (keyOf(doc)) slot(keyOf(doc)).fcMonth = doc;
+  const slot = (key) => { if (!docs.has(key)) docs.set(key, { salesMonths: [], fcMonths: [] }); return docs.get(key); };
+  for (const doc of salesMonths || []) if (keyOf(doc)) slot(keyOf(doc)).salesMonths.push(doc);
+  for (const doc of fcMonths || []) if (keyOf(doc)) slot(keyOf(doc)).fcMonths.push(doc);
   const result = new Map();
   for (const [key, value] of docs) {
-    const extra = extraPayOf(value);
-    if (extra.has) result.set(key, extra);
+    const parts = [...value.salesMonths.map((salesMonth) => extraPayOf({ salesMonth })), ...value.fcMonths.map((fcMonth) => extraPayOf({ fcMonth }))];
+    const lines = parts.flatMap((part) => part.lines);
+    if (!lines.length) continue;
+    result.set(key, {
+      lines,
+      confirmedTotal: parts.reduce((sum, part) => sum + part.confirmedTotal, 0),
+      waiting: parts.reduce((sum, part) => sum + part.waiting, 0),
+      has: true,
+    });
   }
   return result;
 }

@@ -1948,6 +1948,8 @@ service cloud.firestore {
             : data.refundOfMonth == "")
           /* 그룹 수강권(5%)에는 OT 인센이 없다. */
           && (!(data.kind in ["group", "group_refund"]) || data.ot == false)
+          /* 그룹은 FC 반반 매출이 없다 (2026-11-22 대표). */
+          && (!(data.kind in ["group", "group_refund"]) || data.share == 1)
           && data.updatedBy == request.auth.uid
           && data.updatedAt == request.time;
       }

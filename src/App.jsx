@@ -430,7 +430,7 @@ import {
 } from "./features/records/renewal-radar.js";
 import { groupRowsByBranch, pickBranch } from "./features/records/branch-groups.js";
 import {
-  CONFIRM_NOTICE_HINT, SALES_KIND_CHOICES_BY_SECTION, blankEntry, otBonusOf, confirmFailureText, entryErrors, entryFromSuggestion, entryLine, kstDate, monthStatusView, mySalesView, salesBoardRows,
+  CONFIRM_NOTICE_HINT, SALES_KIND_CHOICES_BY_SECTION, blankEntry, entryPreview, otBonusOf, confirmFailureText, entryErrors, entryFromSuggestion, entryLine, kstDate, monthStatusView, mySalesView, salesBoardRows,
   submissionChangeText, submittedSummaryOf,
 } from "./features/sales/sales-board.js";
 import { MATCH_VIEW, PAIR, PAIR_VIEW, SALES_KIND_LABELS, isGroup, matchEntry, salesRecordsOf, suggestionsFor } from "../functions/shared/sales-incentive.mjs";
@@ -8505,7 +8505,7 @@ function ReferenceMemberDetail({ openConsultOnMount = false, onConsumeConsultInt
       {sheet === "memos-all" && <Sheet title="상담 메모 전체 보기" onClose={() => setSheet(null)}><div className="space-y-2"><DeviceOnlyNote />{consultationNotes.length ? consultationNotes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 8, backgroundColor: note.important ? WARN_S : CANVAS }}><p style={{ fontSize: TYPE.caption, color: SUB }}>{ymd(note.date)}{note.important ? " · 중요 메모" : ""}</p><p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{note.body}</p></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>등록된 상담 메모가 없습니다</p>}<button type="button" onClick={openMemo} className="h-11 w-full text-xs font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D }}>메모 추가</button></div></Sheet>}
       {sheet === "records-all" && <Sheet title="수업 기록 전체 보기" onClose={() => setSheet(null)}><div className="min-w-0 space-y-2">{lessonSessions.length ? lessonSessions.map((session) => <div key={session.key} className="min-w-0" style={{ padding: 10, borderRadius: 8, backgroundColor: CANVAS }}><p className="mb-2 text-caption tabular-nums" style={{ color: SUB }}>{formatMemberLessonDate(session.date, { weekday: true })} · {session.type}</p><LessonRecordFieldRows session={session} />{session.warning && <p className="mt-2 text-caption" style={{ color: SUB }}>{session.warning}</p>}</div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>아직 작성된 수업 기록이 없습니다</p>}</div></Sheet>}
       {sheet === "membership" && <Sheet title="현재 이용권 수정" onClose={() => setSheet(null)}><div className="space-y-3">{!passConfirm ? <><Field label="이용권 이름"><input value={pass.name} onChange={(e) => setPass({ ...pass, name: e.target.value })} className={inputCls} /></Field><div className="grid grid-cols-3 gap-2"><Field label="정규 잔여"><input inputMode="numeric" value={pass.regular} onChange={(e) => setPass({ ...pass, regular: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field><Field label="서비스 잔여"><input inputMode="numeric" value={pass.service} onChange={(e) => setPass({ ...pass, service: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field><Field label="누적 등록"><input inputMode="numeric" value={pass.total} onChange={(e) => setPass({ ...pass, total: e.target.value.replace(/\D/g, "") })} className={inputCls} /></Field></div><Field label="만료일"><input type="date" value={pass.end} onChange={(e) => setPass({ ...pass, end: e.target.value })} className={inputCls} /></Field><button type="button" onClick={() => setPassConfirm(true)} className="h-12 w-full text-sm font-bold text-white" style={{ borderRadius: 8, backgroundColor: BRAND }}>변경 내용 확인</button></> : <><div style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}><p className="mb-2 text-xs font-bold" style={{ color: INK }}>변경 전후를 확인해 주세요</p>{[["총 잔여", `${left(member)}회`, `${num(pass.regular) + num(pass.service)}회`], ["누적 등록", `${num(member.total)}회`, `${num(pass.total)}회`], ["만료일", member.contractEnd ? ymd(member.contractEnd) : "미설정", pass.end ? ymd(pass.end) : "미설정"]].map(([label,before,after]) => <div key={label} className="flex items-center gap-2 py-1"><span className="w-16 text-caption" style={{ color: SUB }}>{label}</span><span className="min-w-0 flex-1 text-right text-xs line-through" style={{ color: SUB }}>{before}</span><ChevronRight size={12} style={{ color: FAINT }} /><span className="min-w-0 flex-1 text-xs font-bold" style={{ color: BRAND_D }}>{after}</span></div>)}</div>{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setPassConfirm(false)} className="h-12 text-sm font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2 }}>다시 수정</button><button type="button" disabled={saving === "membership"} onClick={() => { const regular = num(pass.regular), service = num(pass.service), total = num(pass.total); commitPatch("membership", { passName: pass.name.trim(), regular, service, total, contractEnd: pass.end, payments: [{ id: uid(), date: todayISO(), kind: "adjustment", name: "이용권 수정", before: { remaining: left(member), total: num(member.total), end: member.contractEnd || "" }, after: { remaining: regular + service, total, end: pass.end } }, ...(member.payments || [])] }); }} className="h-12 text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "membership" ? "저장 중…" : "확인 후 저장"}</button></div></>}</div></Sheet>}
-      {sheet === "rate" && canViewSettlement && !organizationMode && <Sheet title="강사 정산 단가 수정" onClose={() => setSheet(null)}><div className="space-y-3">{!rateConfirm ? <><Field label="강사 정산 단가"><input inputMode="numeric" value={rateEdit} onChange={(e) => setRateEdit(e.target.value.replace(/\D/g, ""))} className={inputCls} /></Field><p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>회원 회당 결제금액과 별도이며 급여 예상 계산에 사용됩니다.</p><button type="button" disabled={!num(rateEdit)} onClick={() => setRateConfirm(true)} className="h-12 w-full text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>변경 내용 확인</button></> : <><div className="flex items-center gap-3" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}><span className="min-w-0 flex-1 text-right text-sm line-through" style={{ color: SUB }}>₩{won(settlementUnit)}</span><ChevronRight size={14} style={{ color: FAINT }} /><span className="min-w-0 flex-1 text-sm font-bold" style={{ color: BRAND_D }}>₩{won(rateEdit)}</span></div>{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setRateConfirm(false)} className="h-12 text-sm font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2 }}>다시 수정</button><button type="button" disabled={saving === "rate"} onClick={() => commitPatch("rate", { payRate: num(rateEdit) })} className="h-12 text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "rate" ? "저장 중…" : "확인 후 저장"}</button></div></>}</div></Sheet>}
+      {sheet === "rate" && canViewSettlement && !organizationMode && <Sheet title="강사 정산 단가 수정" onClose={() => setSheet(null)}><div className="space-y-3">{!rateConfirm ? <><Field label="강사 정산 단가"><input inputMode="numeric" value={commaDigits(rateEdit)} onChange={(e) => setRateEdit(e.target.value.replace(/\D/g, ""))} className={inputCls} /></Field><p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>회원 회당 결제금액과 별도이며 급여 예상 계산에 사용됩니다.</p><button type="button" disabled={!num(rateEdit)} onClick={() => setRateConfirm(true)} className="h-12 w-full text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>변경 내용 확인</button></> : <><div className="flex items-center gap-3" style={{ padding: 12, borderRadius: 10, backgroundColor: CANVAS }}><span className="min-w-0 flex-1 text-right text-sm line-through" style={{ color: SUB }}>₩{won(settlementUnit)}</span><ChevronRight size={14} style={{ color: FAINT }} /><span className="min-w-0 flex-1 text-sm font-bold" style={{ color: BRAND_D }}>₩{won(rateEdit)}</span></div>{saveError && <p role="alert" style={{ fontSize: TYPE.caption, color: BAD }}>{saveError}</p>}<div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setRateConfirm(false)} className="h-12 text-sm font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2 }}>다시 수정</button><button type="button" disabled={saving === "rate"} onClick={() => commitPatch("rate", { payRate: num(rateEdit) })} className="h-12 text-sm font-bold text-white disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND }}>{saving === "rate" ? "저장 중…" : "확인 후 저장"}</button></div></>}</div></Sheet>}
     </div>
   );
 }
@@ -16821,15 +16821,15 @@ function PaymentSheet({ member, onClose, onSubmit }) {
           <p className="mb-2 text-xs font-extrabold" style={{ color: INK }}>이 회원 수업료 <span className="font-bold" style={{ color: SUB }}>· 비워 두면 설정의 기본값</span></p>
           <div className="grid grid-cols-2 gap-2">
             <Field label="개인 1회당 원">
-              <input inputMode="numeric" value={f.payRate} onChange={(e) => setUnitPrice(e.target.value)} placeholder="40000" className={inputCls} />
+              <input inputMode="numeric" value={commaDigits(f.payRate)} onChange={(e) => setUnitPrice(e.target.value)} placeholder="40,000" className={inputCls} />
             </Field>
             <Field label="그룹 1회당 원" hint="선택">
-              <input inputMode="numeric" value={f.groupRate} onChange={(e) => setF({ ...f, groupRate: onlyNum(e.target.value) })} placeholder="20000" className={inputCls} />
+              <input inputMode="numeric" value={commaDigits(f.groupRate)} onChange={(e) => setF({ ...f, groupRate: onlyNum(e.target.value) })} placeholder="20,000" className={inputCls} />
             </Field>
           </div>
           <Sub className="mt-1 block">개인 1회당 × 정규 횟수 = 총 결제 금액이 자동으로 채워집니다</Sub>
         </div>
-        <Field label="총 결제 금액 원"><input inputMode="numeric" value={f.amount} onChange={(e) => setAmount(e.target.value)} placeholder="2100000" className={inputCls} /></Field>
+        <Field label="총 결제 금액 원"><input inputMode="numeric" value={commaDigits(f.amount)} onChange={(e) => setAmount(e.target.value)} placeholder="2,100,000" className={inputCls} /></Field>
         <div className="flex gap-1.5">
           {[100000, 500000, 1000000].map((v) => (
             <button key={v} onClick={() => setF({ ...f, amount: String((Number(f.amount) || 0) + v) })} className="flex-1 rounded-xl py-2 text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}>+{won(v)}</button>
@@ -17002,7 +17002,7 @@ function InfoForm({ member, members, onPatch, onDelete, onToast }) {
           <div className="rounded-2xl p-3" style={{ backgroundColor: CANVAS }}>
             <p className="mb-2 text-xs font-extrabold" style={{ color: INK }}>이 회원 개인수업료 <span className="font-bold" style={{ color: SUB }}>· 비워 두면 설정의 기본값</span></p>
             <Field label="개인 1회당 원">
-              <input inputMode="numeric" value={d.payRate || ""} placeholder="기본값 사용"
+              <input inputMode="numeric" value={d.payRate ? commaDigits(d.payRate) : ""} placeholder="기본값 사용"
                 onChange={(e) => S({ payRate: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} className={inputCls} />
             </Field>
             <Sub className="mt-1 block">그룹 수업료는 설정 → 내 수업료 기본값에서 한 번에 정합니다</Sub>
@@ -17579,7 +17579,7 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
             <Sub className="mb-2 block">그룹 수업 정산에 사용하는 기본값입니다</Sub>
             <div>
               <Field label="그룹 1회당 원">
-                <input inputMode="numeric" value={db.settings.groupRate ?? DEF_GROUP_RATE} placeholder={String(DEF_GROUP_RATE)}
+                <input inputMode="numeric" value={commaDigits(db.settings.groupRate ?? DEF_GROUP_RATE)} placeholder={commaDigits(DEF_GROUP_RATE)}
                   onChange={(e) => onChangeSettings({ ...db.settings, groupRate: Number(e.target.value.replace(/[^0-9]/g, "")) || 0 })} className={inputCls} />
               </Field>
             </div>
@@ -17674,6 +17674,13 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
    원장에 쌓인 수업료만 더한다. 인센티브도 노쇼 수수료도 그룹 수업도 여기
    없다. 강사가 이 값을 받을 돈으로 읽으면 매달 정산 때 어긋나므로, 화면이
    무엇까지 셌는지 먼저 말한다. */
+
+/* 금액 입력은 쉼표를 기본으로 (2026-11-22 대표: "전체적으로 금액을 입력할 때 따옴표 표시 기본으로, 헷갈림").
+   저장하는 값은 숫자만이고, 칸에 보이는 글자만 1,400,000 처럼 끊는다. 각 칸의 onChange 는 이미 숫자가 아닌 글자를 걷어 낸다. */
+const commaDigits = (value) => {
+  const digits = String(value ?? "").replace(/\D/g, "").replace(/^0+(?=\d)/, "");
+  return digits ? digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",") : "";
+};
 
 const PAY_SCOPE_NOTICE = "수업료만 계산합니다. 매출 인센 · FC 복지 수업료는 확정된 것만 아래 수업료 외 칸에 따로 더해요. 간부 인센 · 노쇼 · 보너스 · 세금은 따로 정산되고, 확정 대기는 바뀔 수 있어요.";
 
@@ -17778,7 +17785,7 @@ function PayStatementSection({
                 style={{ borderRadius: 8, backgroundColor: sign === value ? (value > 0 ? INK : BAD) : CARD, color: sign === value ? "#fff" : INK2, fontSize: TYPE.caption }}>{label}</button>
             ))}
           </div>
-          <input inputMode="numeric" style={input} placeholder="금액 (원)" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^0-9]/g, ""))} aria-label="조정 금액" />
+          <input inputMode="numeric" style={input} placeholder="금액 (원)" value={commaDigits(amount)} onChange={(event) => setAmount(event.target.value.replace(/[^0-9]/g, ""))} aria-label="조정 금액" />
           <input style={input} placeholder="사유 (예: 대타 수업 정산 누락)" maxLength={100} value={reason} onChange={(event) => setReason(event.target.value)} aria-label="조정 사유" />
           {tried && errors.length ? <p style={{ fontSize: TYPE.caption, color: WARN }}>{errors.map((item) => `${item.text} (${item.code})`).join(" · ")}</p> : null}
           <button type="button" disabled={busy} onClick={submit} className="h-10 w-full font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>
@@ -19183,8 +19190,8 @@ function PassIssue({
                 : priceSource === UNIT_PRICE_SOURCE.FULL_ROOM_RATE
                   ? "담당 강사의 풀방금액으로 정해집니다. 강사를 고르거나 직접 입력해 주세요."
                   : "이 상품은 제안 단가가 없어 직접 넣습니다. 회당 금액입니다."}>
-              <input inputMode="numeric" value={form.unitPriceWon} className={inputCls}
-                placeholder={standardPrice.value !== null ? String(standardPrice.value) : "30000"}
+              <input inputMode="numeric" value={commaDigits(form.unitPriceWon)} className={inputCls}
+                placeholder={standardPrice.value !== null ? commaDigits(standardPrice.value) : "30,000"}
                 onChange={(e) => setForm({ ...form, unitPriceWon: e.target.value.replace(/\D/g, "") })} />
             </IssueField>
           ) : null}
@@ -21461,7 +21468,7 @@ function PassSessionUpSheet({
             onChange={(event) => setSessions(event.target.value.replace(/\D/g, ""))} />
         </Field>
         <Field label="추가 금액 (원)">
-          <input value={price} inputMode="numeric" className={inputCls} placeholder="예) 2500000"
+          <input value={commaDigits(price)} inputMode="numeric" className={inputCls} placeholder="예) 2,500,000"
             onChange={(event) => setPrice(event.target.value.replace(/\D/g, ""))} />
         </Field>
       </div>
@@ -23395,12 +23402,12 @@ function ProductCatalog({ organization, currentUserId, store, onRetryOrganizatio
             onChange={(e) => setForm({ ...form, defaultSessions: e.target.value.replace(/\D/g, "") })} />
         </Field>
         <Field label="기준 금액 (만원)">
-          <input inputMode="numeric" value={form.defaultPriceManwon} className={inputCls} placeholder="120"
+          <input inputMode="numeric" value={commaDigits(form.defaultPriceManwon)} className={inputCls} placeholder="120"
             onChange={(e) => setForm({ ...form, defaultPriceManwon: e.target.value.replace(/\D/g, "") })} />
         </Field>
         {wantsUnitPrice ? (
           <Field label="회당 단가 (원)">
-            <input inputMode="numeric" value={form.baseUnitPriceWon} className={inputCls} placeholder="25000"
+            <input inputMode="numeric" value={commaDigits(form.baseUnitPriceWon)} className={inputCls} placeholder="25,000"
               onChange={(e) => setForm({ ...form, baseUnitPriceWon: e.target.value.replace(/\D/g, "") })} />
             <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
               기타는 표에 단가가 없어 여기서 정합니다. 이 상품으로 발급하면 이 금액이 그대로 쓰입니다.
@@ -27838,7 +27845,7 @@ const salesWon = (value) => `${Math.round(Number(value) || 0).toLocaleString("ko
 const salesMonthOptions = (month, count = 12) => Array.from({ length: count }, (_, index) => shiftRatingMonth(month, -index));
 
 /** 결제 한 줄 입력 · 고치기. 그룹 회원은 명부에 없어 이름을 글자로 (대표: "회원은 그룹이라서 필라티쳐에는 조회가 안됨"). */
-function SalesEntryEditor({ draft, onChange, onSave, onCancel, clients, busy, month }) {
+function SalesEntryEditor({ draft, onChange, onSave, onCancel, clients, busy, month, preview = null }) {
   const errors = entryErrors(draft);
   const group = draft.kind === "group" || draft.kind === "group_refund";
   const refund = draft.kind === "refund" || draft.kind === "group_refund";
@@ -27853,7 +27860,7 @@ function SalesEntryEditor({ draft, onChange, onSave, onCancel, clients, busy, mo
       <div className="flex flex-wrap gap-1.5" role="group" aria-label="구분">
         {SALES_KIND_CHOICES_BY_SECTION[group ? "group" : "personal"].map((kind) => {
           const active = draft.kind === kind;
-          return <button key={kind} type="button" aria-pressed={active} onClick={() => set({ kind, ot: kind === "group" || kind === "group_refund" ? false : draft.ot, refundOfMonth: kind === "refund" || kind === "group_refund" ? draft.refundOfMonth : "" })}
+          return <button key={kind} type="button" aria-pressed={active} onClick={() => set({ kind, ot: kind === "group" || kind === "group_refund" ? false : draft.ot, share: kind === "group" || kind === "group_refund" ? 1 : draft.share, refundOfMonth: kind === "refund" || kind === "group_refund" ? draft.refundOfMonth : "" })}
             className="min-h-9 px-3 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 999, backgroundColor: active ? INK : CANVAS, color: active ? CARD : INK2 }}>{SALES_KIND_LABELS[kind]}</button>;
         })}
       </div>
@@ -27875,7 +27882,7 @@ function SalesEntryEditor({ draft, onChange, onSave, onCancel, clients, busy, mo
           <input type="date" style={input} value={draft.paidOn} min={`${month}-01`} max={`${month}-${String(lastDay).padStart(2, "0")}`} onChange={(event) => set({ paidOn: event.target.value })} />
         </label>
         <label style={{ fontSize: TYPE.caption, color: SUB }}>실제로 받은 금액 (현금가)
-          <input inputMode="numeric" style={input} value={draft.amount ? String(draft.amount) : ""} placeholder="0"
+          <input inputMode="numeric" style={input} value={draft.amount ? commaDigits(draft.amount) : ""} placeholder="0"
             onChange={(event) => set({ amount: Number.parseInt(event.target.value.replace(/[^0-9]/g, "") || "0", 10) })} />
         </label>
       </div>
@@ -27887,8 +27894,13 @@ function SalesEntryEditor({ draft, onChange, onSave, onCancel, clients, busy, mo
           </select>
         </label>
       ) : null}
-      <label className="block" style={{ fontSize: TYPE.caption, color: SUB }}>수강권 · 계약세션 (메모)
-        <input style={input} value={draft.productLabel} maxLength={60} onChange={(event) => set({ productLabel: event.target.value })} />
+      {/* 수강권은 횟수로 (2026-11-22 대표: "수강권을 횟수를 입력하게끔"). 저장은 "20회" 글자 그대로 -- 예전 메모 글은 숫자만 남겨 보인다. */}
+      <label className="block" style={{ fontSize: TYPE.caption, color: SUB }}>수강권 횟수
+        <span className="flex items-center gap-1.5">
+          <input inputMode="numeric" style={input} value={String(draft.productLabel || "").replace(/\D/g, "")} placeholder="예) 20" aria-label="수강권 횟수"
+            onChange={(event) => { const count = event.target.value.replace(/\D/g, "").slice(0, 4); set({ productLabel: count ? `${Number(count)}회` : "" }); }} />
+          <span className="shrink-0 font-bold" style={{ fontSize: TYPE.body, color: INK2 }}>회</span>
+        </span>
       </label>
       {group ? null : (
         <div style={{ fontSize: TYPE.caption, color: SUB }} data-sales-ot-choice>이 매출로 OT 10% 추가 인센을 받나요?
@@ -27901,9 +27913,31 @@ function SalesEntryEditor({ draft, onChange, onSave, onCancel, clients, busy, mo
           </div>
         </div>
       )}
-      <label className="flex items-center gap-1.5" style={{ fontSize: TYPE.caption, color: INK }}>
-        <input type="checkbox" checked={Number(draft.share) === 0.5} onChange={(event) => set({ share: event.target.checked ? 0.5 : 1 })} />FC 가 대신 상담 (반반 매출)
-      </label>
+      {/* 그룹은 FC 반반 매출이 없다 (2026-11-22 대표). */}
+      {group ? null : (
+        <label className="flex items-center gap-1.5" style={{ fontSize: TYPE.caption, color: INK }}>
+          <input type="checkbox" checked={Number(draft.share) === 0.5} onChange={(event) => set({ share: event.target.checked ? 0.5 : 1 })} />FC 가 대신 상담 (반반 매출)
+        </label>
+      )}
+      {/* 이 줄로 예상 받는 금액을 크게 (2026-11-22 대표: "예상 받는 금액을 크게 포인트로"). */}
+      {preview ? (() => {
+        const view = preview(draft);
+        const sign = view.delta < 0 ? "−" : "+";
+        return (
+          <div className="px-3 py-2.5" style={{ borderRadius: 10, backgroundColor: TINT }} data-sales-preview>
+            <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>이 매출로 예상 받는 금액</p>
+            <p className="tabular-nums" style={{ fontSize: TYPE.hero, lineHeight: 1.15, fontWeight: 800, color: BRAND_D }} data-sales-preview-amount>{sign}₩{won(Math.abs(view.delta))}</p>
+            <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>
+              {view.group
+                ? `그룹 매출 ₩${won(draft.amount || 0)} × 5%`
+                : `개인 매출 합계 ₩${won(view.before.total)} → ₩${won(view.after.total)} · 구간 인센 ₩${won(view.before.bracket?.amount || 0)} → ₩${won(view.after.bracket?.amount || 0)}${view.otBonus ? ` · OT 10% +₩${won(view.otBonus)}` : ""}`}
+            </p>
+            {!view.group && !view.delta && view.nextBracket ? (
+              <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>다음 구간(₩{won(view.nextBracket.threshold)})까지 ₩{won(view.nextBracket.needed)} 남았어요 · 넘으면 +₩{won(view.nextBracket.gain)}</p>
+            ) : null}
+          </div>
+        );
+      })() : null}
       {tried && errors.length ? <p style={{ fontSize: TYPE.caption, color: WARN }}>{errors.map((item) => `${item.text} (${item.code})`).join(" · ")}</p> : null}
       <div className="flex gap-2">
         <button type="button" onClick={onCancel} disabled={busy} className="h-10 flex-1 font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
@@ -27981,7 +28015,7 @@ function MySalesScreen({ organization, currentUserId, passStore, clientStore, in
   const [month, setMonth] = useState(initialState?.month || thisMonth);
   const [data, setData] = useState(() => initialState?.data || null);
   const [error, setError] = useState("");
-  const [draft, setDraft] = useState(null);
+  const [draft, setDraft] = useState(() => initialState?.draft || null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const load = useCallback(async () => {
@@ -28066,7 +28100,13 @@ function MySalesScreen({ organization, currentUserId, passStore, clientStore, in
               return (
                 <div key={group ? "group" : "personal"} className="min-w-0 space-y-2 p-3" style={{ borderRadius: 12, border: `1px solid ${LINE}`, backgroundColor: CARD }} data-sales-section={group ? "group" : "personal"}>
                   <div>
-                    <p className="font-extrabold" style={{ fontSize: TYPE.body, color: INK }}>{group ? "그룹 인센" : "개인 매출 인센"}</p>
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <p className="min-w-0 flex-1 font-extrabold" style={{ fontSize: TYPE.body, color: INK }}>{group ? "그룹 인센" : "개인 매출 인센"}</p>
+                      {/* 예상 받는 금액을 크게 (2026-11-22 대표). */}
+                      <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.heading, fontWeight: 800, color: BRAND_D }} data-sales-section-amount={group ? "group" : "personal"}>
+                        ₩{won(group ? statement.groupBonus : bracketAmount + (statement.otBonus || 0))}
+                      </p>
+                    </div>
                     <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
                       {group ? `그룹 매출 ${salesWon(statement.groupBase)} × 5% = ${salesWon(statement.groupBonus)} · 개인 구간과 따로`
                         : `합계 ${salesWon(statement.total)} · 구간 인센 ${salesWon(bracketAmount)} · OT 10% ${salesWon(statement.otBonus)}`}
@@ -28083,7 +28123,8 @@ function MySalesScreen({ organization, currentUserId, passStore, clientStore, in
                       ))}
                     </div>
                   ) : null}
-                  {draft && isGroup(draft) === group ? <SalesEntryEditor draft={draft} onChange={setDraft} onSave={save} onCancel={() => setDraft(null)} clients={data.clients} busy={busy} month={month} /> : null}
+                  {draft && isGroup(draft) === group ? <SalesEntryEditor draft={draft} onChange={setDraft} onSave={save} onCancel={() => setDraft(null)} clients={data.clients} busy={busy} month={month}
+                    preview={(candidate) => entryPreview({ entries: data.entries, priorEntries: data.prior, month, draft: candidate })} /> : null}
                   {list.map((entry) => (
                     <SalesEntryRow key={entry.id} entry={entry} name={nameOf(entry)} flagged={entry.flagged} locked={view.locked}
                       extra={submissionPill(view.submission, entry)} onEdit={() => setDraft({ ...entry })} onDelete={() => remove(entry)} />
@@ -28269,7 +28310,8 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
           })}
           {!row.pairing.pairs.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>두 장부 모두 비어 있어요 -- 이 달 매출이 없으면 그대로 확정할 수 있어요.</p> : null}
         </div>
-        {draft && draft.instructorId === row.instructorId ? <SalesEntryEditor draft={draft} onChange={setDraft} onSave={save} onCancel={() => setDraft(null)} clients={data.clients} busy={busy} month={month} /> : null}
+        {draft && draft.instructorId === row.instructorId ? <SalesEntryEditor draft={draft} onChange={setDraft} onSave={save} onCancel={() => setDraft(null)} clients={data.clients} busy={busy} month={month}
+          preview={(candidate) => entryPreview({ entries: data.entriesByInstructor.get(row.instructorId) || [], month, draft: candidate })} /> : null}
         {!row.confirmed && !draft && !row.ownSales ? (
           <div className="space-y-1.5">
             {suggestions.length ? <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>앱 기록에서 사무실 장부로 넣기</p> : null}
@@ -33146,6 +33188,12 @@ export function createAppScreenSmokeCases() {
         { name: "매출 인센 · 강사", element: providerWith(smokeInstructorOrg, (
           <MySalesScreen organization={readyOrganizationContext(smokeInstructorOrg)} currentUserId="u1"
             initialState={{ month, fc, data: { entries: entries.filter((item) => item.side === "instructor"), prior: [], monthDoc, records, clients, warning: "" } }} />
+        )) },
+        /* 2026-11-22 대표: 그룹은 반반 없음 · 수강권은 횟수 · 금액은 쉼표 · 예상 받는 금액을 크게. 14만 원 그룹 → +7,000원. */
+        { name: "매출 인센 · 강사 · 그룹 입력", element: providerWith(smokeInstructorOrg, (
+          <MySalesScreen organization={readyOrganizationContext(smokeInstructorOrg)} currentUserId="u1"
+            initialState={{ month, fc, draft: { ...blankEntry({ side: "instructor", instructorId: "u1", month, kind: "group" }), memberLabel: "도형", paidOn: "2026-11-11", amount: 140000, productLabel: "10회" },
+              data: { entries: entries.filter((item) => item.side === "instructor"), prior: [], monthDoc, records, clients, warning: "" } }} />
         )) },
         { name: "매출 인센 · FC · PC", element: providerWith(smokeManagerOrg, (
           <SalesBoardScreen organization={readyOrganizationContext(smokeManagerOrg)} currentUserId="smoke-fc" onConfirm={asyncNoop}

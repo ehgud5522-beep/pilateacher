@@ -472,6 +472,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "재등록 레이더",
     "재등록 레이더 · PC",
     "매출 인센 · 강사",
+    "매출 인센 · 강사 · 그룹 입력",
     "매출 인센 · FC · PC",
     "담당 강사",
     "담당 강사 · 빠진 회원",
@@ -3880,4 +3881,20 @@ test("급여 명세: 조정 · 세전 → 세금 → 실수령 · 다음 달 15�
   assert.match(closed, /확정 되돌리기/);
   assert.match(closed, /₩999,999/, "확정 때 남긴 숫자 그대로");
   assert.doesNotMatch(closed, /data-pay-adjust-editor/, "확정된 달은 조정 칸이 없다");
+});
+
+/* 2026-11-22 대표: "그룹 인센은 FC 반반 매출이 없음, 수강권을 횟수로, 금액에 따옴표(쉼표) 표시, 예상 받는 금액을 크게" */
+test("매출 인센 입력: 그룹은 반반 없음 · 수강권 횟수 · 금액 쉼표 · 예상 받는 금액 크게", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const html = renderToStaticMarkup(byName.get("매출 인센 · 강사 · 그룹 입력"));
+  assert.match(html, /data-sales-editor/);
+  assert.match(html, /value="140,000"/, "금액은 쉼표로 끊어 보인다");
+  assert.match(html, /수강권 횟수/);
+  assert.match(html, /aria-label="수강권 횟수"[^>]*value="10"|value="10"[^>]*aria-label="수강권 횟수"/);
+  assert.doesNotMatch(html, /반반 매출/, "그룹에는 FC 반반 매출이 없다");
+  assert.match(html, /data-sales-preview-amount="true"[^>]*>\+₩7,000/);
+  assert.match(html, /그룹 매출 ₩140,000 × 5%/);
+  assert.match(html, /data-sales-section-amount="group"[^>]*>₩45,000/, "그룹 칸 머리에 예상 그룹 인센이 크게 (90만 × 5%)");
+  assert.match(html, /data-sales-section-amount="personal"/);
 });

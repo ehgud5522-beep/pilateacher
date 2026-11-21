@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
-  CONFIRM_NOTICE_HINT, SALES_KIND_CHOICES_BY_SECTION, entryLine, otBonusOf, blankEntry, confirmFailureText, entryErrors, entryFromSuggestion, kstDate, lastCheckLine, monthStatusView, mySalesView, salesBoardRows,
+  CONFIRM_NOTICE_HINT, SALES_KIND_CHOICES_BY_SECTION, entryPreview, entryLine, otBonusOf, blankEntry, confirmFailureText, entryErrors, entryFromSuggestion, kstDate, lastCheckLine, monthStatusView, mySalesView, salesBoardRows,
   kstDateTimeLabel, submissionChangeText, submissionView, submittedSummaryOf,
 } from "../../src/features/sales/sales-board.js";
 import { salesRecordsOf } from "../../functions/shared/sales-incentive.mjs";
@@ -150,4 +150,24 @@ test("OT 10%: 새 줄은 비워 두고 꼭 고르게 · 줄마다 받음(+금액
   assert.equal(entryLine({ ...row("g", "instructor"), kind: "group", amount: 900000 }, LABELS), "그룹 · 900,000원");
   assert.deepEqual([...SALES_KIND_CHOICES_BY_SECTION.group], ["group", "group_refund"]);
   assert.ok(!SALES_KIND_CHOICES_BY_SECTION.personal.includes("group"));
+});
+
+/* 2026-11-22 대표: 예상 받는 금액을 크게, 그룹은 반반 없음 */
+test("입력 중인 줄의 예상 금액: 구간을 넘기면 구간 인센 · 그룹은 5% · OT 는 10% · 못 넘기면 다음 구간까지", () => {
+  const base = row("e1", "instructor", { amount: 3500000, kind: "repurchase" });
+  const draft = (extra) => ({ ...blankEntry({ side: "instructor", instructorId: "t1", month: MONTH }), kind: "repurchase", paidOn: "2026-11-10", ...extra });
+  assert.equal(entryPreview({ entries: [base], month: MONTH, draft: draft({ amount: 600000, ot: false }) }).delta, 160000, "350만 + 60만 = 410만 → 400만 구간");
+  const group = entryPreview({ entries: [base], month: MONTH, draft: draft({ kind: "group", amount: 140000, ot: false }) });
+  assert.equal(group.group, true);
+  assert.equal(group.delta, 7000);
+  assert.equal(group.groupBonus, 7000);
+  const small = entryPreview({ entries: [], month: MONTH, draft: draft({ amount: 100000, ot: false }) });
+  assert.equal(small.delta, 0);
+  assert.equal(small.nextBracket.needed, 3900000);
+  const ot = entryPreview({ entries: [], month: MONTH, draft: draft({ amount: 1000000, ot: true }) });
+  assert.equal(ot.delta, 100000);
+  assert.equal(ot.otBonus, 100000);
+  /* 고치는 줄은 자기 자신을 빼고 센다 -- 두 번 세면 예상이 부풀려진다. */
+  assert.equal(entryPreview({ entries: [base], month: MONTH, draft: { ...base, amount: 4000000 } }).delta, 160000);
+  assert.ok(entryErrors({ ...row("g", "instructor"), kind: "group", ot: false, share: 0.5, clientId: "", memberLabel: "박그룹", recordId: "" }).some((item) => item.code === "share_not_for_group"));
 });

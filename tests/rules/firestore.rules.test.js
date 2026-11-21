@@ -7085,4 +7085,14 @@ describe("정산 점검 -- 결과는 서버만 · 대표급만 읽음 · 확인�
     await assertSucceeds(getDoc(ackRef(users.owner)));
     await assertFails(getDoc(ackRef(users.instructor)));
   });
+
+  test("확인 이력: 덧붙이기만 -- 고치기 · 지우기 없음, 대표급만", async () => {
+    const logRef = (userId, id) => doc(dbFor(userId), "organizations", ORG_A, "payCheckAckLog", id);
+    await assertSucceeds(setDoc(logRef(users.owner, "l1"), ack(users.owner)));
+    await assertFails(setDoc(logRef(users.manager, "l2"), ack(users.manager)));
+    await assertFails(updateDoc(logRef(users.owner, "l1"), { reason: "바꿈" }), "이력은 못 고친다");
+    await assertFails(deleteDoc(logRef(users.owner, "l1")), "이력은 못 지운다");
+    await assertSucceeds(getDoc(logRef(users.owner, "l1")));
+    await assertFails(getDoc(logRef(users.instructor, "l1")));
+  });
 });

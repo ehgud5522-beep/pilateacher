@@ -95,5 +95,30 @@ test("확정 직전 재점검: 확인 안 한 차단이 있으면 거절, 확인
   assert.equal(run.reconciliation.deducts, 2);
   assert.equal(run.reconciliation.ledgerAmount, 60000);
   assert.equal(run.reconciliation.matched, true);
-  assert.deepEqual(run.check, { block: 1, warn: 2, openWarns: 2, ackedBlocks: 1 });
+  const { fingerprint, ...checkSummary } = run.check;
+  assert.deepEqual(checkSummary, { block: 1, warn: 2, openWarns: 2, ackedBlocks: 1 });
+  assert.deepEqual(fingerprint, run.fingerprint, "점검 때 지문 = 확정 때 지문");
+});
+
+test("재점검과 확정 사이에 차감이 붙으면 점검 때 자료와 달라 확정하지 않는다 (check_stale)", async () => {
+  const store = fake(base({ [`organizations/${ORG}/lessons/L3`]: { lessonId: "L3", instructorId: "t1", clientIds: ["c1"], status: "scheduled", startsAt: new Date("2026-11-12T03:00:00Z") } }));
+  const real = createPayCheckService(deps(store));
+  const payCheck = {
+    check: async (...args) => {
+      const result = await real.check(...args);
+      /* 점검이 끝난 직후, 확정 트랜잭션 전에 다른 기기가 차감을 하나 더 넣었다. */
+      store.docs.set(`organizations/${ORG}/passes/p1/ledger/late`, { organizationId: ORG, passId: "p1", instructorId: "t1", type: "deduct", delta: -1, unitPrice: 30000, clientId: "c1", lessonId: "L9", occurredAt: new Date("2026-11-21T03:00:00Z") });
+      return result;
+    },
+  };
+  const close = createPayCloseService({ ...deps(store), payCheck });
+  await assert.rejects(close.close({ callerUid: "owner", organizationId: ORG, month: MONTH }), (error) => error.reason === "check_stale");
+  assert.equal(store.docs.get(`organizations/${ORG}/payMonths/${MONTH}`), undefined, "확정되지 않았다");
+});
+
+test("점검 범위: 명부의 강사인데 이 달 서버 일정이 없으면 이름으로 남긴다", async () => {
+  const store = fake(base({ "memberships/o1_t2": { organizationId: ORG, userId: "t2", role: "instructor", status: "active" } }));
+  const result = await createPayCheckService(deps(store)).check(ORG, MONTH, "manual");
+  assert.deepEqual(result.scope.noScheduleInstructorIds, ["t2"]);
+  assert.ok(store.docs.get(`organizations/${ORG}/payChecks/${MONTH}`).fingerprint.ledger.startsWith("2-"));
 });

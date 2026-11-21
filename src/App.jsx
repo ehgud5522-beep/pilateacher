@@ -17731,6 +17731,10 @@ function checkDetailText(item) {
   if (item.kind === CHECK_KIND.COMPLETED_NO_DEDUCT) return "완료로 저장됐는데 차감 기록이 없어요";
   if (item.kind === CHECK_KIND.DEDUCT_SHORT) return `회원 ${detail.members || 0}명 · 차감 ${detail.deducts || 0}건 (한 회원권을 같이 쓰는 듀엣이면 정상)`;
   if (item.kind === CHECK_KIND.BALANCE_MISMATCH) return `남은 횟수 ${detail.remaining ?? "?"}회 · 원장 계산 ${detail.ledgerTotal ?? "?"}회 (차이 ${detail.difference > 0 ? "+" : ""}${detail.difference ?? "?"})`;
+  if (item.kind === CHECK_KIND.BALANCE_UNKNOWN) {
+    const why = { no_ledger: "원장 기록이 없어요 (앱 이전 회원권이면 확인함으로)", unreadable_delta: "원장 숫자를 읽을 수 없어요", unreadable_remaining: "남은 횟수를 읽을 수 없어요" }[detail.reason] || "검산할 수 없어요";
+    return `남은 횟수 ${detail.remaining ?? "?"}회 · ${why}`;
+  }
   if (item.kind === CHECK_KIND.DUPLICATE_DEDUCT) return `같은 시각 차감 ${detail.deducts || 0}건 · 수업 ${(detail.lessonIds || []).length}개`;
   return "";
 }
@@ -17751,10 +17755,11 @@ function PayCheckCard({ month, check, errorCode = "", busy = false, nameOfInstru
     );
   }
   const items = check.items || [];
+  /* 건수는 전체 기준(점검 문서의 countsTotal), 확인함은 담긴 항목에서. 차단 항목은 전부 담긴다. */
   const kindsOf = (severity) => Object.keys(CHECK_KIND_LABELS).map((kind) => ({ kind, all: items.filter((item) => item.kind === kind && item.severity === severity) }))
     .filter((row) => row.all.length).map((row) => ({ ...row, open: row.all.filter((item) => !item.ack).length }));
   const acked = items.filter((item) => item.ack).length;
-  const syncOff = check.scope?.syncOffInstructorIds || [];
+  const noSchedule = check.scope?.noScheduleInstructorIds || [];
   const groups = new Map();
   for (const item of items) {
     const location = String(item.locationId || "");
@@ -17784,8 +17789,8 @@ function PayCheckCard({ month, check, errorCode = "", busy = false, nameOfInstru
         {kindsOf(CHECK_SEVERITY.WARN).map((row) => <p key={`w-${row.kind}`} style={{ fontSize: TYPE.caption, color: row.open ? WARN : SUB }}>● 확인 · {CHECK_KIND_LABELS[row.kind]} {row.open}건{row.all.length > row.open ? ` (확인함 ${row.all.length - row.open})` : ""}</p>)}
         {!items.length && check.complete ? <p style={{ fontSize: TYPE.caption, color: GOOD }}>점검한 범위에서 걸린 것이 없어요.</p> : null}
         {acked ? <p style={{ fontSize: TYPE.caption, color: SUB }}>확인함 {acked}건 -- 내용이 바뀌면 다시 떠요.</p> : null}
-        {syncOff.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>일정 동기화가 꺼진 강사 {syncOff.length}명({syncOff.slice(0, 3).map(nameOfInstructor).join(", ")}{syncOff.length > 3 ? " …" : ""})은 지난 수업 미처리를 볼 수 없어요.</p> : null}
-        {check.truncated ? <p style={{ fontSize: TYPE.caption, color: SUB }}>항목이 많아 앞 {items.length}건만 보여요 (전체 {check.total}건).</p> : null}
+        {noSchedule.length ? <p style={{ fontSize: TYPE.caption, color: SUB }} data-pay-check-no-schedule>이 달 서버 일정이 하나도 없는 강사 {noSchedule.length}명({noSchedule.slice(0, 3).map(nameOfInstructor).join(", ")}{noSchedule.length > 3 ? " …" : ""}) -- 이 강사의 미처리 수업은 이 점검으로 볼 수 없어요.</p> : null}
+        {check.hiddenWarns ? <p style={{ fontSize: TYPE.caption, color: SUB }}>확인 항목이 많아 {check.hiddenWarns}건은 목록에 없어요 (전체 {check.total}건). 차단 항목은 모두 보여요 -- 확인 항목은 확정을 막지 않아요.</p> : null}
         <p style={{ fontSize: TYPE.caption, color: FAINT }}>차단은 급여 확정을 막고, 확인은 막지 않아요. 확정할 때 서버가 그 달을 다시 점검해요.</p>
       </div>
       <div className="mt-2 flex flex-wrap gap-2">
@@ -33687,7 +33692,7 @@ export function createAppScreenSmokeCases() {
       summary: smokePayroll, ...smokePayrollNames, wide: true, selected: "u1", checkOpen: true,
       payDocs: { adjustments: [], payMonth: null, statements: [], tax: null, errorCode: "", acks: [{ key: "balance_mismatch:smoke-pass-a", signature: "9|8", reason: "이관 때 1회 더 넣음 -- 잔여 조정 예정" }],
         check: { month: "2026-10", trigger: "nightly", checkedAt: new Date("2026-10-02T18:00:00Z"), complete: true, failures: [], total: 4, truncated: false,
-          scope: { lessons: 120, passes: 40, syncOffInstructorIds: ["u2"] }, counts: { block: 2, warn: 2, byKind: {} },
+          scope: { lessons: 120, passes: 40, noScheduleInstructorIds: ["u2"] }, counts: { block: 2, warn: 2, byKind: {} },
           items: [
             { key: "completed_no_deduct:L9", kind: "completed_no_deduct", severity: "block", instructorId: "u1", locationId: "bansong", lessonId: "L9", startsAt: new Date("2026-10-01T10:00:00Z").getTime(), detail: { members: 1, deducts: 0 }, signature: "x" },
             { key: "balance_mismatch:smoke-pass-a", kind: "balance_mismatch", severity: "block", instructorId: "u1", locationId: "bansong", passId: "smoke-pass-a", clientId: "smoke-client-a", detail: { remaining: 9, ledgerTotal: 8, difference: 1 }, signature: "9|8" },
@@ -33700,7 +33705,7 @@ export function createAppScreenSmokeCases() {
       summary: smokePayroll, ...smokePayrollNames,
       payDocs: { adjustments: [], payMonth: null, statements: [], tax: null, errorCode: "", acks: [],
         check: { month: "2026-10", trigger: "close", checkedAt: new Date("2026-10-02T18:00:00Z"), complete: false, failures: [{ source: "ledger_all", code: "unavailable" }], total: 0, truncated: false,
-          scope: { lessons: 120, passes: 0, syncOffInstructorIds: [] }, counts: { block: 0, warn: 0, byKind: {} }, items: [] } },
+          scope: { lessons: 120, passes: 0, noScheduleInstructorIds: [] }, counts: { block: 0, warn: 0, byKind: {} }, items: [] } },
     }) },
     /* 2026-11-22 외부 검토 2차: 지급 완료 · 확정 이력 2회 · u2 명세는 앞 회차 것이라 숫자로 쓰지 않는다. */
     { name: "급여 집계 · 지급 완료 · 이력", element: payrollSummary(smokeOwner, {

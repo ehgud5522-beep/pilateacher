@@ -1,64 +1,103 @@
 /**
- * 정산 점검 (2026-11-22): 지난 수업 미처리 · 완료인데 차감 없음 · 듀엣 차감 부족 · 남은 횟수 불일치 · 중복 차감,
- * 차단/확인 구분, 같은 건은 확인함 유지 · 내용이 바뀌면 다시, 못 읽으면 점검 미완료, 동기화 꺼진 강사는 범위에.
+ * 정산 점검 (2026-11-22, 외부 검토 2회 반영): 지난 수업 미처리 · 완료인데 차감 없음 · 듀엣 차감 부족 · 남은 횟수 불일치 · 검산 불가 · 중복 차감,
+ * 차단/확인 구분, 차단은 전체 기준(자르기 전), 확인함은 판단에 쓴 값이 모두 같을 때만, 못 읽으면 점검 미완료, 서버 일정 없는 강사는 범위에, 자료 지문.
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CHECK_KIND, CHECK_SEVERITY, ackDocId, kstTodayStart, runPayCheck, withAcks } from "../../functions/shared/pay-check.mjs";
+import {
+  CHECK_KIND, CHECK_SEVERITY, PAY_CHECK_WARN_LIMIT, ackDocId, kstTodayStart, runPayCheck, sameFingerprint, sourceFingerprint, storedCheck, withAcks,
+} from "../../functions/shared/pay-check.mjs";
 
 const ORG = "o1";
 const MONTH = "2026-11";
 const NOW = new Date("2026-11-20T01:00:00Z"); // 한국 11월 20일 10시
 const at = (iso) => new Date(iso);
 const lesson = (id, extra = {}) => ({ id, lessonId: id, instructorId: "t1", locationId: "bansong", clientIds: ["c1"], status: "scheduled", startsAt: at("2026-11-18T01:00:00Z"), ...extra });
-const deduct = (id, extra = {}) => ({ organizationId: ORG, type: "deduct", delta: -1, unitPrice: 30000, instructorId: "t1", clientId: "c1", passId: "p1", lessonId: id, locationId: "bansong", occurredAt: at("2026-11-18T01:00:00Z"), ...extra });
-const kinds = (check) => check.items.map((item) => [item.kind, item.severity]);
+const deduct = (id, extra = {}) => ({ id: `e-${id}`, organizationId: ORG, type: "deduct", delta: -1, unitPrice: 30000, instructorId: "t1", clientId: "c1", passId: "p1", lessonId: id, locationId: "bansong", occurredAt: at("2026-11-18T01:00:00Z"), ...extra });
+const run = (input) => runPayCheck({ organizationId: ORG, month: MONTH, now: NOW, ...input });
 
-test("지난 수업 미처리는 어제까지만 (오늘 수업은 아직) · 회원 없는 개인 일정 · 취소 · 다른 달은 뺀다", () => {
+test("지난 수업 미처리는 어제까지만 · 회원 없는 개인 일정 · 취소 · 다른 달은 뺀다", () => {
   assert.equal(kstTodayStart(NOW).toISOString(), "2026-11-19T15:00:00.000Z");
-  const check = runPayCheck({ organizationId: ORG, month: MONTH, now: NOW, lessons: [
+  const check = run({ lessons: [
     lesson("past"), lesson("today", { startsAt: at("2026-11-20T00:30:00Z") }), lesson("personal", { clientIds: [] }),
     lesson("cancelled", { status: "cancelled" }), lesson("october", { startsAt: at("2026-10-30T01:00:00Z") }),
   ] });
-  assert.deepEqual(kinds(check), [[CHECK_KIND.UNSETTLED_PAST, CHECK_SEVERITY.WARN]]);
-  assert.equal(check.items[0].lessonId, "past");
+  assert.deepEqual(check.items.map((item) => [item.kind, item.lessonId]), [[CHECK_KIND.UNSETTLED_PAST, "past"]]);
   assert.equal(check.complete, true);
 });
 
 test("완료인데 차감 없음은 차단 · 듀엣 차감 부족 · 중복 차감은 확인", () => {
-  const check = runPayCheck({ organizationId: ORG, month: MONTH, now: NOW,
+  const check = withAcks(run({
     lessons: [lesson("done-ok", { status: "completed" }), lesson("done-none", { status: "completed" }), lesson("duet", { status: "completed", clientIds: ["c1", "c2"] })],
-    monthLedger: [deduct("done-ok"), deduct("duet"), deduct("other-device", { lessonId: "other-device" })],
-  });
-  assert.deepEqual(kinds(check), [
-    [CHECK_KIND.COMPLETED_NO_DEDUCT, CHECK_SEVERITY.BLOCK],
-    [CHECK_KIND.DEDUCT_SHORT, CHECK_SEVERITY.WARN],
-    [CHECK_KIND.DUPLICATE_DEDUCT, CHECK_SEVERITY.WARN],
-  ].sort((a, b) => (a[1] === b[1] ? 0 : a[1] === "block" ? -1 : 1)));
-  const duplicate = check.items.find((item) => item.kind === CHECK_KIND.DUPLICATE_DEDUCT);
-  assert.deepEqual(duplicate.detail.lessonIds, ["done-ok", "duet", "other-device"]);
+    monthLedger: [deduct("done-ok"), deduct("duet"), deduct("other-device")],
+  }));
   assert.deepEqual(check.counts, { block: 1, warn: 2, byKind: { completed_no_deduct: 1, deduct_short: 1, duplicate_deduct: 1 } });
+  assert.equal(check.items[0].severity, CHECK_SEVERITY.BLOCK);
+  assert.deepEqual(check.items.find((item) => item.kind === CHECK_KIND.DUPLICATE_DEDUCT).detail.lessonIds, ["done-ok", "duet", "other-device"]);
 });
 
-test("남은 횟수 불일치: 이 달에 쓴 회원권이면 차단, 아니면 확인", () => {
-  const ledger = (passId, month, delta) => ({ passId, type: delta > 0 ? "issue" : "deduct", delta, occurredAt: at(`${month}-05T01:00:00Z`) });
-  const check = runPayCheck({ organizationId: ORG, month: MONTH, now: NOW,
-    passes: [{ id: "used", clientId: "c1", instructorId: "t1", remainingCount: 9 }, { id: "old", clientId: "c2", instructorId: "t2", remainingCount: 5 }, { id: "fine", remainingCount: 9 }],
-    passLedger: [ledger("used", "2026-10", 10), ledger("used", "2026-11", -1), ledger("used", "2026-11", -1), ledger("old", "2026-09", 10), ledger("old", "2026-09", -1), ledger("fine", "2026-11", 10), ledger("fine", "2026-11", -1)],
+test("남은 횟수: 불일치 · 검산 불가(원장 없음 · 숫자 못 읽음)를 정상으로 치지 않는다 -- 이 달에 쓴 회원권이면 차단", () => {
+  const ledger = (passId, month, delta, id) => ({ id, passId, type: delta > 0 ? "issue" : "deduct", delta, occurredAt: at(`${month}-05T01:00:00Z`) });
+  const check = run({
+    passes: [
+      { id: "used", clientId: "c1", instructorId: "t1", remainingCount: 9 },
+      { id: "old", clientId: "c2", instructorId: "t2", remainingCount: 5 },
+      { id: "no-ledger", clientId: "c3", instructorId: "t1", remainingCount: 10 },
+      { id: "broken", clientId: "c4", instructorId: "t1", remainingCount: "열" },
+      { id: "fine", remainingCount: 9 },
+    ],
+    passLedger: [
+      ledger("used", "2026-10", 10, "u1"), ledger("used", "2026-11", -1, "u2"), ledger("used", "2026-11", -1, "u3"),
+      ledger("old", "2026-09", 10, "o1"), ledger("old", "2026-09", -1, "o2"),
+      ledger("broken", "2026-11", 10, "b1"), ledger("broken", "2026-11", -1, "b2"),
+      ledger("fine", "2026-11", 10, "f1"), ledger("fine", "2026-11", -1, "f2"),
+    ],
   });
-  assert.deepEqual(check.items.map((item) => [item.passId, item.severity, item.detail.difference]), [["used", "block", 1], ["old", "warn", -4]]);
+  assert.deepEqual(check.items.map((item) => [item.passId, item.kind, item.severity]), [
+    ["used", CHECK_KIND.BALANCE_MISMATCH, "block"],
+    ["broken", CHECK_KIND.BALANCE_UNKNOWN, "block"],
+    ["old", CHECK_KIND.BALANCE_MISMATCH, "warn"],
+    ["no-ledger", CHECK_KIND.BALANCE_UNKNOWN, "warn"],
+  ]);
+  assert.equal(check.items.find((item) => item.passId === "no-ledger").detail.reason, "no_ledger");
 });
 
-test("확인함은 같은 key · 같은 내용일 때만 · 바뀌면 다시 뜬다 · 못 읽으면 점검 미완료 · 동기화 꺼진 강사는 범위에", () => {
-  const first = runPayCheck({ organizationId: ORG, month: MONTH, now: NOW, lessons: [lesson("done-none", { status: "completed" })] });
-  const key = first.items[0].key;
-  const acks = [{ key, signature: first.items[0].signature, reason: "옛 앱에서 처리 -- 원장 확인함", ackedBy: "owner" }];
-  assert.equal(withAcks(first, acks).openBlocks, 0);
-  const changed = runPayCheck({ organizationId: ORG, month: MONTH, now: NOW, lessons: [lesson("done-none", { status: "completed", clientIds: ["c1", "c2"] })] });
-  assert.equal(withAcks(changed, acks).openBlocks, 1, "회원 수가 바뀌면 다시 막는다");
+test("차단은 자르기 전 전체로 센다 -- 차단 301건 중 앞 300건만 확인해도 1건이 남아 막는다, 문서엔 차단을 전부 담는다", () => {
+  const lessons = Array.from({ length: 301 }, (_, index) => lesson(`L${String(index).padStart(3, "0")}`, { status: "completed" }));
+  const warnLessons = Array.from({ length: PAY_CHECK_WARN_LIMIT + 5 }, (_, index) => lesson(`W${index}`));
+  const full = run({ lessons: [...lessons, ...warnLessons] });
+  const blocks = full.items.filter((item) => item.severity === CHECK_SEVERITY.BLOCK);
+  const acks = blocks.slice(0, 300).map((item) => ({ key: item.key, signature: item.signature, reason: "확인" }));
+  assert.equal(withAcks(full, acks).openBlocks, 1);
+  const stored = storedCheck(full, acks);
+  assert.equal(stored.items.filter((item) => item.severity === CHECK_SEVERITY.BLOCK).length, 301, "차단은 전부 담긴다");
+  assert.equal(stored.hiddenWarns, 5);
+  assert.equal(withAcks(stored, acks).openBlocks, 1, "문서로 다시 세도 1건이 남는다");
+  assert.equal(stored.countsTotal.warn, PAY_CHECK_WARN_LIMIT + 5);
+  assert.equal(stored.complete, true);
+});
+
+test("확인함은 판단에 쓴 값이 모두 같을 때만 -- 회원을 A 에서 B 로 바꾸면(인원 같아도) 다시 막는다", () => {
+  const before = run({ lessons: [lesson("done-none", { status: "completed", clientIds: ["A"] })] });
+  const acks = [{ key: before.items[0].key, signature: before.items[0].signature, reason: "옛 앱에서 처리" }];
+  assert.equal(withAcks(before, acks).openBlocks, 0);
+  assert.equal(withAcks(run({ lessons: [lesson("done-none", { status: "completed", clientIds: ["B"] })] }), acks).openBlocks, 1, "회원이 바뀜");
+  assert.equal(withAcks(run({ lessons: [lesson("done-none", { status: "completed", clientIds: ["A"], instructorId: "t9" })] }), acks).openBlocks, 1, "강사가 바뀜");
   assert.equal(ackDocId(MONTH, "balance_mismatch:p/1"), "2026-11__balance_mismatch:p_1");
-  const broken = runPayCheck({ organizationId: ORG, month: MONTH, now: NOW, failures: [{ source: "lessons", code: "unavailable" }],
-    syncedInstructorIds: new Set(["t1"]), activeInstructorIds: ["t1", "t2", "t3-old"], canonicalInstructorId: (id) => (id === "t3-old" ? "t3" : id) });
-  assert.equal(broken.complete, false);
-  assert.deepEqual(broken.scope.syncOffInstructorIds, ["t2", "t3"]);
+});
+
+test("못 읽으면 점검 미완료 · 명부에 있는데 이 달 서버 일정이 하나도 없는 강사는 범위에 (차감 기록이 없어도)", () => {
+  const check = run({ lessons: [lesson("past")], failures: [{ source: "lessons", code: "unavailable" }],
+    rosterInstructorIds: ["t1", "t2", "t3-old"], canonicalInstructorId: (id) => (id === "t3-old" ? "t3" : id) });
+  assert.equal(check.complete, false);
+  assert.deepEqual(check.scope.noScheduleInstructorIds, ["t2", "t3"]);
+});
+
+test("자료 지문: 차감 · 보정이 하나 붙거나 수업 상태 · 그룹 급여가 바뀌면 달라진다", () => {
+  const base = { monthLedger: [deduct("a")], lessons: [lesson("a", { status: "completed" })], groupRows: [{ locationId: "b", instructorId: "t1", fullCount: 2, fullRate: 20000, emptyCount: 0 }] };
+  const same = sourceFingerprint(base);
+  assert.equal(sameFingerprint(same, sourceFingerprint({ ...base, monthLedger: [...base.monthLedger] })), true);
+  assert.equal(sameFingerprint(same, sourceFingerprint({ ...base, monthLedger: [...base.monthLedger, deduct("b")] })), false);
+  assert.equal(sameFingerprint(same, sourceFingerprint({ ...base, lessons: [lesson("a", { status: "scheduled" })] })), false);
+  assert.equal(sameFingerprint(same, sourceFingerprint({ ...base, groupRows: [{ ...base.groupRows[0], fullCount: 3 }] })), false);
 });

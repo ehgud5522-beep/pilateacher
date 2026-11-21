@@ -28,18 +28,11 @@ class PayCheckError extends Error {
   }
 }
 
-/** runtimeConfig/scheduleSync 의 켜짐 판정 (src/features/schedule/sync-switch.js 와 같은 규칙). */
-function syncEnabledFor(raw, userId) {
-  const mode = text(raw?.mode);
-  if (mode === "all") return true;
-  if (mode === "listed") return (Array.isArray(raw?.userIds) ? raw.userIds : []).map(text).includes(text(userId));
-  return false;
-}
-
 function createPayCheckService({ firestore, membershipId, isOwnerLevel, now = () => new Date() }) {
-  /** 한 센터 · 한 달 점검. 읽기 하나가 실패해도 나머지는 돌고, 실패는 failures 에 원본 코드로. */
+  /** 한 센터 · 한 달 점검. 읽기 하나가 실패해도 나머지는 돌고, 실패는 failures 에 원본 코드로.
+      돌려주는 판정(openBlocks 등)은 **전체 항목** 기준, 문서에는 storedCheck 로 차단 전부 + 확인 일부만. */
   async function check(organizationId, month, trigger) {
-    const [{ runPayCheck, withAcks }, { kstMonthRange, PAYROLL_LEDGER_TYPES }, { canonicalInstructorIdFrom }] = await Promise.all([loadCheck(), loadClose(), loadSwap()]);
+    const [{ runPayCheck, withAcks, storedCheck, sourceFingerprint }, { kstMonthRange, PAYROLL_LEDGER_TYPES }, { canonicalInstructorIdFrom }] = await Promise.all([loadCheck(), loadClose(), loadSwap()]);
     const org = text(organizationId);
     const centre = firestore.collection("organizations").doc(org);
     const { start, end } = kstMonthRange(month);
@@ -48,27 +41,29 @@ function createPayCheckService({ firestore, membershipId, isOwnerLevel, now = ()
       try { return await work(); } catch (error) { failures.push({ source, code: String(error?.code || "unknown") }); return fallback; }
     };
     const rows = (snapshot) => snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
-    const [lessons, monthLedger, passes, passLedger, members, syncDoc, acks] = await Promise.all([
+    const [lessons, monthLedger, passes, passLedger, members, groups, acks] = await Promise.all([
       read("lessons", async () => rows(await centre.collection("lessons").where("startsAt", ">=", start).where("startsAt", "<", end).get()), []),
       read("ledger_month", async () => rows(await firestore.collectionGroup("ledger").where("organizationId", "==", org).where("type", "in", PAYROLL_LEDGER_TYPES)
         .where("occurredAt", ">=", start).where("occurredAt", "<", end).get()), []),
       read("passes", async () => rows(await centre.collection("passes").get()), []),
       read("ledger_all", async () => rows(await firestore.collectionGroup("ledger").where("organizationId", "==", org).get()), []),
       read("memberships", async () => rows(await firestore.collection("memberships").where("organizationId", "==", org).get()), []),
-      read("schedule_sync", async () => { const snapshot = await firestore.collection("runtimeConfig").doc("scheduleSync").get(); return snapshot.exists ? snapshot.data() : {}; }, null),
+      read("group_payroll", async () => rows(await centre.collection("groupPayroll").doc(month).collection("locations").get()), []),
       read("acks", async () => rows(await centre.collection("payCheckAcks").where("month", "==", month).get()), []),
     ]);
     const canonicalInstructorId = canonicalInstructorIdFrom(members);
-    const teaching = [...new Set(monthLedger.map((entry) => text(entry.instructorId)).filter(Boolean))];
-    const result = runPayCheck({
-      organizationId: org, month, now: now(), lessons, monthLedger, passes, passLedger, failures, canonicalInstructorId,
-      syncedInstructorIds: syncDoc ? new Set(teaching.map((id) => canonicalInstructorId(id)).filter((id) => syncEnabledFor(syncDoc, id))) : null,
-      activeInstructorIds: teaching,
-    });
-    const at = now();
-    const stored = { organizationId: org, month, trigger: text(trigger), checkedAt: at, ...result };
-    await centre.collection("payChecks").doc(month).set(stored);
-    return withAcks(stored, acks);
+    /* 점검 범위의 강사 명부: 지금 활성인 강사 + 이 달에 차감한 사람 (대표 · FC 가 수업하는 센터도 있다). */
+    const roster = [
+      ...members.filter((row) => text(row.status || "active") === "active" && text(row.role) === "instructor").map((row) => text(row.userId)),
+      ...monthLedger.map((entry) => text(entry.instructorId)),
+    ].filter(Boolean);
+    const full = runPayCheck({ organizationId: org, month, now: now(), lessons, monthLedger, passes, passLedger, failures, canonicalInstructorId, rosterInstructorIds: roster });
+    const groupRows = groups.flatMap((document) => (document.rows || []).map((row) => ({ ...row, locationId: document.id })));
+    const fingerprint = sourceFingerprint({ monthLedger, lessons, groupRows });
+    const stored = storedCheck(full, acks);
+    await centre.collection("payChecks").doc(month).set({ organizationId: org, month, trigger: text(trigger), checkedAt: now(), fingerprint, ...stored });
+    const judged = withAcks(full, acks);
+    return { ...judged, complete: stored.complete, failures: stored.failures, fingerprint };
   }
 
   async function authorize(org, callerUid) {

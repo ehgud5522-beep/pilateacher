@@ -151,10 +151,16 @@ export function listPayCheckAcks(organizationId, month) {
 
 /** 대표 · 총괄: 점검 항목 확인함 (사유). 그때의 내용(signature)을 함께 남겨, 내용이 바뀌면 다시 뜬다. */
 export async function savePayCheckAck(organizationId, month, item, reason, { uid }) {
-  const { doc, getFirestore, serverTimestamp, setDoc } = await load();
+  const { collection, doc, getFirestore, serverTimestamp, writeBatch } = await load();
+  const db = getFirestore();
   const key = text(item?.key);
-  await setDoc(doc(getFirestore(), "organizations", org(organizationId), "payCheckAcks", `${text(month)}__${key.replaceAll("/", "_")}`), {
+  const data = {
     organizationId: org(organizationId), month: text(month), key, kind: text(item?.kind), signature: text(item?.signature),
     reason: text(reason).slice(0, 200), ackedBy: String(uid), ackedAt: serverTimestamp(),
-  });
+  };
+  /* 지금 상태(덮어씀) + 이력(덧붙이기만) 을 한 번에. 이력이 없으면 다시 확인할 때 이전 확인자 · 사유가 사라진다. */
+  const batch = writeBatch(db);
+  batch.set(doc(db, "organizations", org(organizationId), "payCheckAcks", `${text(month)}__${key.replaceAll("/", "_")}`), data);
+  batch.set(doc(collection(db, "organizations", org(organizationId), "payCheckAckLog")), data);
+  await batch.commit();
 }

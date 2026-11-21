@@ -3966,7 +3966,7 @@ test("정산 점검함: 시각 · 범위 먼저, 차단 · 확인 나눔, 확인
   assert.match(card, /차단 · 완료했는데 차감 없음 1건/);
   assert.match(card, /차단 · 남은 횟수 불일치 0건 \(확인함 1\)/);
   assert.match(card, /확인 · 지난 수업 미처리 1건/);
-  assert.match(card, /일정 동기화가 꺼진 강사 1명\(박서연\)/);
+  assert.match(card, /이 달 서버 일정이 하나도 없는 강사 1명\(박서연\)/);
   assert.match(card, /data-pay-check-detail/);
   assert.match(card, /반송/, "지점부터");
   assert.match(card, /확인함 · 이관 때 1회 더 넣음/);

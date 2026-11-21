@@ -50,3 +50,13 @@ test("센터 한 달 → 강사별, 계정을 바꾼 강사는 한 사람으로"
   assert.equal(map.get("new-uid").confirmedTotal, 290000 + 50000);
   assert.deepEqual(extrasTotal(map), { confirmedTotal: 340000, waiting: 1 });
 });
+
+test("계정을 바꾼 강사: 옛 계정 16만 · 새 계정 25만 확정이면 41만 (덮어쓰지 않는다)", () => {
+  const confirmed = (instructorId, payout, bracketAmount) => ({ instructorId, status: "confirmed", snapshot: { total: 5000000, bracketAmount, otBonus: 0, groupBase: 0, groupBonus: 0, clawbackTotal: 0, payout } });
+  const swap = (id) => (id === "old" ? "new" : id);
+  for (const order of [[confirmed("old", 160000, 160000), confirmed("new", 250000, 250000)], [confirmed("new", 250000, 250000), confirmed("old", 160000, 160000)]]) {
+    const map = extrasByInstructor({ salesMonths: order, canonicalInstructorId: swap });
+    assert.equal(map.get("new").confirmedTotal, 410000);
+    assert.equal(map.get("new").lines.length, 2);
+  }
+});

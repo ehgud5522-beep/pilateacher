@@ -1948,6 +1948,8 @@ service cloud.firestore {
             : data.refundOfMonth == "")
           /* 그룹 수강권(5%)에는 OT 인센이 없다. */
           && (!(data.kind in ["group", "group_refund"]) || data.ot == false)
+          /* 그룹은 FC 반반 매출이 없다 (2026-11-22 대표). */
+          && (!(data.kind in ["group", "group_refund"]) || data.share == 1)
           && data.updatedBy == request.auth.uid
           && data.updatedAt == request.time;
       }
@@ -2071,12 +2073,11 @@ service cloud.firestore {
            payMonths/{YYYY-MM}              급여 확정(closed) · 되돌림(reopened, 사유). 확정된 달은 조정 · 명세를 못 바꾼다
            payStatements/{강사}_{YYYY-MM}   확정 때 남기는 강사별 세전 · 세금 · 실수령. 강사는 자기 것만 (없는 문서도 id 로 판단)
            payrollSettings/tax              3.3% 를 떼지 않는 강사(noTaxIds). 기본은 모두 3.3% */
+      /* 2026-11-22 외부 검토 2차: 급여 확정은 서버(closePayMonth)만 한다 -- 원자료로 다시 계산하고 회차 이력(payCloseRuns)을 남긴다.
+         앱이 쓰는 것은 되돌림(사유) · 지급 완료 표시뿐. 조정은 지우지 않고 취소 기록(canceledBy · canceledAt · cancelReason)을 단다. */
       function payMonthClosed(organizationId, month) {
         let path = /databases/$(database)/documents/organizations/$(organizationId)/payMonths/$(month);
-        return exists(path) && get(path).data.status == "closed";
-      }
-      function payInt(value) {
-        return value is int && value >= -1000000000 && value <= 1000000000;
+        return exists(path) && get(path).data.status in ["closed", "paid"];
       }
       match /payAdjustments/{adjustmentId} {
         allow get, list: if hasRole(organizationId, ownerLevel())
@@ -2093,25 +2094,33 @@ service cloud.firestore {
           && request.resource.data.createdBy == request.auth.uid
           && request.resource.data.createdAt == request.time
           && !payMonthClosed(organizationId, request.resource.data.month);
-        allow update: if false;
-        allow delete: if hasRole(organizationId, ownerLevel()) && !payMonthClosed(organizationId, resource.data.month);
+        /* 취소 기록만 -- 한 번, 사유와 함께, 확정 전 달에서. 금액 · 사유 · 넣은 사람은 그대로 남는다. */
+        allow update: if hasRole(organizationId, ownerLevel())
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["canceledBy", "canceledAt", "cancelReason"])
+          && !resource.data.keys().hasAny(["canceledAt"])
+          && request.resource.data.canceledBy == request.auth.uid
+          && request.resource.data.canceledAt == request.time
+          && request.resource.data.cancelReason is string
+          && request.resource.data.cancelReason.size() > 0 && request.resource.data.cancelReason.size() <= 100
+          && !payMonthClosed(organizationId, resource.data.month);
+        allow delete: if false;
       }
       match /payMonths/{payMonthId} {
         allow get: if isCentreStaff(organizationId);
-        allow create, update: if hasRole(organizationId, ownerLevel())
-          && request.resource.data.keys().hasOnly(["organizationId", "month", "status", "closedBy", "closedAt", "reopenReason", "updatedBy", "updatedAt"])
-          && request.resource.data.organizationId == organizationId
-          && request.resource.data.month == payMonthId && salesMonthString(payMonthId)
+        allow create: if false;
+        allow update: if hasRole(organizationId, ownerLevel())
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["status", "reopenReason", "paidBy", "paidAt", "updatedBy", "updatedAt"])
           && request.resource.data.updatedBy == request.auth.uid
           && request.resource.data.updatedAt == request.time
           && (
-            (request.resource.data.status == "closed"
-              && request.resource.data.closedBy == request.auth.uid && request.resource.data.closedAt == request.time
-              && (resource == null || resource.data.status != "closed"))
-            || (request.resource.data.status == "reopened"
-              && resource != null && resource.data.status == "closed"
+            (request.resource.data.status == "reopened"
+              && resource.data.status in ["closed", "paid"]
               && request.resource.data.reopenReason is string
               && request.resource.data.reopenReason.size() > 0 && request.resource.data.reopenReason.size() <= 200)
+            || (request.resource.data.status == "paid"
+              && resource.data.status == "closed"
+              && request.resource.data.paidBy == request.auth.uid
+              && request.resource.data.paidAt == request.time)
           );
         allow delete: if false;
       }
@@ -2119,21 +2128,11 @@ service cloud.firestore {
         allow get: if hasRole(organizationId, ownerLevel())
           || (isCentreStaff(organizationId) && statementId.matches(request.auth.uid + "_[0-9]{4}-[0-9]{2}"));
         allow list: if hasRole(organizationId, ownerLevel());
-        /* 확정과 한 번에(batch) 쓴다 -- get() 은 쓰기 전 상태라 이 달이 아직 닫히지 않았을 때만 통과한다. */
-        allow create, update: if hasRole(organizationId, ownerLevel())
-          && request.resource.data.keys().hasOnly(["organizationId", "instructorId", "month", "lessons", "extras", "adjustTotal", "gross", "incomeTax", "localTax", "net", "taxType", "closedBy", "closedAt"])
-          && request.resource.data.keys().hasAll(["organizationId", "instructorId", "month", "lessons", "extras", "adjustTotal", "gross", "incomeTax", "localTax", "net", "taxType", "closedBy", "closedAt"])
-          && request.resource.data.organizationId == organizationId
-          && request.resource.data.instructorId is string
-          && salesMonthString(request.resource.data.month)
-          && statementId == request.resource.data.instructorId + "_" + request.resource.data.month
-          && payInt(request.resource.data.lessons) && payInt(request.resource.data.extras) && payInt(request.resource.data.adjustTotal)
-          && payInt(request.resource.data.gross) && payInt(request.resource.data.incomeTax) && payInt(request.resource.data.localTax) && payInt(request.resource.data.net)
-          && request.resource.data.taxType in ["3.3", "none"]
-          && request.resource.data.closedBy == request.auth.uid
-          && request.resource.data.closedAt == request.time
-          && !payMonthClosed(organizationId, request.resource.data.month);
-        allow delete: if false;
+        allow write: if false;
+      }
+      match /payCloseRuns/{runId} {
+        allow get, list: if hasRole(organizationId, ownerLevel());
+        allow write: if false;
       }
       match /payrollSettings/{settingId} {
         allow get: if isCentreStaff(organizationId);

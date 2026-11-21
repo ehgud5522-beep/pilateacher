@@ -178,7 +178,6 @@ export function entryErrors(entry) {
   const problems = entryProblems(entry);
   if (text(entry?.paidOn).slice(0, 7) !== text(entry?.month)) problems.push("paid_on_month");
   if (!isGroup(entry) && typeof entry?.ot !== "boolean") problems.push("ot_choice_required");
-  if (isGroup(entry) && Number(entry?.share) === 0.5) problems.push("share_not_for_group");
   return problems.map((code) => ({ code, text: PROBLEM_TEXT[code] || code }));
 }
 
@@ -257,9 +256,10 @@ export function confirmFailureText(error) {
     not_confirmer: "확정은 FC · 대표 · 총괄만 할 수 있어요",
     already_confirmed: "이미 확정된 달이에요",
     target_required: "강사 · 달을 다시 골라 주세요",
+    group_half_share: "그룹 수강권 줄에 FC 반반이 남아 있어요 -- 두 장부에서 반반을 풀고 다시 확정해 주세요",
   };
-  if (known[reason]) return { kind: reason === "already_confirmed" ? "data_conflict" : "permission", code: reason, text: `${known[reason]} (코드 ${reason})` };
-  if (/unavailable|deadline|network/.test(reason)) return { kind: "network", code: reason, text: `연결이 불안정해 확정하지 못했어요. 다시 눌러 주세요 (코드 ${reason})` };
+  if (known[reason]) return { kind: reason === "already_confirmed" ? "data_conflict" : reason === "group_half_share" ? "invalid_request" : "permission", code: reason, text: `${known[reason]} (코드 ${reason})` };
+  if (/unavailable|deadline|network|aborted/.test(reason)) return { kind: "network", code: reason, text: `연결이 불안정해 확정하지 못했어요. 다시 눌러 주세요 (코드 ${reason})` };
   return { kind: "unknown", code: reason, text: `확정하지 못했어요 (코드 ${reason})` };
 }
 

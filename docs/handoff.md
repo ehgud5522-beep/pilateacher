@@ -1,3 +1,32 @@
+## 2026-11-22 — 급여 무결성 2차: 서버 급여 확정 · 회차 이력 · 조정 취소 기록 · 지급 완료 · 명세 CSV · 공제 없음 표시 (#269 에 함께)
+
+- 대표: "2차까지 다 마무리하고 해 줘"
+- **서버 급여 확정** `closePayMonth`(functions/src/pay-close.js): 원장(한국 시각 달) · 그룹 급여 · 심사용 회원 · 계정 합치기 · 확정 인센 · FC ·
+  조정 · 세금을 서버가 직접 읽어 다시 계산(`functions/shared/pay-close.mjs`, 화면 계산과 같은지 tests/payroll/pay-close.test.js).
+  대표가 본 실수령 합계와 다르면 `totals_changed` 거절. 조정 · 인센 · 세금 · 달 상태는 트랜잭션 안에서 다시 읽음
+- **회차**: 확정마다 revision +1, `payCloseRuns/{달}_r{n}` 에 그 회차 명세 전부 · 앞 회차 되돌린 사유. 화면은 지금 회차 명세만(`statementOfRevision`)
+- **규칙**: payMonths 생성 · closed 는 서버만, 앱은 되돌림(closed/paid → reopened, 사유) · 지급 완료(closed → paid)만, 회차 · 합계 못 건드림.
+  payStatements · payCloseRuns 쓰기 금지(서버만). payAdjustments 삭제 금지 → 취소 기록(canceledBy · canceledAt · cancelReason) 한 번만. 확정 · 지급 완료 달은 잠금
+- **화면**: 확정 줄에 명세 CSV(세전 · 소득세 · 지방세 · 실수령, 수식 막음) · 지급 완료로 표시 · 확정 이력. 조정 [취소] + 사유, 취소한 줄은 그어서 남김.
+  공제 없음 = "지급액 (공제 전 · 공제는 따로)", 카드 "지급액 ₩ (공제는 따로)"
+- 계산 모듈 이동: `src/features/payroll/pay-statement.js` · `src/features/sales/extra-pay.js` → functions/shared/*.mjs (원래 경로는 다시 내보내기)
+- 확인: build 4005 · Functions 443 · 규칙 477. **배포 순서**: 규칙 → Functions(confirmSalesMonth · closePayMonth) → 웹
+- 남은 것(3차): App.jsx 에서 급여 · 매출 화면 분리, GitHub 자동 검사
+
+## 2026-11-22 — 급여 무결성 1차 (외부 검토 반영, 병합 · 배포 전, 규칙 · Functions · 웹)
+
+- 대표가 외부 검토를 붙여 주며 "확인해 줘" → P1 6건 모두 코드로 사실 확인(환수는 직접 재현) → "1차부터 진행"
+- **급여 확정 잠금**: 매출 인센 · 조정/세금/확정 기록 · 명부를 하나라도 못 읽으면 확정 버튼 잠금 + 이유 + [다시 읽기], 조정 칸도 잠금
+- **확정된 달은 확정 명세만**: 명세가 없거나 못 읽으면 지금 원장으로 다시 계산하지 않음(대표 표 "명세 없음", 합계 제외 안내 · 강사 안내 문구).
+  확정 명세에 있는 강사 · 조정만 있는 강사도 목록에, "조정할 강사 추가" 로 수업 없는 강사 고르기
+- **강사 실수령**: 자료 일부를 못 읽으면 실수령 대신 "일부 자료를 읽지 못해 …(코드)"
+- **여러 달 환불 환수**: 그 사이 달 환불을 먼저 깎음(`monthStatement`), 읽을 달 = `refundRangeMonths`(환불 달 ~ 지난달). 9월 500만 → 10월 · 11월 100만 = 9만 + 16만
+- **서버 매출 확정 트랜잭션**: 읽기 · 대조 · 확정을 `runTransaction` 하나로, 그룹 반반 줄이 있으면 `group_half_share` 거절
+- **계정 바꾼 강사 인센 합산**(`extrasByInstructor` 덮어쓰기 → 더하기), **그룹 반반 규칙에서도 거절**(salesEntries `share == 1`)
+- 수강권 "1:1 20회" → 20(`sessionCountOf`) · 기존 메모 표시, 사무실 · 강사 환불 미리보기가 지난달 줄을 읽음, CSV 글자 칸 수식 막기(`'`)
+- 확인: build 3999 · 규칙 476 · Functions 441. **배포 순서(지시 뒤)**: 규칙 → Functions(confirmSalesMonth) → 웹
+- 2차(남음): 서버가 다시 계산하는 급여 확정 · 확정 회차 이력 · 조정 취소 기록 · 지급 완료 · 명세 CSV · 공제 없음 직원 표시
+
 ## 2026-11-22 — 금액 입력 쉼표 기본 · 그룹 반반 없음 · 수강권 횟수 · 예상 받는 금액 크게 (병합 · 배포 전, 웹만)
 
 - 같은 날 배포: #266 · #267 (규칙 · confirmSalesMonth · 웹), 앱 빌드 브랜치 `release/1-1-60` (1.1.60 · versionCode 83)

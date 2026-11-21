@@ -359,6 +359,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "이달 예상 급여 · 빈 달",
     "이달 예상 급여 · 조회 실패",
     "예상 급여 카드",
+    "예상 급여 카드 · 공제 없음",
+    "예상 급여 카드 · 자료 누락",
     "예상 급여 카드 · 인센",
     "이달 예상 급여 · 수업료 외",
     "이달 예상 급여 · 명세",
@@ -473,6 +475,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "재등록 레이더 · PC",
     "매출 인센 · 강사",
     "매출 인센 · 강사 · 그룹 입력",
+    "매출 인센 · 강사 · 예전 메모 고치기",
     "매출 인센 · FC · PC",
     "담당 강사",
     "담당 강사 · 빠진 회원",
@@ -504,6 +507,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "급여 집계 · 수업료 외",
     "급여 집계 · 명세 · PC",
     "급여 집계 · 확정됨",
+    "급여 집계 · 지급 완료 · 이력",
+    "급여 집계 · 자료 누락",
     "급여 집계 · 이관 전",
     "급여 집계 · 빈 달",
     "급여 집계 · 조회 실패",
@@ -3897,4 +3902,52 @@ test("매출 인센 입력: 그룹은 반반 없음 · 수강권 횟수 · 금�
   assert.match(html, /그룹 매출 ₩140,000 × 5%/);
   assert.match(html, /data-sales-section-amount="group"[^>]*>₩45,000/, "그룹 칸 머리에 예상 그룹 인센이 크게 (90만 × 5%)");
   assert.match(html, /data-sales-section-amount="personal"/);
+});
+
+/* 2026-11-22 외부 검토 1차: 자료를 못 읽으면 확정 · 실수령을 막는다, 확정된 달은 확정 명세만, 예전 메모 횟수 */
+test("급여 무결성: 자료 누락이면 확정 잠금 · 강사 실수령 대신 안내 · 확정된 달은 명세 없는 강사를 지금 숫자로 채우지 않는다", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+  const blocked = markupOf("급여 집계 · 자료 누락");
+  assert.match(blocked, /data-pay-close-blocked/);
+  assert.match(blocked, /매출 인센 · FC 수업료를 읽지 못했어요 \(코드 permission-denied\)/);
+  assert.match(blocked, /<button[^>]*disabled=""[^>]*data-pay-close/, "확정 버튼이 잠긴다");
+  assert.doesNotMatch(blocked, /data-pay-adjust-editor/, "자료가 빠진 채로 조정도 넣지 않는다");
+  const card = markupOf("예상 급여 카드 · 자료 누락");
+  assert.match(card, /data-pay-net-missing/);
+  assert.doesNotMatch(card, /실수령 ₩/);
+  const closed = markupOf("급여 집계 · 확정됨");
+  assert.match(closed, /명세 없음/, "u2 는 확정 명세가 없다 -- 지금 원장으로 채우지 않는다");
+  assert.match(closed, /확정 명세가 없는 강사 1명은 합계에 넣지 않았어요/);
+  const legacy = markupOf("매출 인센 · 강사 · 예전 메모 고치기");
+  assert.match(legacy, /aria-label="수강권 횟수"[^>]*value="20"|value="20"[^>]*aria-label="수강권 횟수"/);
+  assert.match(legacy, /기존 메모: 1:1 20회/);
+  assert.doesNotMatch(legacy, /value="1120"/);
+});
+
+/* 2026-11-22 외부 검토 2차: 서버 확정 · 회차 이력 · 지급 완료 · 조정 취소 기록 · 명세 CSV · 공제 없음 표시 */
+test("급여 2차: 지급 완료 · 확정 이력 · 앞 회차 명세는 쓰지 않음 · 조정 취소 기록 · 공제 없음은 지급액", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+  const paid = markupOf("급여 집계 · 지급 완료 · 이력");
+  assert.match(paid, /data-pay-close-bar="paid"/);
+  assert.match(paid, /지급 완료/);
+  assert.match(paid, /data-pay-close-runs/);
+  assert.match(paid, /확정 이력 2회/);
+  assert.match(paid, /앞 회차 되돌린 사유: 조정 추가/);
+  assert.match(paid, /₩449,660/);
+  assert.match(paid, /명세 없음/, "u2 명세는 1회차 것 -- 2회차 숫자로 쓰지 않는다");
+  assert.match(paid, /data-pay-statement-csv/);
+  assert.doesNotMatch(paid, /data-pay-mark-paid/, "이미 지급 완료");
+  assert.match(markupOf("급여 집계 · 확정됨"), /data-pay-mark-paid/, "확정된 달에는 지급 완료 버튼");
+  const owner = markupOf("급여 집계 · 명세 · PC");
+  assert.match(owner, /data-pay-line="adjust-canceled"/);
+  assert.match(owner, /취소됨 · 중복 입력/);
+  assert.match(owner, /₩807,450/, "취소한 조정 −99,999 는 더하지 않는다");
+  assert.doesNotMatch(owner, /정말 지우기/, "지우기는 없다 -- 취소 기록만");
+  const none = markupOf("예상 급여 카드 · 공제 없음");
+  assert.match(none, /11월분 · 12월 15일 지급 · 지급액 ₩500,000 \(공제는 따로\)/);
+  assert.doesNotMatch(none, /실수령/);
 });

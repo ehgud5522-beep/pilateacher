@@ -423,6 +423,7 @@ import {
   recordActivityDocument, recordActivitySignature, recordBoardSummary, recordRowView,
 } from "./features/records/record-activity.js";
 import { beforeAfterBoard, shareInstructorView, shareMemberLabel } from "./features/records/before-after-board.js";
+import { beforeAfterNudge, lastSentAtOf, recordNudge } from "./features/records/record-nudges.js";
 import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
 import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js";
 import { RENEWAL_ALERT, livePassesOf, renewalForecast, renewalLine, renewalRates } from "../functions/shared/renewal-forecast.mjs";
@@ -528,7 +529,7 @@ const LESSON_RECORD_REVIEW_FLAGS = new Set(["no_speech", "low_confidence", "tail
 const hasLessonRecordReviewFlag = (record) => (record?.reviewFlags || record?.flags || []).some((flag) => LESSON_RECORD_REVIEW_FLAGS.has(flag));
 /* 서버 기록 읽기 (설계 문서 1단계-5). 스위치가 켜진 계정에서 회원을 열 때 그 회원의 서버 기록을 받아 화면에만 더한다.
    기기에는 쓰지 않는다 (features/lesson-record/server-notes.js). 꺼져 있으면 회원 객체를 그대로 돌려준다. */
-const ServerNotesContext = createContext({ enabled: false, recordsFor: () => null, request: () => {}, resolveClientId: () => "", consentOn: false, saveConsent: async () => {}, briefingV2On: false, summaryFor: () => null, summaryState: () => ({ loaded: false, error: "" }), requestSummary: () => {}, renewalOn: false, renewalFor: () => null, requestRenewal: () => {}, consultOn: false, organizationId: "", saveCareNotes: async () => false });
+const ServerNotesContext = createContext({ enabled: false, recordsFor: () => null, request: () => {}, resolveClientId: () => "", consentOn: false, saveConsent: async () => {}, briefingV2On: false, summaryFor: () => null, summaryState: () => ({ loaded: false, error: "" }), requestSummary: () => {}, renewalOn: false, renewalFor: () => null, requestRenewal: () => {}, beforeAfterFor: () => null, requestBeforeAfter: () => {}, consultOn: false, organizationId: "", saveCareNotes: async () => false });
 function useServerMergedMember(member) {
   const context = useContext(ServerNotesContext);
   const clientId = context.enabled && member ? context.resolveClientId(member) : "";
@@ -4659,6 +4660,27 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
       ) : null}
     </p>
   ) : null;
+  /* 권장 문구 (2026-11-21 대표): 수업기록 3번에 1번 · 비포애프터 한 달에 한 장. 수업 후 탭 일지 칸 위에 저절로,
+     할 일을 하면 저절로 사라진다. 막지 않는다. 판정은 features/records/record-nudges.js. */
+  const nudgeClientId = briefingContext.organizationId && activeMember ? String(activeMember.orgClientId || "") : "";
+  useEffect(() => { if (nudgeClientId) briefingContext.requestBeforeAfter(nudgeClientId); }, [nudgeClientId, briefingContext]);
+  const recordNudgeView = activeMember && draft.id ? recordNudge({ member: activeMember, schedule, currentLessonId: draft.id }) : null;
+  const beforeAfterNudgeView = nudgeClientId ? beforeAfterNudge({ member: activeMember, schedule, share: briefingContext.beforeAfterFor(nudgeClientId) }) : null;
+  const nudgeLines = recordNudgeView || beforeAfterNudgeView ? (
+    <div className="space-y-1.5" data-nudges>
+      {recordNudgeView ? (
+        <p data-record-nudge={recordNudgeView.code} className="rounded-lg px-3 py-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2, backgroundColor: TINT }}>
+          {recordNudgeView.text}
+        </p>
+      ) : null}
+      {beforeAfterNudgeView ? (
+        <p data-before-after-nudge={beforeAfterNudgeView.code} className="rounded-lg px-3 py-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2, backgroundColor: TINT }}>
+          {beforeAfterNudgeView.text}
+          <button type="button" onClick={() => onOpenMember?.(activeMember.id)} className="ml-2 underline" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }}>회원 상세</button>
+        </p>
+      ) : null}
+    </div>
+  ) : null;
   /* 2026-11-17 개편: 브리핑은 늘 이 세 덩어리다. 회원 요약(서버 · AI)은 스위치 lessonBriefingV2 가 켜진 계정만 얹힌다 --
      꺼져 있으면 briefingSummary 가 비어 기기 기록만으로 채운다. */
   const lessonBriefingView = useMemo(() => (activeMember
@@ -5525,6 +5547,7 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
                 </button>
               </div>
             ) : null}
+                  {nudgeLines}
                   {recordSection}
                   {feedbackSection}
                   {moreSection}
@@ -5570,6 +5593,7 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
                       </div>
                     ) : null}
                   </section>
+                  {nudgeLines}
                   {recordSection}
                   {feedbackSection}
                   {moreSection}
@@ -34331,6 +34355,9 @@ export default function App() {
   const renewalAlertsOn = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.renewalAlerts, account?.id);
   const [renewalLedgers, setRenewalLedgers] = useState(() => new Map());
   const renewalFetchedAt = useRef(new Map());
+  /* 비포애프터 권장 문구 (2026-11-21): 이 강사가 그 회원에게 마지막으로 보낸 카드 시각. 회원마다 10분에 한 번만 묻는다. */
+  const [beforeAfterByClient, setBeforeAfterByClient] = useState(() => new Map());
+  const beforeAfterFetchedAt = useRef(new Map());
   /* 5단계: 재등록 상담 소재 초안 (AI, 누를 때만). */
   const consultPointsOn = Boolean(organizationRoster) && scheduleSyncEnabledFor(scheduleSyncConfig?.consultPoints, account?.id);
   const serverNotesValue = useMemo(() => ({
@@ -34366,6 +34393,26 @@ export default function App() {
       Promise.all(live.map((pass) => listPassLedger(organizationContext.organizationId, pass.id)))
         .then((lists) => setRenewalLedgers((current) => new Map(current).set(key, lists.flat())))
         .catch((error) => deviceLog("renewal_forecast_failed", { feature: "renewal_alerts", stage: "ledger_read", errorDomain: "firestore", errorCode: String(error?.code || error?.cause?.code || "unknown"), correlationId: key.slice(-8), appBuild: APP_BUILD_LABEL }));
+    },
+    beforeAfterFor: (clientId) => beforeAfterByClient.get(String(clientId || "")) || null,
+    requestBeforeAfter: (clientId) => {
+      const key = String(clientId || "");
+      if (!key || !organizationRoster || !organizationContext.organizationId) return;
+      if (Date.now() - (beforeAfterFetchedAt.current.get(key) || 0) < 10 * 60e3) return;
+      beforeAfterFetchedAt.current.set(key, Date.now());
+      /* 회원 앱에 연결되지 않은 회원은 카드를 받을 수 없다 -- 묻지 않고 권하지도 않는다. */
+      const linked = Boolean(String(rosterClients.find((item) => String(item?.id || "") === key)?.userId || ""));
+      if (!linked) { setBeforeAfterByClient((current) => new Map(current).set(key, { linked: false, lastSentAt: null })); return; }
+      fbPrivatePhotoSharing({ action: "teacherList", organizationId: organizationContext.organizationId, clientId: key })
+        .then((result) => setBeforeAfterByClient((current) => new Map(current).set(key, { linked: true, lastSentAt: lastSentAtOf(result?.shares) })))
+        .catch((error) => {
+          /* 공유 오류의 이유는 details.reasonCode 나 문구에 있다 (features/photos/sharing-errors.js 와 같은 읽기). */
+          const code = String(error?.details?.reasonCode || error?.message || error?.code || "unknown").replace("functions/", "");
+          /* 공유가 꺼진 계정이면 권하지 않는다. 그 밖의 실패는 진단만 남기고 문구를 띄우지 않는다 -- 권장 문구가 오류 화면이 되면 안 된다. */
+          if (code === "share/disabled") { setBeforeAfterByClient((current) => new Map(current).set(key, { linked: true, lastSentAt: null, disabled: true })); return; }
+          beforeAfterFetchedAt.current.delete(key);
+          deviceLog("before_after_nudge_read_failed", { feature: "record_nudges", stage: "teacher_list", errorDomain: "functions_callable", errorCode: String(error?.code || "unknown"), serverCode: code, correlationId: key.slice(-8), appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform() });
+        });
     },
     briefingV2On: lessonBriefingV2On,
     summaryFor: (clientId) => { const row = summariesByClient.get(String(clientId)); return row && !row.readError ? row : null; },
@@ -34413,7 +34460,7 @@ export default function App() {
         .then((rows) => setServerRecordsByClient((current) => new Map(current).set(key, rows)))
         .catch((error) => deviceLog("lesson_record_server_read_failed", { feature: "lesson_record", stage: "server_read", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), appBuild: APP_BUILD_LABEL }));
     },
-  }), [lessonRecordServerReadOn, serverRecordsByClient, findRosterMember, organizationContext.organizationId, memberConsentOn, account?.id, lessonBriefingV2On, summariesByClient, renewalAlertsOn, renewalLedgers, rosterPasses, consultPointsOn, lessonRecordServerOn]);
+  }), [beforeAfterByClient, rosterClients, organizationRoster, lessonRecordServerReadOn, serverRecordsByClient, findRosterMember, organizationContext.organizationId, memberConsentOn, account?.id, lessonBriefingV2On, summariesByClient, renewalAlertsOn, renewalLedgers, rosterPasses, consultPointsOn, lessonRecordServerOn]);
   const lessonRecordServerOnRef = useRef(lessonRecordServerOn);
   lessonRecordServerOnRef.current = lessonRecordServerOn;
   const lessonRecordOutbox = useMemo(() => (account?.id ? createServerOutbox({

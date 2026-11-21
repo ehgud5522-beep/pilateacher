@@ -464,6 +464,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "번호 점검 · 조회 실패",
     "만료 회원 · 강사",
     "만료 회원 · 조회 실패",
+    "재등록 레이더",
     "담당 강사",
     "담당 강사 · 빠진 회원",
     "담당 강사 · 아직 안 돌았음",
@@ -3279,6 +3280,19 @@ test("the expiry report says how many are still inside the 30-day window", async
   const failed = markupOf("만료 회원 · 조회 실패");
   assert.match(failed, /코드 permission-denied/);
   assert.doesNotMatch(failed, /만료된 회원이 없습니다/, "못 읽은 것을 없는 것으로 보이면 안 된다");
+});
+
+test("재등록 레이더: 급한 회원 · 신호 · 못 읽은 신호는 빼고 코드로 말한다 (2026-11-21)", async (t) => {
+  const markupOf = await issueScreens(t);
+  const radar = markupOf("재등록 레이더");
+  assert.match(radar, /강사가 따로 할 일은 없어요/, "강사 일을 늘리지 않는다는 것을 화면이 말한다");
+  assert.match(radar, /급함 1명/);
+  assert.match(radar, /data-radar-signal="pace_drop"/);
+  assert.match(radar, /data-radar-signal="no_attendance_8w"/);
+  assert.match(radar, /비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 \(코드 permission-denied\)/);
+  assert.doesNotMatch(radar, /data-radar-signal="before_after_/, "못 읽은 비포애프터를 \"안 보냄\" 으로 칠하지 않는다");
+  assert.match(radar, /재등록 2명 중 1명/, "표본이 적으면 퍼센트를 내지 않는다");
+  assert.match(radar, /코드 no_device_report/);
 });
 
 test("the member tab separates ongoing from expired, and says why it ended", async (t) => {

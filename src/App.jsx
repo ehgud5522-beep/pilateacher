@@ -442,6 +442,7 @@ import {
 import {
   addSalesEntry, deleteSalesEntry, listSalesEntries, listSalesEntriesOfMonth, listSalesLedger, listSalesMonths, readSalesMonth, reopenSalesMonth, submitSalesMonth, updateSalesEntry,
 } from "./data/repositories/sales-repository.js";
+import { EXTRA_STATE, extraPayOf, extrasByInstructor, extrasTotal } from "./features/sales/extra-pay.js";
 import { nextAggregateSort, sortAggregateRows } from "./features/records/aggregate-table.js";
 import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
 import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js";
@@ -17666,7 +17667,41 @@ function SettingsTab({ db, photos, account, savedAt, demoMode, onChangeSettings,
    없다. 강사가 이 값을 받을 돈으로 읽으면 매달 정산 때 어긋나므로, 화면이
    무엇까지 셌는지 먼저 말한다. */
 
-const PAY_SCOPE_NOTICE = "수업료만 계산합니다. 인센티브 · 노쇼 · 보너스 · 세금은 따로 정산되고, 확정 대기는 바뀔 수 있어요.";
+const PAY_SCOPE_NOTICE = "수업료만 계산합니다. 매출 인센 · FC 복지 수업료는 확정된 것만 아래 수업료 외 칸에 따로 더해요. 간부 인센 · 노쇼 · 보너스 · 세금은 따로 정산되고, 확정 대기는 바뀔 수 있어요.";
+
+/* ── 수업료 외 (2026-11-21 대표: "급여 집계에 잘 포함돼서 나오는지, 강사가 이해하기 쉬워야 하고 한눈에") ──
+   매출 인센 · 그룹 인센 · 환수 · FC 복지 수업료를 수업료 아래 한 장에. 확정된 것만 금액, 확정 전은 "확정 전" 표시만
+   (합계에 안 듦). 맨 아래 "이번 달 받을 돈 = 확정 수업료 + 수업료 외" 한 숫자. 계산은 features/sales/extra-pay.js. */
+function PayExtrasSection({ extras, lessonConfirmed, compact = false }) {
+  if (!extras || (!extras.has && !extras.errorCode)) return null;
+  const signed = (amount) => `${amount < 0 ? "−" : ""}₩${won(Math.abs(amount))}`;
+  return (
+    <section className="mt-3" data-pay-extras-section style={{ padding: compact ? 12 : 16, borderRadius: compact ? 12 : 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+      <p style={{ fontSize: TYPE.body, fontWeight: 800, color: INK }}>수업료 외</p>
+      {extras.errorCode ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: WARN }}>매출 인센 · FC 수업료를 읽지 못했어요 (코드 {extras.errorCode}). 0원이 아니라 읽지 못한 거예요.</p> : null}
+      {extras.lines.map((line) => (
+        <div key={line.code} className="flex items-start gap-2" style={{ padding: "9px 0", borderBottom: `1px solid ${LINE}` }} data-pay-extra={line.code}>
+          <span className="min-w-0 flex-1" style={{ wordBreak: "keep-all" }}>
+            <span style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{line.label}</span>
+            <span className="block tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{line.note}</span>
+          </span>
+          {line.state === EXTRA_STATE.WAITING
+            ? <span className="shrink-0 rounded-full px-2 py-0.5 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D, backgroundColor: TINT }}>확정 전</span>
+            : <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: line.amount < 0 ? BAD : INK }}>{signed(line.amount)}</span>}
+        </div>
+      ))}
+      {lessonConfirmed === null ? null : (
+        <div className="mt-3" style={{ padding: "10px 12px", borderRadius: 12, backgroundColor: CANVAS }} data-pay-grand-total>
+          <p style={{ fontSize: TYPE.caption, fontWeight: 600, color: SUB }}>이번 달 받을 돈 · 확정된 것만</p>
+          <p className="tabular-nums" style={{ fontSize: TYPE.heading, fontWeight: 800, color: INK, overflowWrap: "anywhere" }}>₩{won(lessonConfirmed + extras.confirmedTotal)}</p>
+          <p className="tabular-nums" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            확정 수업료 ₩{won(lessonConfirmed)} + 수업료 외 {signed(extras.confirmedTotal)}{extras.waiting ? ` · 확정 전 ${extras.waiting}건은 확정되면 더해져요` : ""}
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
 
 /* 이름을 못 읽은 급여 줄. 회원권 번호를 보여 주면 강사는 그것이 무엇인지 알 수
    없고, 빈칸으로 두면 화면이 깨진 것으로 읽는다. 무슨 일이 있었는지 말한다. */
@@ -17694,7 +17729,7 @@ const SMOKE_LARGE_TEXT = {
    회원권 없어 빠지지 않는 수업은 **자세히 보기(내 급여 화면) 맨 위 요약으로 옮겼다** --
    거기에 확정 대기 N건 · 금액이 같은 계산(upcomingPayRows)으로 있다. 큰 글씨에서는 줄이
    접힌다 (높이 고정 없음). upcoming 은 받기만 하고 그리지 않는다 (부르는 쪽 그대로). */
-function InstructorPayCard({ pay, loading, error, upcoming = null, onOpen }) {
+function InstructorPayCard({ pay, loading, error, upcoming = null, extras = null, onOpen }) {
   const headline = payHeadline(pay, upcoming);
   /* 카드 전체가 하나의 버튼이다. 오른쪽 "자세히 보기" 는 같은 버튼 안의 글자라
      어디를 눌러도 같은 화면으로 간다 -- 버튼 안에 버튼을 두지 않는다. */
@@ -17714,6 +17749,10 @@ function InstructorPayCard({ pay, loading, error, upcoming = null, onOpen }) {
               <span className="tabular-nums" data-pay-amount style={{ fontSize: TYPE.heading, lineHeight: 1.25, fontWeight: 800, color: INK }}>
                 ₩{won(headline.confirmed)}
               </span>
+              {/* 확정된 매출 인센 · FC 수업료 (2026-11-21). 수업료 숫자와 섞지 않고 옆에 + 로 -- 자세히 보기에 줄별로 있다. */}
+              {extras?.confirmedTotal ? (
+                <span className="tabular-nums" data-pay-extras style={{ fontSize: TYPE.body, fontWeight: 700, color: BRAND_D }}>+ 인센 ₩{won(extras.confirmedTotal)}</span>
+              ) : null}
             </p>
           )}
         </div>
@@ -17736,6 +17775,8 @@ function InstructorPayDetail({
   onClose, onRetry, onChangeMonth, initialState = null,
   /* 확정 대기 합계 · 줄. 일정 탭 카드와 **같은 계산**이다 (upcomingPayRows). */
   upcoming = null, pending = null, memberNameOf = () => "",
+  /* 수업료 외 -- 매출 인센 · FC 복지 수업료 (extraPayOf). 없으면 칸이 없다. */
+  extras = null,
   /* 정정 줄 · 수업 줄을 누르면 그 회원 상세로 (원래 수업 기록). 없으면 누르지 않는다. */
   onOpenClient,
   now = () => new Date(),
@@ -17840,6 +17881,7 @@ function InstructorPayDetail({
                 <p className="mt-1" style={{ fontSize: TYPE.caption, color: WARN }}>회원권이 없어 빠지지 않는 수업 {upcoming.blocked}건은 대기에 넣지 않았어요</p>
               ) : null}
             </section>
+            <PayExtrasSection extras={extras} lessonConfirmed={confirmed} />
 
             {/* ② 단가별 계산 내역 -- 누르면 그 수업 */}
             <h3 className="mt-5 mb-2 px-1" style={{ fontSize: TYPE.body, fontWeight: 800, color: INK }}>급여 계산 내역</h3>
@@ -23907,8 +23949,9 @@ function CenterMigration({
    회원권 원장의 수업료에 지점별 그룹 급여를 더한다. FC매니저는 담당 지점의
    그룹 횟수를 입력하고, 센터 전체 집계는 대표 권한에서 조회한다. */
 
+/* 2026-11-21: 매출 인센(개인 · OT · 그룹) · FC 복지 수업료는 확정된 것만 "수업료 외" 로 합산한다 -- 여기서 빠졌다. */
 const PAYROLL_EXCLUDED = [
-  "개인매출 인센", "OT 인센", "간부 인센", "바우처 조정", "노쇼", "FC 수업료",
+  "간부 인센", "바우처 조정", "노쇼",
 ];
 
 /** 한 달 앞뒤로 움직인다. 문자열로 더하면 12월에서 13월이 나온다. */
@@ -24007,7 +24050,7 @@ function PayrollClientRow({ row, clientName, passName, open, onToggle }) {
 }
 
 function PayrollInstructorRow({
-  row, name, badge, open, onToggle,
+  row, name, badge, open, onToggle, extras = null,
   nameOfClient = (id) => id, nameOfPass = (passId, category) => category || passId,
   onDownload, nameOfLocation = (id) => id, initialView = PAYROLL_VIEW.PRICE, initialOpenClient = "",
 }) {
@@ -24043,12 +24086,14 @@ function PayrollInstructorRow({
         <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
           {row.sessions}회
         </span>
-        <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
+        <span className="shrink-0 text-right tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>
           ₩{won(row.total)}
+          {extras?.confirmedTotal ? <span className="block" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND_D }} data-payroll-row-extras>+ 인센 ₩{won(extras.confirmedTotal)}</span> : null}
         </span>
       </button>
       {open ? (
         <div className="pb-2" style={{ paddingLeft: 22 }}>
+          {extras ? <PayExtrasSection extras={extras} lessonConfirmed={row.total} compact /> : null}
           <div className="flex items-center gap-1.5" style={{ paddingBottom: 4 }}>
             {[[PAYROLL_VIEW.PRICE, "단가별"], [PAYROLL_VIEW.CLIENT, "회원별"]].map(([key, label]) => (
               <button key={key} type="button" onClick={() => setView(key)}
@@ -24749,6 +24794,8 @@ function PayrollSummary({
   const [clients, setClients] = useState(initialState?.clients || []);
   const [passes, setPasses] = useState(initialState?.passes || []);
   const [namesFailed, setNamesFailed] = useState(initialState?.namesFailed || "");
+  /* 수업료 외 -- 확정된 매출 인센 · FC 복지 수업료 (2026-11-21). 못 읽어도 수업료 집계는 선다. */
+  const [extraDocs, setExtraDocs] = useState(initialState?.extraDocs || { salesMonths: [], fcMonths: [], errorCode: "" });
   const [loading, setLoading] = useState(!initialState);
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
   const [open, setOpen] = useState(initialState?.open || "");
@@ -24776,7 +24823,7 @@ function PayrollSummary({
       /* 심사용 회원을 빼려면 명부가 필요하다 -- 원장 항목에는 그 표시가
          없다. 이 화면이 예전에는 명부를 읽지 않았고, 읽기 한 번이 느는 대신
          가짜 회차가 강사 급여에 섞이지 않는다. */
-      const [payrollClients, instructorResult, locationResult, passResult, groupPayroll] = await Promise.all([
+      const [payrollClients, instructorResult, locationResult, passResult, groupPayroll, salesMonthResult, fcMonthResult] = await Promise.all([
         toleratingReadFailure(listClients(organizationId, { store: clientStore })),
         toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
@@ -24785,6 +24832,8 @@ function PayrollSummary({
            종류를 두 장 들고 있으면 두 줄이 구별되지 않는다. */
         toleratingReadFailure(listPasses(organizationId, { store: passStore })),
         fbManageGroupPayroll({ organizationId, month, action: "list" }),
+        toleratingReadFailure(listSalesMonths(organizationId, month)),
+        toleratingReadFailure(listFcLessonMonths(organizationId, month)),
       ]);
       /* 집계보다 명부를 먼저 읽는다. 계정을 바꾼 강사를 한 사람으로 합치려면
          previousUids 가 있어야 하고, 그것은 소속 문서에만 있다 -- 나중에
@@ -24803,6 +24852,7 @@ function PayrollSummary({
       setLocations(locationResult.items);
       setClients(payrollClients.items);
       setPasses(passResult.items);
+      setExtraDocs({ salesMonths: salesMonthResult.items, fcMonths: fcMonthResult.items, errorCode: salesMonthResult.errorCode || fcMonthResult.errorCode || "" });
       setNamesFailed(
         instructorResult.errorCode || locationResult.errorCode
         || payrollClients.errorCode || passResult.errorCode || "",
@@ -24887,6 +24937,15 @@ function PayrollSummary({
     </section>
   );
 
+  /* 잠금(locked) 뒤라 훅을 쓰지 않는다 -- 가벼운 계산. */
+  const extras = extrasByInstructor({ ...extraDocs, canonicalInstructorId });
+  const extraSum = extrasTotal(extras);
+  /* 수업은 없고 인센 · FC 수업료만 있는 강사도 강사별 줄에 세운다 -- 빠지면 그 사람 몫이 집계에서 안 보인다. */
+  const allInstructorRows = summary ? [
+    ...summary.byInstructor,
+    ...[...extras.keys()].filter((id) => !summary.byInstructor.some((row) => row.instructorId === id))
+      .map((instructorId) => ({ instructorId, sessions: 0, total: 0, byUnitPrice: [], byClient: [], byCategory: [], byRule: [] })),
+  ] : [];
   const multiLocation = (summary?.byLocation?.length || 0) > 1;
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
   const toggle = (key) => setOpen(open === key ? "" : key);
@@ -24895,7 +24954,7 @@ function PayrollSummary({
      "전 지점 합계" 가 처음이다 -- 지급은 지점을 가로지른 합계로 한다 (아래 폰 화면의 설명과 같다).
      지점을 고르면 그 지점 안의 수업만. 상세 칸은 폰에서 펼치던 그 줄(단가별 · 회원별 · CSV)을 그대로 쓴다. */
   const payGroups = summary ? [
-    { id: "all", name: multiLocation ? "전 지점 합계" : "강사별", rows: summary.byInstructor, sessions: summary.sessions, total: summary.total },
+    { id: "all", name: multiLocation ? "전 지점 합계" : "강사별", rows: allInstructorRows, sessions: summary.sessions, total: summary.total },
     ...(multiLocation ? summary.byLocation.map((location) => ({
       id: location.locationId || "none", locationId: location.locationId, name: nameOfLocation(location.locationId),
       rows: location.byInstructor, sessions: location.sessions, total: location.total,
@@ -24904,9 +24963,16 @@ function PayrollSummary({
   const payGroup = payGroups.find((group) => group.id === payBranch) || payGroups[0] || null;
   const payRow = payGroup ? (payGroup.rows.find((row) => row.instructorId === paySelected) || payGroup.rows[0] || null) : null;
   const payScope = (row) => ({ ...(payGroup?.id === "all" ? {} : { locationId: payGroup.locationId }), ...(row ? { instructorId: row.instructorId } : {}) });
-  const payWide = wide && summary && summary.byInstructor.length > 0 ? (
+  const allGroup = payGroup?.id === "all";
+  const payWide = wide && summary && allInstructorRows.length > 0 ? (
     <div data-payroll-wide>
-      <SummaryTiles items={[
+      {/* 인센은 지점이 아니라 사람에게 붙는다 -- "전 지점 합계" 에서만 수업료 외 · 지급 합계를 보인다. */}
+      <SummaryTiles items={allGroup ? [
+        { label: `${payGroup.name} 수업료`, value: `₩${won(payGroup.total)}`, code: "payroll_total" },
+        { label: `수업료 외 (확정)${extraSum.waiting ? ` · 확정 전 ${extraSum.waiting}` : ""}`, value: `₩${won(extraSum.confirmedTotal)}`, code: "payroll_extras" },
+        { label: "지급 합계", value: `₩${won(payGroup.total + extraSum.confirmedTotal)}`, code: "payroll_payout" },
+        { label: `수업 · 강사 ${payGroup.rows.length}명`, value: `${payGroup.sessions}회`, code: "payroll_sessions" },
+      ] : [
         { label: `${payGroup.name} 수업료`, value: `₩${won(payGroup.total)}`, code: "payroll_total" },
         { label: "수업", value: `${payGroup.sessions}회`, code: "payroll_sessions" },
         { label: "강사", value: `${payGroup.rows.length}명`, code: "payroll_instructors" },
@@ -24926,7 +24992,7 @@ function PayrollSummary({
       ) : null}
       <AggregateSplit wide detail={payRow ? (
         <div data-payroll-detail={payRow.instructorId}>
-          <PayrollInstructorRow key={`${payGroup.id}/${payRow.instructorId}`} row={payRow}
+          <PayrollInstructorRow key={`${payGroup.id}/${payRow.instructorId}`} row={payRow} extras={allGroup ? extras.get(payRow.instructorId) || null : null}
             name={nameOfInstructor(payRow.instructorId)} badge={badgeOfInstructor(payRow.instructorId)}
             nameOfClient={nameOfClient} nameOfPass={nameOfPass} nameOfLocation={nameOfLocation}
             open onToggle={() => {}}
@@ -24942,7 +25008,15 @@ function PayrollSummary({
           { key: "sessions", label: "수업", align: "right", sortValue: (row) => row.sessions, render: (row) => `${row.sessions}회` },
           { key: "clients", label: "회원", align: "right", sortValue: (row) => new Set((row.byClient || []).map((item) => item.clientId)).size, render: (row) => `${new Set((row.byClient || []).map((item) => item.clientId)).size}명` },
           { key: "average", label: "회당", align: "right", sortValue: (row) => (row.sessions ? row.total / row.sessions : null), render: (row) => (row.sessions ? `₩${won(Math.round(row.total / row.sessions))}` : "—") },
-          { key: "total", label: "금액", align: "right", sortValue: (row) => row.total, render: (row) => <span className="font-bold">₩{won(row.total)}</span> },
+          { key: "total", label: allGroup ? "수업료" : "금액", align: "right", sortValue: (row) => row.total, render: (row) => <span className="font-bold">₩{won(row.total)}</span> },
+          ...(allGroup ? [
+            { key: "extras", label: "수업료 외", align: "right", sortValue: (row) => extras.get(row.instructorId)?.confirmedTotal ?? null, render: (row) => {
+              const extra = extras.get(row.instructorId);
+              if (!extra) return <span style={{ color: FAINT }}>—</span>;
+              return <span>₩{won(extra.confirmedTotal)}{extra.waiting ? <span className="block" style={{ color: BRAND_D }}>확정 전 {extra.waiting}</span> : null}</span>;
+            } },
+            { key: "payout", label: "지급 합계", align: "right", sortValue: (row) => row.total + (extras.get(row.instructorId)?.confirmedTotal || 0), render: (row) => <span className="font-extrabold">₩{won(row.total + (extras.get(row.instructorId)?.confirmedTotal || 0))}</span> },
+          ] : []),
         ]} />
       </AggregateSplit>
       {summary.corrections?.priorMonth?.sessions ? (
@@ -24983,7 +25057,7 @@ function PayrollSummary({
       {/* 합계보다 먼저 둔다. 숫자를 본 뒤에 읽는 단서는 이미 늦다. */}
       <section style={{ ...sectionStyle, backgroundColor: WARN_S, borderColor: WARN }}>
         <p style={{ fontSize: TYPE.caption, fontWeight: 700, color: WARN }}>
-          회원권 수업료와 저장한 그룹 수업료를 합산합니다. 아래 항목은 별도 정산입니다.
+          회원권 수업료 · 저장한 그룹 수업료 · 확정된 매출 인센과 FC 복지 수업료(수업료 외)를 합산합니다. 아래 항목은 별도 정산입니다.
         </p>
         <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: INK2 }}>
           {PAYROLL_EXCLUDED.join(" · ")}
@@ -25029,8 +25103,15 @@ function PayrollSummary({
               </p>
             </section>
           ) : null}
+          {extraDocs.errorCode ? (
+            <section style={sectionStyle}>
+              <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN }} data-payroll-extras-failed>
+                매출 인센 · FC 수업료를 읽지 못해 수업료 외가 빠져 있어요 (코드 {extraDocs.errorCode}). 수업료는 그대로입니다.
+              </p>
+            </section>
+          ) : null}
 
-          {summary.byInstructor.length === 0 ? (
+          {allInstructorRows.length === 0 ? (
             <section style={sectionStyle}>
               <p style={{ fontSize: TYPE.caption, color: SUB }}>이 달에 정산할 수업이 없습니다.</p>
             </section>
@@ -25074,7 +25155,7 @@ function PayrollSummary({
             </section>
           )) : null}
 
-          {!payWide && summary.byInstructor.length > 0 ? (
+          {!payWide && allInstructorRows.length > 0 ? (
             <section style={sectionStyle}>
               <h3 style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>
                 {multiLocation ? "강사별 합계 (전 지점)" : "강사별"}
@@ -25087,8 +25168,8 @@ function PayrollSummary({
                 </p>
               ) : null}
               <div className="mt-1">
-                {summary.byInstructor.map((row) => (
-                  <PayrollInstructorRow key={row.instructorId} row={row}
+                {allInstructorRows.map((row) => (
+                  <PayrollInstructorRow key={row.instructorId} row={row} extras={extras.get(row.instructorId) || null}
                     name={nameOfInstructor(row.instructorId)}
                     badge={badgeOfInstructor(row.instructorId)}
                     nameOfClient={nameOfClient} nameOfPass={nameOfPass} nameOfLocation={nameOfLocation}
@@ -25116,6 +25197,18 @@ function PayrollSummary({
             <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
               수업 {summary.sessions}회 · 강사 {summary.byInstructor.length}명
             </p>
+            {extras.size ? (
+              <div className="mt-2 pt-2" style={{ borderTop: `1px solid ${LINE}` }} data-payroll-payout>
+                <div className="flex items-end gap-2">
+                  <p className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, color: SUB }}>수업료 외 (확정된 매출 인센 · FC 수업료){extraSum.waiting ? ` · 확정 전 ${extraSum.waiting}건` : ""}</p>
+                  <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>₩{won(extraSum.confirmedTotal)}</p>
+                </div>
+                <div className="mt-1 flex items-end gap-2">
+                  <p className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>지급 합계</p>
+                  <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 800, color: INK }}>₩{won(summary.total + extraSum.confirmedTotal)}</p>
+                </div>
+              </div>
+            ) : null}
             {/* 지난달 차감을 이번 달에 보정하면 이미 지급된 급여에서 빠진다.
                 말하지 않으면 대표가 이번 달 합계를 보고 계산이 틀렸다고 읽는다. */}
             {summary.corrections?.priorMonth?.sessions ? (
@@ -32149,6 +32242,15 @@ export function createAppScreenSmokeCases() {
         initialState={{ passes: [], clients: [] }} />
     )) },
     { name: "예상 급여 카드", element: <InstructorPayCard pay={smokePay} loading={false} error="" onOpen={noop} /> },
+    /* 수업료 외 (2026-11-21): 확정된 매출 인센 40만 원은 카드에 "+ 인센", 내 급여에는 줄별 + 이번 달 받을 돈. FC 수업료는 확정 전. */
+    { name: "예상 급여 카드 · 인센", element: <InstructorPayCard pay={smokePay} loading={false} error="" onOpen={noop}
+      extras={extraPayOf({ salesMonth: { status: "confirmed", snapshot: { total: 5000000, bracketAmount: 250000, otBonus: 50000, groupBase: 2000000, groupBonus: 100000, clawbackTotal: 0, payout: 400000 } } })} /> },
+    { name: "이달 예상 급여 · 수업료 외", element: providerWith(smokeInstructorOrg, (
+      <InstructorPayDetail organization={readyOrganizationContext(smokeInstructorOrg)} month="2026-09"
+        pay={smokePay} loading={false} error="" onClose={noop} onRetry={noop} onChangeMonth={noop}
+        extras={extraPayOf({ salesMonth: { status: "confirmed", snapshot: { total: 5000000, bracketAmount: 250000, otBonus: 50000, groupBase: 2000000, groupBonus: 100000, clawbackTotal: 0, payout: 400000 } }, fcMonth: { status: "submitted", done: 3, cancel: 1 } })}
+        initialState={{ passes: smokePasses, clients: smokeClients }} />
+    )) },
     /* 확정과 예정은 **다른 종류의 숫자다** -- 앞은 원장에 박혀 되돌릴 수 없고,
        뒤는 회원권이 모자라면 한 푼도 나가지 않는다. 한 줄로 합치면 강사는
        둘을 구분할 수 없고, 월말에 대표의 집계와 다른 숫자를 들고 묻는다. */
@@ -32988,6 +33090,16 @@ export function createAppScreenSmokeCases() {
         entry.instructorId === "u2" ? { ...entry, locationId: "centum" } : entry
       ))),
     }) },
+    /* 수업료 외 (2026-11-21): u1 은 매출 인센 40만 원 확정, u2 는 FC 수업료 확정 전, smoke-u9 는 수업 없이 인센만 -- 그래도 줄이 선다. */
+    { name: "급여 집계 · 수업료 외 · PC", element: payrollSummary(smokeOwner, {
+      summary: smokePayroll, ...smokePayrollNames, wide: true, selected: "u1",
+      extraDocs: { salesMonths: [{ instructorId: "u1", status: "confirmed", snapshot: { total: 5000000, bracketAmount: 250000, otBonus: 50000, groupBase: 2000000, groupBonus: 100000, clawbackTotal: 0, payout: 400000 } }, { instructorId: "smoke-u9", status: "confirmed", snapshot: { total: 4000000, bracketAmount: 160000, otBonus: 0, groupBase: 0, groupBonus: 0, clawbackTotal: 0, payout: 160000 } }],
+        fcMonths: [{ instructorId: "u2", status: "submitted", done: 2, cancel: 0 }], errorCode: "" },
+    }) },
+    { name: "급여 집계 · 수업료 외", element: payrollSummary(smokeOwner, {
+      summary: smokePayroll, ...smokePayrollNames, open: "all/u1",
+      extraDocs: { salesMonths: [{ instructorId: "u1", status: "confirmed", snapshot: { total: 5000000, bracketAmount: 250000, otBonus: 50000, groupBase: 2000000, groupBonus: 100000, clawbackTotal: 0, payout: 400000 } }], fcMonths: [], errorCode: "" },
+    }) },
     /* 이관 전. 모든 강사-회원 쌍이 0 에서 시작해 판정 3 이 먼저 걸리므로
        카테고리와 무관하게 전부 25,000 이다. 화면이 그 이유를 합계보다 먼저
        말해야 한다 -- 말하지 않으면 계산이 고장 난 것으로 읽힌다. */
@@ -33117,6 +33229,8 @@ export default function App() {
      월말 정산은 다음 달에 하므로 그때 강사가 자기 숫자를 확인할 자리가
      있어야 한다. */
   const [payMonth, setPayMonth] = useState(() => monthKey(todayISO()));
+  /* 수업료 외 (매출 인센 · FC 복지 수업료, 2026-11-21) -- 급여와 같은 달. */
+  const [payExtras, setPayExtras] = useState(null);
   const [db, setDb] = useState(emptyDb("", ""));
   const lessonRecordDbRef = useRef(db);
   useEffect(() => { lessonRecordDbRef.current = db; }, [db]);
@@ -34208,6 +34322,23 @@ export default function App() {
       .finally(() => { if (alive) setPayLoading(false); });
     return () => { alive = false; };
   }, [canSeeOwnPay, account?.id, organizationContext.organizationId, organizationContext.previousUids, payMonth, payRevision, rosterClients]);
+
+  useEffect(() => {
+    if (!canSeeOwnPay || !account?.id || !organizationContext.organizationId) { setPayExtras(null); return undefined; }
+    let alive = true;
+    const failed = [];
+    const tolerate = (stage) => (error) => {
+      const code = String(error?.code || "unknown");
+      failed.push(code);
+      deviceLog("pay_extras_read_failed", { feature: "payroll_extras", stage, errorDomain: "firestore", errorCode: code, message: String(error?.message || "").slice(0, 200), appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform() });
+      return null;
+    };
+    Promise.all([
+      readSalesMonth(organizationContext.organizationId, account.id, payMonth).catch(tolerate("sales_month")),
+      readFcLessonMonth(organizationContext.organizationId, account.id, payMonth).catch(tolerate("fc_month")),
+    ]).then(([salesMonth, fcMonth]) => { if (alive) setPayExtras({ ...extraPayOf({ salesMonth, fcMonth }), errorCode: failed[0] || "" }); });
+    return () => { alive = false; };
+  }, [canSeeOwnPay, account?.id, organizationContext.organizationId, payMonth, payRevision]);
 
   useEffect(() => {
     if (!detailClient?.id || !organizationContext.organizationId) return undefined;
@@ -38023,7 +38154,7 @@ export default function App() {
         ) : null}
         <div key={tab} className="app-motion-content relative min-h-0 flex-1 overflow-hidden">
           <ServerNotesContext.Provider value={serverNotesValue}><Guard>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} draftAccountId={account?.id} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} syncStatus={syncStatus} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id, options) => { if (options?.consult) setConsultIntentId(id); setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} draftAccountId={account?.id} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} syncStatus={syncStatus} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} extras={payMonth === monthKey(todayISO()) ? payExtras : null} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id, options) => { if (options?.consult) setConsultIntentId(id); setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} viewerLocationIds={organizationContext.locationIds || []} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterInMemberTab} centreAccount={centreAccount} onOpenCentreRegistration={canOpenCentreRegistration ? openCentreRegistration : undefined} unlinkedLocal={centreAccount && roster ? roster.unlinkedLocal || [] : []} onUploadUnlinked={canOpenCentreRegistration ? uploadUnlinkedMember : undefined} onLinkUnlinked={linkUnlinkedMember} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
@@ -38189,7 +38320,7 @@ export default function App() {
         {payOpen && canSeeOwnPay ? (
           <AppOverlay layer="PAGE" name="이달 예상 급여">
             <InstructorPayDetail organization={organizationContext} currentUserId={account?.id || ""} pay={instructorPay}
-              loading={payLoading} error={payError} month={payMonth} upcoming={upcomingPay} pending={pendingPayRows}
+              loading={payLoading} error={payError} month={payMonth} upcoming={upcomingPay} pending={pendingPayRows} extras={payExtras}
               memberNameOf={(memberId) => db.members.find((member) => member.id === memberId)?.name || ""}
               onOpenClient={(client) => { setPayOpen(false); setDetailClient(client); }}
               clientStore={undefined} passStore={undefined}

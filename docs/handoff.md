@@ -1,3 +1,14 @@
+## 2026-11-22 — 정산 점검 첫 실행: 회원권 원장 색인 없음(코드 9) · 검산 불가 1,853건 (병합 · 배포 전, 색인 배포 필요)
+
+- 같은 날 배포: #270 (규칙 · payCheckNightly · runPayCheck · closePayMonth · 웹)
+- 대표가 첫 점검 화면을 붙임: "점검 미완료 · 회원권 원장(코드 9) · 남은 횟수 검산 불가 300건 (전체 1,853건)" -- "아직 안 써서 검산이 안 되는 거 아닌가?"
+- 원인: `collectionGroup("ledger").where("organizationId", "==", …)` 한 줄짜리 컬렉션 그룹 쿼리는 단일 필드 색인(COLLECTION_GROUP)이 따로 있어야 한다 → 없어서
+  FAILED_PRECONDITION(9). 원장을 못 읽은 채로 회원권 1,340개가 전부 "원장 없음" 으로 계산돼 쏟아졌다.
+  **같은 읽기를 closePayMonth 트랜잭션도 한다 -- 색인 배포 전에는 급여 확정도 실패한다.** reconcilePassesNightly 도 같은 쿼리(아마 그동안 실패 로그)
+- 고침: `firestore.foundation.indexes.json` fieldOverrides 에 ledger.organizationId (COLLECTION ASC/DESC/CONTAINS 유지 + COLLECTION_GROUP ASC).
+  회원권 · 원장을 못 읽으면 잔여 검산을 건너뜀(`scope.balanceSkipped`). 원장이 하나도 없는 옛 회원권은 항목 대신 개수(`scope.noLedgerPasses`)
+- 확인: build 4018 · Functions 449. **배포(지시 뒤)**: 색인(`--only firestore:indexes`, 만들어지는 데 몇 분) → Functions(payCheckNightly · runPayCheck · closePayMonth) → 웹
+
 ## 2026-11-22 — 정산 점검함 1단계: 밤 점검 · 대표 점검함 · 확인함 · 확정 직전 재점검 · 확정 대조 기록 (병합 · 배포 전)
 
 - 같은 날 배포: #269 (규칙 · confirmSalesMonth · closePayMonth · 웹)

@@ -179,7 +179,11 @@ export function runPayCheck({
       detail: { deducts: list.length, lessonIds }, signature: signatureOf(list.map((entry) => `${entryIdOf(entry)}@${text(entry.lessonId)}`).sort().join(",")) });
   }
 
-  /* 남은 횟수 검산 (pass-reconcile 와 같은 판정). 이 달에 원장이 움직인 회원권이면 급여에 걸리니 차단. */
+  /* 남은 횟수 검산 (pass-reconcile 와 같은 판정). 이 달에 원장이 움직인 회원권이면 급여에 걸리니 차단.
+     회원권이나 원장을 못 읽었으면 **검산 자체를 건너뛴다** -- 못 읽은 원장을 "원장 없음" 으로 치면 모든 회원권이 검산 불가로 쏟아진다
+     (2026-11-22 실제로: 원장 읽기가 색인 없음(코드 9)으로 실패해 회원권 1,340개가 전부 검산 불가 1,853건으로 떴다). 점검 미완료로 남는다. */
+  const balanceSkipped = failures.some((failure) => ["passes", "ledger_all"].includes(text(failure?.source)));
+  let noLedgerPasses = 0;
   const ledgerByPass = new Map();
   for (const entry of passLedger) {
     const passId = text(entry?.passId);
@@ -187,10 +191,13 @@ export function runPayCheck({
     if (!ledgerByPass.has(passId)) ledgerByPass.set(passId, []);
     ledgerByPass.get(passId).push(entry);
   }
-  for (const pass of passes) {
+  for (const pass of balanceSkipped ? [] : passes) {
     const entries = ledgerByPass.get(text(pass.id)) || [];
     const result = reconcilePass(pass, entries);
     if (result.state === RECONCILE_STATE.MATCHED) continue;
+    /* 원장이 하나도 없는 회원권 = 앱 이전에 만든 옛 회원권 (앱에서 발급하면 발급 기록이 있다). 이 달에 쓴 적도 없으니(쓰면 원장이 생긴다)
+       급여에 걸리지 않는다 -- 한 줄씩 보이지 않고 개수만 범위에 남긴다. 숫자를 못 읽는 경우는 그대로 항목으로. */
+    if (!entries.length && result.unknownReason === "no_ledger") { noLedgerPasses += 1; continue; }
     const touched = entries.some((entry) => ["deduct", "correction"].includes(text(entry.type)) && inMonth(entry.occurredAt));
     const unknown = result.state !== RECONCILE_STATE.MISMATCHED;
     const kind = unknown ? CHECK_KIND.BALANCE_UNKNOWN : CHECK_KIND.BALANCE_MISMATCH;
@@ -209,7 +216,7 @@ export function runPayCheck({
     month: text(month),
     complete: !failures.length,
     failures,
-    scope: { lessons: lessons.length, passes: passes.length, noScheduleInstructorIds: noSchedule, rosterInstructors: sorted(rosterInstructorIds.map(who)).length },
+    scope: { lessons: lessons.length, passes: passes.length, noScheduleInstructorIds: noSchedule, rosterInstructors: sorted(rosterInstructorIds.map(who)).length, noLedgerPasses, balanceSkipped },
     items,
   };
 }

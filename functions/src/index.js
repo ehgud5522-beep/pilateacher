@@ -1869,6 +1869,28 @@ exports.confirmSalesMonth = onCall(CLIENT_PHONE_OPTIONS, async (request) => {
   }
 });
 
+/* ── 강사 FC 복지 수업료 확정 (2026-11-21 대표 결정) ── 지정 강사 · FC 별 한 달 8회 · 받은 FC 본인 확정 금지를 서버가 다시 보고 확정. FC 가 확정하면 대표 알림. */
+const { createFcLessonConfirmService } = require("./fc-lesson-confirm");
+const fcLessonConfirmService = createFcLessonConfirmService({ firestore, membershipId, isOwnerLevel, log: (level, event, fields) => logger[level]?.(event, fields) });
+exports.confirmFcLessonMonth = onCall(CLIENT_PHONE_OPTIONS, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const instructorId = String(request?.data?.instructorId || "").trim();
+  const month = String(request?.data?.month || "").trim();
+  const fields = { feature: "fc_lessons", organizationId, month, correlationId: instructorId.slice(-8) };
+  try {
+    const result = await fcLessonConfirmService.confirm({ callerUid: request?.auth?.uid, organizationId, instructorId, month });
+    logger.info("fc_lessons_confirmed", { ...fields, stage: "confirm", count: result.snapshot.count, amount: result.snapshot.amount, ownersNotified: result.notified?.sent || 0 });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      logger.warn("fc_lessons_refused", { ...fields, stage: "confirm", errorDomain: "fc_lessons", errorCode: error.reason, details: error.details || {} });
+      throw new HttpsError(error.httpsCode, error.reason, { reason: error.reason, ...(error.details || {}) });
+    }
+    logger.error("fc_lessons_failed", { ...fields, stage: "confirm", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200) });
+    throw new HttpsError("internal", "fc_confirm_failed", { reason: "fc_confirm_failed" });
+  }
+});
+
 const { createConsultPointsService } = require("./consult-points");
 const consultPointsService = createConsultPointsService({
   firestore, membershipId, isOwnerLevel,

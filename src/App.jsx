@@ -55,7 +55,7 @@ import {
   fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone, fbDeleteArchivedClient,
-  fbBeforeAfterShareStats, fbConfirmSalesMonth,
+  fbBeforeAfterShareStats, fbConfirmSalesMonth, fbConfirmFcLessonMonth,
   fbVerifyMemberViews, fbMemberAppStatus,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
@@ -430,9 +430,14 @@ import {
 } from "./features/records/renewal-radar.js";
 import { groupRowsByBranch, pickBranch } from "./features/records/branch-groups.js";
 import {
-  CONFIRM_NOTICE_HINT, SALES_KIND_CHOICES, blankEntry, confirmFailureText, entryErrors, entryFromSuggestion, entryLine, kstDate, mySalesView, salesBoardRows,
+  CONFIRM_NOTICE_HINT, SALES_KIND_CHOICES, blankEntry, confirmFailureText, entryErrors, entryFromSuggestion, entryLine, kstDate, monthStatusView, mySalesView, salesBoardRows,
 } from "./features/sales/sales-board.js";
-import { MATCH_VIEW, PAIR, PAIR_VIEW, SALES_KIND_LABELS, matchEntry, salesRecordsOf, suggestionsFor } from "../functions/shared/sales-incentive.mjs";
+import { MATCH_VIEW, PAIR, PAIR_VIEW, SALES_KIND_LABELS, isGroup, matchEntry, salesRecordsOf, suggestionsFor } from "../functions/shared/sales-incentive.mjs";
+import { FC_LESSON_MONTHLY_CAP, FC_LESSON_OUTCOME_LABELS, FC_LESSON_PROBLEM_TEXT, FC_LESSON_RATE } from "../functions/shared/fc-lessons.mjs";
+import { blankFcLesson, fcConfirmFailureText, fcLessonErrors, myFcLessonView } from "./features/sales/fc-lesson-view.js";
+import {
+  addFcLesson, deleteFcLesson, listFcLessonsOfMonth, readFcDesignation, readFcLessonMonth, reopenFcLessonMonth, saveFcDesignation, submitFcLessonMonth, updateFcLesson,
+} from "./data/repositories/fc-lesson-repository.js";
 import {
   addSalesEntry, deleteSalesEntry, listSalesEntries, listSalesEntriesOfMonth, listSalesLedger, listSalesMonths, readSalesMonth, reopenSalesMonth, submitSalesMonth, updateSalesEntry,
 } from "./data/repositories/sales-repository.js";
@@ -27639,9 +27644,10 @@ function SalesEntryRow({ entry, name, flagged = false, locked, onEdit, onDelete,
 
 function salesStatementTiles(statement) {
   return [
+    /* 개인 매출 인센과 그룹 인센은 다른 칸 (2026-11-21 대표: "그룹이랑 개인매출인센이랑 다른 칸에"). */
     { label: "개인 매출 합계", value: salesWon(statement.total), code: "sales_total" },
-    { label: "개인 인센 (구간)", value: salesWon(statement.bracket?.amount ?? statement.bracketAmount), code: "sales_bracket" },
-    { label: "OT · 그룹 인센", value: `${salesWon(statement.otBonus)} · ${salesWon(statement.groupBonus)}`, code: "sales_bonus" },
+    { label: `개인 인센 (구간${statement.otBonus ? ` + OT ${salesWon(statement.otBonus)}` : ""})`, value: salesWon((statement.bracket?.amount ?? statement.bracketAmount ?? 0) + (statement.otBonus || 0)), code: "sales_personal" },
+    { label: `그룹 인센 (그룹 매출 ${salesWon(statement.groupBase)} · 0.5%)`, value: salesWon(statement.groupBonus), code: "sales_group" },
     { label: statement.clawbackTotal ? `지급 예정 (환수 −${salesWon(statement.clawbackTotal)})` : "지급 예정", value: salesWon(statement.payout), color: statement.payout < 0 ? BAD : INK, code: "sales_payout" },
   ];
 }
@@ -27737,13 +27743,19 @@ function MySalesScreen({ organization, currentUserId, passStore, clientStore, in
               ))}
             </div>
           ) : null}
-          <div className="mt-3 space-y-1.5">
-            {view.rows.map((entry) => (
-              <SalesEntryRow key={entry.id} entry={entry} name={nameOf(entry)} flagged={entry.flagged} locked={view.locked}
-                onEdit={() => setDraft({ ...entry })} onDelete={() => remove(entry)} />
-            ))}
-            {!view.rows.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>아직 넣은 매출이 없어요.</p> : null}
-          </div>
+          {[["개인 매출", false, "아직 넣은 개인 매출이 없어요."], ["그룹 매출 · 0.5% · 개인 인센과 따로", true, "아직 넣은 그룹 매출이 없어요."]].map(([title, group, empty]) => {
+            const list = view.rows.filter((entry) => isGroup(entry) === group);
+            return (
+              <div key={title} className="mt-3 space-y-1.5" data-sales-section={group ? "group" : "personal"}>
+                <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{title}</p>
+                {list.map((entry) => (
+                  <SalesEntryRow key={entry.id} entry={entry} name={nameOf(entry)} flagged={entry.flagged} locked={view.locked}
+                    onEdit={() => setDraft({ ...entry })} onDelete={() => remove(entry)} />
+                ))}
+                {!list.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>{empty}</p> : null}
+              </div>
+            );
+          })}
           {view.locked ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>확정된 달이라 고칠 수 없어요. 고칠 것이 있으면 FC · 대표에게 말해 주세요.</p> : (
             <div className="mt-3 flex flex-wrap gap-2">
               <button type="button" disabled={Boolean(draft)} onClick={() => setDraft(blankEntry({ side: "instructor", instructorId: currentUserId, month }))} className="h-10 px-3 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>+ 직접 추가</button>
@@ -27753,6 +27765,7 @@ function MySalesScreen({ organization, currentUserId, passStore, clientStore, in
           )}
         </>
       ) : null}
+      <FcLessonSection key={month} organization={organization} currentUserId={currentUserId} month={month} initialState={initialState?.fc || null} />
     </section>
   );
 }
@@ -27778,12 +27791,13 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
     if (!organizationId) return;
     setData(null); setError("");
     try {
-      const [members, locations, ledger, passes, clients] = await Promise.all([
+      const [members, locations, ledger, passes, clients, fcLessons] = await Promise.all([
         listMemberships(organizationId, { store: instructorStore }),
         toleratingReadFailure(listLocations(organizationId)),
         toleratingReadFailure(listSalesLedger(organizationId, month)),
         toleratingReadFailure(listPasses(organizationId, { store: passStore })),
         toleratingReadFailure(listClients(organizationId, { store: clientStore })),
+        toleratingReadFailure(listFcLessonsOfMonth(organizationId, month)),
       ]);
       /* FC 는 맡은 지점 강사만 (규칙 · 서버와 같은 판단: 내 지점이 비었으면 전부, 강사 지점이 비었으면 보임). */
       const mine = scopedLocationIds(organization);
@@ -27811,6 +27825,7 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
         teachers, locations: locations.items, entriesByInstructor,
         monthsByInstructor: new Map(months.map((item) => [String(item.instructorId), item])),
         records: salesRecordsOf({ passes: passes.items, ledger: ledger.items, month }), clients: clients.items,
+        fcInstructorIds: new Set((fcLessons.items || []).map((item) => String(item.instructorId))),
         warning: ledger.errorCode || passes.errorCode ? `앱 기록을 읽지 못해 대조 근거 · 후보가 비어 있어요 (코드 ${ledger.errorCode || passes.errorCode})` : "",
       });
     } catch (thrown) {
@@ -27820,7 +27835,7 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
     }
   }, [organizationId, month, instructorStore, passStore, clientStore, organization, ownerView, currentUserId]);
   useEffect(() => { if (!initialState) load(); }, [load, initialState]);
-  const rows = data ? salesBoardRows({ instructors: data.teachers, entriesByInstructor: data.entriesByInstructor, monthsByInstructor: data.monthsByInstructor, month, viewerUid: currentUserId }) : [];
+  const rows = data ? salesBoardRows({ instructors: data.teachers, entriesByInstructor: data.entriesByInstructor, monthsByInstructor: data.monthsByInstructor, month, viewerUid: currentUserId, alsoInclude: data.fcInstructorIds }) : [];
   const groups = data ? groupRowsByBranch(rows, { instructors: data.teachers, locations: data.locations || [], canonicalInstructorId: canonicalInstructorIdFrom(data.teachers) }) : [];
   const branchId = pickBranch(groups, branch);
   const shown = groups.length > 1 ? (groups.find((group) => group.id === branchId)?.rows || []) : rows;
@@ -27871,8 +27886,14 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
           {salesPill(row.status.tone, row.status.label)}
         </div>
         <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>강사 장부 {salesWon(row.mineTotal)} ({row.mineCount}줄) · 사무실 장부 {salesWon(row.officeTotal)} ({row.officeCount}줄) · 지급 예정 {salesWon(row.statement.payout)}</p>
-        <div className="space-y-1.5" data-sales-pairs>
-          {row.pairing.pairs.map((pair, index) => {
+        <div className="space-y-3" data-sales-pairs>
+          {[["개인 매출", false], ["그룹 매출 · 0.5% · 개인 인센과 따로", true]].map(([title, group]) => {
+            const list = row.pairing.pairs.filter((pair) => isGroup(pair.instructor || pair.office) === group);
+            if (!list.length) return null;
+            return (
+              <div key={title} className="space-y-1.5" data-sales-section={group ? "group" : "personal"}>
+                <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{title}</p>
+                {list.map((pair, index) => {
             const view = PAIR_VIEW[pair.code];
             const source = pair.office || pair.instructor;
             const evidence = pair.office ? MATCH_VIEW[matchEntry(pair.office, { records: data.records, claims: [] }).code] : null;
@@ -27895,6 +27916,9 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
                       : <button type="button" onClick={() => setAskDelete(pair.office.id)} style={{ fontSize: TYPE.caption, color: SUB }}>사무실 줄 지우기</button>}
                   </div>
                 ) : null}
+              </div>
+            );
+          })}
               </div>
             );
           })}
@@ -27932,6 +27956,8 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
               : !ownerView ? <p style={{ fontSize: TYPE.caption, color: SUB }} data-sales-confirm-hint>{CONFIRM_NOTICE_HINT}</p> : null}
           </div>
         )}
+        <FcLessonBoardSection key={`${row.instructorId}-${month}`} organization={organization} instructorId={row.instructorId} month={month} currentUserId={currentUserId}
+          initialState={initialState?.fcByInstructor?.[row.instructorId] || null} />
       </div>
     );
   };
@@ -27953,6 +27979,7 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
       {!data && !error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
       {data?.warning ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{data.warning}</p> : null}
       {notice ? <p className="mt-2 font-bold" style={{ fontSize: TYPE.caption, color: notice.tone === "good" ? GOOD : notice.tone === "bad" ? BAD : WARN }} data-sales-notice>{notice.text}</p> : null}
+      {data && ownerView ? <FcDesignationEditor key={month} organization={organization} month={month} teachers={data.teachers} currentUserId={currentUserId} initialState={initialState?.designation || null} /> : null}
       {data ? (
         <>
           <SummaryTiles items={[
@@ -27996,6 +28023,253 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
         </>
       ) : null}
     </section>
+  );
+}
+
+/* ── 강사 FC 복지 수업료 화면 (2026-11-21 대표 결정) ───────────────────────────────────
+   진행 25,000 · 캔슬 15,000, FC 한 명당 한 달 진행 + 캔슬 8회, 그 달 대표 · 총괄이 지정한 강사만.
+   강사가 넣고(이번 달 매출 인센 화면 아래), FC · 대표 · 총괄이 확정한다(매출 인센 화면의 강사 상세). 확정은 서버만. */
+function FcLessonSection({ organization, currentUserId, month, initialState = null }) {
+  const organizationId = organization?.organizationId || "";
+  const [state, setState] = useState(() => initialState || null);
+  const [error, setError] = useState("");
+  const [draft, setDraft] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [askDelete, setAskDelete] = useState("");
+  const [tried, setTried] = useState(false);
+  const load = useCallback(async () => {
+    if (!organizationId || !currentUserId) return;
+    setState(null); setError("");
+    try {
+      const [all, designation, monthDoc] = await Promise.all([
+        listFcLessonsOfMonth(organizationId, month), readFcDesignation(organizationId, month), readFcLessonMonth(organizationId, currentUserId, month),
+      ]);
+      setState({ all, designation, monthDoc });
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setError(`FC 복지 수업을 읽지 못했어요 (코드 ${code})`);
+      deviceLog("fc_lessons_read_failed", { feature: "fc_lessons", stage: "mine_read", errorDomain: "firestore", errorCode: code, appBuild: APP_BUILD_LABEL });
+    }
+  }, [organizationId, currentUserId, month]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const view = state ? myFcLessonView({ instructorId: currentUserId, monthEntries: state.all, designation: state.designation, monthDoc: state.monthDoc }) : null;
+  const names = state?.designation?.fcNames || {};
+  const fcName = (uid) => names[uid] || "FC";
+  const save = async (entry) => {
+    setTried(true);
+    if (fcLessonErrors(entry, { designation: state.designation, monthEntries: state.all }).length) return;
+    setBusy(true); setMessage("");
+    try {
+      if (entry.id) await updateFcLesson(organizationId, entry.id, entry, { uid: currentUserId });
+      else await addFcLesson(organizationId, entry, { uid: currentUserId });
+      setDraft(null); setTried(false); await load();
+    } catch (thrown) {
+      setMessage(`저장하지 못했어요 -- 입력은 그대로 있어요 (코드 ${String(thrown?.code || "unknown")})`);
+    } finally { setBusy(false); }
+  };
+  const remove = async (entry) => {
+    try { await deleteFcLesson(organizationId, entry.id); await load(); }
+    catch (thrown) { setMessage(`지우지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
+  };
+  const submit = async () => {
+    setBusy(true);
+    try { await submitFcLessonMonth(organizationId, currentUserId, month, { uid: currentUserId }); setMessage("제출했어요. FC · 대표 · 총괄이 확인 뒤 확정해요."); await load(); }
+    catch (thrown) { setMessage(`제출하지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
+    finally { setBusy(false); }
+  };
+  const input = { height: 40, borderRadius: 8, border: `1px solid ${LINE}`, padding: "0 10px", fontSize: TYPE.caption, color: INK, backgroundColor: CARD, width: "100%" };
+  const errors = draft && state ? fcLessonErrors(draft, { designation: state.designation, monthEntries: state.all }) : [];
+  return (
+    <div className="mt-4 pt-3" style={{ borderTop: `1px solid ${LINE}` }} data-fc-lessons>
+      <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>FC 복지 수업</p>
+      <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>진행 {salesWon(FC_LESSON_RATE.done)} · 캔슬 {salesWon(FC_LESSON_RATE.cancel)} · FC 한 명당 한 달 {FC_LESSON_MONTHLY_CAP}회(진행 + 캔슬) · 매출 인센과 따로 정산</p>
+      {error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{error}</p> : null}
+      {!state && !error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+      {view && !view.designated && !view.rows.length ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }} data-fc-not-designated>{FC_LESSON_PROBLEM_TEXT.not_designated} (코드 not_designated)</p> : null}
+      {view && (view.designated || view.rows.length) ? (
+        <>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="font-bold tabular-nums" style={{ fontSize: TYPE.caption, color: INK }} data-fc-total={view.totals.amount}>진행 {view.totals.done}회 · 캔슬 {view.totals.cancel}회 · {salesWon(view.totals.amount)}</span>
+            {salesPill(monthStatusView(state.monthDoc).tone, monthStatusView(state.monthDoc).label)}
+          </div>
+          {message ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: message.startsWith("제출했어요") ? GOOD : WARN }}>{message}</p> : null}
+          <div className="mt-2 space-y-1.5">
+            {view.rows.map((entry) => (
+              <div key={entry.id} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: entry.overCap ? WARN_S : CANVAS }} data-fc-lesson={entry.id}>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="min-w-0 flex-1 font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{fcName(entry.fcUserId)} <span className="font-normal tabular-nums" style={{ color: SUB }}>{entry.lessonDate}</span></span>
+                  {entry.overCap ? salesPill("warn", `${FC_LESSON_MONTHLY_CAP}회 넘음`) : null}
+                  <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{FC_LESSON_OUTCOME_LABELS[entry.outcome]} · {salesWon(FC_LESSON_RATE[entry.outcome])}</span>
+                </div>
+                {view.locked ? null : (
+                  <div className="mt-1 flex gap-3">
+                    <button type="button" onClick={() => { setDraft({ ...entry }); setTried(false); }} className="font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>고치기</button>
+                    {askDelete === entry.id
+                      ? <><button type="button" onClick={() => { setAskDelete(""); remove(entry); }} className="font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>정말 지우기</button><button type="button" onClick={() => setAskDelete("")} style={{ fontSize: TYPE.caption, color: SUB }}>그만두기</button></>
+                      : <button type="button" onClick={() => setAskDelete(entry.id)} style={{ fontSize: TYPE.caption, color: SUB }}>지우기</button>}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          {draft ? (
+            <div className="mt-2 space-y-2 p-3" style={{ borderRadius: 10, border: `1px solid ${LINE}` }} data-fc-editor>
+              <label className="block" style={{ fontSize: TYPE.caption, color: SUB }}>수업을 받은 FC
+                <select style={input} value={draft.fcUserId} onChange={(event) => setDraft({ ...draft, fcUserId: event.target.value })}>
+                  <option value="">고르기</option>
+                  {(state.designation?.fcUserIds || []).filter((uid) => uid !== currentUserId).map((uid) => <option key={uid} value={uid}>{fcName(uid)} · 이번 달 남은 {view.remainingOf(uid)}회</option>)}
+                </select>
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <label style={{ fontSize: TYPE.caption, color: SUB }}>수업일
+                  <input type="date" style={input} value={draft.lessonDate} min={`${month}-01`} max={`${month}-31`} onChange={(event) => setDraft({ ...draft, lessonDate: event.target.value })} />
+                </label>
+                <div style={{ fontSize: TYPE.caption, color: SUB }}>결과
+                  <div className="mt-0.5 flex gap-1.5">
+                    {["done", "cancel"].map((outcome) => (
+                      <button key={outcome} type="button" aria-pressed={draft.outcome === outcome} onClick={() => setDraft({ ...draft, outcome })} className="h-10 flex-1 font-bold"
+                        style={{ borderRadius: 8, backgroundColor: draft.outcome === outcome ? INK : CANVAS, color: draft.outcome === outcome ? CARD : INK2, fontSize: TYPE.caption }}>{FC_LESSON_OUTCOME_LABELS[outcome]} {salesWon(FC_LESSON_RATE[outcome])}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              {tried && errors.length ? <p style={{ fontSize: TYPE.caption, color: WARN }}>{errors.map((item) => `${item.text} (${item.code})`).join(" · ")}</p> : null}
+              <div className="flex gap-2">
+                <button type="button" onClick={() => { setDraft(null); setTried(false); }} disabled={busy} className="h-10 flex-1 font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+                <button type="button" onClick={() => save(draft)} disabled={busy} className="h-10 flex-1 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>{busy ? "저장 중…" : "저장"}</button>
+              </div>
+            </div>
+          ) : null}
+          {view.locked ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>확정된 달이라 고칠 수 없어요.</p> : (
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button type="button" disabled={Boolean(draft) || !view.designated} onClick={() => { setDraft(blankFcLesson({ instructorId: currentUserId, month })); setTried(false); }} className="h-10 px-3 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>+ FC 수업 추가</button>
+              <button type="button" disabled={busy || Boolean(draft) || !view.rows.length} onClick={submit} className="ml-auto h-10 px-4 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>FC 수업 제출</button>
+            </div>
+          )}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/** FC · 대표 · 총괄: 강사 상세 안의 FC 복지 수업 -- 보기 · 확정 · 되돌림. 강사 줄은 고치지 않는다. */
+function FcLessonBoardSection({ organization, instructorId, month, currentUserId, onConfirm = fbConfirmFcLessonMonth, initialState = null }) {
+  const organizationId = organization?.organizationId || "";
+  const ownerView = isOwnerLevelRole(organization?.role);
+  const [state, setState] = useState(() => initialState || null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const [reason, setReason] = useState("");
+  const load = useCallback(async () => {
+    if (!organizationId || !instructorId) return;
+    setState(null); setError("");
+    try {
+      const [all, designation, monthDoc] = await Promise.all([
+        listFcLessonsOfMonth(organizationId, month), readFcDesignation(organizationId, month), readFcLessonMonth(organizationId, instructorId, month),
+      ]);
+      setState({ all, designation, monthDoc });
+    } catch (thrown) { setError(`FC 복지 수업을 읽지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
+  }, [organizationId, instructorId, month]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const view = state ? myFcLessonView({ instructorId, monthEntries: state.all, designation: state.designation, monthDoc: state.monthDoc }) : null;
+  const fcName = (uid) => state?.designation?.fcNames?.[uid] || "FC";
+  const received = Boolean(view?.rows.some((entry) => entry.fcUserId === currentUserId));
+  const confirm = async () => {
+    setBusy(true); setNotice(null);
+    try {
+      const result = await onConfirm({ organizationId, instructorId, month });
+      setNotice({ tone: "good", text: `FC 수업료를 확정했어요 · ${salesWon(result?.snapshot?.amount)}${result?.notified?.sent ? " · 대표님에게 알림을 보냈어요" : ""}` });
+      await load();
+    } catch (thrown) {
+      const failure = fcConfirmFailureText(thrown);
+      setNotice({ tone: failure.kind === "network" ? "warn" : "bad", text: failure.text });
+      deviceLog("fc_lessons_confirm_failed", { feature: "fc_lessons", stage: "confirm", errorDomain: "functions_callable", errorCode: String(thrown?.code || "unknown"), serverCode: failure.code, appBuild: APP_BUILD_LABEL });
+      await load();
+    } finally { setBusy(false); }
+  };
+  const reopen = async () => {
+    if (!reason.trim()) { setNotice({ tone: "warn", text: "되돌리는 사유를 적어 주세요 (코드 reopen_reason_required)" }); return; }
+    setBusy(true);
+    try { await reopenFcLessonMonth(organizationId, instructorId, month, reason, { uid: currentUserId }); setReason(""); await load(); }
+    catch (thrown) { setNotice({ tone: "warn", text: `되돌리지 못했어요 (코드 ${String(thrown?.code || "unknown")})` }); }
+    finally { setBusy(false); }
+  };
+  if (error) return <p className="mt-3" style={{ fontSize: TYPE.caption, color: WARN }}>{error}</p>;
+  if (!view) return <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>FC 복지 수업 불러오는 중…</p>;
+  if (!view.rows.length) return <p className="mt-3" style={{ fontSize: TYPE.caption, color: FAINT }} data-fc-board-empty>FC 복지 수업 없음{view.designated ? "" : " · 이번 달 지정 강사 아님"}</p>;
+  return (
+    <div className="mt-3 space-y-1.5 pt-3" style={{ borderTop: `1px solid ${LINE}` }} data-fc-board={instructorId}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>FC 복지 수업 · 진행 {view.totals.done} · 캔슬 {view.totals.cancel} · {salesWon(view.totals.amount)}</span>
+        {salesPill(monthStatusView(state.monthDoc).tone, monthStatusView(state.monthDoc).label)}
+      </div>
+      {view.rows.map((entry) => (
+        <p key={entry.id} className="px-3 py-1.5 tabular-nums" style={{ borderRadius: 8, fontSize: TYPE.caption, color: INK2, backgroundColor: entry.overCap ? WARN_S : CANVAS }}>
+          {entry.lessonDate} · {fcName(entry.fcUserId)} · {FC_LESSON_OUTCOME_LABELS[entry.outcome]} {salesWon(FC_LESSON_RATE[entry.outcome])}{entry.overCap ? ` · ${FC_LESSON_MONTHLY_CAP}회 넘음` : ""}
+        </p>
+      ))}
+      {notice ? <p className="font-bold" style={{ fontSize: TYPE.caption, color: notice.tone === "good" ? GOOD : notice.tone === "bad" ? BAD : WARN }}>{notice.text}</p> : null}
+      {view.locked ? (
+        <div className="space-y-1.5">
+          <input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={200} placeholder="되돌리는 사유 (필수)" className="h-10 w-full px-3" style={{ borderRadius: 8, border: `1px solid ${LINE}`, fontSize: TYPE.caption, backgroundColor: CARD, color: INK }} />
+          <button type="button" disabled={busy} onClick={reopen} className="h-10 w-full font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: BAD, fontSize: TYPE.caption }}>FC 수업료 확정 되돌리기</button>
+        </div>
+      ) : (
+        <div className="space-y-1">
+          <button type="button" disabled={busy || received || instructorId === currentUserId} onClick={confirm} className="h-10 w-full font-extrabold disabled:opacity-40"
+            style={{ borderRadius: 10, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }} data-fc-confirm={instructorId}>{busy ? "확인 중…" : `FC 수업료 확정 · ${salesWon(view.totals.amount)}`}</button>
+          {received ? <p style={{ fontSize: TYPE.caption, color: SUB }}>자기가 받은 수업은 다른 사람이 확정해요 (코드 received_by_confirmer)</p>
+            : !ownerView ? <p style={{ fontSize: TYPE.caption, color: SUB }}>{CONFIRM_NOTICE_HINT}</p> : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 대표 · 총괄: 그 달 FC 수업 지정 강사 + 그 달 FC 명단 (강사는 소속 명단을 못 읽어 여기서 고른다). */
+function FcDesignationEditor({ organization, month, teachers, currentUserId, initialState = null }) {
+  const organizationId = organization?.organizationId || "";
+  const [selected, setSelected] = useState(() => new Set(initialState?.instructorIds || []));
+  const [loaded, setLoaded] = useState(Boolean(initialState));
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (initialState || !organizationId) return undefined;
+    let alive = true;
+    setLoaded(false);
+    readFcDesignation(organizationId, month)
+      .then((found) => { if (alive) { setSelected(new Set(found?.instructorIds || [])); setLoaded(true); } })
+      .catch((thrown) => { if (alive) { setMessage(`지정 강사를 읽지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); setLoaded(true); } });
+    return () => { alive = false; };
+  }, [organizationId, month, initialState]);
+  const instructors = (teachers || []).filter((member) => String(member.role || "") === "instructor");
+  const fcs = (teachers || []).filter((member) => String(member.role || "") === "manager").map((member) => ({ userId: String(member.userId), name: String(member.displayName || "FC") }));
+  const save = async () => {
+    setBusy(true); setMessage("");
+    try { await saveFcDesignation(organizationId, month, { instructorIds: [...selected], fcs }, { uid: currentUserId }); setMessage(`저장했어요 · 지정 강사 ${selected.size}명 · FC ${fcs.length}명`); }
+    catch (thrown) { setMessage(`저장하지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="mt-3 p-3" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-fc-designation>
+      <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{ratingMonthLabel(month)} FC 복지 수업 지정 강사</p>
+      <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>지정한 강사만 그 달 FC 수업료를 넣을 수 있어요. 저장하면 지금 FC 명단({fcs.length}명)도 함께 저장돼요.</p>
+      {!loaded ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {instructors.map((member) => {
+            const on = selected.has(String(member.userId));
+            return <button key={member.userId} type="button" aria-pressed={on} onClick={() => setSelected((current) => { const next = new Set(current); if (next.has(String(member.userId))) next.delete(String(member.userId)); else next.add(String(member.userId)); return next; })}
+              className="min-h-9 px-3 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 999, backgroundColor: on ? INK : CARD, color: on ? CARD : INK2, border: `1px solid ${LINE}` }} data-fc-designate={member.userId}>{member.displayName || member.userId}</button>;
+          })}
+        </div>
+      )}
+      <div className="mt-2 flex items-center gap-2">
+        <button type="button" disabled={busy || !loaded} onClick={save} className="h-9 px-3 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>지정 저장</button>
+        {message ? <span style={{ fontSize: TYPE.caption, color: message.startsWith("저장했어요") ? GOOD : WARN }}>{message}</span> : null}
+      </div>
+    </div>
   );
 }
 
@@ -32536,14 +32810,22 @@ export function createAppScreenSmokeCases() {
         line("o2", "office", { kind: "group", amount: 800000, clientId: "", memberLabel: "박그룹", recordId: "", passId: "" }),
       ];
       const monthDoc = { status: "submitted", lastCheck: { differs: 1, instructorOnly: 0, officeOnly: 0, instructorEntryIds: ["e2"], officeEntryIds: ["o2"] } };
+      /* FC 복지 수업: 박에프씨는 다른 강사에게 7회 받았고 u1 에게 2회 -- 두 번째가 8회를 넘는다. */
+      const designation = { instructorIds: ["u1"], fcUserIds: ["smoke-fc"], fcNames: { "smoke-fc": "박에프씨" } };
+      const fcAll = [
+        ...Array.from({ length: 7 }, (_, index) => ({ id: `fo${index}`, instructorId: "u2", fcUserId: "smoke-fc", month, lessonDate: `2026-11-0${index + 1}`, outcome: "done" })),
+        { id: "f1", instructorId: "u1", fcUserId: "smoke-fc", month, lessonDate: "2026-11-12", outcome: "done" },
+        { id: "f2", instructorId: "u1", fcUserId: "smoke-fc", month, lessonDate: "2026-11-19", outcome: "cancel" },
+      ];
+      const fc = { all: fcAll, designation, monthDoc: { status: "submitted" } };
       return [
         { name: "매출 인센 · 강사", element: providerWith(smokeInstructorOrg, (
           <MySalesScreen organization={readyOrganizationContext(smokeInstructorOrg)} currentUserId="u1"
-            initialState={{ month, data: { entries: entries.filter((item) => item.side === "instructor"), prior: [], monthDoc, records, clients, warning: "" } }} />
+            initialState={{ month, fc, data: { entries: entries.filter((item) => item.side === "instructor"), prior: [], monthDoc, records, clients, warning: "" } }} />
         )) },
         { name: "매출 인센 · FC · PC", element: providerWith(smokeManagerOrg, (
           <SalesBoardScreen organization={readyOrganizationContext(smokeManagerOrg)} currentUserId="smoke-fc" onConfirm={asyncNoop}
-            initialState={{ month, wide: true, selected: "u1", data: {
+            initialState={{ month, wide: true, selected: "u1", fcByInstructor: { u1: fc }, designation, data: {
               teachers: smokeInstructors, locations: [{ id: "bansong", name: "반송" }],
               entriesByInstructor: new Map([["u1", entries]]), monthsByInstructor: new Map([["u1", monthDoc]]), records, clients, warning: "",
             } }} />

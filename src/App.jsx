@@ -443,6 +443,14 @@ import {
   addSalesEntry, deleteSalesEntry, listSalesEntries, listSalesEntriesOfMonth, listSalesLedger, listSalesMonths, readSalesMonth, reopenSalesMonth, submitSalesMonth, updateSalesEntry,
 } from "./data/repositories/sales-repository.js";
 import { EXTRA_STATE, extraPayOf, extrasByInstructor, extrasTotal } from "./features/sales/extra-pay.js";
+import {
+  TAX_TYPE, TAX_TYPE_LABELS, adjustmentErrors, adjustmentsOf, payMonthStatusView, payPeriodLabel, payStatementOf,
+  statementFromSnapshot, statementSnapshot, taxTypeOf,
+} from "./features/payroll/pay-statement.js";
+import {
+  addPayAdjustment, closePayMonth, deletePayAdjustment, listMyPayAdjustments, listPayAdjustments, listPayStatements,
+  readPayMonth, readPayStatement, readPayTaxSettings, reopenPayMonth, savePayTaxSettings,
+} from "./data/repositories/pay-statement-repository.js";
 import { nextAggregateSort, sortAggregateRows } from "./features/records/aggregate-table.js";
 import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
 import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js";
@@ -17703,6 +17711,92 @@ function PayExtrasSection({ extras, lessonConfirmed, compact = false }) {
   );
 }
 
+/* ── 급여 명세 (2026-11-21 대표 승인): 수업료 + 수업료 외 + 조정 = 세전 → 세금 → 실수령, 다음 달 15일 지급 ──
+   강사 화면과 대표 급여 집계가 같은 판을 쓴다. 대표 쪽(editable)만 조정 넣기 · 지우기 · 세금 종류 바꾸기가 붙는다.
+   급여 확정된 달은 잠근다 -- 숫자는 확정 때 남긴 명세(payStatements) 그대로. 계산은 features/payroll/pay-statement.js. */
+function PayStatementSection({
+  statement, month, status, editable = false, busy = false, message = "", compact = false,
+  onAddAdjustment, onDeleteAdjustment, onTaxType,
+}) {
+  const [sign, setSign] = useState(-1);
+  const [amount, setAmount] = useState("");
+  const [reason, setReason] = useState("");
+  const [tried, setTried] = useState(false);
+  const [askDelete, setAskDelete] = useState("");
+  if (!statement) return null;
+  const locked = Boolean(status?.locked);
+  const signed = (value) => `${value < 0 ? "−" : value > 0 ? "+" : ""}₩${won(Math.abs(value))}`;
+  const draftAmount = sign * (Number.parseInt(String(amount).replace(/[^0-9]/g, "") || "0", 10));
+  const errors = adjustmentErrors({ amount: draftAmount, reason });
+  const row = (label, value, extra = {}) => (
+    <div className="flex items-start gap-2" style={{ padding: "7px 0", borderBottom: `1px solid ${LINE}` }} data-pay-line={extra.code}>
+      <span className="min-w-0 flex-1" style={{ fontSize: TYPE.body, color: extra.strong ? INK : INK2, fontWeight: extra.strong ? 800 : 500, wordBreak: "keep-all" }}>
+        {label}{extra.note ? <span className="block" style={{ fontSize: TYPE.caption, fontWeight: 500, color: SUB }}>{extra.note}</span> : null}
+      </span>
+      <span className="shrink-0 tabular-nums" style={{ fontSize: extra.strong ? TYPE.title : TYPE.body, fontWeight: extra.strong ? 800 : 700, color: extra.color || INK }}>{value}</span>
+      {extra.action || null}
+    </div>
+  );
+  const submit = () => {
+    setTried(true);
+    if (errors.length) return;
+    onAddAdjustment?.({ amount: draftAmount, reason: reason.trim() });
+    setAmount(""); setReason(""); setTried(false);
+  };
+  const input = { height: 40, borderRadius: 8, border: `1px solid ${LINE}`, padding: "0 10px", fontSize: TYPE.caption, color: INK, backgroundColor: CARD, width: "100%" };
+  return (
+    <section className="mt-3" data-pay-statement={status?.code || "open"} style={{ padding: compact ? 12 : 16, borderRadius: compact ? 12 : 16, backgroundColor: CARD, border: `1px solid ${LINE}` }}>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 800, color: INK }}>{payPeriodLabel(month)}</p>
+        {status ? salesPill(status.tone, status.label, { "data-pay-month-status": status.code }) : null}
+      </div>
+      <div className="mt-1">
+        {row("수업료", `₩${won(statement.lessons)}`, { code: "lessons", note: "확정된 수업만" })}
+        {row("수업료 외", signed(statement.extras), { code: "extras", note: "확정된 매출 인센 · 그룹 인센 · FC 수업료" })}
+        {statement.adjustments.map((item) => row(`조정 · ${String(item.reason || "")}`, signed(Math.round(Number(item.amount) || 0)), {
+          code: "adjust", color: Number(item.amount) < 0 ? BAD : INK,
+          action: editable && !locked && item.id ? (askDelete === item.id
+            ? <span className="flex shrink-0 gap-2"><button type="button" onClick={() => { setAskDelete(""); onDeleteAdjustment?.(item); }} className="font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>정말 지우기</button><button type="button" onClick={() => setAskDelete("")} style={{ fontSize: TYPE.caption, color: SUB }}>그만</button></span>
+            : <button type="button" onClick={() => setAskDelete(item.id)} className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>지우기</button>) : null,
+        }))}
+        {row("세전 합계", `₩${won(statement.gross)}`, { code: "gross", strong: true })}
+        {row(`세금 · ${TAX_TYPE_LABELS[statement.taxType] || ""}`, statement.tax.total ? `−₩${won(statement.tax.total)}` : "₩0", { code: "tax", color: statement.tax.total ? BAD : INK })}
+      </div>
+      <div className="mt-2 flex items-end gap-2" style={{ padding: "10px 12px", borderRadius: 12, backgroundColor: TINT }} data-pay-net-total>
+        <p className="min-w-0 flex-1" style={{ fontSize: TYPE.body, fontWeight: 800, color: BRAND_D }}>실수령 (세후)</p>
+        <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.heading, fontWeight: 800, color: BRAND_D }}>₩{won(statement.net)}</p>
+      </div>
+      {locked ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>급여가 확정된 달이에요. 숫자가 바뀌지 않아요.</p>
+        : <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>대표가 급여를 확정하기 전까지는 바뀔 수 있어요.</p>}
+      {message ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: WARN }}>{message}</p> : null}
+      {editable && !locked ? (
+        <div className="mt-3 space-y-2 p-3" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-pay-adjust-editor>
+          <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>급여 조정 (대표 · 총괄만 · 강사에게 사유와 함께 보여요)</p>
+          <div className="grid grid-cols-2 gap-1.5">
+            {[[1, "+ 더하기"], [-1, "− 빼기"]].map(([value, label]) => (
+              <button key={value} type="button" aria-pressed={sign === value} onClick={() => setSign(value)} className="h-9 font-bold"
+                style={{ borderRadius: 8, backgroundColor: sign === value ? (value > 0 ? INK : BAD) : CARD, color: sign === value ? "#fff" : INK2, fontSize: TYPE.caption }}>{label}</button>
+            ))}
+          </div>
+          <input inputMode="numeric" style={input} placeholder="금액 (원)" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^0-9]/g, ""))} aria-label="조정 금액" />
+          <input style={input} placeholder="사유 (예: 대타 수업 정산 누락)" maxLength={100} value={reason} onChange={(event) => setReason(event.target.value)} aria-label="조정 사유" />
+          {tried && errors.length ? <p style={{ fontSize: TYPE.caption, color: WARN }}>{errors.map((item) => `${item.text} (${item.code})`).join(" · ")}</p> : null}
+          <button type="button" disabled={busy} onClick={submit} className="h-10 w-full font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>
+            {draftAmount ? `${signed(draftAmount)} 조정 넣기` : "조정 넣기"}
+          </button>
+          <div className="flex flex-wrap items-center gap-1.5" data-pay-tax-choice>
+            <span style={{ fontSize: TYPE.caption, color: SUB }}>세금</span>
+            {[TAX_TYPE.FREELANCE, TAX_TYPE.NONE].map((type) => (
+              <button key={type} type="button" aria-pressed={statement.taxType === type} disabled={busy} onClick={() => statement.taxType !== type && onTaxType?.(type)}
+                className="h-8 px-2.5 font-bold" style={{ borderRadius: 999, backgroundColor: statement.taxType === type ? INK : CARD, color: statement.taxType === type ? "#fff" : INK2, fontSize: TYPE.caption, border: `1px solid ${LINE}` }}>{TAX_TYPE_LABELS[type]}</button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 /* 이름을 못 읽은 급여 줄. 회원권 번호를 보여 주면 강사는 그것이 무엇인지 알 수
    없고, 빈칸으로 두면 화면이 깨진 것으로 읽는다. 무슨 일이 있었는지 말한다. */
 const HANDED_OVER_LABEL = "인수인계된 회원";
@@ -17729,7 +17823,7 @@ const SMOKE_LARGE_TEXT = {
    회원권 없어 빠지지 않는 수업은 **자세히 보기(내 급여 화면) 맨 위 요약으로 옮겼다** --
    거기에 확정 대기 N건 · 금액이 같은 계산(upcomingPayRows)으로 있다. 큰 글씨에서는 줄이
    접힌다 (높이 고정 없음). upcoming 은 받기만 하고 그리지 않는다 (부르는 쪽 그대로). */
-function InstructorPayCard({ pay, loading, error, upcoming = null, extras = null, onOpen }) {
+function InstructorPayCard({ pay, loading, error, upcoming = null, extras = null, statement = null, month = "", onOpen }) {
   const headline = payHeadline(pay, upcoming);
   /* 카드 전체가 하나의 버튼이다. 오른쪽 "자세히 보기" 는 같은 버튼 안의 글자라
      어디를 눌러도 같은 화면으로 간다 -- 버튼 안에 버튼을 두지 않는다. */
@@ -17755,6 +17849,12 @@ function InstructorPayCard({ pay, loading, error, upcoming = null, extras = null
               ) : null}
             </p>
           )}
+          {/* 세전 · 세후 한 줄 (2026-11-21 대표: "세전 세후 금액 나눠서 강사가 한 번에"). 급여일은 다음 달 15일. */}
+          {!loading && !error && statement ? (
+            <p className="tabular-nums" data-pay-net style={{ fontSize: TYPE.caption, fontWeight: 600, color: SUB, overflowWrap: "anywhere" }}>
+              {payPeriodLabel(month)} · 실수령 ₩{won(statement.net)} (세전 ₩{won(statement.gross)})
+            </p>
+          ) : null}
         </div>
         <span className="flex items-center gap-0.5" data-pay-more
           style={{ minHeight: PAY_TAP, fontSize: TYPE.body, fontWeight: 700, color: BRAND_D }}>
@@ -17777,6 +17877,8 @@ function InstructorPayDetail({
   upcoming = null, pending = null, memberNameOf = () => "",
   /* 수업료 외 -- 매출 인센 · FC 복지 수업료 (extraPayOf). 없으면 칸이 없다. */
   extras = null,
+  /* 급여 명세 (세전 → 세금 → 실수령) · 그 달 급여 상태 (payMonthStatusView). */
+  statement = null, payStatus = null,
   /* 정정 줄 · 수업 줄을 누르면 그 회원 상세로 (원래 수업 기록). 없으면 누르지 않는다. */
   onOpenClient,
   now = () => new Date(),
@@ -17881,7 +17983,8 @@ function InstructorPayDetail({
                 <p className="mt-1" style={{ fontSize: TYPE.caption, color: WARN }}>회원권이 없어 빠지지 않는 수업 {upcoming.blocked}건은 대기에 넣지 않았어요</p>
               ) : null}
             </section>
-            <PayExtrasSection extras={extras} lessonConfirmed={confirmed} />
+            <PayStatementSection statement={statement} month={month} status={payStatus} />
+            <PayExtrasSection extras={extras} lessonConfirmed={statement ? null : confirmed} />
 
             {/* ② 단가별 계산 내역 -- 누르면 그 수업 */}
             <h3 className="mt-5 mb-2 px-1" style={{ fontSize: TYPE.body, fontWeight: 800, color: INK }}>급여 계산 내역</h3>
@@ -24050,7 +24153,7 @@ function PayrollClientRow({ row, clientName, passName, open, onToggle }) {
 }
 
 function PayrollInstructorRow({
-  row, name, badge, open, onToggle, extras = null,
+  row, name, badge, open, onToggle, extras = null, statementSlot = null,
   nameOfClient = (id) => id, nameOfPass = (passId, category) => category || passId,
   onDownload, nameOfLocation = (id) => id, initialView = PAYROLL_VIEW.PRICE, initialOpenClient = "",
 }) {
@@ -24093,7 +24196,8 @@ function PayrollInstructorRow({
       </button>
       {open ? (
         <div className="pb-2" style={{ paddingLeft: 22 }}>
-          {extras ? <PayExtrasSection extras={extras} lessonConfirmed={row.total} compact /> : null}
+          {statementSlot}
+          {extras ? <PayExtrasSection extras={extras} lessonConfirmed={statementSlot ? null : row.total} compact /> : null}
           <div className="flex items-center gap-1.5" style={{ paddingBottom: 4 }}>
             {[[PAYROLL_VIEW.PRICE, "단가별"], [PAYROLL_VIEW.CLIENT, "회원별"]].map(([key, label]) => (
               <button key={key} type="button" onClick={() => setView(key)}
@@ -24780,7 +24884,7 @@ const MEMBER_VIEW_MISMATCH_LABEL = {
 
 function PayrollSummary({
   organization, locationStore, instructorStore, payrollStore, clientStore, passStore,
-  onRetryOrganization, onToast, now = () => new Date(), initialState = null,
+  onRetryOrganization, onToast, now = () => new Date(), initialState = null, currentUserId = "",
 }) {
   const [month, setMonth] = useState(initialState?.month || currentMonth(now()));
   const [summary, setSummary] = useState(initialState?.summary || null);
@@ -24796,6 +24900,12 @@ function PayrollSummary({
   const [namesFailed, setNamesFailed] = useState(initialState?.namesFailed || "");
   /* 수업료 외 -- 확정된 매출 인센 · FC 복지 수업료 (2026-11-21). 못 읽어도 수업료 집계는 선다. */
   const [extraDocs, setExtraDocs] = useState(initialState?.extraDocs || { salesMonths: [], fcMonths: [], errorCode: "" });
+  /* 급여 명세 (2026-11-21): 조정 · 급여 확정 · 확정 명세 · 세금 설정. */
+  const [payDocs, setPayDocs] = useState(initialState?.payDocs || { adjustments: [], payMonth: null, statements: [], tax: null, errorCode: "" });
+  const [payBusy, setPayBusy] = useState(false);
+  const [payMessage, setPayMessage] = useState("");
+  const [askClose, setAskClose] = useState(false);
+  const [reopenWhy, setReopenWhy] = useState("");
   const [loading, setLoading] = useState(!initialState);
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
   const [open, setOpen] = useState(initialState?.open || "");
@@ -24823,7 +24933,7 @@ function PayrollSummary({
       /* 심사용 회원을 빼려면 명부가 필요하다 -- 원장 항목에는 그 표시가
          없다. 이 화면이 예전에는 명부를 읽지 않았고, 읽기 한 번이 느는 대신
          가짜 회차가 강사 급여에 섞이지 않는다. */
-      const [payrollClients, instructorResult, locationResult, passResult, groupPayroll, salesMonthResult, fcMonthResult] = await Promise.all([
+      const [payrollClients, instructorResult, locationResult, passResult, groupPayroll, salesMonthResult, fcMonthResult, adjustmentResult, payMonthResult, statementResult, taxResult] = await Promise.all([
         toleratingReadFailure(listClients(organizationId, { store: clientStore })),
         toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
@@ -24834,6 +24944,10 @@ function PayrollSummary({
         fbManageGroupPayroll({ organizationId, month, action: "list" }),
         toleratingReadFailure(listSalesMonths(organizationId, month)),
         toleratingReadFailure(listFcLessonMonths(organizationId, month)),
+        toleratingReadFailure(listPayAdjustments(organizationId, month)),
+        toleratingReadFailure(readPayMonth(organizationId, month)),
+        toleratingReadFailure(listPayStatements(organizationId, month)),
+        toleratingReadFailure(readPayTaxSettings(organizationId)),
       ]);
       /* 집계보다 명부를 먼저 읽는다. 계정을 바꾼 강사를 한 사람으로 합치려면
          previousUids 가 있어야 하고, 그것은 소속 문서에만 있다 -- 나중에
@@ -24853,6 +24967,10 @@ function PayrollSummary({
       setClients(payrollClients.items);
       setPasses(passResult.items);
       setExtraDocs({ salesMonths: salesMonthResult.items, fcMonths: fcMonthResult.items, errorCode: salesMonthResult.errorCode || fcMonthResult.errorCode || "" });
+      setPayDocs({
+        adjustments: adjustmentResult.items || [], payMonth: payMonthResult.items || null, statements: statementResult.items || [], tax: taxResult.items || null,
+        errorCode: adjustmentResult.errorCode || payMonthResult.errorCode || statementResult.errorCode || taxResult.errorCode || "",
+      });
       setNamesFailed(
         instructorResult.errorCode || locationResult.errorCode
         || payrollClients.errorCode || passResult.errorCode || "",
@@ -24946,6 +25064,69 @@ function PayrollSummary({
     ...[...extras.keys()].filter((id) => !summary.byInstructor.some((row) => row.instructorId === id))
       .map((instructorId) => ({ instructorId, sessions: 0, total: 0, byUnitPrice: [], byClient: [], byCategory: [], byRule: [] })),
   ] : [];
+  const payStatus = payMonthStatusView(payDocs.payMonth);
+  const statementOf = (row) => {
+    const adjustments = adjustmentsOf(payDocs.adjustments, row.instructorId, canonicalInstructorId);
+    const saved = payStatus.locked ? payDocs.statements.find((item) => String(item.instructorId) === String(row.instructorId)) : null;
+    if (saved) return statementFromSnapshot(saved, adjustments);
+    return payStatementOf({ lessons: row.total, extrasConfirmed: extras.get(row.instructorId)?.confirmedTotal || 0, adjustments, taxType: taxTypeOf(payDocs.tax, row.instructorId) });
+  };
+  const statements = new Map(allInstructorRows.map((row) => [row.instructorId, statementOf(row)]));
+  const statementTotals = [...statements.values()].reduce((sum, item) => ({ gross: sum.gross + item.gross, tax: sum.tax + item.tax.total, net: sum.net + item.net }), { gross: 0, tax: 0, net: 0 });
+  const payFail = (stage) => (error) => {
+    const code = String(error?.code || "unknown");
+    setPayMessage(`저장하지 못했어요 (코드 ${code})`);
+    deviceLog("pay_statement_write_failed", { feature: "pay_statement", stage, errorDomain: "firestore", errorCode: code, message: String(error?.message || "").slice(0, 200), appBuild: APP_BUILD_LABEL });
+  };
+  const payWrite = async (stage, work) => {
+    setPayBusy(true); setPayMessage("");
+    try { await work(); await reload(); } catch (error) { payFail(stage)(error); } finally { setPayBusy(false); }
+  };
+  const currentUid = currentUserId;
+  const addAdjustment = (instructorId) => (draft) => payWrite("adjust_add", () => addPayAdjustment(organizationId, { instructorId, month, ...draft }, { uid: currentUid }));
+  const removeAdjustment = (item) => payWrite("adjust_delete", () => deletePayAdjustment(organizationId, item.id));
+  const setTaxType = (instructorId) => (type) => {
+    const now = new Set((payDocs.tax?.noTaxIds || []).map(String));
+    if (type === TAX_TYPE.NONE) now.add(String(instructorId)); else now.delete(String(instructorId));
+    return payWrite("tax", () => savePayTaxSettings(organizationId, [...now], { uid: currentUid }));
+  };
+  const closeMonth = () => payWrite("close", () => closePayMonth(organizationId, month,
+    allInstructorRows.map((row) => ({ instructorId: row.instructorId, snapshot: statementSnapshot(statements.get(row.instructorId)) })), { uid: currentUid }));
+  const reopenMonth = () => {
+    if (!reopenWhy.trim()) { setPayMessage("되돌리는 사유를 적어 주세요 (코드 reopen_reason_required)"); return undefined; }
+    return payWrite("reopen", async () => { await reopenPayMonth(organizationId, month, reopenWhy, { uid: currentUid }); setReopenWhy(""); });
+  };
+  const statementSlotFor = (row) => (
+    <PayStatementSection compact statement={statements.get(row.instructorId)} month={month} status={payStatus} editable busy={payBusy}
+      onAddAdjustment={addAdjustment(row.instructorId)} onDeleteAdjustment={removeAdjustment} onTaxType={setTaxType(row.instructorId)} />
+  );
+  /* 급여 확정 줄 -- 전 지점 합계 위. 확정하면 조정 · 명세가 잠기고 강사 화면에 "급여 확정" 이 뜬다. */
+  const payCloseBar = summary && allInstructorRows.length ? (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-pay-close-bar={payStatus.code}>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="min-w-0 flex-1 font-bold" style={{ fontSize: TYPE.body, color: INK }}>{payPeriodLabel(month)}</p>
+        {salesPill(payStatus.tone, payStatus.label)}
+      </div>
+      <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+        세전 ₩{won(statementTotals.gross)} · 세금 ₩{won(statementTotals.tax)} · 실수령 ₩{won(statementTotals.net)}
+      </p>
+      {payMessage ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: WARN }}>{payMessage}</p> : null}
+      {payDocs.errorCode ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: WARN }}>조정 · 급여 확정 기록을 읽지 못했어요 (코드 {payDocs.errorCode})</p> : null}
+      {payStatus.locked ? (
+        <div className="mt-2 flex flex-wrap gap-2">
+          <input value={reopenWhy} onChange={(event) => setReopenWhy(event.target.value)} maxLength={200} placeholder="되돌리는 사유 (필수)" className="h-10 min-w-0 flex-1 px-3" style={{ borderRadius: 8, border: `1px solid ${LINE}`, fontSize: TYPE.caption, backgroundColor: CARD, color: INK }} />
+          <button type="button" disabled={payBusy} onClick={reopenMonth} className="h-10 px-3 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: BAD, fontSize: TYPE.caption }}>확정 되돌리기</button>
+        </div>
+      ) : askClose ? (
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button type="button" disabled={payBusy} onClick={() => { setAskClose(false); closeMonth(); }} className="h-10 flex-1 font-extrabold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>정말 확정 · 강사 {allInstructorRows.length}명 실수령 ₩{won(statementTotals.net)}</button>
+          <button type="button" onClick={() => setAskClose(false)} className="h-10 px-3 font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>그만두기</button>
+        </div>
+      ) : (
+        <button type="button" disabled={payBusy} onClick={() => setAskClose(true)} className="mt-2 h-10 w-full font-extrabold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }} data-pay-close>{Number(month.slice(5, 7))}월분 급여 확정</button>
+      )}
+    </section>
+  ) : null;
   const multiLocation = (summary?.byLocation?.length || 0) > 1;
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
   const toggle = (key) => setOpen(open === key ? "" : key);
@@ -24968,9 +25149,9 @@ function PayrollSummary({
     <div data-payroll-wide>
       {/* 인센은 지점이 아니라 사람에게 붙는다 -- "전 지점 합계" 에서만 수업료 외 · 지급 합계를 보인다. */}
       <SummaryTiles items={allGroup ? [
-        { label: `${payGroup.name} 수업료`, value: `₩${won(payGroup.total)}`, code: "payroll_total" },
-        { label: `수업료 외 (확정)${extraSum.waiting ? ` · 확정 전 ${extraSum.waiting}` : ""}`, value: `₩${won(extraSum.confirmedTotal)}`, code: "payroll_extras" },
-        { label: "지급 합계", value: `₩${won(payGroup.total + extraSum.confirmedTotal)}`, code: "payroll_payout" },
+        { label: `세전 (수업료 ₩${won(payGroup.total)} + 수업료 외 ₩${won(extraSum.confirmedTotal)}${extraSum.waiting ? ` · 확정 전 ${extraSum.waiting}` : ""})`, value: `₩${won(statementTotals.gross)}`, code: "payroll_gross" },
+        { label: "세금", value: `₩${won(statementTotals.tax)}`, code: "payroll_tax" },
+        { label: "실수령 합계", value: `₩${won(statementTotals.net)}`, code: "payroll_net" },
         { label: `수업 · 강사 ${payGroup.rows.length}명`, value: `${payGroup.sessions}회`, code: "payroll_sessions" },
       ] : [
         { label: `${payGroup.name} 수업료`, value: `₩${won(payGroup.total)}`, code: "payroll_total" },
@@ -24993,6 +25174,7 @@ function PayrollSummary({
       <AggregateSplit wide detail={payRow ? (
         <div data-payroll-detail={payRow.instructorId}>
           <PayrollInstructorRow key={`${payGroup.id}/${payRow.instructorId}`} row={payRow} extras={allGroup ? extras.get(payRow.instructorId) || null : null}
+            statementSlot={allGroup ? statementSlotFor(payRow) : null}
             name={nameOfInstructor(payRow.instructorId)} badge={badgeOfInstructor(payRow.instructorId)}
             nameOfClient={nameOfClient} nameOfPass={nameOfPass} nameOfLocation={nameOfLocation}
             open onToggle={() => {}}
@@ -25006,8 +25188,8 @@ function PayrollSummary({
             return <span className="font-bold">{nameOfInstructor(row.instructorId)}{badge ? <span className="ml-1.5 rounded-full px-1.5 py-0.5" style={{ fontSize: TYPE.caption, backgroundColor: badge.bg, color: badge.color }}>{badge.label}</span> : null}</span>;
           } },
           { key: "sessions", label: "수업", align: "right", sortValue: (row) => row.sessions, render: (row) => `${row.sessions}회` },
-          { key: "clients", label: "회원", align: "right", sortValue: (row) => new Set((row.byClient || []).map((item) => item.clientId)).size, render: (row) => `${new Set((row.byClient || []).map((item) => item.clientId)).size}명` },
-          { key: "average", label: "회당", align: "right", sortValue: (row) => (row.sessions ? row.total / row.sessions : null), render: (row) => (row.sessions ? `₩${won(Math.round(row.total / row.sessions))}` : "—") },
+          ...(allGroup ? [] : [{ key: "clients", label: "회원", align: "right", sortValue: (row) => new Set((row.byClient || []).map((item) => item.clientId)).size, render: (row) => `${new Set((row.byClient || []).map((item) => item.clientId)).size}명` },
+          { key: "average", label: "회당", align: "right", sortValue: (row) => (row.sessions ? row.total / row.sessions : null), render: (row) => (row.sessions ? `₩${won(Math.round(row.total / row.sessions))}` : "—") }]),
           { key: "total", label: allGroup ? "수업료" : "금액", align: "right", sortValue: (row) => row.total, render: (row) => <span className="font-bold">₩{won(row.total)}</span> },
           ...(allGroup ? [
             { key: "extras", label: "수업료 외", align: "right", sortValue: (row) => extras.get(row.instructorId)?.confirmedTotal ?? null, render: (row) => {
@@ -25015,7 +25197,13 @@ function PayrollSummary({
               if (!extra) return <span style={{ color: FAINT }}>—</span>;
               return <span>₩{won(extra.confirmedTotal)}{extra.waiting ? <span className="block" style={{ color: BRAND_D }}>확정 전 {extra.waiting}</span> : null}</span>;
             } },
-            { key: "payout", label: "지급 합계", align: "right", sortValue: (row) => row.total + (extras.get(row.instructorId)?.confirmedTotal || 0), render: (row) => <span className="font-extrabold">₩{won(row.total + (extras.get(row.instructorId)?.confirmedTotal || 0))}</span> },
+            { key: "adjust", label: "조정", align: "right", sortValue: (row) => statements.get(row.instructorId)?.adjustTotal || 0, render: (row) => {
+              const value = statements.get(row.instructorId)?.adjustTotal || 0;
+              return value ? <span style={{ color: value < 0 ? BAD : INK }}>{value < 0 ? "−" : "+"}₩{won(Math.abs(value))}</span> : <span style={{ color: FAINT }}>—</span>;
+            } },
+            { key: "gross", label: "세전", align: "right", sortValue: (row) => statements.get(row.instructorId)?.gross || 0, render: (row) => `₩${won(statements.get(row.instructorId)?.gross || 0)}` },
+            { key: "tax", label: "세금", align: "right", sortValue: (row) => statements.get(row.instructorId)?.tax.total || 0, render: (row) => `₩${won(statements.get(row.instructorId)?.tax.total || 0)}` },
+            { key: "net", label: "실수령", align: "right", sortValue: (row) => statements.get(row.instructorId)?.net || 0, render: (row) => <span className="font-extrabold">₩{won(statements.get(row.instructorId)?.net || 0)}</span> },
           ] : []),
         ]} />
       </AggregateSplit>
@@ -25117,6 +25305,7 @@ function PayrollSummary({
             </section>
           ) : null}
 
+          {payCloseBar}
           {payWide ? <section style={sectionStyle}>{payWide}</section> : null}
           {!payWide && multiLocation ? summary.byLocation.map((location) => (
             <section key={location.locationId} style={sectionStyle}>
@@ -25169,7 +25358,7 @@ function PayrollSummary({
               ) : null}
               <div className="mt-1">
                 {allInstructorRows.map((row) => (
-                  <PayrollInstructorRow key={row.instructorId} row={row} extras={extras.get(row.instructorId) || null}
+                  <PayrollInstructorRow key={row.instructorId} row={row} extras={extras.get(row.instructorId) || null} statementSlot={statementSlotFor(row)}
                     name={nameOfInstructor(row.instructorId)}
                     badge={badgeOfInstructor(row.instructorId)}
                     nameOfClient={nameOfClient} nameOfPass={nameOfPass} nameOfLocation={nameOfLocation}
@@ -25197,15 +25386,23 @@ function PayrollSummary({
             <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
               수업 {summary.sessions}회 · 강사 {summary.byInstructor.length}명
             </p>
-            {extras.size ? (
+            {extras.size || payDocs.adjustments.length || statementTotals.tax ? (
               <div className="mt-2 pt-2" style={{ borderTop: `1px solid ${LINE}` }} data-payroll-payout>
                 <div className="flex items-end gap-2">
                   <p className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, color: SUB }}>수업료 외 (확정된 매출 인센 · FC 수업료){extraSum.waiting ? ` · 확정 전 ${extraSum.waiting}건` : ""}</p>
                   <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>₩{won(extraSum.confirmedTotal)}</p>
                 </div>
                 <div className="mt-1 flex items-end gap-2">
-                  <p className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>지급 합계</p>
-                  <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 800, color: INK }}>₩{won(summary.total + extraSum.confirmedTotal)}</p>
+                  <p className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK }}>세전 합계 (조정 포함)</p>
+                  <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>₩{won(statementTotals.gross)}</p>
+                </div>
+                <div className="mt-1 flex items-end gap-2">
+                  <p className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, color: SUB }}>세금</p>
+                  <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.body, fontWeight: 700, color: BAD }}>−₩{won(statementTotals.tax)}</p>
+                </div>
+                <div className="mt-1 flex items-end gap-2">
+                  <p className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, fontWeight: 800, color: BRAND_D }}>실수령 합계</p>
+                  <p className="shrink-0 tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 800, color: BRAND_D }}>₩{won(statementTotals.net)}</p>
                 </div>
               </div>
             ) : null}
@@ -30711,7 +30908,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
             locationStore={locationStore} instructorStore={instructorStore} />
         )}
         {view === "payroll" && showPayroll && (
-          <PayrollSummary organization={organization}
+          <PayrollSummary organization={organization} currentUserId={account?.id || ""}
             locationStore={locationStore} instructorStore={instructorStore} payrollStore={payrollStore}
             /* 회원별 보기가 쓴다. 원장 항목은 id 만 들고 있어서, 이름 없이는
                대표가 어느 줄이 누구인지 모른 채 숫자만 본다. */
@@ -32243,12 +32440,21 @@ export function createAppScreenSmokeCases() {
     )) },
     { name: "예상 급여 카드", element: <InstructorPayCard pay={smokePay} loading={false} error="" onOpen={noop} /> },
     /* 수업료 외 (2026-11-21): 확정된 매출 인센 40만 원은 카드에 "+ 인센", 내 급여에는 줄별 + 이번 달 받을 돈. FC 수업료는 확정 전. */
-    { name: "예상 급여 카드 · 인센", element: <InstructorPayCard pay={smokePay} loading={false} error="" onOpen={noop}
+    { name: "예상 급여 카드 · 인센", element: <InstructorPayCard pay={smokePay} loading={false} error="" onOpen={noop} month="2026-11"
+      statement={payStatementOf({ lessons: smokePay.total, extrasConfirmed: 400000, adjustments: [{ id: "a1", instructorId: "u1", amount: -30000, reason: "10월 중복 지급" }] })}
       extras={extraPayOf({ salesMonth: { status: "confirmed", snapshot: { total: 5000000, bracketAmount: 250000, otBonus: 50000, groupBase: 2000000, groupBonus: 100000, clawbackTotal: 0, payout: 400000 } } })} /> },
     { name: "이달 예상 급여 · 수업료 외", element: providerWith(smokeInstructorOrg, (
       <InstructorPayDetail organization={readyOrganizationContext(smokeInstructorOrg)} month="2026-09"
         pay={smokePay} loading={false} error="" onClose={noop} onRetry={noop} onChangeMonth={noop}
         extras={extraPayOf({ salesMonth: { status: "confirmed", snapshot: { total: 5000000, bracketAmount: 250000, otBonus: 50000, groupBase: 2000000, groupBonus: 100000, clawbackTotal: 0, payout: 400000 } }, fcMonth: { status: "submitted", done: 3, cancel: 1 } })}
+        initialState={{ passes: smokePasses, clients: smokeClients }} />
+    )) },
+    /* 급여 명세 (2026-11-21): 수업료 13만 + 수업료 외 40만 − 조정 3만 = 세전 50만 → 3.3% 16,500 → 실수령 483,500, 급여 확정된 달. */
+    { name: "이달 예상 급여 · 명세", element: providerWith(smokeInstructorOrg, (
+      <InstructorPayDetail organization={readyOrganizationContext(smokeInstructorOrg)} month="2026-11"
+        pay={smokePay} loading={false} error="" onClose={noop} onRetry={noop} onChangeMonth={noop}
+        extras={extraPayOf({ salesMonth: { status: "confirmed", snapshot: { total: 5000000, bracketAmount: 250000, otBonus: 50000, groupBase: 2000000, groupBonus: 100000, clawbackTotal: 0, payout: 400000 } } })}
+        statement={payStatementOf({ lessons: smokePay.total, extrasConfirmed: 400000, adjustments: [{ id: "a1", instructorId: "u1", amount: -30000, reason: "10월 중복 지급" }] })} payStatus={payMonthStatusView({ status: "closed" })}
         initialState={{ passes: smokePasses, clients: smokeClients }} />
     )) },
     /* 확정과 예정은 **다른 종류의 숫자다** -- 앞은 원장에 박혀 되돌릴 수 없고,
@@ -33100,6 +33306,19 @@ export function createAppScreenSmokeCases() {
       summary: smokePayroll, ...smokePayrollNames, open: "all/u1",
       extraDocs: { salesMonths: [{ instructorId: "u1", status: "confirmed", snapshot: { total: 5000000, bracketAmount: 250000, otBonus: 50000, groupBase: 2000000, groupBonus: 100000, clawbackTotal: 0, payout: 400000 } }], fcMonths: [], errorCode: "" },
     }) },
+    /* 급여 명세 (2026-11-21): u1 조정 −3만 (대타 정산 차감), u2 는 공제 없음. 대표가 조정을 넣고 지우고 세금 종류를 바꾸는 칸이 상세에 있다. */
+    { name: "급여 집계 · 명세 · PC", element: payrollSummary(smokeOwner, {
+      summary: smokePayroll, ...smokePayrollNames, wide: true, selected: "u1",
+      extraDocs: { salesMonths: [{ instructorId: "u1", status: "confirmed", snapshot: { total: 5000000, bracketAmount: 250000, otBonus: 50000, groupBase: 2000000, groupBonus: 100000, clawbackTotal: 0, payout: 400000 } }], fcMonths: [], errorCode: "" },
+      payDocs: { adjustments: [{ id: "adj1", instructorId: "u1", month: "2026-09", amount: -30000, reason: "대타 정산 차감", createdAt: new Date(2026, 9, 1) }],
+        payMonth: null, statements: [], tax: { noTaxIds: ["u2"] }, errorCode: "" },
+    }) },
+    /* 급여 확정된 달: 숫자는 확정 때 남긴 명세 그대로(999,999 로 표시해 계산값이 아님을 본다), 조정 칸은 잠긴다. */
+    { name: "급여 집계 · 확정됨", element: payrollSummary(smokeOwner, {
+      summary: smokePayroll, ...smokePayrollNames, wide: true, selected: "u1",
+      payDocs: { adjustments: [], payMonth: { status: "closed" }, tax: null, errorCode: "",
+        statements: [{ instructorId: "u1", lessons: 465000, extras: 0, adjustTotal: 0, gross: 1034000, incomeTax: 31020, localTax: 3100, net: 999999, taxType: "3.3" }] },
+    }) },
     /* 이관 전. 모든 강사-회원 쌍이 0 에서 시작해 판정 3 이 먼저 걸리므로
        카테고리와 무관하게 전부 25,000 이다. 화면이 그 이유를 합계보다 먼저
        말해야 한다 -- 말하지 않으면 계산이 고장 난 것으로 읽힌다. */
@@ -33231,6 +33450,8 @@ export default function App() {
   const [payMonth, setPayMonth] = useState(() => monthKey(todayISO()));
   /* 수업료 외 (매출 인센 · FC 복지 수업료, 2026-11-21) -- 급여와 같은 달. */
   const [payExtras, setPayExtras] = useState(null);
+  /* 급여 명세 재료 (2026-11-21): 내 조정 · 그 달 급여 상태 · 확정 때 남긴 내 명세 · 세금 설정. */
+  const [payDocs, setPayDocs] = useState(null);
   const [db, setDb] = useState(emptyDb("", ""));
   const lessonRecordDbRef = useRef(db);
   useEffect(() => { lessonRecordDbRef.current = db; }, [db]);
@@ -34336,9 +34557,25 @@ export default function App() {
     Promise.all([
       readSalesMonth(organizationContext.organizationId, account.id, payMonth).catch(tolerate("sales_month")),
       readFcLessonMonth(organizationContext.organizationId, account.id, payMonth).catch(tolerate("fc_month")),
-    ]).then(([salesMonth, fcMonth]) => { if (alive) setPayExtras({ ...extraPayOf({ salesMonth, fcMonth }), errorCode: failed[0] || "" }); });
+      listMyPayAdjustments(organizationContext.organizationId, account.id, payMonth).catch(tolerate("pay_adjustments")),
+      readPayMonth(organizationContext.organizationId, payMonth).catch(tolerate("pay_month")),
+      readPayStatement(organizationContext.organizationId, account.id, payMonth).catch(tolerate("pay_statement")),
+      readPayTaxSettings(organizationContext.organizationId).catch(tolerate("pay_tax")),
+    ]).then(([salesMonth, fcMonth, adjustments, payMonthDoc, statementDoc, tax]) => {
+      if (!alive) return;
+      setPayExtras({ ...extraPayOf({ salesMonth, fcMonth }), errorCode: failed[0] || "" });
+      setPayDocs({ adjustments: adjustments || [], payMonth: payMonthDoc, statementDoc, tax, errorCode: failed[0] || "" });
+    });
     return () => { alive = false; };
   }, [canSeeOwnPay, account?.id, organizationContext.organizationId, payMonth, payRevision]);
+  /* 내 명세. 급여가 확정된 달은 그때 남긴 숫자, 아니면 지금 숫자로 계산한다. */
+  const payStatus = payDocs ? payMonthStatusView(payDocs.payMonth) : null;
+  const myStatement = useMemo(() => {
+    if (!instructorPay || !payDocs) return null;
+    const adjustments = adjustmentsOf(payDocs.adjustments, account?.id || "");
+    if (payStatus?.locked && payDocs.statementDoc) return statementFromSnapshot(payDocs.statementDoc, adjustments);
+    return payStatementOf({ lessons: instructorPay.total, extrasConfirmed: payExtras?.confirmedTotal || 0, adjustments, taxType: taxTypeOf(payDocs.tax, account?.id || "") });
+  }, [instructorPay, payDocs, payExtras, payStatus?.locked, account?.id]);
 
   useEffect(() => {
     if (!detailClient?.id || !organizationContext.organizationId) return undefined;
@@ -38154,7 +38391,7 @@ export default function App() {
         ) : null}
         <div key={tab} className="app-motion-content relative min-h-0 flex-1 overflow-hidden">
           <ServerNotesContext.Provider value={serverNotesValue}><Guard>
-            {tab === "schedule" && <ScheduleManager db={rosterDb} draftAccountId={account?.id} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} syncStatus={syncStatus} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} extras={payMonth === monthKey(todayISO()) ? payExtras : null} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id, options) => { if (options?.consult) setConsultIntentId(id); setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
+            {tab === "schedule" && <ScheduleManager db={rosterDb} draftAccountId={account?.id} photos={photos} readQueueLessonStates={organizationRoster && organizationContext.organizationId ? queueLessonStatesReader : null} onToast={setToast} onSettings={(next) => saveDb({ ...db, settings: next })} onSave={saveSchedule} onDelete={deleteSchedule} onStatus={setStatus} onStatusAll={setStatusAll} onCareGrade={setCareGrade} onNoshowFee={setNoshowFee} onGroupDone={setGroupDone} onNoComment={noComment} onSaveNote={saveScheduleComment} memberPresetId={scheduleMemberId} onConsumeMemberPreset={() => setScheduleMemberId(null)} quickAddRequest={scheduleQuickAddRequest} onConsumeQuickAdd={() => setScheduleQuickAddRequest(0)} openLessonId={scheduleOpenLessonId} onConsumeOpenLesson={() => setScheduleOpenLessonId(null)} onAddMember={canRegisterInMemberTab || canOpenCentreRegistration ? requestMemberRegistration : undefined} organizationMode={organizationRoster} rateOf={previewRatesFor} careOptionsOf={careOptionsFor} onSettleLesson={settleLesson} onUnsettleLesson={unsettleLesson} onReadMemberNote={readMemberNoteFor} onSaveMemberNote={saveMemberNoteFor} canUnsettle={organizationRoster && isOwnerLevelRole(organizationContext.role)} memberCancelOn={organizationRoster && memberCancelEnabledFor(scheduleSyncConfig, account?.id)} inbox={inboxProps} onOpenAttendance={canCheckAttendance ? () => setAttendanceOpen(true) : undefined} ownerMessage={organizationRoster ? ownerMessage : ""} syncStatus={syncStatus} payCard={canSeeOwnPay ? <InstructorPayCard pay={instructorPay} loading={payLoading} error={payError} upcoming={upcomingPay} extras={payMonth === monthKey(todayISO()) ? payExtras : null} statement={payMonth === monthKey(todayISO()) ? myStatement : null} month={payMonth} onOpen={() => setPayOpen(true)} /> : null} onOpenMember={(id, options) => { if (options?.consult) setConsultIntentId(id); setSelectedId(id); setDetailTab("summary"); setMobileView("detail"); setTab("members"); }} />}
             {tab === "members" && <div className={`h-full min-h-0 ${mobileView === "detail" && member ? "pt-member-detail-active" : ""}`}>
               <div className="pt-member-list-pane h-full min-h-0"><ReferenceMemberList passSummaryOf={passSummaryFor} locations={rosterLocations} members={rosterMembers} schedule={db.schedule} settings={db.settings} organizationMode={organizationRoster} rosterError={rosterError} onRetryRoster={() => setRosterRevision((value) => value + 1)} currentUserId={account?.id || ""} myMembersDefault={organizationRoster} canBrowseAll={!organizationRoster || canBrowseAllClients(organizationContext.role)} viewerRole={organizationContext.role} viewerLocationId={organizationContext.locationId || ""} viewerLocationIds={organizationContext.locationIds || []} registerRequest={memberRegistrationRequest} onConsumeRegisterRequest={() => setMemberRegistrationRequest(0)} onDeleteSamples={deleteSampleMembers} onAdd={addMember} canRegister={canRegisterInMemberTab} centreAccount={centreAccount} onOpenCentreRegistration={canOpenCentreRegistration ? openCentreRegistration : undefined} unlinkedLocal={centreAccount && roster ? roster.unlinkedLocal || [] : []} onUploadUnlinked={canOpenCentreRegistration ? uploadUnlinkedMember : undefined} onLinkUnlinked={linkUnlinkedMember} hiddenCount={roster?.hiddenCount || 0} onShowHidden={showAllRosterMembers} journeyOf={organizationRoster ? journeyFor : undefined} onSelect={(id) => { setSelectedId(id); setMobileView("detail"); }} /></div>
               {mobileView === "detail" && member && <div className="pt-member-detail-pane h-full min-h-0">
@@ -38320,7 +38557,7 @@ export default function App() {
         {payOpen && canSeeOwnPay ? (
           <AppOverlay layer="PAGE" name="이달 예상 급여">
             <InstructorPayDetail organization={organizationContext} currentUserId={account?.id || ""} pay={instructorPay}
-              loading={payLoading} error={payError} month={payMonth} upcoming={upcomingPay} pending={pendingPayRows} extras={payExtras}
+              loading={payLoading} error={payError} month={payMonth} upcoming={upcomingPay} pending={pendingPayRows} extras={payExtras} statement={myStatement} payStatus={payStatus}
               memberNameOf={(memberId) => db.members.find((member) => member.id === memberId)?.name || ""}
               onOpenClient={(client) => { setPayOpen(false); setDetailClient(client); }}
               clientStore={undefined} passStore={undefined}

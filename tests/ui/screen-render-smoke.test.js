@@ -359,6 +359,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "이달 예상 급여 · 빈 달",
     "이달 예상 급여 · 조회 실패",
     "예상 급여 카드",
+    "예상 급여 카드 · 인센",
+    "이달 예상 급여 · 수업료 외",
+    "이달 예상 급여 · 명세",
     "예상 급여 카드 · 예정 포함",
     "예상 급여 카드 · 큰 글씨",
     "이달 예상 급여 · 확정 대기 · 보정",
@@ -496,6 +499,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "급여 집계 · 회원별 · 날짜",
     "급여 집계 · 두 지점",
     "급여 집계 · 두 지점 · PC",
+    "급여 집계 · 수업료 외 · PC",
+    "급여 집계 · 수업료 외",
+    "급여 집계 · 명세 · PC",
+    "급여 집계 · 확정됨",
     "급여 집계 · 이관 전",
     "급여 집계 · 빈 달",
     "급여 집계 · 조회 실패",
@@ -667,8 +674,9 @@ test("the payroll summary is the owner's, and says out loud what it did not coun
 
   /* 대표가 이 숫자를 최종 급여로 읽으면 매달 정산이 어긋난다. 빠진 항목을
      이름으로 적는다 -- "일부 항목 제외" 같은 문구로는 읽히지 않는다. */
-  assert.match(summary, /회원권 수업료와 저장한 그룹 수업료를 합산합니다\. 아래 항목은 별도 정산입니다\./);
-  for (const missing of ["개인매출 인센", "OT 인센", "간부 인센", "바우처 조정", "노쇼", "FC 수업료"]) {
+  /* 2026-11-21: 확정된 매출 인센 · FC 복지 수업료는 "수업료 외" 로 합산한다 -- 빠진 것은 셋만 남았다. */
+  assert.match(summary, /회원권 수업료 · 저장한 그룹 수업료 · 확정된 매출 인센과 FC 복지 수업료\(수업료 외\)를 합산합니다\. 아래 항목은 별도 정산입니다\./);
+  for (const missing of ["간부 인센", "바우처 조정", "노쇼"]) {
     assert.match(summary, new RegExp(missing), missing);
   }
   // 숫자를 본 뒤에 읽는 단서는 이미 늦다. 안내가 합계보다 앞에 있어야 한다.
@@ -1582,7 +1590,7 @@ test("the pay screen says what it counted and what it did not", async (t) => {
   assert.match(detail, /확정 수업료/);
   assert.match(detail, /확정 대기/);
   /* 이 문구가 없으면 강사가 이 숫자를 받을 돈으로 읽는다 -- 인센티브 · 보너스 · 세금 제외를 말한다. */
-  assert.match(detail, /수업료만 계산합니다\. 인센티브 · 노쇼 · 보너스 · 세금은 따로 정산되고/);
+  assert.match(detail, /수업료만 계산합니다\. 매출 인센 · FC 복지 수업료는 확정된 것만 아래 수업료 외 칸에 따로 더해요\. 간부 인센 · 노쇼 · 보너스 · 세금은 따로 정산되고/);
   /* 단가별: 구분 · 건수 · 건당 단가 · 금액. 같은 구분이라도 단가가 다르면 줄이 갈린다. */
   assert.match(detail, /1:1 재등록\(정상\) · 1건/);
   assert.match(detail, /건당 ₩45,000/);
@@ -3796,4 +3804,80 @@ test("branch overview hides stale balances on query failure and refuses a manage
 test("schedule colors are reachable directly from the instructor schedule tab", async (t) => {
   const markupOf = await issueScreens(t);
   assert.equal((markupOf("일정 탭 · 이사님 전달사항").match(/일정 색상/g)||[]).length, 1, "병합 후에도 일정 색상 버튼은 하나만 표시한다");
+});
+
+/* 2026-11-21 대표: "급여 집계에 잘 포함돼서 나오는지, 강사가 이해하기 쉬워야 하고 한눈에 잘 보여야 함" */
+test("수업료 외: 확정된 매출 인센 · FC 수업료가 강사 급여와 대표 집계에 같은 숫자로 · 확정 전은 금액 없이", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+  assert.match(markupOf("예상 급여 카드 · 인센"), /\+ 인센 ₩400,000/);
+  assert.doesNotMatch(markupOf("예상 급여 카드"), /\+ 인센/, "인센이 없으면 카드는 그대로");
+  const mine = markupOf("이달 예상 급여 · 수업료 외");
+  assert.match(mine, /data-pay-extras-section/);
+  assert.match(mine, /개인 매출 인센/);
+  assert.match(mine, /매출 5,000,000원 · 구간 250,000원 · OT 10% 50,000원/);
+  assert.match(mine, /₩300,000/);
+  assert.match(mine, /그룹 인센/);
+  assert.match(mine, /FC 복지 수업료/);
+  assert.match(mine, /확정 전/);
+  assert.match(mine, /이번 달 받을 돈 · 확정된 것만/);
+  assert.match(mine, /확정 수업료 ₩[\d,]+ \+ 수업료 외 ₩400,000 · 확정 전 1건은 확정되면 더해져요/);
+  assert.ok(mine.indexOf("data-pay-summary") < mine.indexOf("data-pay-extras-section"), "수업료 요약 바로 아래");
+  assert.doesNotMatch(markupOf("이달 예상 급여"), /data-pay-extras-section/, "없으면 칸도 없다");
+
+  const pc = markupOf("급여 집계 · 수업료 외 · PC");
+  assert.match(pc, /data-summary-tile="payroll_gross"/);
+  assert.match(pc, /data-summary-tile="payroll_net"/);
+  /* 세금 3.3%: u1 865,000 → 28,540 · u2 200,000 → 6,600 · smoke-u9 160,000 → 5,280 = 40,420 → 실수령 1,184,580 */
+  assert.match(pc, /₩40,420/);
+  assert.match(pc, /₩1,184,580/);
+  assert.match(pc, /data-pay-close/);
+  assert.match(pc, /₩560,000/, "수업료 외 = u1 40만 + smoke-u9 16만");
+  assert.match(pc, /₩1,225,000/, "지급 합계 = 수업료 665,000 + 560,000");
+  assert.match(pc, /확정 전 1/);
+  assert.match(pc, /data-table-row="smoke-u9"/, "수업 없이 인센만 있어도 줄이 선다");
+  assert.match(pc, /data-payroll-detail="u1"[\s\S]*data-pay-extras-section/);
+  const phone = markupOf("급여 집계 · 수업료 외");
+  assert.match(phone, /\+ 인센 ₩400,000/);
+  assert.match(phone, /data-payroll-payout/);
+  assert.match(phone, /₩1,065,000/);
+  assert.match(phone, /₩1,029,860/, "실수령 합계 = 1,065,000 − (28,540 + 6,600)");
+  /* 인센이 없는 달도 세금 3.3% 가 있어 세전 · 세금 · 실수령이 선다 (665,000 → 세금 21,940 → 643,060). */
+  assert.match(markupOf("급여 집계"), /실수령 합계[\s\S]*₩643,060/);
+});
+
+/* 2026-11-21 대표: "대표급만 급여 집계 최종에 추가 · 빼기", "급여는 15일에 나감, 세전 세후 금액 나눠서 강사가 한 번에" */
+test("급여 명세: 조정 · 세전 → 세금 → 실수령 · 다음 달 15일 · 급여 확정 잠금", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+  const card = markupOf("예상 급여 카드 · 인센");
+  assert.match(card, /data-pay-net/);
+  assert.match(card, /11월분 · 12월 15일 지급 · 실수령 ₩483,500 \(세전 ₩500,000\)/);
+  assert.equal((card.match(/<button/g) || []).length, 1, "카드는 여전히 버튼 하나");
+  const mine = markupOf("이달 예상 급여 · 명세");
+  assert.match(mine, /data-pay-statement="closed"/);
+  assert.match(mine, /11월분 · 12월 15일 지급/);
+  assert.match(mine, /급여 확정/);
+  assert.match(mine, /조정 · 10월 중복 지급/, "강사에게 사유가 보인다");
+  assert.match(mine, /세전 합계[\s\S]*₩500,000/);
+  assert.match(mine, /3\.3% \(소득세 3% · 지방세 0\.3%\)[\s\S]*−₩16,500/);
+  assert.match(mine, /실수령 \(세후\)[\s\S]*₩483,500/);
+  assert.doesNotMatch(mine, /data-pay-adjust-editor/, "강사는 조정을 못 넣는다");
+  assert.ok(mine.indexOf("data-pay-statement") < mine.indexOf("data-pay-extras-section"), "명세가 먼저, 수업료 외 상세는 그 아래");
+  assert.doesNotMatch(mine, /data-pay-grand-total/, "받을 돈 숫자는 명세 하나만");
+
+  const owner = markupOf("급여 집계 · 명세 · PC");
+  assert.match(owner, /data-pay-adjust-editor/);
+  assert.match(owner, /조정 · 대타 정산 차감/);
+  assert.match(owner, /₩807,450/, "u1: 465,000 + 400,000 − 30,000 = 835,000 → 세금 27,550");
+  assert.match(owner, /₩1,007,450/, "실수령 합계: u2 는 공제 없음");
+  assert.match(owner, /aria-pressed="true"[^>]*>3\.3%/);
+  assert.match(owner, /공제 없음/);
+  const closed = markupOf("급여 집계 · 확정됨");
+  assert.match(closed, /data-pay-close-bar="closed"/);
+  assert.match(closed, /확정 되돌리기/);
+  assert.match(closed, /₩999,999/, "확정 때 남긴 숫자 그대로");
+  assert.doesNotMatch(closed, /data-pay-adjust-editor/, "확정된 달은 조정 칸이 없다");
 });

@@ -3365,6 +3365,17 @@ test("매출 인센: 강사는 응원 · 후보 · 어긋난 줄, FC 는 두 장
   assert.match(board, /두 장부가 같아야 확정할 수 있어요/);
   assert.match(board, /확정하면 대표님에게 알림이 갑니다/);
   assert.match(board, /data-instructor-table/);
+  /* 2026-11-21 대표: 그룹은 개인 매출 인센과 다른 칸, FC 복지 수업료는 따로 */
+  assert.match(mine, /data-sales-section="personal"/);
+  assert.match(mine, /data-sales-section="group"/);
+  assert.match(mine, /data-summary-tile="sales_group"/);
+  assert.match(mine, /data-fc-lessons/);
+  assert.match(mine, /진행 1회 · 캔슬 1회 · 40,000원/);
+  assert.match(mine, /8회 넘음/, "다른 강사 7회 + 두 번째 줄 = 9회째");
+  assert.match(board, /data-sales-section="group"/);
+  assert.match(board, /data-fc-board="u1"/);
+  assert.match(board, /FC 수업료 확정 · 40,000원/);
+  assert.doesNotMatch(board, /data-fc-designation/, "지정 강사 편집은 대표 · 총괄만 -- 이 견본은 FC");
 });
 
 test("the member tab separates ongoing from expired, and says why it ended", async (t) => {

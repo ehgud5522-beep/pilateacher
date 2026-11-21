@@ -114,9 +114,10 @@ export function mySalesView({ entries, priorEntries = [], records, instructorId,
 
 /**
  * FC · 대표 화면의 강사 줄들.
- * @param {{ instructors: any[], entriesByInstructor: Map<string, any[]>, monthsByInstructor: Map<string, any>, month: string, viewerUid: string }} input
+ * @param {{ instructors: any[], entriesByInstructor: Map<string, any[]>, monthsByInstructor: Map<string, any>, month: string, viewerUid: string, alsoInclude?: Set<string> }} input
+ *   alsoInclude = 매출은 없어도 줄에 세울 강사 (FC 복지 수업만 넣은 강사)
  */
-export function salesBoardRows({ instructors, entriesByInstructor, monthsByInstructor, month, viewerUid }) {
+export function salesBoardRows({ instructors, entriesByInstructor, monthsByInstructor, month, viewerUid, alsoInclude = new Set() }) {
   return (instructors || []).map((member) => {
     const instructorId = text(member.userId);
     const entries = entriesByInstructor.get(instructorId) || [];
@@ -143,7 +144,7 @@ export function salesBoardRows({ instructors, entriesByInstructor, monthsByInstr
       ownSales: instructorId === text(viewerUid),
       attention: pairing.pairs.filter((pair) => pair.code !== PAIR.AGREED).length,
     };
-  }).filter((row) => row.mineCount || row.officeCount || row.monthDoc)
+  }).filter((row) => row.mineCount || row.officeCount || row.monthDoc || alsoInclude.has(row.instructorId))
     .sort((left, right) => Number(left.confirmed) - Number(right.confirmed) || right.attention - left.attention || left.name.localeCompare(right.name, "ko"));
 }
 

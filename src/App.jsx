@@ -82,6 +82,7 @@ import {
 } from "./features/schedule/care-options.js";
 import GroupPayrollAdmin from "./features/schedule/GroupPayrollAdmin.jsx";
 import { useNarrowViewport, useWideViewport } from "./features/ui/viewport.js";
+import { installTapLatencyProbe } from "./features/ui/tap-latency.js";
 import { upcomingPayPreview, upcomingPayRows } from "./features/schedule/upcoming-pay.js";
 import {
   PAY_FILTERS as MY_PAY_FILTERS, PAY_STATUS_LABEL as MY_PAY_STATUS_LABEL, myPayModel, myPayWeeks, whenLabel,
@@ -27219,7 +27220,11 @@ function startRadarLoad({ organizationId, clientStore, passStore, instructorStor
 }
 /** 센터 운영 메뉴가 열릴 때 미리 읽는다. 5분 안에 읽었으면 아무것도 안 한다. */
 function prefetchRenewalRadar(params) {
-  try { startRadarLoad(params); } catch (_ignored) { /* 미리 읽기가 메뉴를 깨뜨리면 안 된다 -- 화면을 열면 다시 읽는다. */ }
+  /* 브라우저가 한가할 때 (늦어도 3초 안). 더보기를 열자마자 읽기 시작하면 수천 건을 푸는 일이 첫 몇 번의 누름과 겹친다
+     (2026-11-21 대표: "눌렀을 때 반응이 0.5초 느림"). 그 사이 화면을 열면 화면이 바로 읽는다. */
+  const run = () => { try { startRadarLoad(params); } catch (_ignored) { /* 미리 읽기가 메뉴를 깨뜨리면 안 된다 -- 화면을 열면 다시 읽는다. */ } };
+  if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") window.requestIdleCallback(run, { timeout: 3000 });
+  else setTimeout(run, 1500);
 }
 
 /* ── 현황판 틀 (2026-11-21 대표 승인 "현황판 웹 배치안" 1단계) ───────────────
@@ -32828,6 +32833,14 @@ export default function App() {
   const [scheduleOpenLessonId, setScheduleOpenLessonId] = useState(null);
   const [demoMode, setDemoMode] = useState(false);
   const [mobileView, setMobileView] = useState("list");
+  /* 누름 반응 시간 (2026-11-21 대표: "눌렀을 때 반응이 0.5초 느림"). 느린 누름만 진단에 남긴다 -- 손 뗌 → 누름 대기와
+     누름 → 그림을 따로. 누른 것의 글자는 남기지 않는다 (features/ui/tap-latency.js). */
+  useEffect(() => installTapLatencyProbe({
+    report: ({ target, tapDelayMs, renderMs }) => deviceLog("ui_tap_slow", {
+      feature: "ui_latency", stage: target, tapDelayMs, renderMs,
+      appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+    }),
+  }), []);
   const briefing = false;
   const [savedAt, setSavedAt] = useState(null);
   const [cloudBackupStatus, setCloudBackupStatus] = useState({ state: "idle", counts: {}, pendingPhotos: 0, localPhotoCount: 0, storageUsage: {}, photoEnabled: false, lastBackupAt: null });

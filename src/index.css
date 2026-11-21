@@ -85,3 +85,15 @@ body,
 @media (prefers-reduced-motion: reduce) {
   .pt-sentence-in, .pt-sentence-glow, .pt-sentence-spark { animation: none; }
 }
+
+/* 누름 반응 (2026-11-21 대표: "눌렀을 때 뭔가 반응이 0.5초 느림").
+   1. 두 번 누르기 확대를 끈다 -- 폰 웹뷰가 "두 번째 누름이 오나" 를 기다리느라 첫 누름을 늦게 넘기는 일이 없게.
+      두 손가락 확대는 그대로 된다.
+   2. 누르는 순간 버튼이 살짝 흐려진다 -- 다음 화면이 그려지기 전에도 눌렸다는 것이 보이게. */
+html {
+  touch-action: manipulation;
+}
+button:not(:disabled):active,
+[role="button"]:not([aria-disabled="true"]):active {
+  opacity: 0.72;
+}

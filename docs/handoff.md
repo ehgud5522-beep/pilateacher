@@ -1,3 +1,13 @@
+## 2026-11-21 — #262 강사 FC 복지 수업료 · 그룹 인센 칸 분리 (PR 만 · 병합 · 배포 전) · 1.1.59 보류
+
+- 1.1.59 빌드 브랜치를 만들던 중 대표가 멈추고 새 요청 → 로컬 브랜치 지우고(올린 것 없음) #262 먼저. **#262 배포 뒤 1.1.59 다시 만들 것** (대표 "이번 것까지 넣고 빌드")
+- 대표: "그룹이랑 개인매출인센이랑 다른 칸" · "강사 FC 복지 수업료, 진행 25,000 / 캔슬 15,000, 한 달에 FC 가 받을 수 있는 횟수 총 8회, 따로 입력하는 칸, 한 달에 지정한 강사만"
+  + 질문 답: 강사 입력 + FC · 대표 · 총괄 확정 / FC 1명당 진행 + 캔슬 8회 / 대표 · 총괄이 달마다 지정
+- **#262** (`feat/fc-welfare-lessons`): functions/shared/fc-lessons.mjs · functions/src/fc-lesson-confirm.js(`confirmFcLessonMonth`) · src/data/repositories/fc-lesson-repository.js ·
+  src/features/sales/fc-lesson-view.js. 규칙 fcLessons · fcLessonDesignations(instructorIds + fcUserIds · fcNames -- 강사는 memberships 를 못 읽음) · fcLessonMonths
+- 그룹 칸: 요약 개인 인센(구간 + OT) / 그룹 인센 따로, 줄 · 짝도 두 칸
+- 테스트: test:rules 470 · functions 440 · build 3969. **배포 순서: 규칙 → 함수 confirmFcLessonMonth → 웹 → 앱 1.1.59**
+
 ## 2026-11-21 — #261 매출 인센 2단계 화면 + FC 회원권 발급 알림 · 병합 · 규칙 · 함수 · 웹 배포
 
 - **대표 "병합하고 배포"** → #261 병합(c20e745) → deploy-main test:rules 465 → **규칙 배포**(firestore:rules, foundation) → functions 436 → **함수 confirmSalesMonth · notifyOwnerOnFcIssue 새로 만듦**(비로그인 401 확인) → **웹 배포**(3962 통과, 운영 번들 index-D3Q5lIWd.js 에 새 문구 확인). **앱 빌드는 지시 대기** -- 강사 폰 · 대표 폰 알림함은 새 빌드부터. 실계정 화면 · 실제 확정 · 알림 도착 미확인

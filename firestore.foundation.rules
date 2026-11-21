@@ -1866,6 +1866,117 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      /* ── 강사 개인매출 인센 (2026-11-21 대표 결정, functions/shared/sales-incentive.mjs) ──────────
+         **두 장부를 맞춰 본다** (같은 날 대표: "강사 입력 + FC · 대표 입력이 같아야 확정이 되는 구조"):
+           side "instructor"  강사 본인이 넣은 줄 -- 본인만 넣고 고치고 지운다
+           side "office"      FC(맡은 지점) · 대표 · 총괄이 따로 넣은 줄 -- 그 강사 본인은 못 넣는다 (한 사람이 두 장부를 채우지 못하게)
+         salesMonths/{강사}_{YYYY-MM}: 강사 제출(submitted) · 서버 확정(confirmed) · 되돌림(reopened, 사유).
+         **확정은 서버 함수 confirmSalesMonth 만** -- 두 쪽이 한 줄도 빠짐없이 같을 때. 앱은 confirmed 를 못 쓴다.
+         확정된 달의 줄은 아무도 못 넣고 · 고치고 · 지운다. 강사는 자기 장부만 읽는다 (사무실 장부는 FC · 대표 · 총괄만).
+         금액은 실제로 받은 현금가만 (결정 6). 반반 매출은 share 0.5 (결정 4). 그룹 수강권은 kind group · group_refund (0.5%, 결정 9). */
+      function salesOffice(organizationId, instructorId) {
+        return instructorId != request.auth.uid
+          && (hasRole(organizationId, ownerLevel())
+            || (hasRole(organizationId, ["manager"]) && instructorInManagerScope(organizationId, instructorId)));
+      }
+      function salesOwnBook(organizationId, instructorId) {
+        return isCentreStaff(organizationId) && instructorId == request.auth.uid;
+      }
+      function salesSideWriter(organizationId, side, instructorId) {
+        return (side == "instructor" && salesOwnBook(organizationId, instructorId))
+          || (side == "office" && salesOffice(organizationId, instructorId));
+      }
+      function salesMonthOpen(organizationId, instructorId, month) {
+        let path = /databases/$(database)/documents/organizations/$(organizationId)/salesMonths/$(instructorId + "_" + month);
+        return !exists(path) || get(path).data.status != "confirmed";
+      }
+      function salesMonthString(value) {
+        return value is string && value.matches("^[0-9]{4}-[0-9]{2}$");
+      }
+      function salesShortText(value, max) {
+        return value is string && value.size() <= max;
+      }
+      function salesEntryWellFormed(organizationId) {
+        let data = request.resource.data;
+        return data.keys().hasOnly([
+            "organizationId", "instructorId", "side", "month", "paidOn", "kind", "amount", "share", "ot",
+            "clientId", "memberLabel", "productLabel", "recordId", "passId", "refundOfMonth", "note",
+            "createdBy", "createdByRole", "createdAt", "updatedBy", "updatedAt"
+          ])
+          && data.keys().hasAll([
+            "organizationId", "instructorId", "side", "month", "paidOn", "kind", "amount", "share", "ot",
+            "clientId", "memberLabel", "productLabel", "recordId", "passId", "refundOfMonth", "note",
+            "createdBy", "createdByRole", "createdAt", "updatedBy", "updatedAt"
+          ])
+          && data.organizationId == organizationId
+          && data.instructorId is string && data.instructorId.size() > 0 && data.instructorId.size() <= 128
+          && data.side in ["instructor", "office"]
+          && salesMonthString(data.month)
+          && data.paidOn is string && data.paidOn.matches("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") && data.paidOn[0:7] == data.month
+          && data.kind in ["ot", "conversion", "session_up", "repurchase", "refund", "group", "group_refund"]
+          && data.amount is int && data.amount > 0 && data.amount <= 100000000
+          && (data.share == 1 || data.share == 0.5)
+          && data.ot is bool
+          && salesShortText(data.clientId, 128) && salesShortText(data.memberLabel, 40)
+          && (data.clientId != "" || data.memberLabel != "")
+          && salesShortText(data.productLabel, 60) && salesShortText(data.recordId, 200) && salesShortText(data.passId, 200)
+          && salesShortText(data.note, 200)
+          && (data.kind in ["refund", "group_refund"]
+            ? (data.refundOfMonth == "" || (salesMonthString(data.refundOfMonth) && data.refundOfMonth <= data.month))
+            : data.refundOfMonth == "")
+          /* 그룹 수강권(0.5%)에는 OT 인센이 없다. */
+          && (!(data.kind in ["group", "group_refund"]) || data.ot == false)
+          && data.updatedBy == request.auth.uid
+          && data.updatedAt == request.time;
+      }
+      match /salesEntries/{entryId} {
+        allow get, list: if salesOffice(organizationId, resource.data.instructorId)
+          || hasRole(organizationId, ownerLevel())
+          || (salesOwnBook(organizationId, resource.data.instructorId) && resource.data.side == "instructor");
+        allow create: if salesEntryWellFormed(organizationId)
+          && salesSideWriter(organizationId, request.resource.data.side, request.resource.data.instructorId)
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.createdByRole == membership(organizationId).data.role
+          && request.resource.data.createdAt == request.time
+          && salesMonthOpen(organizationId, request.resource.data.instructorId, request.resource.data.month);
+        allow update: if salesEntryWellFormed(organizationId)
+          && salesSideWriter(organizationId, resource.data.side, resource.data.instructorId)
+          && immutable(["organizationId", "instructorId", "side", "createdBy", "createdByRole", "createdAt"])
+          && salesMonthOpen(organizationId, resource.data.instructorId, resource.data.month)
+          && salesMonthOpen(organizationId, resource.data.instructorId, request.resource.data.month);
+        allow delete: if salesSideWriter(organizationId, resource.data.side, resource.data.instructorId)
+          && salesMonthOpen(organizationId, resource.data.instructorId, resource.data.month);
+      }
+      match /salesMonths/{monthId} {
+        allow get, list: if salesOffice(organizationId, resource.data.instructorId)
+          || hasRole(organizationId, ownerLevel())
+          || salesOwnBook(organizationId, resource.data.instructorId);
+        /* 앱이 쓰는 것은 둘뿐: 강사 제출, 확정한 쪽의 되돌림. 확정(confirmed)은 서버 함수만. lastCheck 는 서버가 남긴다. */
+        allow create, update: if request.resource.data.keys().hasOnly([
+              "organizationId", "instructorId", "month", "status", "updatedBy", "updatedAt",
+              "submittedAt", "confirmedBy", "confirmedAt", "snapshot", "reopenReason", "lastCheck"
+            ])
+          && request.resource.data.organizationId == organizationId
+          && request.resource.data.instructorId is string
+          && salesMonthString(request.resource.data.month)
+          && monthId == request.resource.data.instructorId + "_" + request.resource.data.month
+          && request.resource.data.updatedBy == request.auth.uid
+          && request.resource.data.updatedAt == request.time
+          && (resource == null || (resource.data.instructorId == request.resource.data.instructorId && resource.data.month == request.resource.data.month))
+          && (
+            (request.resource.data.status == "submitted"
+              && salesOwnBook(organizationId, request.resource.data.instructorId)
+              && (resource == null || resource.data.status != "confirmed")
+              && request.resource.data.submittedAt == request.time)
+            || (request.resource.data.status == "reopened"
+              && salesOffice(organizationId, request.resource.data.instructorId)
+              && resource != null && resource.data.status == "confirmed"
+              && request.resource.data.reopenReason is string
+              && request.resource.data.reopenReason.size() > 0 && request.resource.data.reopenReason.size() <= 200)
+          );
+        allow delete: if false;
+      }
+
       match /lessonNotes/{noteId} {
         // See the locations block for why get and list are split. As with
         // clients, a query cannot prove "only the notes about me", so listing

@@ -1800,6 +1800,21 @@ exports.markRenewalOnPassCreated = onDocumentCreated({
   }
 });
 
+/* FC 회원권 발급 → 대표 · 총괄 알림함 (2026-11-21 대표: "FC 가 수강권 발급 때도 알림이 가게"). 스위치 없음 -- 대표가 켜 달라고 했다.
+   FC(role manager)가 만든 회원권만, 이관 제외, 같은 회원권은 한 번. 실패해도 발급은 그대로 (functions/src/issue-notice.js). */
+const { createIssueNoticeService } = require("./issue-notice");
+const issueNoticeService = createIssueNoticeService({ firestore, isOwnerLevel, log: (level, event, fields) => logger[level]?.(event, fields) });
+exports.notifyOwnerOnFcIssue = onDocumentCreated({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  document: "organizations/{organizationId}/passes/{passId}",
+  memory: "256MiB",
+  timeoutSeconds: 60,
+  retry: false,
+}, async (event) => {
+  const result = await issueNoticeService.onPassCreated(event.params.organizationId, event.params.passId, event.data?.data() || null, new Date(event.time));
+  if (result.sent) logger.info("issue_notice_sent", { feature: "issue_notice", stage: "notify_owner", organizationId: event.params.organizationId, correlationId: String(event.params.passId).slice(-8), sent: result.sent });
+});
+
 /* 다시 채우기 (대표 · 총괄). 지난 6달 동안 끝난 회원권을 한 번 채워 넣는다. 이미 있는 줄은 두지 않는다. */
 exports.backfillRenewalCandidates = onCall({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",
@@ -1831,6 +1846,29 @@ exports.backfillRenewalCandidates = onCall({
 /* ── 재등록 상담 소재 초안 (설계 문서 5단계) ────────────────────────────────
    강사가 누를 때만 부른다. 스위치 scheduleSync.consultPoints (처음엔 꺼짐), 회원 AI 동의 필요. 결과는 저장하지
    않는다. 근거는 consult-points.js 머리말. */
+/* ── 강사 개인매출 인센 확정 (2026-11-21 대표: "강사 입력 + FC · 대표 입력이 같아야 확정") ──
+   확정은 이 함수만 한다 (규칙은 앱에 confirmed 를 열지 않는다). 두 쪽 줄을 직접 읽어 다시 짝짓고, 다르면 거절하며 어긋난 줄을 남긴다. */
+const { createSalesConfirmService } = require("./sales-confirm");
+const salesConfirmService = createSalesConfirmService({ firestore, membershipId, isOwnerLevel, log: (level, event, fields) => logger[level]?.(event, fields) });
+exports.confirmSalesMonth = onCall(CLIENT_PHONE_OPTIONS, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const instructorId = String(request?.data?.instructorId || "").trim();
+  const month = String(request?.data?.month || "").trim();
+  const fields = { feature: "sales_incentive", organizationId, month, correlationId: instructorId.slice(-8) };
+  try {
+    const result = await salesConfirmService.confirm({ callerUid: request?.auth?.uid, organizationId, instructorId, month });
+    logger.info("sales_month_confirmed", { ...fields, stage: "confirm", agreed: result.counts?.agreed || 0, total: result.snapshot.total, ownersNotified: result.notified?.sent || 0, noticeErrorCode: result.notified?.errorCode || "" });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      logger.warn("sales_month_refused", { ...fields, stage: "confirm", errorDomain: "sales_confirm", errorCode: error.reason, details: error.details || {} });
+      throw new HttpsError(error.httpsCode, error.reason, { reason: error.reason, ...(error.details || {}) });
+    }
+    logger.error("sales_month_failed", { ...fields, stage: "confirm", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200) });
+    throw new HttpsError("internal", "sales_confirm_failed", { reason: "sales_confirm_failed" });
+  }
+});
+
 const { createConsultPointsService } = require("./consult-points");
 const consultPointsService = createConsultPointsService({
   firestore, membershipId, isOwnerLevel,

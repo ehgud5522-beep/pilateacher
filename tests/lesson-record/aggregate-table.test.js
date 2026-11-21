@@ -31,9 +31,9 @@ test("값 없는 칸은 어느 쪽이든 맨 뒤 · 같은 값은 들어온 순�
 
 test("화면 배선: 세 현황판이 PC 표 · 오른쪽 상세 · 요약 줄을 쓴다", () => {
   const app = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
-  assert.equal(app.match(/<AggregateSplit /g)?.length, 5, "현황판 셋 + 돈 화면 둘");
-  assert.equal(app.match(/<InstructorTable /g)?.length, 5, "현황판 셋 + 돈 화면 둘");
-  assert.equal(app.match(/<SummaryTiles /g)?.length, 5, "현황판 셋 + 돈 화면 둘");
+  assert.equal(app.match(/<AggregateSplit /g)?.length, 6, "현황판 셋 + 돈 화면 둘 + 매출 인센");
+  assert.equal(app.match(/<InstructorTable /g)?.length, 6, "현황판 셋 + 돈 화면 둘 + 매출 인센");
+  assert.equal(app.match(/<SummaryTiles /g)?.length, 7, "현황판 셋 + 돈 화면 둘 + 매출 인센(강사 · FC 대표 화면 둘)");
   for (const key of ['key: "renewal-radar"', 'key: "record-board"', 'key: "before-after-board"']) assert.ok(app.includes(key), key);
   assert.ok(app.indexOf('{ label: "현황판"') < app.indexOf('{ label: "돈"') && app.indexOf('{ label: "돈"') < app.indexOf('{ label: "관리"'), "현황판 → 돈 → 관리");
 });

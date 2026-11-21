@@ -154,3 +154,28 @@ export const submitSalesMonth = (organizationId, instructorId, month, { uid }) =
 export const reopenSalesMonth = (organizationId, instructorId, month, reason, { uid }) => writeMonth(organizationId, instructorId, month, {
   status: "reopened", reopenReason: text(reason).slice(0, 200),
 }, uid);
+
+/**
+ * 그 달의 매출 근거 원장: 발급(issue) · 세션업(sessionup) · 양도(handover). 강사 · FC · 대표 모두 읽을 수 있다(원장 읽기 규칙).
+ * 급여가 쓰는 (organizationId, type, occurredAt) 색인을 그대로 탄다. 판정은 shared/sales-incentive.mjs 의 salesRecordsOf.
+ */
+export function listSalesLedger(organizationId, month) {
+  return readCollection({
+    feature: "sales_incentive",
+    path: `ledger?organizationId=${organizationId}&type=issue,sessionup,handover&month=${month}`,
+    read: async () => {
+      const { collectionGroup, getDocs, getFirestore, query, where } = await load();
+      const [year, value] = String(month).split("-").map(Number);
+      const start = new Date(year, value - 1, 1);
+      const end = new Date(year, value, 1);
+      const snapshot = await getDocs(query(
+        collectionGroup(getFirestore(), "ledger"),
+        where("organizationId", "==", String(organizationId)),
+        where("type", "in", ["issue", "sessionup", "handover"]),
+        where("occurredAt", ">=", start),
+        where("occurredAt", "<", end),
+      ));
+      return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+    },
+  });
+}

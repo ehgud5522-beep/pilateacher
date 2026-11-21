@@ -10,7 +10,8 @@
 
 const text = (value) => String(value ?? "").trim();
 
-export const INBOX_KIND = Object.freeze({ MEMBER_CANCEL: "member_cancel" });
+/* member_cancel: 강사에게 (회원 앱 취소). 아래 둘은 대표 · 총괄에게 (2026-11-21) -- 수업이 없어 눌러도 읽음만. */
+export const INBOX_KIND = Object.freeze({ MEMBER_CANCEL: "member_cancel", SALES_CONFIRMED: "sales_confirmed", PASS_ISSUED_BY_FC: "pass_issued_by_fc" });
 
 export const INBOX_COPY = Object.freeze({
   TITLE: "알림",

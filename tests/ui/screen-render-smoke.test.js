@@ -468,6 +468,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "만료 회원 · 조회 실패",
     "재등록 레이더",
     "재등록 레이더 · PC",
+    "매출 인센 · 강사",
+    "매출 인센 · FC · PC",
     "담당 강사",
     "담당 강사 · 빠진 회원",
     "담당 강사 · 아직 안 돌았음",
@@ -3344,6 +3346,25 @@ test("돈 화면도 PC 에서는 지점 칩 · 표 · 오른쪽 상세 (2026-11-
   assert.match(issue, /data-issue-detail=/);
   assert.match(issue, /CSV 내려받기/);
   assert.doesNotMatch(markupOf("발급 내역"), /data-issue-wide/, "폰은 그대로");
+});
+
+test("매출 인센: 강사는 응원 · 후보 · 어긋난 줄, FC 는 두 장부 대조 · 확정 잠김 · 대표 알림 문구 (2026-11-21)", async (t) => {
+  const markupOf = await issueScreens(t);
+  const mine = markupOf("매출 인센 · 강사");
+  assert.match(mine, /data-sales-cheer="cheer_first"/);
+  assert.match(mine, /data-sales-status="submitted"/);
+  assert.match(mine, /두 장부가 달라 아직 확정되지 않았어요/);
+  assert.match(mine, /data-sales-suggestions/, "넣지 않은 이두리 결제가 후보로");
+  assert.match(mine, /이두리/);
+  assert.match(mine, /두 장부 다름/, "어긋난 그룹 줄 표시");
+  assert.doesNotMatch(mine, /data-sales-entry="o1"/, "강사 화면에 사무실 장부 없음");
+  const board = markupOf("매출 인센 · FC · PC");
+  assert.match(board, /data-sales-pair="agreed"/);
+  assert.match(board, /data-sales-pair="differs"/);
+  assert.match(board, /다른 칸: 금액/);
+  assert.match(board, /두 장부가 같아야 확정할 수 있어요/);
+  assert.match(board, /확정하면 대표님에게 알림이 갑니다/);
+  assert.match(board, /data-instructor-table/);
 });
 
 test("the member tab separates ongoing from expired, and says why it ended", async (t) => {

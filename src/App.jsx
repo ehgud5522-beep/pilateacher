@@ -55,7 +55,7 @@ import {
   fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone, fbDeleteArchivedClient,
-  fbBeforeAfterShareStats,
+  fbBeforeAfterShareStats, fbConfirmSalesMonth,
   fbVerifyMemberViews, fbMemberAppStatus,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
@@ -429,6 +429,13 @@ import {
   RADAR_EXPIRY_DAYS, RADAR_REMAINING_MAX, RATE_WINDOW_DAYS, radarPassLabel, radarSignalLabel, radarSummary, renewalRadar, renewalRateLabel,
 } from "./features/records/renewal-radar.js";
 import { groupRowsByBranch, pickBranch } from "./features/records/branch-groups.js";
+import {
+  CONFIRM_NOTICE_HINT, SALES_KIND_CHOICES, blankEntry, confirmFailureText, entryErrors, entryFromSuggestion, entryLine, kstDate, mySalesView, salesBoardRows,
+} from "./features/sales/sales-board.js";
+import { MATCH_VIEW, PAIR, PAIR_VIEW, SALES_KIND_LABELS, matchEntry, salesRecordsOf, suggestionsFor } from "../functions/shared/sales-incentive.mjs";
+import {
+  addSalesEntry, deleteSalesEntry, listSalesEntries, listSalesEntriesOfMonth, listSalesLedger, listSalesMonths, readSalesMonth, reopenSalesMonth, submitSalesMonth, updateSalesEntry,
+} from "./data/repositories/sales-repository.js";
 import { nextAggregateSort, sortAggregateRows } from "./features/records/aggregate-table.js";
 import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
 import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js";
@@ -3679,6 +3686,8 @@ function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatu
   /* 알림 하나를 누름: 읽음(안 읽은 것만) → 그 수업을 연다. 기기 일정에 아직 없으면 말한다. */
   const pickInboxItem = (item) => {
     if (!item?.readAt) inbox?.onRead?.(item);
+    /* 수업이 없는 알림(매출 인센 확정 · FC 발급)은 읽음만 -- "일정에 아직 없어요" 를 띄우지 않는다. */
+    if (!String(item?.lessonId || "").trim()) return;
     const lesson = lessonForInboxItem(item, db.schedule);
     if (!lesson) { onToast?.({ ok: false, msg: INBOX_COPY.NOT_SYNCED }); return; }
     setInboxOpen(false);
@@ -27520,6 +27529,476 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
   );
 }
 
+/* ── 강사 개인매출 · 그룹 인센 화면 (2026-11-21 대표 승인 2단계) ─────────────────────────
+   판정 · 문구는 features/sales/sales-board.js, 계산 · 대조는 functions/shared/sales-incentive.mjs.
+   강사(내 매출 인센)와 FC · 대표 · 총괄(매출 인센)이 같은 결제를 **따로** 넣고, 두 장부가 같아야 서버가 확정한다.
+   FC 가 확정하면 대표님 알림함에 한 줄이 간다 (서버 confirmSalesMonth). */
+const SALES_TONE = { good: () => [GOOD, GOOD_S], warn: () => [WARN, WARN_S], bad: () => [BAD, BAD_S], muted: () => [SUB, CANVAS] };
+const salesPill = (tone, label, extra = {}) => {
+  const [color, background] = (SALES_TONE[tone] || SALES_TONE.muted)();
+  return <span className="inline-block px-2 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color, backgroundColor: background, whiteSpace: "nowrap" }} {...extra}>{label}</span>;
+};
+const salesWon = (value) => `${Math.round(Number(value) || 0).toLocaleString("ko-KR")}원`;
+const salesMonthOptions = (month, count = 12) => Array.from({ length: count }, (_, index) => shiftRatingMonth(month, -index));
+
+/** 결제 한 줄 입력 · 고치기. 그룹 회원은 명부에 없어 이름을 글자로 (대표: "회원은 그룹이라서 필라티쳐에는 조회가 안됨"). */
+function SalesEntryEditor({ draft, onChange, onSave, onCancel, clients, busy, month }) {
+  const errors = entryErrors(draft);
+  const group = draft.kind === "group" || draft.kind === "group_refund";
+  const refund = draft.kind === "refund" || draft.kind === "group_refund";
+  const fromRecord = Boolean(draft.recordId);
+  const clientName = (clients || []).find((item) => String(item.id) === String(draft.clientId))?.name || "";
+  const [lastDay] = useState(() => { const [y, m] = String(month).split("-").map(Number); return new Date(y, m, 0).getDate(); });
+  const set = (patch) => onChange({ ...draft, ...patch });
+  const input = { height: 40, borderRadius: 8, border: `1px solid ${LINE}`, padding: "0 10px", fontSize: TYPE.caption, color: INK, backgroundColor: CARD, width: "100%" };
+  const [tried, setTried] = useState(false);
+  return (
+    <div className="space-y-2 p-3" style={{ borderRadius: 10, border: `1px solid ${LINE}`, backgroundColor: CARD }} data-sales-editor>
+      <div className="flex flex-wrap gap-1.5" role="group" aria-label="구분">
+        {SALES_KIND_CHOICES.map((kind) => {
+          const active = draft.kind === kind;
+          return <button key={kind} type="button" aria-pressed={active} onClick={() => set({ kind, ot: kind === "group" || kind === "group_refund" ? false : draft.ot, refundOfMonth: kind === "refund" || kind === "group_refund" ? draft.refundOfMonth : "" })}
+            className="min-h-9 px-3 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 999, backgroundColor: active ? INK : CANVAS, color: active ? CARD : INK2 }}>{SALES_KIND_LABELS[kind]}</button>;
+        })}
+      </div>
+      {fromRecord ? (
+        <p style={{ fontSize: TYPE.caption, color: SUB }}>회원 <b style={{ color: INK }}>{clientName || draft.clientId}</b> · 앱 발급 기록에서 가져옴</p>
+      ) : (
+        <label className="block" style={{ fontSize: TYPE.caption, color: SUB }}>{group ? "그룹 회원 이름 (명부에 없어요)" : "회원 이름"}
+          <input style={input} list={group ? undefined : "sales-client-names"} value={group ? draft.memberLabel : (clientName || draft.memberLabel)} maxLength={40}
+            onChange={(event) => {
+              const value = event.target.value;
+              const found = group ? null : (clients || []).find((item) => String(item.name || "").trim() === value.trim());
+              set(found ? { clientId: String(found.id), memberLabel: "" } : { clientId: "", memberLabel: value });
+            }} />
+          {group ? null : <datalist id="sales-client-names">{(clients || []).slice(0, 500).map((item) => <option key={item.id} value={item.name || ""} />)}</datalist>}
+        </label>
+      )}
+      <div className="grid grid-cols-2 gap-2">
+        <label style={{ fontSize: TYPE.caption, color: SUB }}>결제일
+          <input type="date" style={input} value={draft.paidOn} min={`${month}-01`} max={`${month}-${String(lastDay).padStart(2, "0")}`} onChange={(event) => set({ paidOn: event.target.value })} />
+        </label>
+        <label style={{ fontSize: TYPE.caption, color: SUB }}>실제로 받은 금액 (현금가)
+          <input inputMode="numeric" style={input} value={draft.amount ? String(draft.amount) : ""} placeholder="0"
+            onChange={(event) => set({ amount: Number.parseInt(event.target.value.replace(/[^0-9]/g, "") || "0", 10) })} />
+        </label>
+      </div>
+      <p style={{ fontSize: TYPE.caption, color: FAINT }}>카드 · 이체는 부가세를 뺀 금액(÷1.1), 현금은 그대로. 잔금은 받은 달에 새 줄로.</p>
+      {refund ? (
+        <label className="block" style={{ fontSize: TYPE.caption, color: SUB }}>환불한 결제의 달 (지난달 결제면 그 달 인센에서 환수돼요)
+          <select style={input} value={draft.refundOfMonth || month} onChange={(event) => set({ refundOfMonth: event.target.value === month ? "" : event.target.value })}>
+            {salesMonthOptions(month).map((value) => <option key={value} value={value}>{ratingMonthLabel(value)}</option>)}
+          </select>
+        </label>
+      ) : null}
+      <label className="block" style={{ fontSize: TYPE.caption, color: SUB }}>수강권 · 계약세션 (메모)
+        <input style={input} value={draft.productLabel} maxLength={60} onChange={(event) => set({ productLabel: event.target.value })} />
+      </label>
+      <div className="flex flex-wrap gap-3">
+        <label className="flex items-center gap-1.5" style={{ fontSize: TYPE.caption, color: INK }}>
+          <input type="checkbox" checked={Number(draft.share) === 0.5} onChange={(event) => set({ share: event.target.checked ? 0.5 : 1 })} />FC 가 대신 상담 (반반 매출)
+        </label>
+        {group ? null : (
+          <label className="flex items-center gap-1.5" style={{ fontSize: TYPE.caption, color: INK }}>
+            <input type="checkbox" checked={draft.ot === true} onChange={(event) => set({ ot: event.target.checked })} />OT 인센 (+10%)
+          </label>
+        )}
+      </div>
+      {tried && errors.length ? <p style={{ fontSize: TYPE.caption, color: WARN }}>{errors.map((item) => `${item.text} (${item.code})`).join(" · ")}</p> : null}
+      <div className="flex gap-2">
+        <button type="button" onClick={onCancel} disabled={busy} className="h-10 flex-1 font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
+        <button type="button" disabled={busy} onClick={() => { setTried(true); if (!errors.length) onSave(draft); }} className="h-10 flex-1 font-bold disabled:opacity-40"
+          style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>{busy ? "저장 중…" : "저장"}</button>
+      </div>
+    </div>
+  );
+}
+
+/** 결제 줄 한 개 (목록). */
+function SalesEntryRow({ entry, name, flagged = false, locked, onEdit, onDelete, extra = null }) {
+  const [asking, setAsking] = useState(false);
+  return (
+    <div className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: flagged ? WARN_S : CANVAS, border: flagged ? `1px solid ${WARN}` : "none" }} data-sales-entry={entry.id}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0 flex-1 truncate font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{name || "이름 모름"} <span className="font-normal tabular-nums" style={{ color: SUB }}>{entry.paidOn}</span></span>
+        {flagged ? salesPill("warn", "두 장부 다름") : null}
+        {extra}
+      </div>
+      <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{entryLine(entry, SALES_KIND_LABELS)}{entry.productLabel ? ` · ${entry.productLabel}` : ""}</p>
+      {locked ? null : (
+        <div className="mt-1 flex gap-3">
+          <button type="button" onClick={onEdit} className="font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>고치기</button>
+          {asking
+            ? <><button type="button" onClick={onDelete} className="font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>정말 지우기</button><button type="button" onClick={() => setAsking(false)} style={{ fontSize: TYPE.caption, color: SUB }}>그만두기</button></>
+            : <button type="button" onClick={() => setAsking(true)} style={{ fontSize: TYPE.caption, color: SUB }}>지우기</button>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function salesStatementTiles(statement) {
+  return [
+    { label: "개인 매출 합계", value: salesWon(statement.total), code: "sales_total" },
+    { label: "개인 인센 (구간)", value: salesWon(statement.bracket?.amount ?? statement.bracketAmount), code: "sales_bracket" },
+    { label: "OT · 그룹 인센", value: `${salesWon(statement.otBonus)} · ${salesWon(statement.groupBonus)}`, code: "sales_bonus" },
+    { label: statement.clawbackTotal ? `지급 예정 (환수 −${salesWon(statement.clawbackTotal)})` : "지급 예정", value: salesWon(statement.payout), color: statement.payout < 0 ? BAD : INK, code: "sales_payout" },
+  ];
+}
+
+/** 강사: 이번 달 매출 인센 (자기 장부). */
+function MySalesScreen({ organization, currentUserId, passStore, clientStore, initialState = null }) {
+  const organizationId = organization?.organizationId || "";
+  const thisMonth = currentRatingMonth();
+  const [month, setMonth] = useState(initialState?.month || thisMonth);
+  const [data, setData] = useState(() => initialState?.data || null);
+  const [error, setError] = useState("");
+  const [draft, setDraft] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const load = useCallback(async () => {
+    if (!organizationId || !currentUserId) return;
+    setData(null); setError("");
+    try {
+      const [entries, monthDoc, ledger, passes, clients] = await Promise.all([
+        listSalesEntries(organizationId, { instructorId: currentUserId, month, side: "instructor" }),
+        readSalesMonth(organizationId, currentUserId, month),
+        toleratingReadFailure(listSalesLedger(organizationId, month)),
+        toleratingReadFailure(listPasses(organizationId, { store: passStore })),
+        toleratingReadFailure(listClients(organizationId, { store: clientStore, ...clientScopeFor(organization, currentUserId) })),
+      ]);
+      const refundMonths = [...new Set(entries.filter((entry) => String(entry.refundOfMonth || "") && entry.refundOfMonth < month).map((entry) => entry.refundOfMonth))];
+      const prior = (await Promise.all(refundMonths.map((value) => listSalesEntries(organizationId, { instructorId: currentUserId, month: value, side: "instructor" })))).flat();
+      setData({ entries, prior, monthDoc, records: salesRecordsOf({ passes: passes.items, ledger: ledger.items, month }), clients: clients.items,
+        warning: ledger.errorCode || passes.errorCode ? `앱 기록을 읽지 못해 후보가 비어 있어요 (코드 ${ledger.errorCode || passes.errorCode})` : "" });
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setError(`매출 인센을 읽지 못했어요 (코드 ${code})`);
+      deviceLog("sales_mine_read_failed", { feature: "sales_incentive", stage: "mine_read", errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200), appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform() });
+    }
+  }, [organizationId, currentUserId, month, passStore, clientStore, organization]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const view = data ? mySalesView({ entries: data.entries, priorEntries: data.prior, records: data.records, instructorId: currentUserId, month, monthDoc: data.monthDoc }) : null;
+  const nameOf = (entry) => (entry.clientId ? (data?.clients || []).find((item) => String(item.id) === String(entry.clientId))?.name : "") || entry.memberLabel || "";
+  const save = async (entry) => {
+    setBusy(true); setMessage("");
+    try {
+      if (entry.id) await updateSalesEntry(organizationId, entry.id, entry, { uid: currentUserId });
+      else await addSalesEntry(organizationId, entry, { uid: currentUserId, role: organization?.role || "" });
+      setDraft(null); await load();
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setMessage(`저장하지 못했어요 -- 입력은 그대로 있어요 (코드 ${code})`);
+      deviceLog("sales_entry_save_failed", { feature: "sales_incentive", stage: entry.id ? "update" : "create", errorDomain: "firestore", errorCode: code, appBuild: APP_BUILD_LABEL });
+    } finally { setBusy(false); }
+  };
+  const remove = async (entry) => {
+    try { await deleteSalesEntry(organizationId, entry.id); await load(); }
+    catch (thrown) { setMessage(`지우지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
+  };
+  const submit = async () => {
+    setBusy(true); setMessage("");
+    try { await submitSalesMonth(organizationId, currentUserId, month, { uid: currentUserId }); setMessage("제출했어요. FC · 대표가 같은 결제를 따로 넣고 맞춰 본 뒤 확정해요."); await load(); }
+    catch (thrown) { setMessage(`제출하지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
+    finally { setBusy(false); }
+  };
+  const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-sales-mine>
+      <div className="flex items-center gap-2">
+        <button type="button" aria-label="이전 달" onClick={() => { setMonth((current) => shiftRatingMonth(current, -1)); setDraft(null); }} className="flex items-center justify-center" style={navButton}><ChevronLeft size={16} /></button>
+        <span className="min-w-0 flex-1 text-center font-extrabold tabular-nums" style={{ fontSize: TYPE.body, color: INK }}>{ratingMonthLabel(month)}</span>
+        <button type="button" aria-label="다음 달" disabled={month >= thisMonth} onClick={() => { setMonth((current) => shiftRatingMonth(current, 1)); setDraft(null); }} className="flex items-center justify-center disabled:opacity-30" style={navButton}><ChevronRight size={16} /></button>
+      </div>
+      <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        <b style={{ color: INK }}>내가 낸 매출만</b> 넣어요. FC · 대표도 같은 결제를 따로 넣고, 두 쪽이 같아야 확정돼요. 금액은 실제로 받은 현금가.
+      </p>
+      {error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{error}</p> : null}
+      {!view && !error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+      {view ? (
+        <>
+          <SummaryTiles items={salesStatementTiles(view.statement)} />
+          <p className="mt-3 rounded-lg px-3 py-2 font-bold" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: BRAND_D, backgroundColor: TINT }} data-sales-cheer={view.cheer.code}>{view.cheer.text}</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {salesPill(view.status.tone, view.status.label, { "data-sales-status": view.status.code })}
+            {view.check ? <span style={{ fontSize: TYPE.caption, color: WARN }}>{view.check.text} (코드 {view.check.code})</span> : null}
+          </div>
+          {data.warning ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{data.warning}</p> : null}
+          {message ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: message.startsWith("제출했어요") ? GOOD : WARN }}>{message}</p> : null}
+          {draft ? <div className="mt-3"><SalesEntryEditor draft={draft} onChange={setDraft} onSave={save} onCancel={() => setDraft(null)} clients={data.clients} busy={busy} month={month} /></div> : null}
+          {!view.locked && !draft && view.suggestions.length ? (
+            <div className="mt-3 space-y-1.5" data-sales-suggestions>
+              <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>앱이 찾은 이번 달 내 담당 결제 · 내가 낸 매출이면 넣어 주세요</p>
+              {view.suggestions.map((item) => (
+                <div key={item.recordId} className="flex items-center justify-between gap-2 px-3 py-2" style={{ borderRadius: 10, border: `1px dashed ${LINE}` }}>
+                  <span className="min-w-0 flex-1 truncate tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>{nameOf(item)} · {salesWon(item.amount)} · {kstDate(item.occurredAt)}{item.kind ? ` · ${SALES_KIND_LABELS[item.kind]}` : ""}</span>
+                  <button type="button" onClick={() => setDraft(entryFromSuggestion(item, { side: "instructor", instructorId: currentUserId, month }))} className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>넣기</button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <div className="mt-3 space-y-1.5">
+            {view.rows.map((entry) => (
+              <SalesEntryRow key={entry.id} entry={entry} name={nameOf(entry)} flagged={entry.flagged} locked={view.locked}
+                onEdit={() => setDraft({ ...entry })} onDelete={() => remove(entry)} />
+            ))}
+            {!view.rows.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>아직 넣은 매출이 없어요.</p> : null}
+          </div>
+          {view.locked ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>확정된 달이라 고칠 수 없어요. 고칠 것이 있으면 FC · 대표에게 말해 주세요.</p> : (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button type="button" disabled={Boolean(draft)} onClick={() => setDraft(blankEntry({ side: "instructor", instructorId: currentUserId, month }))} className="h-10 px-3 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>+ 직접 추가</button>
+              <button type="button" disabled={Boolean(draft)} onClick={() => setDraft(blankEntry({ side: "instructor", instructorId: currentUserId, month, kind: "group" }))} className="h-10 px-3 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>+ 그룹 회원</button>
+              <button type="button" disabled={busy || Boolean(draft)} onClick={submit} className="ml-auto h-10 px-4 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>{view.status.code === "submitted" ? "다시 제출" : "제출"}</button>
+            </div>
+          )}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+/** FC · 대표 · 총괄: 매출 인센 -- 강사별 두 장부 대조 · 사무실 장부 · 확정. */
+function SalesBoardScreen({ organization, currentUserId, instructorStore, passStore, clientStore, onConfirm = fbConfirmSalesMonth, initialState = null }) {
+  const organizationId = organization?.organizationId || "";
+  const ownerView = isOwnerLevelRole(organization?.role);
+  const thisMonth = currentRatingMonth();
+  const [month, setMonth] = useState(initialState?.month || thisMonth);
+  const [data, setData] = useState(() => initialState?.data || null);
+  const [error, setError] = useState("");
+  const [selected, setSelected] = useState(initialState?.selected || "");
+  const [branch, setBranch] = useState("");
+  const [draft, setDraft] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const [reopenReason, setReopenReason] = useState("");
+  /* 지우기는 두 번 눌러야 (사용자가 만든 데이터는 명시적으로 고를 때만 지운다 -- CLAUDE.md 5). */
+  const [askDelete, setAskDelete] = useState("");
+  const wide = useWideViewport(initialState?.wide);
+  const load = useCallback(async () => {
+    if (!organizationId) return;
+    setData(null); setError("");
+    try {
+      const [members, locations, ledger, passes, clients] = await Promise.all([
+        listMemberships(organizationId, { store: instructorStore }),
+        toleratingReadFailure(listLocations(organizationId)),
+        toleratingReadFailure(listSalesLedger(organizationId, month)),
+        toleratingReadFailure(listPasses(organizationId, { store: passStore })),
+        toleratingReadFailure(listClients(organizationId, { store: clientStore })),
+      ]);
+      /* FC 는 맡은 지점 강사만 (규칙 · 서버와 같은 판단: 내 지점이 비었으면 전부, 강사 지점이 비었으면 보임). */
+      const mine = scopedLocationIds(organization);
+      const teachers = members.filter((member) => String(member.status || "active") === "active" && ["instructor", "manager", "owner", "area_manager"].includes(String(member.role || "")))
+        .filter((member) => ownerView || !mine.length || !scopedLocationIds(member).length || scopedLocationIds(member).some((id) => mine.includes(id)));
+      let entries = [];
+      let months = [];
+      if (ownerView) {
+        [entries, months] = await Promise.all([listSalesEntriesOfMonth(organizationId, month), listSalesMonths(organizationId, month)]);
+      } else {
+        const per = await Promise.all(teachers.filter((member) => member.userId !== currentUserId).map(async (member) => {
+          const [rows, monthDoc] = await Promise.all([listSalesEntries(organizationId, { instructorId: member.userId, month }), readSalesMonth(organizationId, member.userId, month)]);
+          return { rows, monthDoc };
+        }));
+        entries = per.flatMap((item) => item.rows);
+        months = per.map((item) => item.monthDoc).filter(Boolean);
+      }
+      const entriesByInstructor = new Map();
+      for (const entry of entries) {
+        const key = String(entry.instructorId);
+        if (!entriesByInstructor.has(key)) entriesByInstructor.set(key, []);
+        entriesByInstructor.get(key).push(entry);
+      }
+      setData({
+        teachers, locations: locations.items, entriesByInstructor,
+        monthsByInstructor: new Map(months.map((item) => [String(item.instructorId), item])),
+        records: salesRecordsOf({ passes: passes.items, ledger: ledger.items, month }), clients: clients.items,
+        warning: ledger.errorCode || passes.errorCode ? `앱 기록을 읽지 못해 대조 근거 · 후보가 비어 있어요 (코드 ${ledger.errorCode || passes.errorCode})` : "",
+      });
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setError(`매출 인센을 읽지 못했어요 (코드 ${code})`);
+      deviceLog("sales_board_read_failed", { feature: "sales_incentive", stage: "board_read", errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200), role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform() });
+    }
+  }, [organizationId, month, instructorStore, passStore, clientStore, organization, ownerView, currentUserId]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const rows = data ? salesBoardRows({ instructors: data.teachers, entriesByInstructor: data.entriesByInstructor, monthsByInstructor: data.monthsByInstructor, month, viewerUid: currentUserId }) : [];
+  const groups = data ? groupRowsByBranch(rows, { instructors: data.teachers, locations: data.locations || [], canonicalInstructorId: canonicalInstructorIdFrom(data.teachers) }) : [];
+  const branchId = pickBranch(groups, branch);
+  const shown = groups.length > 1 ? (groups.find((group) => group.id === branchId)?.rows || []) : rows;
+  const current = shown.find((row) => row.instructorId === selected) || (wide ? shown[0] : null) || null;
+  const nameOf = (entry) => (entry?.clientId ? (data?.clients || []).find((item) => String(item.id) === String(entry.clientId))?.name : "") || entry?.memberLabel || "";
+  const officeOf = (row) => (data?.entriesByInstructor.get(row.instructorId) || []).filter((entry) => entry.side === "office");
+  const save = async (entry) => {
+    setBusy(true); setNotice(null);
+    try {
+      if (entry.id) await updateSalesEntry(organizationId, entry.id, entry, { uid: currentUserId });
+      else await addSalesEntry(organizationId, entry, { uid: currentUserId, role: organization?.role || "" });
+      setDraft(null); await load();
+    } catch (thrown) {
+      setNotice({ tone: "warn", text: `저장하지 못했어요 -- 입력은 그대로 있어요 (코드 ${String(thrown?.code || "unknown")})` });
+    } finally { setBusy(false); }
+  };
+  const remove = async (entry) => {
+    try { await deleteSalesEntry(organizationId, entry.id); await load(); }
+    catch (thrown) { setNotice({ tone: "warn", text: `지우지 못했어요 (코드 ${String(thrown?.code || "unknown")})` }); }
+  };
+  const confirm = async (row) => {
+    setBusy(true); setNotice(null);
+    try {
+      const result = await onConfirm({ organizationId, instructorId: row.instructorId, month });
+      setNotice({ tone: "good", text: `확정했어요 · 지급 ${salesWon(result?.snapshot?.payout)}${result?.notified?.sent ? ` · 대표님에게 알림을 보냈어요` : ""}` });
+      await load();
+    } catch (thrown) {
+      const failure = confirmFailureText(thrown);
+      setNotice({ tone: failure.kind === "network" ? "warn" : "bad", text: failure.text });
+      deviceLog("sales_confirm_failed", { feature: "sales_incentive", stage: "confirm", errorDomain: "functions_callable", errorCode: String(thrown?.code || "unknown"), serverCode: failure.code, appBuild: APP_BUILD_LABEL });
+      await load();
+    } finally { setBusy(false); }
+  };
+  const reopen = async (row) => {
+    if (!reopenReason.trim()) { setNotice({ tone: "warn", text: "되돌리는 사유를 적어 주세요 (코드 reopen_reason_required)" }); return; }
+    setBusy(true);
+    try { await reopenSalesMonth(organizationId, row.instructorId, month, reopenReason, { uid: currentUserId }); setReopenReason(""); setNotice({ tone: "good", text: "되돌렸어요. 두 장부를 고친 뒤 다시 확정해 주세요." }); await load(); }
+    catch (thrown) { setNotice({ tone: "warn", text: `되돌리지 못했어요 (코드 ${String(thrown?.code || "unknown")})` }); }
+    finally { setBusy(false); }
+  };
+  const detail = (row) => {
+    const office = officeOf(row);
+    const suggestions = suggestionsFor({ instructorId: row.instructorId, records: data.records, claims: office });
+    return (
+      <div className="space-y-2" data-sales-detail={row.instructorId}>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{row.name}</span>
+          {salesPill(row.status.tone, row.status.label)}
+        </div>
+        <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>강사 장부 {salesWon(row.mineTotal)} ({row.mineCount}줄) · 사무실 장부 {salesWon(row.officeTotal)} ({row.officeCount}줄) · 지급 예정 {salesWon(row.statement.payout)}</p>
+        <div className="space-y-1.5" data-sales-pairs>
+          {row.pairing.pairs.map((pair, index) => {
+            const view = PAIR_VIEW[pair.code];
+            const source = pair.office || pair.instructor;
+            const evidence = pair.office ? MATCH_VIEW[matchEntry(pair.office, { records: data.records, claims: [] }).code] : null;
+            return (
+              <div key={`${pair.instructor?.id || ""}-${pair.office?.id || ""}-${index}`} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: pair.code === PAIR.AGREED ? CANVAS : WARN_S }} data-sales-pair={pair.code}>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {salesPill(view.tone, view.label)}
+                  <span className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{nameOf(source)}</span>
+                </div>
+                {pair.instructor ? <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>강사: {pair.instructor.paidOn} · {entryLine(pair.instructor, SALES_KIND_LABELS)}</p> : null}
+                {pair.office ? <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>사무실: {pair.office.paidOn} · {entryLine(pair.office, SALES_KIND_LABELS)}</p> : null}
+                {pair.diffs.length ? <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: BAD }}>다른 칸: {pair.diffs.map((item) => item.label).join(" · ")}</p> : null}
+                {evidence ? <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>앱 기록: {evidence.label}</p> : null}
+                {pair.office && !row.confirmed ? (
+                  <div className="mt-1 flex gap-3">
+                    <button type="button" onClick={() => setDraft({ ...pair.office })} className="font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>사무실 줄 고치기</button>
+                    {askDelete === pair.office.id
+                      ? <><button type="button" onClick={() => { setAskDelete(""); remove(pair.office); }} className="font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>정말 지우기</button>
+                        <button type="button" onClick={() => setAskDelete("")} style={{ fontSize: TYPE.caption, color: SUB }}>그만두기</button></>
+                      : <button type="button" onClick={() => setAskDelete(pair.office.id)} style={{ fontSize: TYPE.caption, color: SUB }}>사무실 줄 지우기</button>}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+          {!row.pairing.pairs.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>두 장부 모두 비어 있어요 -- 이 달 매출이 없으면 그대로 확정할 수 있어요.</p> : null}
+        </div>
+        {draft && draft.instructorId === row.instructorId ? <SalesEntryEditor draft={draft} onChange={setDraft} onSave={save} onCancel={() => setDraft(null)} clients={data.clients} busy={busy} month={month} /> : null}
+        {!row.confirmed && !draft && !row.ownSales ? (
+          <div className="space-y-1.5">
+            {suggestions.length ? <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>앱 기록에서 사무실 장부로 넣기</p> : null}
+            {suggestions.map((item) => (
+              <div key={item.recordId} className="flex items-center justify-between gap-2 px-3 py-2" style={{ borderRadius: 10, border: `1px dashed ${LINE}` }}>
+                <span className="min-w-0 flex-1 truncate tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>{nameOf(item)} · {salesWon(item.amount)} · {kstDate(item.occurredAt)}</span>
+                <button type="button" onClick={() => setDraft(entryFromSuggestion(item, { side: "office", instructorId: row.instructorId, month }))} className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>넣기</button>
+              </div>
+            ))}
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => setDraft(blankEntry({ side: "office", instructorId: row.instructorId, month }))} className="h-9 px-3 font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>+ 직접 추가</button>
+              <button type="button" onClick={() => setDraft(blankEntry({ side: "office", instructorId: row.instructorId, month, kind: "group" }))} className="h-9 px-3 font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>+ 그룹 회원</button>
+            </div>
+          </div>
+        ) : null}
+        {row.confirmed ? (
+          <div className="space-y-1.5" data-sales-reopen>
+            <input value={reopenReason} onChange={(event) => setReopenReason(event.target.value)} maxLength={200} placeholder="되돌리는 사유 (필수)"
+              className="h-10 w-full px-3" style={{ borderRadius: 8, border: `1px solid ${LINE}`, fontSize: TYPE.caption, backgroundColor: CARD, color: INK }} />
+            <button type="button" disabled={busy || row.ownSales} onClick={() => reopen(row)} className="h-10 w-full font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: BAD, fontSize: TYPE.caption }}>확정 되돌리기</button>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            <button type="button" disabled={busy || row.ownSales || !row.pairing.canConfirm} onClick={() => confirm(row)} className="h-11 w-full font-extrabold disabled:opacity-40"
+              style={{ borderRadius: 10, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }} data-sales-confirm={row.instructorId}>
+              {busy ? "확인 중…" : row.pairing.canConfirm ? `확정 · 지급 ${salesWon(row.statement.payout)}` : `두 장부가 같아야 확정할 수 있어요 (어긋남 ${row.attention}건)`}
+            </button>
+            {row.ownSales ? <p style={{ fontSize: TYPE.caption, color: SUB }}>자기 매출은 다른 사람이 확정해요 (코드 own_sales)</p>
+              : !ownerView ? <p style={{ fontSize: TYPE.caption, color: SUB }} data-sales-confirm-hint>{CONFIRM_NOTICE_HINT}</p> : null}
+          </div>
+        )}
+      </div>
+    );
+  };
+  const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
+  const summary = rows.reduce((sum, row) => ({ confirmed: sum.confirmed + Number(row.confirmed), attention: sum.attention + (row.confirmed ? 0 : Number(row.attention > 0)), payout: sum.payout + (row.statement.payout || 0) }), { confirmed: 0, attention: 0, payout: 0 });
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-sales-board>
+      <div className="flex items-center gap-2">
+        <button type="button" aria-label="이전 달" onClick={() => { setMonth((value) => shiftRatingMonth(value, -1)); setDraft(null); setNotice(null); }} className="flex items-center justify-center" style={navButton}><ChevronLeft size={16} /></button>
+        <span className="min-w-0 flex-1 text-center font-extrabold tabular-nums" style={{ fontSize: TYPE.body, color: INK }}>{ratingMonthLabel(month)}</span>
+        <button type="button" aria-label="다음 달" disabled={month >= thisMonth} onClick={() => { setMonth((value) => shiftRatingMonth(value, 1)); setDraft(null); setNotice(null); }} className="flex items-center justify-center disabled:opacity-30" style={navButton}><ChevronRight size={16} /></button>
+        <button type="button" onClick={load} className="h-9 px-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
+      </div>
+      <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        강사가 넣은 <b style={{ color: INK }}>강사 장부</b>와 FC · 대표가 따로 넣은 <b style={{ color: INK }}>사무실 장부</b>가 한 줄도 빠짐없이 같아야 확정돼요.
+        {" "}강사 장부는 여기서 고칠 수 없어요 -- 다르면 강사에게 알려 주세요.{ownerView ? "" : " FC 가 확정하면 대표님에게 알림이 가요."}
+      </p>
+      {error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{error}</p> : null}
+      {!data && !error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
+      {data?.warning ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{data.warning}</p> : null}
+      {notice ? <p className="mt-2 font-bold" style={{ fontSize: TYPE.caption, color: notice.tone === "good" ? GOOD : notice.tone === "bad" ? BAD : WARN }} data-sales-notice>{notice.text}</p> : null}
+      {data ? (
+        <>
+          <SummaryTiles items={[
+            { label: "강사", value: `${rows.length}명`, code: "sales_board_instructors" },
+            { label: "확정", value: `${summary.confirmed}명`, color: GOOD, code: "sales_board_confirmed" },
+            { label: "두 장부 어긋남", value: `${summary.attention}명`, color: summary.attention ? BAD : INK, code: "sales_board_attention" },
+            { label: "지급 예정 합계", value: salesWon(summary.payout), code: "sales_board_payout" },
+          ]} />
+          <BranchTabs groups={groups} selected={branchId} onSelect={(id) => { setBranch(id); setSelected(""); setDraft(null); }} countLabel={(group) => `${group.rows.length}명`} />
+          {!rows.length ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>이 달에 넣은 매출이 없어요.</p> : null}
+          {wide ? (
+            <AggregateSplit wide detail={current ? detail(current) : null}>
+              <InstructorTable rows={shown} selected={current?.instructorId} onSelect={(id) => { setSelected(id); setDraft(null); setNotice(null); }} columns={[
+                { key: "name", label: "강사", firstDir: "asc", sortValue: (row) => row.name, render: (row) => <span className="font-bold">{row.name}</span> },
+                { key: "status", label: "상태", render: (row) => salesPill(row.status.tone, row.status.label) },
+                { key: "mine", label: "강사 장부", align: "right", sortValue: (row) => row.mineTotal, render: (row) => salesWon(row.mineTotal) },
+                { key: "office", label: "사무실 장부", align: "right", sortValue: (row) => row.officeTotal, render: (row) => salesWon(row.officeTotal) },
+                { key: "pairs", label: "대조", align: "right", sortValue: (row) => row.attention, render: (row) => (row.attention ? salesPill("bad", `어긋남 ${row.attention}`) : salesPill("good", "같음")) },
+                { key: "payout", label: "지급 예정", align: "right", sortValue: (row) => row.statement.payout, render: (row) => <span className="font-bold">{salesWon(row.statement.payout)}</span> },
+              ]} />
+            </AggregateSplit>
+          ) : (
+            <div className="mt-3 space-y-2">
+              {shown.map((row) => {
+                const expanded = selected === row.instructorId;
+                return (
+                  <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-sales-row={row.instructorId}>
+                    <button type="button" onClick={() => { setSelected(expanded ? "" : row.instructorId); setDraft(null); setNotice(null); }} className="flex w-full items-center gap-2 text-left" aria-expanded={expanded}>
+                      <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>{row.name}</span>
+                      {row.attention && !row.confirmed ? salesPill("bad", `어긋남 ${row.attention}`) : null}
+                      {salesPill(row.status.tone, row.status.label)}
+                      <ChevronDown size={16} style={{ color: SUB, transform: expanded ? "rotate(180deg)" : "none" }} />
+                    </button>
+                    <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>지급 예정 {salesWon(row.statement.payout)} · 강사 {row.mineCount}줄 · 사무실 {row.officeCount}줄</p>
+                    {expanded ? <div className="mt-2">{detail(row)}</div> : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 /**
  * 회원 앱 수업 취소 (2026-11-07, 5차 1단계) — 대표 설정 · 강사별 추가 부여 현황.
  *
@@ -29169,6 +29648,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     "before-after-board": "비포애프터 공유 현황",
     "lesson-ratings": "수업 별점",
     "phone-check": "번호 점검",
+    "sales-mine": "이번 달 매출 인센",
+    "sales-board": "매출 인센",
   };
   /* 센터를 운영하는 일과 이 기기를 쓰는 일은 다른 묶음이다. 한 그룹에 섞여
      있으면 목록이 길어지고, 강사에게는 그 목록의 절반이 보이지 않아 어디가 빈
@@ -29192,6 +29673,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   /* 대표 · 총괄의 더보기는 만료 회원을 현황판에 둔다 (강사 · FC 는 업무 그대로). centreGroups 가 쓰므로 그 앞에서 정한다. */
   const expiryItems = inOrganization ? [{ key: "expiry", title: "만료 회원", description: "이번 달 · 지난달 · 재등록률", Icon: Users }] : [];
   const ownerLevelHub = inOrganization && isOwnerLevelRole(organization.role);
+  /* 매출 인센 확정 화면: 대표 · 총괄 · FC매니저 (규칙 · 서버와 같은 선). */
+  const showSalesBoard = organization.ready && !organization.isLegacy && (isOwnerLevelRole(organization.role) || organization.role === ROLES.MANAGER);
   const centreGroups = [
     /* 매일 보는 숫자 (2026-11-21 대표 승인 "현황판 웹 배치안" 1단계). 맨 위에 둔다. */
     { label: "현황판", items: [
@@ -29207,6 +29690,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     ] },
     /* 월말에 보는 돈. */
     { label: "돈", items: [
+      /* 강사 개인매출 · 그룹 인센 (2026-11-21). 두 장부 대조 · 확정은 FC(맡은 지점) · 대표 · 총괄 -- FC 가 확정하면 대표에게 알림. */
+      ...(showSalesBoard ? [{ key: "sales-board", title: "매출 인센", description: "강사 · 사무실 두 장부 대조 · 확정", Icon: Ticket }] : []),
       ...(showPayroll ? [{ key: "payroll", title: "급여 집계", description: "강사별 수업료 · 그룹 급여 포함", Icon: ArrowUpRight }] : []),
       /* 발급 내역도 대표만 본다. 급여와 같은 조건이다 -- 센터 전체의 매출은
          한 사람의 것이 아니고, FC매니저에게는 자기 실적만 보이는 화면이 따로
@@ -29271,6 +29756,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   /* 공지는 **모두가 본다.** 쓰는 사람에게만 보이는 자리에 두면 강사는
      넘긴 공지를 다시 볼 길이 없다 -- 한 번 뜨고 끝나는 창이기 때문이다. */
   const noticeItems = inOrganization ? [{ key: "notices", title: "공지사항", description: "센터에서 알리는 글 · 다시 보기", Icon: Bell }] : [];
+  /* 내가 낸 매출 · 다음 구간까지 · 제출 (2026-11-21). 소속 강사 누구나 -- 자기 장부만. */
+  const salesMineItems = inOrganization && organization.ready && !organization.isLegacy ? [{ key: "sales-mine", title: "이번 달 매출 인센", description: "내가 낸 매출 · 다음 구간까지 · 제출", Icon: ArrowUpRight }] : [];
   const assessmentItem = { key: "assessment", title: "비포애프터 설정", description: "기본 방식 · AI 분석 · 직접 포인트/그리기", Icon: Activity };
   /* 이름은 "센터"지만 센터의 설정이 아니다. 이 세 값은 기기에 저장되고 이
      기기의 일정과 레거시 급여 추정에만 쓰인다 -- 소속 센터의 이름도 단가도
@@ -29316,7 +29803,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   const ownerLayout = inOrganization && isOwnerLevelRole(organization.role);
   const menuGroups = ownerLayout ? [
     ...centreGroups.filter((group) => group.label !== "점검" && group.label !== "대표 설정"),
-    { label: "업무", items: [...noticeItems] },
+    { label: "업무", items: [...salesMineItems, ...noticeItems] },
     ...centreGroups.filter((group) => group.label === "대표 설정"),
     { label: "내 설정", items: [...centerItems, themeItem, dataItem, backupItem] },
     { label: "계정 · 앱", items: [accountItem, permissionsItem, appItem] },
@@ -29325,7 +29812,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       hint: "강사 계정에서 보이는 항목입니다. 대표 업무에는 필요 없어 접어 두었어요.",
       items: [scheduleItem, recordsItem, reportItem, assessmentItem, scheduleColorsItem, onboardingItem, lessonExamplesItem, knowledgeItem] },
   ].filter((group) => group.items.length > 0) : [
-    { label: "업무", items: [scheduleItem, recordsItem, reportItem, ...(showRatings ? [ratingsItem] : []), ...expiryItems, ...noticeItems] },
+    { label: "업무", items: [scheduleItem, recordsItem, reportItem, ...salesMineItems, ...(showRatings ? [ratingsItem] : []), ...expiryItems, ...noticeItems] },
     ...centreGroups,
     { label: "내 설정", items: [assessmentItem, ...centerItems, scheduleColorsItem, themeItem, dataItem, backupItem] },
     { label: "기타", items: [onboardingItem, permissionsItem, lessonExamplesItem, knowledgeItem, accountItem, appItem] },
@@ -29871,6 +30358,12 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
         {view === "renewal-radar" && showAudit && (
           <RenewalRadarScreen organization={organization} instructorStore={instructorStore} clientStore={clientStore} passStore={passStore}
             onOpenClient={(client) => onOpenClient?.({ id: client.id, name: client.name })} />
+        )}
+        {view === "sales-mine" && salesMineItems.length > 0 && (
+          <MySalesScreen organization={organization} currentUserId={account?.id || ""} passStore={passStore} clientStore={clientStore} />
+        )}
+        {view === "sales-board" && showSalesBoard && (
+          <SalesBoardScreen organization={organization} currentUserId={account?.id || ""} instructorStore={instructorStore} passStore={passStore} clientStore={clientStore} />
         )}
         {view === "record-board" && showAudit && (
           <InstructorRecordBoard organization={organization} instructorStore={instructorStore} clientStore={clientStore} />
@@ -32021,6 +32514,42 @@ export function createAppScreenSmokeCases() {
           },
         }} />
     )) },
+    /* 매출 인센 (2026-11-21 2단계). 강사: 내 장부 · 응원 · 후보 · 어긋난 줄 / FC · 대표: 두 장부 대조 · 확정 버튼 · 알림 문구. */
+    ...(() => {
+      const month = "2026-11";
+      const at = new Date(2026, 10, 5, 10);
+      const passes = [
+        { id: "sp1", clientId: "r1", instructorId: "u1", contractPrice: 1320000, paymentMethod: "card", status: "active" },
+        { id: "sp2", clientId: "r2", instructorId: "u1", contractPrice: 3300000, paymentMethod: "card", status: "active" },
+      ];
+      const records = salesRecordsOf({ passes, month, ledger: [
+        { id: "sp1_issue", type: "issue", passId: "sp1", clientId: "r1", occurredAt: at },
+        { id: "sp2_issue", type: "issue", passId: "sp2", clientId: "r2", occurredAt: at },
+      ] });
+      const clients = [{ id: "r1", name: "김하나" }, { id: "r2", name: "이두리" }];
+      const line = (id, side, extra = {}) => ({ id, side, instructorId: "u1", month, paidOn: "2026-11-05", kind: "repurchase", amount: 1200000, share: 1, ot: false,
+        clientId: "r1", memberLabel: "", productLabel: "1:1 20회", recordId: "sp1_issue", passId: "sp1", refundOfMonth: "", ...extra });
+      const entries = [
+        line("e1", "instructor"),
+        line("e2", "instructor", { kind: "group", amount: 900000, clientId: "", memberLabel: "박그룹 회원", recordId: "", passId: "" }),
+        line("o1", "office"),
+        line("o2", "office", { kind: "group", amount: 800000, clientId: "", memberLabel: "박그룹", recordId: "", passId: "" }),
+      ];
+      const monthDoc = { status: "submitted", lastCheck: { differs: 1, instructorOnly: 0, officeOnly: 0, instructorEntryIds: ["e2"], officeEntryIds: ["o2"] } };
+      return [
+        { name: "매출 인센 · 강사", element: providerWith(smokeInstructorOrg, (
+          <MySalesScreen organization={readyOrganizationContext(smokeInstructorOrg)} currentUserId="u1"
+            initialState={{ month, data: { entries: entries.filter((item) => item.side === "instructor"), prior: [], monthDoc, records, clients, warning: "" } }} />
+        )) },
+        { name: "매출 인센 · FC · PC", element: providerWith(smokeManagerOrg, (
+          <SalesBoardScreen organization={readyOrganizationContext(smokeManagerOrg)} currentUserId="smoke-fc" onConfirm={asyncNoop}
+            initialState={{ month, wide: true, selected: "u1", data: {
+              teachers: smokeInstructors, locations: [{ id: "bansong", name: "반송" }],
+              entriesByInstructor: new Map([["u1", entries]]), monthsByInstructor: new Map([["u1", monthDoc]]), records, clients, warning: "",
+            } }} />
+        )) },
+      ];
+    })(),
     /* 담당 강사. 셋을 나눈다 -- 정상, 빠진 회원이 있음, 아직 안 돌았음.
        셋 다 "재계산을 누른다" 로 끝나지만 대표가 읽는 뜻이 다르다. */
     { name: "담당 강사", element: providerWith(smokeOwner, (
@@ -34227,7 +34756,9 @@ export default function App() {
      고른 지점을 듣는다. 대표 · 총괄의 "전체" 칩은 듣지 않는다 (1단계가 맡는다). */
   /* 강사 알림함 (2026-11-07). 회원 앱 취소가 켜진 강사만 듣는다 -- 알림이 올 일이 없는 계정에
      듣기를 열지 않는다. 규칙이 아직 안 나갔으면 permission-denied 로 끝나고 띠가 코드를 말한다. */
-  const inboxOn = Boolean(organizationRoster) && Boolean(account?.id) && memberCancelEnabledFor(scheduleSyncConfig, account?.id);
+  /* 2026-11-21: 대표 · 총괄도 듣는다 -- FC 의 매출 인센 확정 · 회원권 발급 알림이 대표 알림함으로 온다 (서버 confirmSalesMonth · notifyOwnerOnFcIssue). */
+  const inboxOn = Boolean(organizationRoster) && Boolean(account?.id)
+    && (memberCancelEnabledFor(scheduleSyncConfig, account?.id) || isOwnerLevelRole(organizationContext.role));
   const [inboxItems, setInboxItems] = useState([]);
   const [inboxError, setInboxError] = useState(null);
   useEffect(() => {

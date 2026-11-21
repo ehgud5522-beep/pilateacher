@@ -1,12 +1,11 @@
 "use strict";
 
 /**
- * 강사 FC 복지 수업료 확정 (2026-11-21 대표 결정: 강사 입력 + FC · 대표 · 총괄 확정, FC 1명당 한 달 진행 + 캔슬 8회, 대표 · 총괄이 달마다 지정한 강사만).
+ * 강사 FC 복지 수업료 확정 (2026-11-21 대표 결정 · 횟수만 · 지점마다 한 명).
  *
  * 확정은 이 서버 함수만 한다 (규칙은 fcLessonMonths 의 confirmed 를 앱에 열지 않는다). 확정 전에 다시 본다:
- *   1. 그 강사가 그 달 지정 강사인가 (fcLessonDesignations/{달})
- *   2. 그 달 센터 전체 줄로 FC 별 8회 한도를 세어, 이 강사의 줄 중 넘친 것이 없는가 (shared/fc-lessons.mjs 의 fcCapCheck)
- *   3. 확정하는 사람이 이 강사에게 수업을 받은 FC 가 아닌가 (자기가 받은 수업을 자기가 확정하지 못한다)
+ *   1. 그 강사가 그 달 지정 강사인가 (fcLessonDesignations/{달}.branches 의 값)
+ *   2. 진행 + 캔슬이 0 보다 크고 8회를 넘지 않는가
  * 확정하면 대표 · 총괄 알림함에 한 줄 (확정한 본인 제외). 알림 실패는 확정을 막지 않는다.
  * 누가: 대표 · 총괄, 또는 그 강사가 맡은 지점 안인 FC매니저. 자기 수업료는 자기가 확정하지 못한다.
  */
@@ -83,30 +82,18 @@ function createFcLessonConfirmService({ firestore, membershipId, isOwnerLevel, n
     const caller = await authorize(org, callerUid, instructor);
 
     const monthRef = firestore.doc(`organizations/${org}/fcLessonMonths/${instructor}_${key}`);
-    const [monthSnapshot, designationSnapshot, lessonsSnapshot] = await Promise.all([
-      monthRef.get(),
-      firestore.doc(`organizations/${org}/fcLessonDesignations/${key}`).get(),
-      firestore.collection(`organizations/${org}/fcLessons`).where("month", "==", key).get(),
-    ]);
-    if (monthSnapshot.exists && monthSnapshot.data()?.status === "confirmed") throw new FcLessonConfirmError("failed-precondition", "already_confirmed");
+    const [monthSnapshot, designationSnapshot] = await Promise.all([monthRef.get(), firestore.doc(`organizations/${org}/fcLessonDesignations/${key}`).get()]);
+    const current = monthSnapshot.exists ? monthSnapshot.data() : null;
+    if (current?.status === "confirmed") throw new FcLessonConfirmError("failed-precondition", "already_confirmed");
     if (!shared.isDesignated(designationSnapshot.exists ? designationSnapshot.data() : null, instructor)) throw new FcLessonConfirmError("failed-precondition", "not_designated");
-    const all = lessonsSnapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
-    const mine = all.filter((entry) => text(entry.instructorId) === instructor);
-    if (mine.some((entry) => text(entry.fcUserId) === text(callerUid))) throw new FcLessonConfirmError("permission-denied", "received_by_confirmer");
-    const { overIds } = shared.fcCapCheck(all);
-    const over = mine.filter((entry) => overIds.has(text(entry.id))).map((entry) => text(entry.id));
+    const counts = { done: current?.done, cancel: current?.cancel };
+    if (shared.fcCountProblems(counts).length) throw new FcLessonConfirmError("failed-precondition", "fc_cap_exceeded");
+    const snapshot = shared.fcLessonTotals(counts);
+    if (!snapshot.count) throw new FcLessonConfirmError("failed-precondition", "nothing_to_confirm");
     const at = now();
-    if (over.length) {
-      await monthRef.set({
-        organizationId: org, instructorId: instructor, month: key, status: monthSnapshot.exists ? monthSnapshot.data()?.status || "submitted" : "submitted",
-        lastCheck: { checkedAt: at, checkedBy: text(callerUid), overCapEntryIds: over.slice(0, 200) }, updatedBy: text(callerUid), updatedAt: at,
-      }, { merge: true });
-      throw new FcLessonConfirmError("failed-precondition", "fc_cap_exceeded", { overCap: over.length });
-    }
-    const snapshot = shared.fcLessonTotals(mine);
     await monthRef.set({
       organizationId: org, instructorId: instructor, month: key, status: "confirmed", confirmedBy: text(callerUid), confirmedAt: at, snapshot,
-      lastCheck: { checkedAt: at, checkedBy: text(callerUid), overCapEntryIds: [] }, updatedBy: text(callerUid), updatedAt: at,
+      updatedBy: text(callerUid), updatedAt: at,
     }, { merge: true });
     const notified = await notifyOwners({ org, instructor, key, callerUid, caller, snapshot, at, shared });
     return { status: "confirmed", snapshot, notified };

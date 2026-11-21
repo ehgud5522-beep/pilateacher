@@ -1978,62 +1978,28 @@ service cloud.firestore {
       }
 
       /* ── 강사 FC 복지 수업료 (2026-11-21 대표 결정, functions/shared/fc-lessons.mjs) ───────────────
-         FC 가 복지로 강사에게 수업을 받으면 강사가 수업료를 받는다 (진행 25,000 · 캔슬 15,000).
-           fcLessons/{자동 id}                  수업 한 줄. **그 달 지정된 강사가 자기 것만** 넣고 고친다
-           fcLessonDesignations/{YYYY-MM}       그 달 FC 수업 지정 강사 (instructorIds) + 그 달 FC 명단 (fcUserIds · fcNames) -- 대표 · 총괄만 쓴다.
-                                                강사는 소속 명단을 못 읽으므로, 수업을 받은 FC 는 이 명단에서 고르고 규칙도 이 명단으로 막는다
-           fcLessonMonths/{강사}_{YYYY-MM}      강사 제출 · 서버 확정(confirmFcLessonMonth) · 되돌림(사유)
-         FC 한 명당 한 달 8회(진행 + 캔슬) 한도는 규칙으로 셀 수 없다 -- 앱이 먼저 막고, 서버 확정이 다시 본다.
-         그래서 fcLessons 는 직원 모두가 읽는다 (FC 별 남은 횟수를 세야 한다). 회원 정보는 없고 FC uid · 날짜 · 진행/캔슬뿐. */
-      function fcDesignated(organizationId, month, fcUserId) {
+         진행 25,000 · 캔슬 15,000. FC 가 앱에 다 있지 않아 **횟수만** 넣는다 (같은 날 대표: "각 지점당 한 명만 대표가 정하면
+         강사 FC 수업 진행한 걸로 입력하게, 횟수만").
+           fcLessonDesignations/{YYYY-MM}   그 달 지점마다 강사 한 명 (branches: { 지점: 강사 }, instructorIds = 그 값들) -- 대표 · 총괄만
+           fcLessonMonths/{강사}_{YYYY-MM}  지정 강사가 진행 · 캔슬 횟수를 넣고 제출(submitted), 확정은 서버(confirmFcLessonMonth)만,
+                                            되돌림은 FC · 대표 · 총괄이 사유와 함께 (횟수는 그대로)
+         한 달 진행 + 캔슬 8회 상한은 규칙이 직접 본다. */
+      function fcDesignated(organizationId, month) {
         let path = /databases/$(database)/documents/organizations/$(organizationId)/fcLessonDesignations/$(month);
-        return exists(path) && request.auth.uid in get(path).data.instructorIds && fcUserId in get(path).data.fcUserIds;
+        return exists(path) && request.auth.uid in get(path).data.instructorIds;
       }
-      function fcMonthOpen(organizationId, instructorId, month) {
-        let path = /databases/$(database)/documents/organizations/$(organizationId)/fcLessonMonths/$(instructorId + "_" + month);
-        return !exists(path) || get(path).data.status != "confirmed";
-      }
-      function fcLessonWellFormed(organizationId) {
-        let data = request.resource.data;
-        return data.keys().hasOnly(["organizationId", "instructorId", "fcUserId", "month", "lessonDate", "outcome", "note", "createdBy", "createdAt", "updatedBy", "updatedAt"])
-          && data.keys().hasAll(["organizationId", "instructorId", "fcUserId", "month", "lessonDate", "outcome", "note", "createdBy", "createdAt", "updatedBy", "updatedAt"])
-          && data.organizationId == organizationId
-          && data.instructorId == request.auth.uid
-          && data.fcUserId is string && data.fcUserId.size() > 0 && data.fcUserId.size() <= 128 && data.fcUserId != data.instructorId
-          && salesMonthString(data.month)
-          && data.lessonDate is string && data.lessonDate.matches("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") && data.lessonDate[0:7] == data.month
-          && data.outcome in ["done", "cancel"]
-          && salesShortText(data.note, 100)
-          && data.updatedBy == request.auth.uid
-          && data.updatedAt == request.time;
-      }
-      match /fcLessons/{lessonId} {
-        allow get, list: if isCentreStaff(organizationId);
-        allow create: if isCentreStaff(organizationId)
-          && fcLessonWellFormed(organizationId)
-          && fcDesignated(organizationId, request.resource.data.month, request.resource.data.fcUserId)
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.createdAt == request.time
-          && fcMonthOpen(organizationId, request.auth.uid, request.resource.data.month);
-        allow update: if resource.data.instructorId == request.auth.uid
-          && fcLessonWellFormed(organizationId)
-          && immutable(["organizationId", "instructorId", "createdBy", "createdAt"])
-          && fcDesignated(organizationId, request.resource.data.month, request.resource.data.fcUserId)
-          && fcMonthOpen(organizationId, request.auth.uid, resource.data.month)
-          && fcMonthOpen(organizationId, request.auth.uid, request.resource.data.month);
-        allow delete: if resource.data.instructorId == request.auth.uid
-          && fcMonthOpen(organizationId, request.auth.uid, resource.data.month);
+      function fcCount(value) {
+        return value is int && value >= 0 && value <= 8;
       }
       match /fcLessonDesignations/{month} {
         allow get, list: if isCentreStaff(organizationId);
         allow create, update: if hasRole(organizationId, ownerLevel())
-          && request.resource.data.keys().hasOnly(["organizationId", "month", "instructorIds", "fcUserIds", "fcNames", "updatedBy", "updatedAt"])
-          && request.resource.data.keys().hasAll(["organizationId", "month", "instructorIds", "fcUserIds", "fcNames", "updatedBy", "updatedAt"])
-          && request.resource.data.fcUserIds is list && request.resource.data.fcUserIds.size() <= 100
-          && request.resource.data.fcNames is map
+          && request.resource.data.keys().hasOnly(["organizationId", "month", "branches", "instructorIds", "updatedBy", "updatedAt"])
+          && request.resource.data.keys().hasAll(["organizationId", "month", "branches", "instructorIds", "updatedBy", "updatedAt"])
           && request.resource.data.organizationId == organizationId
           && request.resource.data.month == month && salesMonthString(month)
-          && request.resource.data.instructorIds is list && request.resource.data.instructorIds.size() <= 200
+          && request.resource.data.branches is map && request.resource.data.branches.size() <= 50
+          && request.resource.data.instructorIds is list && request.resource.data.instructorIds.size() <= 50
           && request.resource.data.updatedBy == request.auth.uid
           && request.resource.data.updatedAt == request.time;
         allow delete: if false;
@@ -2042,26 +2008,31 @@ service cloud.firestore {
         allow get, list: if salesOffice(organizationId, resource.data.instructorId)
           || hasRole(organizationId, ownerLevel())
           || salesOwnBook(organizationId, resource.data.instructorId);
-        /* 앱이 쓰는 것: 강사 제출, 확정한 쪽의 되돌림. 확정(confirmed)은 서버 함수만. */
         allow create, update: if request.resource.data.keys().hasOnly([
-              "organizationId", "instructorId", "month", "status", "updatedBy", "updatedAt",
+              "organizationId", "instructorId", "month", "status", "done", "cancel", "updatedBy", "updatedAt",
               "submittedAt", "confirmedBy", "confirmedAt", "snapshot", "reopenReason", "lastCheck"
             ])
           && request.resource.data.organizationId == organizationId
           && request.resource.data.instructorId is string
           && salesMonthString(request.resource.data.month)
           && monthId == request.resource.data.instructorId + "_" + request.resource.data.month
+          && fcCount(request.resource.data.done) && fcCount(request.resource.data.cancel)
+          && request.resource.data.done + request.resource.data.cancel <= 8
           && request.resource.data.updatedBy == request.auth.uid
           && request.resource.data.updatedAt == request.time
           && (resource == null || (resource.data.instructorId == request.resource.data.instructorId && resource.data.month == request.resource.data.month))
           && (
+            /* 강사: 그 달 지정된 사람만, 확정 전까지 횟수를 넣고 고친다. */
             (request.resource.data.status == "submitted"
               && salesOwnBook(organizationId, request.resource.data.instructorId)
+              && fcDesignated(organizationId, request.resource.data.month)
               && (resource == null || resource.data.status != "confirmed")
               && request.resource.data.submittedAt == request.time)
+            /* 되돌림: FC(맡은 지점) · 대표 · 총괄, 사유 필수, 횟수는 그대로. */
             || (request.resource.data.status == "reopened"
               && salesOffice(organizationId, request.resource.data.instructorId)
               && resource != null && resource.data.status == "confirmed"
+              && request.resource.data.done == resource.data.done && request.resource.data.cancel == resource.data.cancel
               && request.resource.data.reopenReason is string
               && request.resource.data.reopenReason.size() > 0 && request.resource.data.reopenReason.size() <= 200)
           );

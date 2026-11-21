@@ -433,10 +433,10 @@ import {
   CONFIRM_NOTICE_HINT, SALES_KIND_CHOICES, blankEntry, confirmFailureText, entryErrors, entryFromSuggestion, entryLine, kstDate, monthStatusView, mySalesView, salesBoardRows,
 } from "./features/sales/sales-board.js";
 import { MATCH_VIEW, PAIR, PAIR_VIEW, SALES_KIND_LABELS, isGroup, matchEntry, salesRecordsOf, suggestionsFor } from "../functions/shared/sales-incentive.mjs";
-import { FC_LESSON_MONTHLY_CAP, FC_LESSON_OUTCOME_LABELS, FC_LESSON_PROBLEM_TEXT, FC_LESSON_RATE } from "../functions/shared/fc-lessons.mjs";
-import { blankFcLesson, fcConfirmFailureText, fcLessonErrors, myFcLessonView } from "./features/sales/fc-lesson-view.js";
+import { FC_LESSON_MONTHLY_CAP, FC_LESSON_RATE, fcLessonTotals } from "../functions/shared/fc-lessons.mjs";
+import { fcConfirmFailureText, fcCountErrors, myFcLessonView } from "./features/sales/fc-lesson-view.js";
 import {
-  addFcLesson, deleteFcLesson, listFcLessonsOfMonth, readFcDesignation, readFcLessonMonth, reopenFcLessonMonth, saveFcDesignation, submitFcLessonMonth, updateFcLesson,
+  listFcLessonMonths, readFcDesignation, readFcLessonMonth, reopenFcLessonMonth, saveFcCounts, saveFcDesignation,
 } from "./data/repositories/fc-lesson-repository.js";
 import {
   addSalesEntry, deleteSalesEntry, listSalesEntries, listSalesEntriesOfMonth, listSalesLedger, listSalesMonths, readSalesMonth, reopenSalesMonth, submitSalesMonth, updateSalesEntry,
@@ -27797,7 +27797,7 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
         toleratingReadFailure(listSalesLedger(organizationId, month)),
         toleratingReadFailure(listPasses(organizationId, { store: passStore })),
         toleratingReadFailure(listClients(organizationId, { store: clientStore })),
-        toleratingReadFailure(listFcLessonsOfMonth(organizationId, month)),
+        ownerView ? toleratingReadFailure(listFcLessonMonths(organizationId, month)) : Promise.resolve({ items: [] }),
       ]);
       /* FC 는 맡은 지점 강사만 (규칙 · 서버와 같은 판단: 내 지점이 비었으면 전부, 강사 지점이 비었으면 보임). */
       const mine = scopedLocationIds(organization);
@@ -27825,7 +27825,7 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
         teachers, locations: locations.items, entriesByInstructor,
         monthsByInstructor: new Map(months.map((item) => [String(item.instructorId), item])),
         records: salesRecordsOf({ passes: passes.items, ledger: ledger.items, month }), clients: clients.items,
-        fcInstructorIds: new Set((fcLessons.items || []).map((item) => String(item.instructorId))),
+        fcInstructorIds: new Set((fcLessons.items || []).filter((item) => (Number(item.done) || 0) + (Number(item.cancel) || 0) > 0).map((item) => String(item.instructorId))),
         warning: ledger.errorCode || passes.errorCode ? `앱 기록을 읽지 못해 대조 근거 · 후보가 비어 있어요 (코드 ${ledger.errorCode || passes.errorCode})` : "",
       });
     } catch (thrown) {
@@ -27979,7 +27979,7 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
       {!data && !error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
       {data?.warning ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{data.warning}</p> : null}
       {notice ? <p className="mt-2 font-bold" style={{ fontSize: TYPE.caption, color: notice.tone === "good" ? GOOD : notice.tone === "bad" ? BAD : WARN }} data-sales-notice>{notice.text}</p> : null}
-      {data && ownerView ? <FcDesignationEditor key={month} organization={organization} month={month} teachers={data.teachers} currentUserId={currentUserId} initialState={initialState?.designation || null} /> : null}
+      {data && ownerView ? <FcDesignationEditor key={month} organization={organization} month={month} teachers={data.teachers} locations={data.locations} currentUserId={currentUserId} initialState={initialState?.designation || null} /> : null}
       {data ? (
         <>
           <SummaryTiles items={[
@@ -28026,26 +28026,36 @@ function SalesBoardScreen({ organization, currentUserId, instructorStore, passSt
   );
 }
 
-/* ── 강사 FC 복지 수업료 화면 (2026-11-21 대표 결정) ───────────────────────────────────
-   진행 25,000 · 캔슬 15,000, FC 한 명당 한 달 진행 + 캔슬 8회, 그 달 대표 · 총괄이 지정한 강사만.
-   강사가 넣고(이번 달 매출 인센 화면 아래), FC · 대표 · 총괄이 확정한다(매출 인센 화면의 강사 상세). 확정은 서버만. */
+/* ── 강사 FC 복지 수업료 화면 (2026-11-21 대표 결정 · 횟수만 · 지점마다 한 명) ─────────────
+   진행 25,000 · 캔슬 15,000, 한 달 진행 + 캔슬 8회. FC 가 모두 앱에 있지 않아 누구에게 했는지는 받지 않는다.
+   대표 · 총괄이 그 달 지점마다 강사 한 명을 정하면, 그 강사가 횟수만 넣고(이번 달 매출 인센 화면 아래)
+   FC · 대표 · 총괄이 확정한다(매출 인센 화면의 강사 상세). 확정은 서버만. */
+function FcCountStepper({ label, rate, value, onChange, disabled, max }) {
+  const button = { width: 40, height: 40, borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.body, fontWeight: 700 };
+  return (
+    <div className="flex items-center gap-2" data-fc-stepper={label}>
+      <span className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, color: INK }}><b>{label}</b> <span style={{ color: SUB }}>{salesWon(rate)}</span></span>
+      <button type="button" aria-label={`${label} 하나 빼기`} disabled={disabled || value <= 0} onClick={() => onChange(value - 1)} className="disabled:opacity-40" style={button}>−</button>
+      <span className="w-8 text-center font-extrabold tabular-nums" style={{ fontSize: TYPE.body, color: INK }}>{value}</span>
+      <button type="button" aria-label={`${label} 하나 더하기`} disabled={disabled || value >= max} onClick={() => onChange(value + 1)} className="disabled:opacity-40" style={button}>+</button>
+    </div>
+  );
+}
+
 function FcLessonSection({ organization, currentUserId, month, initialState = null }) {
   const organizationId = organization?.organizationId || "";
   const [state, setState] = useState(() => initialState || null);
   const [error, setError] = useState("");
-  const [draft, setDraft] = useState(null);
+  const [draft, setDraft] = useState(() => (initialState?.monthDoc ? { done: Number(initialState.monthDoc.done) || 0, cancel: Number(initialState.monthDoc.cancel) || 0 } : null));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
-  const [askDelete, setAskDelete] = useState("");
-  const [tried, setTried] = useState(false);
   const load = useCallback(async () => {
     if (!organizationId || !currentUserId) return;
     setState(null); setError("");
     try {
-      const [all, designation, monthDoc] = await Promise.all([
-        listFcLessonsOfMonth(organizationId, month), readFcDesignation(organizationId, month), readFcLessonMonth(organizationId, currentUserId, month),
-      ]);
-      setState({ all, designation, monthDoc });
+      const [designation, monthDoc] = await Promise.all([readFcDesignation(organizationId, month), readFcLessonMonth(organizationId, currentUserId, month)]);
+      setState({ designation, monthDoc });
+      setDraft({ done: Number(monthDoc?.done) || 0, cancel: Number(monthDoc?.cancel) || 0 });
     } catch (thrown) {
       const code = String(thrown?.code || "unknown");
       setError(`FC 복지 수업을 읽지 못했어요 (코드 ${code})`);
@@ -28053,99 +28063,49 @@ function FcLessonSection({ organization, currentUserId, month, initialState = nu
     }
   }, [organizationId, currentUserId, month]);
   useEffect(() => { if (!initialState) load(); }, [load, initialState]);
-  const view = state ? myFcLessonView({ instructorId: currentUserId, monthEntries: state.all, designation: state.designation, monthDoc: state.monthDoc }) : null;
-  const names = state?.designation?.fcNames || {};
-  const fcName = (uid) => names[uid] || "FC";
-  const save = async (entry) => {
-    setTried(true);
-    if (fcLessonErrors(entry, { designation: state.designation, monthEntries: state.all }).length) return;
+  const view = state ? myFcLessonView({ instructorId: currentUserId, designation: state.designation, monthDoc: state.monthDoc }) : null;
+  const counts = draft || view?.counts || { done: 0, cancel: 0 };
+  const totals = view?.locked ? view.totals : fcLessonTotals(counts);
+  const errors = state ? fcCountErrors(counts, { designation: state.designation, instructorId: currentUserId }) : [];
+  const changed = Boolean(view) && (counts.done !== view.counts.done || counts.cancel !== view.counts.cancel);
+  const save = async () => {
+    if (errors.length) return;
     setBusy(true); setMessage("");
     try {
-      if (entry.id) await updateFcLesson(organizationId, entry.id, entry, { uid: currentUserId });
-      else await addFcLesson(organizationId, entry, { uid: currentUserId });
-      setDraft(null); setTried(false); await load();
+      await saveFcCounts(organizationId, currentUserId, month, counts, { uid: currentUserId });
+      setMessage("제출했어요. FC · 대표 · 총괄이 확인 뒤 확정해요.");
+      await load();
     } catch (thrown) {
-      setMessage(`저장하지 못했어요 -- 입력은 그대로 있어요 (코드 ${String(thrown?.code || "unknown")})`);
+      const code = String(thrown?.code || "unknown");
+      setMessage(`저장하지 못했어요 -- 넣은 횟수는 그대로 있어요 (코드 ${code})`);
+      deviceLog("fc_lessons_save_failed", { feature: "fc_lessons", stage: "save_counts", errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200), appBuild: APP_BUILD_LABEL });
     } finally { setBusy(false); }
   };
-  const remove = async (entry) => {
-    try { await deleteFcLesson(organizationId, entry.id); await load(); }
-    catch (thrown) { setMessage(`지우지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
-  };
-  const submit = async () => {
-    setBusy(true);
-    try { await submitFcLessonMonth(organizationId, currentUserId, month, { uid: currentUserId }); setMessage("제출했어요. FC · 대표 · 총괄이 확인 뒤 확정해요."); await load(); }
-    catch (thrown) { setMessage(`제출하지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
-    finally { setBusy(false); }
-  };
-  const input = { height: 40, borderRadius: 8, border: `1px solid ${LINE}`, padding: "0 10px", fontSize: TYPE.caption, color: INK, backgroundColor: CARD, width: "100%" };
-  const errors = draft && state ? fcLessonErrors(draft, { designation: state.designation, monthEntries: state.all }) : [];
+  /* 지정되지 않았고 넣은 것도 없으면 칸을 아예 보이지 않는다 -- 강사 대부분에게 이 칸은 없다. */
+  if (view && !view.designated && !view.hasCounts) return null;
+  const left = Math.max(0, FC_LESSON_MONTHLY_CAP - counts.done - counts.cancel);
   return (
     <div className="mt-4 pt-3" style={{ borderTop: `1px solid ${LINE}` }} data-fc-lessons>
       <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>FC 복지 수업</p>
-      <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>진행 {salesWon(FC_LESSON_RATE.done)} · 캔슬 {salesWon(FC_LESSON_RATE.cancel)} · FC 한 명당 한 달 {FC_LESSON_MONTHLY_CAP}회(진행 + 캔슬) · 매출 인센과 따로 정산</p>
+      <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>이번 달 FC 수업 담당이에요 · 한 달 진행 + 캔슬 {FC_LESSON_MONTHLY_CAP}회까지 · 매출 인센과 따로 정산</p>
       {error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{error}</p> : null}
       {!state && !error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : null}
-      {view && !view.designated && !view.rows.length ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }} data-fc-not-designated>{FC_LESSON_PROBLEM_TEXT.not_designated} (코드 not_designated)</p> : null}
-      {view && (view.designated || view.rows.length) ? (
+      {view ? (
         <>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <span className="font-bold tabular-nums" style={{ fontSize: TYPE.caption, color: INK }} data-fc-total={view.totals.amount}>진행 {view.totals.done}회 · 캔슬 {view.totals.cancel}회 · {salesWon(view.totals.amount)}</span>
-            {salesPill(monthStatusView(state.monthDoc).tone, monthStatusView(state.monthDoc).label)}
-          </div>
-          {message ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: message.startsWith("제출했어요") ? GOOD : WARN }}>{message}</p> : null}
           <div className="mt-2 space-y-1.5">
-            {view.rows.map((entry) => (
-              <div key={entry.id} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: entry.overCap ? WARN_S : CANVAS }} data-fc-lesson={entry.id}>
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <span className="min-w-0 flex-1 font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{fcName(entry.fcUserId)} <span className="font-normal tabular-nums" style={{ color: SUB }}>{entry.lessonDate}</span></span>
-                  {entry.overCap ? salesPill("warn", `${FC_LESSON_MONTHLY_CAP}회 넘음`) : null}
-                  <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{FC_LESSON_OUTCOME_LABELS[entry.outcome]} · {salesWon(FC_LESSON_RATE[entry.outcome])}</span>
-                </div>
-                {view.locked ? null : (
-                  <div className="mt-1 flex gap-3">
-                    <button type="button" onClick={() => { setDraft({ ...entry }); setTried(false); }} className="font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>고치기</button>
-                    {askDelete === entry.id
-                      ? <><button type="button" onClick={() => { setAskDelete(""); remove(entry); }} className="font-bold" style={{ fontSize: TYPE.caption, color: BAD }}>정말 지우기</button><button type="button" onClick={() => setAskDelete("")} style={{ fontSize: TYPE.caption, color: SUB }}>그만두기</button></>
-                      : <button type="button" onClick={() => setAskDelete(entry.id)} style={{ fontSize: TYPE.caption, color: SUB }}>지우기</button>}
-                  </div>
-                )}
-              </div>
-            ))}
+            <FcCountStepper label="진행" rate={FC_LESSON_RATE.done} value={counts.done} max={counts.done + left} disabled={busy || view.locked || !view.designated} onChange={(done) => setDraft({ ...counts, done })} />
+            <FcCountStepper label="캔슬" rate={FC_LESSON_RATE.cancel} value={counts.cancel} max={counts.cancel + left} disabled={busy || view.locked || !view.designated} onChange={(cancel) => setDraft({ ...counts, cancel })} />
           </div>
-          {draft ? (
-            <div className="mt-2 space-y-2 p-3" style={{ borderRadius: 10, border: `1px solid ${LINE}` }} data-fc-editor>
-              <label className="block" style={{ fontSize: TYPE.caption, color: SUB }}>수업을 받은 FC
-                <select style={input} value={draft.fcUserId} onChange={(event) => setDraft({ ...draft, fcUserId: event.target.value })}>
-                  <option value="">고르기</option>
-                  {(state.designation?.fcUserIds || []).filter((uid) => uid !== currentUserId).map((uid) => <option key={uid} value={uid}>{fcName(uid)} · 이번 달 남은 {view.remainingOf(uid)}회</option>)}
-                </select>
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                <label style={{ fontSize: TYPE.caption, color: SUB }}>수업일
-                  <input type="date" style={input} value={draft.lessonDate} min={`${month}-01`} max={`${month}-31`} onChange={(event) => setDraft({ ...draft, lessonDate: event.target.value })} />
-                </label>
-                <div style={{ fontSize: TYPE.caption, color: SUB }}>결과
-                  <div className="mt-0.5 flex gap-1.5">
-                    {["done", "cancel"].map((outcome) => (
-                      <button key={outcome} type="button" aria-pressed={draft.outcome === outcome} onClick={() => setDraft({ ...draft, outcome })} className="h-10 flex-1 font-bold"
-                        style={{ borderRadius: 8, backgroundColor: draft.outcome === outcome ? INK : CANVAS, color: draft.outcome === outcome ? CARD : INK2, fontSize: TYPE.caption }}>{FC_LESSON_OUTCOME_LABELS[outcome]} {salesWon(FC_LESSON_RATE[outcome])}</button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-              {tried && errors.length ? <p style={{ fontSize: TYPE.caption, color: WARN }}>{errors.map((item) => `${item.text} (${item.code})`).join(" · ")}</p> : null}
-              <div className="flex gap-2">
-                <button type="button" onClick={() => { setDraft(null); setTried(false); }} disabled={busy} className="h-10 flex-1 font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
-                <button type="button" onClick={() => save(draft)} disabled={busy} className="h-10 flex-1 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>{busy ? "저장 중…" : "저장"}</button>
-              </div>
-            </div>
-          ) : null}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="font-bold tabular-nums" style={{ fontSize: TYPE.caption, color: INK }} data-fc-total={totals.amount}>진행 {totals.done}회 · 캔슬 {totals.cancel}회 · {salesWon(totals.amount)}</span>
+            {salesPill(monthStatusView(state.monthDoc).tone, monthStatusView(state.monthDoc).label)}
+            {view.locked ? null : <span style={{ fontSize: TYPE.caption, color: SUB }}>남은 {left}회</span>}
+          </div>
+          {errors.length ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{errors.map((item) => `${item.text} (코드 ${item.code})`).join(" · ")}</p> : null}
+          {message ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: message.startsWith("제출했어요") ? GOOD : WARN }}>{message}</p> : null}
           {view.locked ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>확정된 달이라 고칠 수 없어요.</p> : (
-            <div className="mt-2 flex flex-wrap gap-2">
-              <button type="button" disabled={Boolean(draft) || !view.designated} onClick={() => { setDraft(blankFcLesson({ instructorId: currentUserId, month })); setTried(false); }} className="h-10 px-3 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>+ FC 수업 추가</button>
-              <button type="button" disabled={busy || Boolean(draft) || !view.rows.length} onClick={submit} className="ml-auto h-10 px-4 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>FC 수업 제출</button>
-            </div>
+            <button type="button" disabled={busy || Boolean(errors.length) || !(changed || (view.hasCounts && state.monthDoc?.status !== "submitted")) || !(counts.done + counts.cancel)} onClick={save}
+              className="mt-2 h-10 w-full font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>{busy ? "저장 중…" : "횟수 저장 · 제출"}</button>
           )}
         </>
       ) : null}
@@ -28153,7 +28113,7 @@ function FcLessonSection({ organization, currentUserId, month, initialState = nu
   );
 }
 
-/** FC · 대표 · 총괄: 강사 상세 안의 FC 복지 수업 -- 보기 · 확정 · 되돌림. 강사 줄은 고치지 않는다. */
+/** FC · 대표 · 총괄: 강사 상세 안의 FC 복지 수업 -- 횟수 보기 · 확정 · 되돌림. 강사 횟수는 고치지 않는다. */
 function FcLessonBoardSection({ organization, instructorId, month, currentUserId, onConfirm = fbConfirmFcLessonMonth, initialState = null }) {
   const organizationId = organization?.organizationId || "";
   const ownerView = isOwnerLevelRole(organization?.role);
@@ -28166,16 +28126,12 @@ function FcLessonBoardSection({ organization, instructorId, month, currentUserId
     if (!organizationId || !instructorId) return;
     setState(null); setError("");
     try {
-      const [all, designation, monthDoc] = await Promise.all([
-        listFcLessonsOfMonth(organizationId, month), readFcDesignation(organizationId, month), readFcLessonMonth(organizationId, instructorId, month),
-      ]);
-      setState({ all, designation, monthDoc });
+      const [designation, monthDoc] = await Promise.all([readFcDesignation(organizationId, month), readFcLessonMonth(organizationId, instructorId, month)]);
+      setState({ designation, monthDoc });
     } catch (thrown) { setError(`FC 복지 수업을 읽지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
   }, [organizationId, instructorId, month]);
   useEffect(() => { if (!initialState) load(); }, [load, initialState]);
-  const view = state ? myFcLessonView({ instructorId, monthEntries: state.all, designation: state.designation, monthDoc: state.monthDoc }) : null;
-  const fcName = (uid) => state?.designation?.fcNames?.[uid] || "FC";
-  const received = Boolean(view?.rows.some((entry) => entry.fcUserId === currentUserId));
+  const view = state ? myFcLessonView({ instructorId, designation: state.designation, monthDoc: state.monthDoc }) : null;
   const confirm = async () => {
     setBusy(true); setNotice(null);
     try {
@@ -28192,24 +28148,22 @@ function FcLessonBoardSection({ organization, instructorId, month, currentUserId
   const reopen = async () => {
     if (!reason.trim()) { setNotice({ tone: "warn", text: "되돌리는 사유를 적어 주세요 (코드 reopen_reason_required)" }); return; }
     setBusy(true);
-    try { await reopenFcLessonMonth(organizationId, instructorId, month, reason, { uid: currentUserId }); setReason(""); await load(); }
+    try { await reopenFcLessonMonth(organizationId, instructorId, month, view.counts, reason, { uid: currentUserId }); setReason(""); await load(); }
     catch (thrown) { setNotice({ tone: "warn", text: `되돌리지 못했어요 (코드 ${String(thrown?.code || "unknown")})` }); }
     finally { setBusy(false); }
   };
   if (error) return <p className="mt-3" style={{ fontSize: TYPE.caption, color: WARN }}>{error}</p>;
   if (!view) return <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>FC 복지 수업 불러오는 중…</p>;
-  if (!view.rows.length) return <p className="mt-3" style={{ fontSize: TYPE.caption, color: FAINT }} data-fc-board-empty>FC 복지 수업 없음{view.designated ? "" : " · 이번 달 지정 강사 아님"}</p>;
+  if (!view.hasCounts) return view.designated ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: FAINT }} data-fc-board-empty>FC 복지 수업 담당 · 아직 횟수 안 넣음</p> : null;
+  const over = view.counts.done + view.counts.cancel > FC_LESSON_MONTHLY_CAP;
   return (
     <div className="mt-3 space-y-1.5 pt-3" style={{ borderTop: `1px solid ${LINE}` }} data-fc-board={instructorId}>
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>FC 복지 수업 · 진행 {view.totals.done} · 캔슬 {view.totals.cancel} · {salesWon(view.totals.amount)}</span>
+        <span className="font-bold tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>FC 복지 수업 · 진행 {view.totals.done}회 · 캔슬 {view.totals.cancel}회 · {salesWon(view.totals.amount)}</span>
         {salesPill(monthStatusView(state.monthDoc).tone, monthStatusView(state.monthDoc).label)}
+        {over ? salesPill("warn", `${FC_LESSON_MONTHLY_CAP}회 넘음`) : null}
+        {view.designated ? null : salesPill("warn", "이번 달 지정 강사 아님")}
       </div>
-      {view.rows.map((entry) => (
-        <p key={entry.id} className="px-3 py-1.5 tabular-nums" style={{ borderRadius: 8, fontSize: TYPE.caption, color: INK2, backgroundColor: entry.overCap ? WARN_S : CANVAS }}>
-          {entry.lessonDate} · {fcName(entry.fcUserId)} · {FC_LESSON_OUTCOME_LABELS[entry.outcome]} {salesWon(FC_LESSON_RATE[entry.outcome])}{entry.overCap ? ` · ${FC_LESSON_MONTHLY_CAP}회 넘음` : ""}
-        </p>
-      ))}
       {notice ? <p className="font-bold" style={{ fontSize: TYPE.caption, color: notice.tone === "good" ? GOOD : notice.tone === "bad" ? BAD : WARN }}>{notice.text}</p> : null}
       {view.locked ? (
         <div className="space-y-1.5">
@@ -28218,9 +28172,9 @@ function FcLessonBoardSection({ organization, instructorId, month, currentUserId
         </div>
       ) : (
         <div className="space-y-1">
-          <button type="button" disabled={busy || received || instructorId === currentUserId} onClick={confirm} className="h-10 w-full font-extrabold disabled:opacity-40"
+          <button type="button" disabled={busy || instructorId === currentUserId} onClick={confirm} className="h-10 w-full font-extrabold disabled:opacity-40"
             style={{ borderRadius: 10, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }} data-fc-confirm={instructorId}>{busy ? "확인 중…" : `FC 수업료 확정 · ${salesWon(view.totals.amount)}`}</button>
-          {received ? <p style={{ fontSize: TYPE.caption, color: SUB }}>자기가 받은 수업은 다른 사람이 확정해요 (코드 received_by_confirmer)</p>
+          {instructorId === currentUserId ? <p style={{ fontSize: TYPE.caption, color: SUB }}>자기 수업료는 다른 사람이 확정해요 (코드 own_lessons)</p>
             : !ownerView ? <p style={{ fontSize: TYPE.caption, color: SUB }}>{CONFIRM_NOTICE_HINT}</p> : null}
         </div>
       )}
@@ -28228,10 +28182,10 @@ function FcLessonBoardSection({ organization, instructorId, month, currentUserId
   );
 }
 
-/** 대표 · 총괄: 그 달 FC 수업 지정 강사 + 그 달 FC 명단 (강사는 소속 명단을 못 읽어 여기서 고른다). */
-function FcDesignationEditor({ organization, month, teachers, currentUserId, initialState = null }) {
+/** 대표 · 총괄: 그 달 지점마다 FC 수업 담당 강사 한 명. 그 지점에 소속된 강사 중에서 고른다 (소속이 비었으면 누구나). */
+function FcDesignationEditor({ organization, month, teachers, locations, currentUserId, initialState = null }) {
   const organizationId = organization?.organizationId || "";
-  const [selected, setSelected] = useState(() => new Set(initialState?.instructorIds || []));
+  const [branches, setBranches] = useState(() => ({ ...(initialState?.branches || {}) }));
   const [loaded, setLoaded] = useState(Boolean(initialState));
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -28240,29 +28194,40 @@ function FcDesignationEditor({ organization, month, teachers, currentUserId, ini
     let alive = true;
     setLoaded(false);
     readFcDesignation(organizationId, month)
-      .then((found) => { if (alive) { setSelected(new Set(found?.instructorIds || [])); setLoaded(true); } })
+      .then((found) => { if (alive) { setBranches({ ...(found?.branches || {}) }); setLoaded(true); } })
       .catch((thrown) => { if (alive) { setMessage(`지정 강사를 읽지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); setLoaded(true); } });
     return () => { alive = false; };
   }, [organizationId, month, initialState]);
   const instructors = (teachers || []).filter((member) => String(member.role || "") === "instructor");
-  const fcs = (teachers || []).filter((member) => String(member.role || "") === "manager").map((member) => ({ userId: String(member.userId), name: String(member.displayName || "FC") }));
+  const places = (locations || []).length ? locations : [{ id: "all", name: "센터" }];
+  const optionsFor = (branchId) => {
+    const inBranch = instructors.filter((member) => !scopedLocationIds(member).length || scopedLocationIds(member).includes(branchId));
+    return inBranch.length ? inBranch : instructors;
+  };
   const save = async () => {
     setBusy(true); setMessage("");
-    try { await saveFcDesignation(organizationId, month, { instructorIds: [...selected], fcs }, { uid: currentUserId }); setMessage(`저장했어요 · 지정 강사 ${selected.size}명 · FC ${fcs.length}명`); }
-    catch (thrown) { setMessage(`저장하지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
+    try {
+      await saveFcDesignation(organizationId, month, branches, { uid: currentUserId });
+      setMessage(`저장했어요 · ${Object.values(branches).filter(Boolean).length}개 지점`);
+    } catch (thrown) { setMessage(`저장하지 못했어요 (코드 ${String(thrown?.code || "unknown")})`); }
     finally { setBusy(false); }
   };
+  const select = { height: 36, borderRadius: 8, border: `1px solid ${LINE}`, padding: "0 8px", fontSize: TYPE.caption, color: INK, backgroundColor: CARD, minWidth: 0, flex: 1 };
   return (
     <div className="mt-3 p-3" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-fc-designation>
-      <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{ratingMonthLabel(month)} FC 복지 수업 지정 강사</p>
-      <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>지정한 강사만 그 달 FC 수업료를 넣을 수 있어요. 저장하면 지금 FC 명단({fcs.length}명)도 함께 저장돼요.</p>
+      <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{ratingMonthLabel(month)} FC 복지 수업 담당 (지점마다 한 명)</p>
+      <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>정한 강사만 그 달 FC 수업 진행 · 캔슬 횟수를 넣을 수 있어요.</p>
       {!loaded ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>불러오는 중…</p> : (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {instructors.map((member) => {
-            const on = selected.has(String(member.userId));
-            return <button key={member.userId} type="button" aria-pressed={on} onClick={() => setSelected((current) => { const next = new Set(current); if (next.has(String(member.userId))) next.delete(String(member.userId)); else next.add(String(member.userId)); return next; })}
-              className="min-h-9 px-3 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 999, backgroundColor: on ? INK : CARD, color: on ? CARD : INK2, border: `1px solid ${LINE}` }} data-fc-designate={member.userId}>{member.displayName || member.userId}</button>;
-          })}
+        <div className="mt-2 space-y-1.5">
+          {places.map((place) => (
+            <label key={place.id} className="flex items-center gap-2" style={{ fontSize: TYPE.caption, color: INK2 }} data-fc-designate-branch={place.id}>
+              <span className="w-16 shrink-0 font-bold">{place.name || place.id}</span>
+              <select style={select} value={branches[place.id] || ""} onChange={(event) => setBranches((current) => ({ ...current, [place.id]: event.target.value }))}>
+                <option value="">지정 안 함</option>
+                {optionsFor(place.id).map((member) => <option key={member.userId} value={member.userId}>{member.displayName || member.userId}</option>)}
+              </select>
+            </label>
+          ))}
         </div>
       )}
       <div className="mt-2 flex items-center gap-2">
@@ -32810,14 +32775,9 @@ export function createAppScreenSmokeCases() {
         line("o2", "office", { kind: "group", amount: 800000, clientId: "", memberLabel: "박그룹", recordId: "", passId: "" }),
       ];
       const monthDoc = { status: "submitted", lastCheck: { differs: 1, instructorOnly: 0, officeOnly: 0, instructorEntryIds: ["e2"], officeEntryIds: ["o2"] } };
-      /* FC 복지 수업: 박에프씨는 다른 강사에게 7회 받았고 u1 에게 2회 -- 두 번째가 8회를 넘는다. */
-      const designation = { instructorIds: ["u1"], fcUserIds: ["smoke-fc"], fcNames: { "smoke-fc": "박에프씨" } };
-      const fcAll = [
-        ...Array.from({ length: 7 }, (_, index) => ({ id: `fo${index}`, instructorId: "u2", fcUserId: "smoke-fc", month, lessonDate: `2026-11-0${index + 1}`, outcome: "done" })),
-        { id: "f1", instructorId: "u1", fcUserId: "smoke-fc", month, lessonDate: "2026-11-12", outcome: "done" },
-        { id: "f2", instructorId: "u1", fcUserId: "smoke-fc", month, lessonDate: "2026-11-19", outcome: "cancel" },
-      ];
-      const fc = { all: fcAll, designation, monthDoc: { status: "submitted" } };
+      /* FC 복지 수업: 반송 담당 u1 이 진행 3회 · 캔슬 1회를 제출했다. */
+      const designation = { branches: { bansong: "u1" }, instructorIds: ["u1"] };
+      const fc = { designation, monthDoc: { status: "submitted", done: 3, cancel: 1 } };
       return [
         { name: "매출 인센 · 강사", element: providerWith(smokeInstructorOrg, (
           <MySalesScreen organization={readyOrganizationContext(smokeInstructorOrg)} currentUserId="u1"

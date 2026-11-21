@@ -3370,11 +3370,14 @@ test("매출 인센: 강사는 응원 · 후보 · 어긋난 줄, FC 는 두 장
   assert.match(mine, /data-sales-section="group"/);
   assert.match(mine, /data-summary-tile="sales_group"/);
   assert.match(mine, /data-fc-lessons/);
-  assert.match(mine, /진행 1회 · 캔슬 1회 · 40,000원/);
-  assert.match(mine, /8회 넘음/, "다른 강사 7회 + 두 번째 줄 = 9회째");
+  /* 2026-11-21 대표: FC 는 모두 앱에 있지 않다 -- 지점마다 강사 한 명, 횟수만 */
+  assert.match(mine, /진행 3회 · 캔슬 1회 · 90,000원/);
+  assert.match(mine, /남은 4회/);
+  assert.match(mine, /data-fc-stepper="진행"/);
+  assert.doesNotMatch(mine, /수업을 받은 FC/, "누구에게 했는지는 받지 않는다");
   assert.match(board, /data-sales-section="group"/);
   assert.match(board, /data-fc-board="u1"/);
-  assert.match(board, /FC 수업료 확정 · 40,000원/);
+  assert.match(board, /FC 수업료 확정 · 90,000원/);
   assert.doesNotMatch(board, /data-fc-designation/, "지정 강사 편집은 대표 · 총괄만 -- 이 견본은 FC");
 });
 

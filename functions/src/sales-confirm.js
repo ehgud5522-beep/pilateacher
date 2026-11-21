@@ -88,11 +88,6 @@ function createSalesConfirmService({ firestore, membershipId, isOwnerLevel, now 
     return membership;
   }
 
-  async function readEntries(organizationId, instructorId, month) {
-    const snapshot = await firestore.collection(`organizations/${organizationId}/salesEntries`)
-      .where("instructorId", "==", instructorId).where("month", "==", month).get();
-    return snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
-  }
 
   /**
    * @returns {Promise<{ status: "confirmed", snapshot: any, counts: any } >}
@@ -106,14 +101,41 @@ function createSalesConfirmService({ firestore, membershipId, isOwnerLevel, now 
     const caller = await authorize(org, callerUid, instructor);
 
     const monthRef = firestore.doc(`organizations/${org}/salesMonths/${instructor}_${key}`);
-    const monthSnapshot = await monthRef.get();
-    const current = monthSnapshot.exists ? monthSnapshot.data() : null;
-    if (current?.status === "confirmed") throw new SalesConfirmError("failed-precondition", "already_confirmed");
-
-    const entries = await readEntries(org, instructor, key);
-    const { pairs, counts, canConfirm } = shared.pairSalesEntries(entries);
+    const entriesQuery = (month) => firestore.collection(`organizations/${org}/salesEntries`).where("instructorId", "==", instructor).where("month", "==", month);
+    const rowsOf = (snapshot) => snapshot.docs.map((document) => ({ id: document.id, ...document.data() }));
     const at = now();
-    if (!canConfirm) {
+    /* 읽기 · 대조 · 확정을 한 트랜잭션으로 (2026-11-22 검토 지적: 읽은 뒤 저장 사이에 강사 장부가 바뀌어도 이전 금액으로 확정됐다).
+       트랜잭션 안에서 읽은 줄이 바뀌면 Firestore 가 처음부터 다시 돌리거나 실패시킨다. */
+    const outcome = await firestore.runTransaction(async (tx) => {
+      const monthSnapshot = await tx.get(monthRef);
+      const current = monthSnapshot.exists ? monthSnapshot.data() : null;
+      if (current?.status === "confirmed") return { kind: "already_confirmed" };
+      const entries = rowsOf(await tx.get(entriesQuery(key)));
+      const { pairs, counts, canConfirm } = shared.pairSalesEntries(entries);
+      if (!canConfirm) return { kind: "sides_differ", current, pairs, counts };
+      /* 그룹은 FC 반반 매출이 없다 -- 화면 · 규칙이 막지만 예전에 넣은 줄 · 옛 앱이 남았을 수 있다. */
+      const halfGroups = entries.filter((entry) => shared.entryProblems(entry).includes("share_not_for_group"));
+      if (halfGroups.length) return { kind: "group_half_share", count: halfGroups.length };
+      /* 환수 계산: 환불이 가리키는 달부터 지난달까지 (그 사이 달의 환불까지 -- shared.refundRangeMonths). 강사 쪽만 -- 확정된 달은 두 쪽이 같다. */
+      const mine = entries.filter((entry) => entry.side === shared.SALES_SIDE.INSTRUCTOR);
+      const prior = [];
+      for (const month of shared.refundRangeMonths(mine, key)) {
+        prior.push(...rowsOf(await tx.get(entriesQuery(month))).filter((entry) => entry.side === shared.SALES_SIDE.INSTRUCTOR));
+      }
+      const statement = shared.monthStatement({ entries: [...mine, ...prior], month: key });
+      const snapshot = shared.confirmSnapshot(statement, mine.length);
+      tx.set(monthRef, {
+        organizationId: org, instructorId: instructor, month: key, status: "confirmed",
+        confirmedBy: text(callerUid), confirmedAt: at, snapshot,
+        lastCheck: { checkedAt: at, checkedBy: text(callerUid), agreed: counts[shared.PAIR.AGREED] || 0, differs: 0, instructorOnly: 0, officeOnly: 0, instructorEntryIds: [], officeEntryIds: [] },
+        updatedBy: text(callerUid), updatedAt: at,
+      }, { merge: true });
+      return { kind: "confirmed", snapshot, counts };
+    });
+    if (outcome.kind === "already_confirmed") throw new SalesConfirmError("failed-precondition", "already_confirmed");
+    if (outcome.kind === "group_half_share") throw new SalesConfirmError("failed-precondition", "group_half_share", { count: outcome.count });
+    if (outcome.kind === "sides_differ") {
+      const { pairs, counts, current } = outcome;
       /* 무엇이 어긋났는지 남긴다. 줄 id 만 -- 금액 · 회원은 이미 각 줄에 있고, 강사는 자기 줄 id 로 어느 것이 걸렸는지 안다. */
       const mismatched = pairs.filter((pair) => pair.code !== shared.PAIR.AGREED);
       await monthRef.set({
@@ -129,20 +151,7 @@ function createSalesConfirmService({ firestore, membershipId, isOwnerLevel, now 
       }, { merge: true });
       throw new SalesConfirmError("failed-precondition", "sides_differ", counts);
     }
-
-    /* 환수 계산에 필요한 지난 달 줄 (강사 쪽만 -- 확정된 달은 두 쪽이 같다). */
-    const mine = entries.filter((entry) => entry.side === shared.SALES_SIDE.INSTRUCTOR);
-    const priorMonths = [...new Set(mine.filter((entry) => shared.isRefund(entry) && text(entry.refundOfMonth) && text(entry.refundOfMonth) < key).map((entry) => text(entry.refundOfMonth)))];
-    const prior = (await Promise.all(priorMonths.map((original) => readEntries(org, instructor, original))))
-      .flat().filter((entry) => entry.side === shared.SALES_SIDE.INSTRUCTOR);
-    const statement = shared.monthStatement({ entries: [...mine, ...prior], month: key });
-    const snapshot = shared.confirmSnapshot(statement, mine.length);
-    await monthRef.set({
-      organizationId: org, instructorId: instructor, month: key, status: "confirmed",
-      confirmedBy: text(callerUid), confirmedAt: at, snapshot,
-      lastCheck: { checkedAt: at, checkedBy: text(callerUid), agreed: counts[shared.PAIR.AGREED] || 0, differs: 0, instructorOnly: 0, officeOnly: 0, instructorEntryIds: [], officeEntryIds: [] },
-      updatedBy: text(callerUid), updatedAt: at,
-    }, { merge: true });
+    const { snapshot, counts } = outcome;
     const notified = await notifyOwners({ org, instructor, key, callerUid, caller, snapshot, at, shared });
     return { status: "confirmed", snapshot, counts, notified };
   }

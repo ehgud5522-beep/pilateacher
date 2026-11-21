@@ -6,7 +6,7 @@
  *   FC · 대표 화면 (매출 인센) : 강사별로 두 장부를 맞춰 보고, 같으면 확정 (서버). FC 가 확정하면 대표님에게 알림이 간다.
  */
 import {
-  CONFIRM_NOTICE_HINT, OT_BONUS_RATE, PAIR, SALES_KIND, SALES_SIDE, cheerLine, creditOf, entryProblems, isGroup, isRefund, monthStatement, pairSalesEntries, suggestionsFor,
+  CONFIRM_NOTICE_HINT, GROUP_BONUS_RATE, OT_BONUS_RATE, PAIR, SALES_KIND, SALES_SIDE, cheerLine, creditOf, entryProblems, isGroup, isRefund, monthStatement, nextBracketOf, pairSalesEntries, suggestionsFor,
 } from "../../../functions/shared/sales-incentive.mjs";
 
 const text = (value) => String(value ?? "").trim();
@@ -137,6 +137,28 @@ export const blankEntry = ({ side, instructorId, month, kind = "" }) => ({
   clientId: "", memberLabel: "", productLabel: "", recordId: "", passId: "", refundOfMonth: "", note: "",
 });
 
+/**
+ * 입력 중인 한 줄로 예상 받는 금액 (2026-11-22 대표: "예상 받는 금액을 크게 포인트로"). 그 줄을 넣기 전 · 후 지급 예정의 차이.
+ * 개인 매출은 구간이 정액이라 한 줄만으로는 0 일 수 있다 -- 그때는 다음 구간까지 남은 금액을 함께 준다.
+ * @param {{ entries: any[], priorEntries?: any[], month: string, draft: any }} input  entries = 같은 장부의 이 달 줄들
+ */
+export function entryPreview({ entries, priorEntries = [], month, draft }) {
+  const side = text(draft?.side);
+  const others = (entries || []).filter((entry) => text(entry.side) === side && (!text(draft?.id) || text(entry.id) !== text(draft.id)));
+  const candidate = { ...draft, amount: Math.max(0, Math.round(Number(draft?.amount) || 0)), ot: draft?.ot === true, month: text(month) };
+  const before = monthStatement({ entries: [...others, ...(priorEntries || [])], month });
+  const after = monthStatement({ entries: [...others, candidate, ...(priorEntries || [])], month });
+  const group = isGroup(candidate);
+  return {
+    group,
+    delta: after.payout - before.payout,
+    before, after,
+    groupBonus: group ? Math.round(creditOf(candidate) * GROUP_BONUS_RATE) : 0,
+    otBonus: otBonusOf(candidate),
+    nextBracket: group ? null : nextBracketOf(after.total),
+  };
+}
+
 /** 저장 전 막을 것 → 사용자 문구 (코드 함께). */
 const PROBLEM_TEXT = Object.freeze({
   month_invalid: "달이 맞지 않아요",
@@ -149,6 +171,7 @@ const PROBLEM_TEXT = Object.freeze({
   refund_month_future: "환불한 결제의 달은 이번 달보다 뒤일 수 없어요",
   ot_not_for_group: "그룹 수강권에는 OT 인센이 없어요",
   ot_choice_required: "OT 10% 를 받는지 안 받는지 골라 주세요",
+  share_not_for_group: "그룹 수강권에는 FC 반반 매출이 없어요",
   paid_on_month: "결제일이 이 달이 아니에요",
 });
 export function entryErrors(entry) {
@@ -233,9 +256,10 @@ export function confirmFailureText(error) {
     not_confirmer: "확정은 FC · 대표 · 총괄만 할 수 있어요",
     already_confirmed: "이미 확정된 달이에요",
     target_required: "강사 · 달을 다시 골라 주세요",
+    group_half_share: "그룹 수강권 줄에 FC 반반이 남아 있어요 -- 두 장부에서 반반을 풀고 다시 확정해 주세요",
   };
-  if (known[reason]) return { kind: reason === "already_confirmed" ? "data_conflict" : "permission", code: reason, text: `${known[reason]} (코드 ${reason})` };
-  if (/unavailable|deadline|network/.test(reason)) return { kind: "network", code: reason, text: `연결이 불안정해 확정하지 못했어요. 다시 눌러 주세요 (코드 ${reason})` };
+  if (known[reason]) return { kind: reason === "already_confirmed" ? "data_conflict" : reason === "group_half_share" ? "invalid_request" : "permission", code: reason, text: `${known[reason]} (코드 ${reason})` };
+  if (/unavailable|deadline|network|aborted/.test(reason)) return { kind: "network", code: reason, text: `연결이 불안정해 확정하지 못했어요. 다시 눌러 주세요 (코드 ${reason})` };
   return { kind: "unknown", code: reason, text: `확정하지 못했어요 (코드 ${reason})` };
 }
 

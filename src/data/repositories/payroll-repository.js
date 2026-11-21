@@ -605,8 +605,11 @@ export function previousMonth(today = new Date()) {
   return `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`;
 }
 
+/* 이름 · 회원권처럼 사람이 적은 글이 = + - @ 로 시작하면 엑셀이 수식으로 읽는다 (2026-11-22 검토 지적).
+   글자(string)만 앞에 ' 를 붙여 글로 두고, 금액 · 횟수 같은 숫자는 그대로 둔다 -- −30,000 정정이 글자가 되면 합계가 안 맞는다. */
 const csvCell = (value) => {
-  const text = String(value ?? "");
+  const raw = String(value ?? "");
+  const text = typeof value === "string" && /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
   return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 };
 

@@ -52,10 +52,12 @@ export async function addPayAdjustment(organizationId, { instructorId, month, am
   return reference.id;
 }
 
-/** 지우기 -- 대표가 [정말 지우기] 를 눌렀을 때만. */
-export async function deletePayAdjustment(organizationId, adjustmentId) {
-  const { deleteDoc, doc, getFirestore } = await load();
-  await deleteDoc(doc(getFirestore(), "organizations", org(organizationId), "payAdjustments", String(adjustmentId)));
+/** 취소 기록 -- 지우지 않는다 (2026-11-22 외부 검토 2차). 금액 · 사유 · 넣은 사람은 남고 계산에서만 빠진다. */
+export async function cancelPayAdjustment(organizationId, adjustmentId, reason, { uid }) {
+  const { doc, getFirestore, serverTimestamp, updateDoc } = await load();
+  await updateDoc(doc(getFirestore(), "organizations", org(organizationId), "payAdjustments", String(adjustmentId)), {
+    canceledBy: String(uid), canceledAt: serverTimestamp(), cancelReason: text(reason).slice(0, 100),
+  });
 }
 
 export async function readPayMonth(organizationId, month) {
@@ -70,35 +72,34 @@ export async function readPayStatement(organizationId, instructorId, month) {
   return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
 }
 
-/**
- * 대표 · 총괄: 급여 확정. 달 문서와 강사별 명세를 한 번에 쓴다 (규칙은 달이 아직 닫히지 않았을 때만 명세를 받는다).
- * @param {string} organizationId
- * @param {string} month
- * @param {{ instructorId: string, snapshot: any }[]} statements  statementSnapshot(payStatementOf(...))
- * @param {{ uid: string }} actor
- */
-export async function closePayMonth(organizationId, month, statements, { uid }) {
-  const { doc, getFirestore, serverTimestamp, writeBatch } = await load();
-  const db = getFirestore();
-  const batch = writeBatch(db);
-  batch.set(doc(db, "organizations", org(organizationId), "payMonths", String(month)), {
-    organizationId: org(organizationId), month: String(month), status: "closed",
-    closedBy: String(uid), closedAt: serverTimestamp(), updatedBy: String(uid), updatedAt: serverTimestamp(),
+/* 급여 확정은 서버 함수 closePayMonth 만 한다 (lib/firebase.js 의 fbClosePayMonth) -- 서버가 원자료로 다시 계산하고 회차 이력을 남긴다. */
+
+/** 대표 · 총괄: 확정 되돌림 (사유). 회차 · 합계는 그대로 둔다 -- 규칙이 그 칸을 못 건드리게 막는다. */
+export async function reopenPayMonth(organizationId, month, reason, { uid }) {
+  const { doc, getFirestore, serverTimestamp, updateDoc } = await load();
+  await updateDoc(doc(getFirestore(), "organizations", org(organizationId), "payMonths", String(month)), {
+    status: "reopened", reopenReason: text(reason).slice(0, 200), updatedBy: String(uid), updatedAt: serverTimestamp(),
   });
-  for (const item of statements || []) {
-    batch.set(doc(db, "organizations", org(organizationId), "payStatements", payStatementId(item.instructorId, month)), {
-      organizationId: org(organizationId), instructorId: text(item.instructorId), month: String(month), ...item.snapshot,
-      closedBy: String(uid), closedAt: serverTimestamp(),
-    });
-  }
-  await batch.commit();
 }
 
-export async function reopenPayMonth(organizationId, month, reason, { uid }) {
-  const { doc, getFirestore, serverTimestamp, setDoc } = await load();
-  await setDoc(doc(getFirestore(), "organizations", org(organizationId), "payMonths", String(month)), {
-    organizationId: org(organizationId), month: String(month), status: "reopened", reopenReason: text(reason).slice(0, 200),
-    updatedBy: String(uid), updatedAt: serverTimestamp(),
+/** 대표 · 총괄: 지급 완료 표시 (확정된 달에서만). */
+export async function markPayMonthPaid(organizationId, month, { uid }) {
+  const { doc, getFirestore, serverTimestamp, updateDoc } = await load();
+  await updateDoc(doc(getFirestore(), "organizations", org(organizationId), "payMonths", String(month)), {
+    status: "paid", paidBy: String(uid), paidAt: serverTimestamp(), updatedBy: String(uid), updatedAt: serverTimestamp(),
+  });
+}
+
+/** 대표 · 총괄: 그 달 확정 회차 이력 (되돌려도 남는다). */
+export function listPayCloseRuns(organizationId, month) {
+  return readCollection({
+    feature: "pay_close_runs",
+    path: `organizations/${organizationId}/payCloseRuns?month=${month}`,
+    read: async () => {
+      const { collection, getDocs, getFirestore, query, where } = await load();
+      const snapshot = await getDocs(query(collection(getFirestore(), "organizations", org(organizationId), "payCloseRuns"), where("month", "==", String(month))));
+      return snapshot.docs.map((item) => /** @type {any} */ ({ id: item.id, ...item.data() })).sort((left, right) => Number(right.revision || 0) - Number(left.revision || 0));
+    },
   });
 }
 
@@ -127,4 +128,39 @@ export function listPayStatements(organizationId, month) {
       return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
     },
   });
+}
+
+/* ── 정산 점검 (2026-11-22) ── 결과는 서버가 쓴다(payCheckNightly · runPayCheck · closePayMonth). 앱은 읽고, 확인함만 남긴다. */
+export async function readPayCheck(organizationId, month) {
+  const { doc, getDoc, getFirestore } = await load();
+  const snapshot = await getDoc(doc(getFirestore(), "organizations", org(organizationId), "payChecks", String(month)));
+  return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
+}
+
+export function listPayCheckAcks(organizationId, month) {
+  return readCollection({
+    feature: "pay_check_acks",
+    path: `organizations/${organizationId}/payCheckAcks?month=${month}`,
+    read: async () => {
+      const { collection, getDocs, getFirestore, query, where } = await load();
+      const snapshot = await getDocs(query(collection(getFirestore(), "organizations", org(organizationId), "payCheckAcks"), where("month", "==", String(month))));
+      return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+    },
+  });
+}
+
+/** 대표 · 총괄: 점검 항목 확인함 (사유). 그때의 내용(signature)을 함께 남겨, 내용이 바뀌면 다시 뜬다. */
+export async function savePayCheckAck(organizationId, month, item, reason, { uid }) {
+  const { collection, doc, getFirestore, serverTimestamp, writeBatch } = await load();
+  const db = getFirestore();
+  const key = text(item?.key);
+  const data = {
+    organizationId: org(organizationId), month: text(month), key, kind: text(item?.kind), signature: text(item?.signature),
+    reason: text(reason).slice(0, 200), ackedBy: String(uid), ackedAt: serverTimestamp(),
+  };
+  /* 지금 상태(덮어씀) + 이력(덧붙이기만) 을 한 번에. 이력이 없으면 다시 확인할 때 이전 확인자 · 사유가 사라진다. */
+  const batch = writeBatch(db);
+  batch.set(doc(db, "organizations", org(organizationId), "payCheckAcks", `${text(month)}__${key.replaceAll("/", "_")}`), data);
+  batch.set(doc(collection(db, "organizations", org(organizationId), "payCheckAckLog")), data);
+  await batch.commit();
 }

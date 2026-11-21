@@ -359,6 +359,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "이달 예상 급여 · 빈 달",
     "이달 예상 급여 · 조회 실패",
     "예상 급여 카드",
+    "예상 급여 카드 · 공제 없음",
+    "예상 급여 카드 · 자료 누락",
     "예상 급여 카드 · 인센",
     "이달 예상 급여 · 수업료 외",
     "이달 예상 급여 · 명세",
@@ -472,6 +474,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "재등록 레이더",
     "재등록 레이더 · PC",
     "매출 인센 · 강사",
+    "매출 인센 · 강사 · 그룹 입력",
+    "매출 인센 · 강사 · 예전 메모 고치기",
     "매출 인센 · FC · PC",
     "담당 강사",
     "담당 강사 · 빠진 회원",
@@ -503,6 +507,10 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "급여 집계 · 수업료 외",
     "급여 집계 · 명세 · PC",
     "급여 집계 · 확정됨",
+    "급여 집계 · 정산 점검",
+    "급여 집계 · 정산 점검 미완료",
+    "급여 집계 · 지급 완료 · 이력",
+    "급여 집계 · 자료 누락",
     "급여 집계 · 이관 전",
     "급여 집계 · 빈 달",
     "급여 집계 · 조회 실패",
@@ -3880,4 +3888,94 @@ test("급여 명세: 조정 · 세전 → 세금 → 실수령 · 다음 달 15�
   assert.match(closed, /확정 되돌리기/);
   assert.match(closed, /₩999,999/, "확정 때 남긴 숫자 그대로");
   assert.doesNotMatch(closed, /data-pay-adjust-editor/, "확정된 달은 조정 칸이 없다");
+});
+
+/* 2026-11-22 대표: "그룹 인센은 FC 반반 매출이 없음, 수강권을 횟수로, 금액에 따옴표(쉼표) 표시, 예상 받는 금액을 크게" */
+test("매출 인센 입력: 그룹은 반반 없음 · 수강권 횟수 · 금액 쉼표 · 예상 받는 금액 크게", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const html = renderToStaticMarkup(byName.get("매출 인센 · 강사 · 그룹 입력"));
+  assert.match(html, /data-sales-editor/);
+  assert.match(html, /value="140,000"/, "금액은 쉼표로 끊어 보인다");
+  assert.match(html, /수강권 횟수/);
+  assert.match(html, /aria-label="수강권 횟수"[^>]*value="10"|value="10"[^>]*aria-label="수강권 횟수"/);
+  assert.doesNotMatch(html, /반반 매출/, "그룹에는 FC 반반 매출이 없다");
+  assert.match(html, /data-sales-preview-amount="true"[^>]*>\+₩7,000/);
+  assert.match(html, /그룹 매출 ₩140,000 × 5%/);
+  assert.match(html, /data-sales-section-amount="group"[^>]*>₩45,000/, "그룹 칸 머리에 예상 그룹 인센이 크게 (90만 × 5%)");
+  assert.match(html, /data-sales-section-amount="personal"/);
+});
+
+/* 2026-11-22 외부 검토 1차: 자료를 못 읽으면 확정 · 실수령을 막는다, 확정된 달은 확정 명세만, 예전 메모 횟수 */
+test("급여 무결성: 자료 누락이면 확정 잠금 · 강사 실수령 대신 안내 · 확정된 달은 명세 없는 강사를 지금 숫자로 채우지 않는다", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+  const blocked = markupOf("급여 집계 · 자료 누락");
+  assert.match(blocked, /data-pay-close-blocked/);
+  assert.match(blocked, /매출 인센 · FC 수업료를 읽지 못했어요 \(코드 permission-denied\)/);
+  assert.match(blocked, /<button[^>]*disabled=""[^>]*data-pay-close/, "확정 버튼이 잠긴다");
+  assert.doesNotMatch(blocked, /data-pay-adjust-editor/, "자료가 빠진 채로 조정도 넣지 않는다");
+  const card = markupOf("예상 급여 카드 · 자료 누락");
+  assert.match(card, /data-pay-net-missing/);
+  assert.doesNotMatch(card, /실수령 ₩/);
+  const closed = markupOf("급여 집계 · 확정됨");
+  assert.match(closed, /명세 없음/, "u2 는 확정 명세가 없다 -- 지금 원장으로 채우지 않는다");
+  assert.match(closed, /확정 명세가 없는 강사 1명은 합계에 넣지 않았어요/);
+  const legacy = markupOf("매출 인센 · 강사 · 예전 메모 고치기");
+  assert.match(legacy, /aria-label="수강권 횟수"[^>]*value="20"|value="20"[^>]*aria-label="수강권 횟수"/);
+  assert.match(legacy, /기존 메모: 1:1 20회/);
+  assert.doesNotMatch(legacy, /value="1120"/);
+});
+
+/* 2026-11-22 외부 검토 2차: 서버 확정 · 회차 이력 · 지급 완료 · 조정 취소 기록 · 명세 CSV · 공제 없음 표시 */
+test("급여 2차: 지급 완료 · 확정 이력 · 앞 회차 명세는 쓰지 않음 · 조정 취소 기록 · 공제 없음은 지급액", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+  const paid = markupOf("급여 집계 · 지급 완료 · 이력");
+  assert.match(paid, /data-pay-close-bar="paid"/);
+  assert.match(paid, /지급 완료/);
+  assert.match(paid, /data-pay-close-runs/);
+  assert.match(paid, /확정 이력 2회/);
+  assert.match(paid, /앞 회차 되돌린 사유: 조정 추가/);
+  assert.match(paid, /₩449,660/);
+  assert.match(paid, /명세 없음/, "u2 명세는 1회차 것 -- 2회차 숫자로 쓰지 않는다");
+  assert.match(paid, /data-pay-statement-csv/);
+  assert.doesNotMatch(paid, /data-pay-mark-paid/, "이미 지급 완료");
+  assert.match(markupOf("급여 집계 · 확정됨"), /data-pay-mark-paid/, "확정된 달에는 지급 완료 버튼");
+  const owner = markupOf("급여 집계 · 명세 · PC");
+  assert.match(owner, /data-pay-line="adjust-canceled"/);
+  assert.match(owner, /취소됨 · 중복 입력/);
+  assert.match(owner, /₩807,450/, "취소한 조정 −99,999 는 더하지 않는다");
+  assert.doesNotMatch(owner, /정말 지우기/, "지우기는 없다 -- 취소 기록만");
+  const none = markupOf("예상 급여 카드 · 공제 없음");
+  assert.match(none, /11월분 · 12월 15일 지급 · 지급액 ₩500,000 \(공제는 따로\)/);
+  assert.doesNotMatch(none, /실수령/);
+});
+
+/* 2026-11-22 정산 점검: 점검 시각 · 범위 · 완료 여부, 차단/확인 구분, 확인함 유지, 못 읽으면 점검 미완료, 지점 → 강사 상세 */
+test("정산 점검함: 시각 · 범위 먼저, 차단 · 확인 나눔, 확인함은 따로, 동기화 꺼진 강사는 범위에, 미완료는 0건이 아니다", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+  const card = markupOf("급여 집계 · 정산 점검");
+  assert.match(card, /data-pay-check="blocked"/);
+  assert.match(card, /10월 정산 점검/);
+  assert.match(card, /10월 3일 03:00 밤 점검 · 전 지점 · 수업 120개 · 회원권 40개/);
+  assert.match(card, /차단 · 완료했는데 차감 없음 1건/);
+  assert.match(card, /차단 · 남은 횟수 불일치 0건 \(확인함 1\)/);
+  assert.match(card, /확인 · 지난 수업 미처리 1건/);
+  assert.match(card, /이 달 서버 일정이 하나도 없는 강사 1명\(박서연\)/);
+  assert.match(card, /data-pay-check-detail/);
+  assert.match(card, /반송/, "지점부터");
+  assert.match(card, /확인함 · 이관 때 1회 더 넣음/);
+  assert.match(card, /남은 횟수 9회 · 원장 계산 8회 \(차이 \+1\)/);
+  assert.match(card, /data-pay-check-ack/);
+  assert.ok(card.indexOf("data-pay-check=") < card.indexOf("data-pay-close-bar"), "점검함이 급여 확정 줄보다 먼저");
+  const broken = markupOf("급여 집계 · 정산 점검 미완료");
+  assert.match(broken, /data-pay-check="incomplete"/);
+  assert.match(broken, /점검을 다 하지 못했어요/);
+  assert.match(broken, /회원권 원장 \(코드 unavailable\)/);
+  assert.doesNotMatch(broken, /걸린 것이 없어요/, "못 읽었으면 이상 없음이라고 말하지 않는다");
 });

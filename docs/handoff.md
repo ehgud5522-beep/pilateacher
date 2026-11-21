@@ -1,3 +1,15 @@
+## 2026-11-21 — #261 매출 인센 2단계 화면 + FC 회원권 발급 알림 (PR 만 · 병합 · 배포 전)
+
+- 대표: "2단계 시작하고 FC 가 수강권 발급 때도 알림이 가게"
+- **FC 발급 알림**: 트리거 `notifyOwnerOnFcIssue`(functions/src/issue-notice.js, 문구 shared/issue-notice.mjs) -- passes 생성 · 만든 사람 role manager 만 ·
+  이관 제외 · 대표 · 총괄 inbox `issue_{회원권}`. 서비스 회차 · 단가 직접 입력 · 잔금이면 제목에 "확인". 실패해도 발급 그대로(issue_notice_failed)
+- **화면**: 강사 `MySalesScreen`(업무 → 이번 달 매출 인센) · FC/대표 `SalesBoardScreen`(돈 → 매출 인센). 판정 src/features/sales/sales-board.js,
+  저장소 listSalesLedger(이 달 issue · sessionup · handover). 지우기 두 번, 확정 버튼은 두 장부가 같을 때만, FC 에게 "확정하면 대표님에게 알림이 갑니다"
+- **알림함 변경**: 대표 · 총괄도 inbox 를 듣는다(전에는 회원 앱 취소 켠 강사만) -- 띠는 일정 탭 위. 수업 없는 알림은 읽음만(NOT_SYNCED 안 띄움)
+- 테스트: test:rules 465 · functions 436 · build 3964 · typecheck. 견본 폰 · PC 로 확인. **실계정 · 알림 도착 · 확정 미확인**
+- **배포 순서: 규칙 → 함수(confirmSalesMonth · notifyOwnerOnFcIssue) → 웹 → 앱**. 대표 지시 대기
+- 남은 것: 확정된 인센을 급여 집계에 별도 칸으로(3단계) · 대표 폰 푸시(teacherPush) · 지난달 엑셀과 한 달 나란히 시범
+
 ## 2026-11-21 — #261 갱신: FC 단독 확정 + 대표 알림 · 그룹 인센 개별 확정 (PR 만)
 
 - 대표 결정: "FC 단독 확정 + 대표에게 알림, 대표님에게 알림 간다고 하면 될 듯" · "그룹 인센은 개별, 개인 매출에 포함 안 됨"

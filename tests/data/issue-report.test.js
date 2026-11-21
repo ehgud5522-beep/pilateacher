@@ -398,3 +398,21 @@ test("without the exclusion set the report is unchanged", async () => {
   });
   assert.equal(summary.totals.count, 1);
 });
+
+test("화면은 최신이 맨 위: 발급자 안의 줄은 새것부터, 발급자는 최근에 판 사람부터 (CSV 순서는 그대로)", () => {
+  /* 2026-11-21 대표: "발급 내역 이름별로 누가 어떻게, 최신이 맨 위로". */
+  const summary = run({
+    entries: [
+      issue({ id: "a-old", passId: "p-a1", createdBy: "fc-a", occurredAt: at(3) }),
+      issue({ id: "b-mid", passId: "p-b1", createdBy: "fc-b", occurredAt: at(12) }),
+      issue({ id: "a-new", passId: "p-a2", createdBy: "fc-a", occurredAt: at(20) }),
+      issue({ id: "b-old", passId: "p-b2", createdBy: "fc-b", occurredAt: at(5) }),
+    ],
+    passes: [pass({ id: "p-a1" }), pass({ id: "p-a2" }), pass({ id: "p-b1" }), pass({ id: "p-b2" })],
+  });
+  const issuers = summary.byLocation[0].byIssuer;
+  assert.deepEqual(issuers.map((item) => item.issuedBy), ["fc-a", "fc-b"], "가장 최근(20일)에 판 사람이 위");
+  assert.deepEqual(issuers[0].rows.map((row) => row.entryId), ["a-new", "a-old"]);
+  assert.deepEqual(issuers[1].rows.map((row) => row.entryId), ["b-mid", "b-old"]);
+  assert.deepEqual(summary.rows.map((row) => row.entryId), ["a-old", "b-old", "b-mid", "a-new"], "전체 줄(CSV)은 오래된 것부터");
+});

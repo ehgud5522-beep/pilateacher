@@ -1800,6 +1800,21 @@ exports.markRenewalOnPassCreated = onDocumentCreated({
   }
 });
 
+/* FC 회원권 발급 → 대표 · 총괄 알림함 (2026-11-21 대표: "FC 가 수강권 발급 때도 알림이 가게"). 스위치 없음 -- 대표가 켜 달라고 했다.
+   FC(role manager)가 만든 회원권만, 이관 제외, 같은 회원권은 한 번. 실패해도 발급은 그대로 (functions/src/issue-notice.js). */
+const { createIssueNoticeService } = require("./issue-notice");
+const issueNoticeService = createIssueNoticeService({ firestore, isOwnerLevel, log: (level, event, fields) => logger[level]?.(event, fields) });
+exports.notifyOwnerOnFcIssue = onDocumentCreated({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  document: "organizations/{organizationId}/passes/{passId}",
+  memory: "256MiB",
+  timeoutSeconds: 60,
+  retry: false,
+}, async (event) => {
+  const result = await issueNoticeService.onPassCreated(event.params.organizationId, event.params.passId, event.data?.data() || null, new Date(event.time));
+  if (result.sent) logger.info("issue_notice_sent", { feature: "issue_notice", stage: "notify_owner", organizationId: event.params.organizationId, correlationId: String(event.params.passId).slice(-8), sent: result.sent });
+});
+
 /* 다시 채우기 (대표 · 총괄). 지난 6달 동안 끝난 회원권을 한 번 채워 넣는다. 이미 있는 줄은 두지 않는다. */
 exports.backfillRenewalCandidates = onCall({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",

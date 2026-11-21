@@ -57,9 +57,19 @@ test("남은 횟수: 불일치 · 검산 불가(원장 없음 · 숫자 못 읽�
     ["used", CHECK_KIND.BALANCE_MISMATCH, "block"],
     ["broken", CHECK_KIND.BALANCE_UNKNOWN, "block"],
     ["old", CHECK_KIND.BALANCE_MISMATCH, "warn"],
-    ["no-ledger", CHECK_KIND.BALANCE_UNKNOWN, "warn"],
   ]);
-  assert.equal(check.items.find((item) => item.passId === "no-ledger").detail.reason, "no_ledger");
+  /* 원장이 하나도 없는 옛 회원권은 한 줄씩 보이지 않고 개수만 (이 달에 쓴 적이 없어 급여와 상관없다). */
+  assert.equal(check.scope.noLedgerPasses, 1);
+});
+
+/* 2026-11-22 실제 점검: 원장 읽기가 색인 없음(코드 9)으로 실패해 회원권 1,340개가 전부 "검산 불가" 1,853건으로 쏟아졌다. */
+test("회원권 원장을 못 읽으면 남은 횟수 검산을 건너뛴다 -- 못 읽은 원장을 원장 없음으로 치지 않는다", () => {
+  const check = run({ failures: [{ source: "ledger_all", code: "9" }],
+    passes: [{ id: "a", clientId: "c1", remainingCount: 10 }, { id: "b", clientId: "c2", remainingCount: 3 }], passLedger: [] });
+  assert.equal(check.complete, false);
+  assert.equal(check.items.length, 0, "검산 불가가 쏟아지지 않는다");
+  assert.equal(check.scope.balanceSkipped, true);
+  assert.equal(check.scope.noLedgerPasses, 0);
 });
 
 test("차단은 자르기 전 전체로 센다 -- 차단 301건 중 앞 300건만 확인해도 1건이 남아 막는다, 문서엔 차단을 전부 담는다", () => {

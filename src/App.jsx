@@ -17789,6 +17789,8 @@ function PayCheckCard({ month, check, errorCode = "", busy = false, nameOfInstru
         {kindsOf(CHECK_SEVERITY.WARN).map((row) => <p key={`w-${row.kind}`} style={{ fontSize: TYPE.caption, color: row.open ? WARN : SUB }}>● 확인 · {CHECK_KIND_LABELS[row.kind]} {row.open}건{row.all.length > row.open ? ` (확인함 ${row.all.length - row.open})` : ""}</p>)}
         {!items.length && check.complete ? <p style={{ fontSize: TYPE.caption, color: GOOD }}>점검한 범위에서 걸린 것이 없어요.</p> : null}
         {acked ? <p style={{ fontSize: TYPE.caption, color: SUB }}>확인함 {acked}건 -- 내용이 바뀌면 다시 떠요.</p> : null}
+        {check.scope?.balanceSkipped ? <p style={{ fontSize: TYPE.caption, color: WARN }} data-pay-check-balance-skipped>회원권 원장을 읽지 못해 이번에는 남은 횟수 검산을 하지 않았어요 -- 다시 점검해 주세요.</p> : null}
+        {check.scope?.noLedgerPasses ? <p style={{ fontSize: TYPE.caption, color: SUB }} data-pay-check-no-ledger>원장 기록이 없는 회원권 {check.scope.noLedgerPasses}개(앱 이전에 만든 옛 회원권)는 남은 횟수 검산에서 뺐어요 -- 이 달에 쓴 적이 없어 급여와 상관없어요.</p> : null}
         {noSchedule.length ? <p style={{ fontSize: TYPE.caption, color: SUB }} data-pay-check-no-schedule>이 달 서버 일정이 하나도 없는 강사 {noSchedule.length}명({noSchedule.slice(0, 3).map(nameOfInstructor).join(", ")}{noSchedule.length > 3 ? " …" : ""}) -- 이 강사의 미처리 수업은 이 점검으로 볼 수 없어요.</p> : null}
         {check.hiddenWarns ? <p style={{ fontSize: TYPE.caption, color: SUB }}>확인 항목이 많아 {check.hiddenWarns}건은 목록에 없어요 (전체 {check.total}건). 차단 항목은 모두 보여요 -- 확인 항목은 확정을 막지 않아요.</p> : null}
         <p style={{ fontSize: TYPE.caption, color: FAINT }}>차단은 급여 확정을 막고, 확인은 막지 않아요. 확정할 때 서버가 그 달을 다시 점검해요.</p>

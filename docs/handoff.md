@@ -1,5 +1,6 @@
-## 2026-11-21 — #261 매출 인센 2단계 화면 + FC 회원권 발급 알림 (PR 만 · 병합 · 배포 전)
+## 2026-11-21 — #261 매출 인센 2단계 화면 + FC 회원권 발급 알림 · 병합 · 규칙 · 함수 · 웹 배포
 
+- **대표 "병합하고 배포"** → #261 병합(c20e745) → deploy-main test:rules 465 → **규칙 배포**(firestore:rules, foundation) → functions 436 → **함수 confirmSalesMonth · notifyOwnerOnFcIssue 새로 만듦**(비로그인 401 확인) → **웹 배포**(3962 통과, 운영 번들 index-D3Q5lIWd.js 에 새 문구 확인). **앱 빌드는 지시 대기** -- 강사 폰 · 대표 폰 알림함은 새 빌드부터. 실계정 화면 · 실제 확정 · 알림 도착 미확인
 - 대표: "2단계 시작하고 FC 가 수강권 발급 때도 알림이 가게"
 - **FC 발급 알림**: 트리거 `notifyOwnerOnFcIssue`(functions/src/issue-notice.js, 문구 shared/issue-notice.mjs) -- passes 생성 · 만든 사람 role manager 만 ·
   이관 제외 · 대표 · 총괄 inbox `issue_{회원권}`. 서비스 회차 · 단가 직접 입력 · 잔금이면 제목에 "확인". 실패해도 발급 그대로(issue_notice_failed)

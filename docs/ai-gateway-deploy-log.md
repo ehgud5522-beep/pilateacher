@@ -144,3 +144,13 @@ npx firebase functions:log --only aiGateway --project pilateacher -n 6
 - 결과: `Successful update operation`, 새 인스턴스 기동 · STARTUP 프로브 1회 통과(10:39:48Z), 직후 오류 로그 없음
 - 같이 나간 함수: updateRuntimeConfig(update), refreshMemberSummaryOnRecord · sweepMemberSummaries · rebuildMemberSummary · sweepRenewalCandidatesNightly · markRenewalOnPassCreated · backfillRenewalCandidates · consultTalkingPoints (create)
 - 이름을 빼면 음성 인식이 회원 이름을 말했을 때 철자가 틀릴 수 있다 (설계 결정 6에서 받아들인 대가). 기록에 이름이 남는 일은 오히려 줄어든다
+
+## 2026-11-21 — #261 매출 인센 확정 · FC 발급 알림 (대표 지시 "병합하고 배포")
+
+- 소스: main `c20e745` (#261 병합). deploy-main 에서 functions 테스트 436 통과 뒤
+  `npx firebase deploy --project pilateacher --config firebase.ai-gateway.json --only "functions:confirmSalesMonth,functions:notifyOwnerOnFcIssue"`
+- 결과: 둘 다 `Successful create operation` (asia-northeast3). 비로그인으로 confirmSalesMonth 호출 → HTTP 401 `unauthenticated` 확인
+- confirmSalesMonth (callable): 두 장부(salesEntries side instructor/office)를 다시 짝짓고 같을 때만 salesMonths 확정 + 대표 · 총괄 inbox 알림
+- notifyOwnerOnFcIssue (passes 생성 트리거): FC(role manager)가 만든 회원권만 대표 · 총괄 inbox 알림. 실패해도 발급 그대로
+- 같은 날 규칙(salesEntries · salesMonths)을 먼저 배포했다 (test:rules 465 통과)
+

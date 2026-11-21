@@ -1,3 +1,14 @@
+## 2026-11-21 — #261 강사 개인매출 인센 1단계 (계산 · 대조 · 저장소 · 규칙, PR 만 · 화면 없음)
+
+- 대표 결정 (기획안 https://claude.ai/artifact/A6Y72EhG13oSxANcm4Xsu5 v2 에 반영): 1 구간 **정액**("400인데 490이여도 400인센") · 2 OT 도 합계 + 10% ·
+  3 FC · 대표도 입력 · 4 강사가 낸 매출만, FC 대신 상담은 **반반** · 5 확정 FC · 대표 · 총괄 · 6 **받은 돈만**(잔금은 받은 달에) ·
+  7 환불 줄, 지난달 결제 환불은 다음 달 환수 알림 · 8 다음 구간 응원 문구
+- **#261** (`feat/sales-incentive-core`): `functions/shared/sales-incentive.mjs`(구간 · OT · 반반 · 환불 · 환수 · cheerLine · 받은 현금가 · 대조 matchEntry · suggestionsFor),
+  `src/data/repositories/sales-repository.js`, 규칙 salesEntries · salesMonths(확정 snapshot, 확정 달 잠금, 되돌림 사유). 단위 12 · 규칙 7 · test:rules 464 · build 3949
+- 세션업은 원장 `sessionup`(addedPrice · paymentMethod) -- 발급 내역에 줄로 안 나와 대조에 따로 넣음. 양도 회원권은 회원권에 표시 없음 → 같은 배치 `handover.toPassId`
+- **배포 대기**: 규칙 배포 필요하지만 화면이 없어 지금은 쓸 사람 없음. 2단계와 함께 규칙 → 웹 → 앱 권장
+- **다음(2단계)**: 강사 입력 화면(내 급여 아래, 후보 · 반반 · OT · 환불 줄 · 응원 문구 · 제출) + 대표/FC 확정 화면(현황판 → 돈 → 매출 인센, 대조) · 급여 집계 별도 칸
+
 ## 2026-11-21 — #260 발급 내역 최신순 (PR 만) · 강사 매출 인센 기획안
 
 - 대표: "발급내역 이름별로 누가 어떻게 최신이 맨위로" → **#260** (`feat/issue-latest-first`): 발급자 안의 줄은 새것부터, 발급자는 최근에 판 사람부터.

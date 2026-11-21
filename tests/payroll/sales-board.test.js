@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
-  CONFIRM_NOTICE_HINT, blankEntry, confirmFailureText, entryErrors, entryFromSuggestion, kstDate, lastCheckLine, monthStatusView, mySalesView, salesBoardRows,
+  CONFIRM_NOTICE_HINT, SALES_KIND_CHOICES_BY_SECTION, entryLine, otBonusOf, blankEntry, confirmFailureText, entryErrors, entryFromSuggestion, kstDate, lastCheckLine, monthStatusView, mySalesView, salesBoardRows,
   kstDateTimeLabel, submissionChangeText, submissionView, submittedSummaryOf,
 } from "../../src/features/sales/sales-board.js";
 import { salesRecordsOf } from "../../functions/shared/sales-incentive.mjs";
@@ -132,4 +132,22 @@ test("제출한 내용: 요약을 남기고, 제출 뒤 고친 줄 · 새 줄 ·
   assert.equal(submissionView({ entries, monthDoc: null }).submitted, false);
   assert.equal(kstDateTimeLabel("nope"), "");
   assert.equal(mySalesView({ entries, records: [], instructorId: "t1", month: MONTH, monthDoc: { status: "submitted", submittedAt: sentAt, submittedSummary: summary } }).submission.dirty, true);
+});
+
+/* 2026-11-21 대표: 개인 · 그룹 반반 두 칸, OT 10% 는 받는지 안 받는지 명확하게 */
+test("OT 10%: 새 줄은 비워 두고 꼭 고르게 · 줄마다 받음(+금액) / 안 받음 · 그룹은 OT 없음", () => {
+  const LABELS = { repurchase: "재등록", group: "그룹" };
+  assert.equal(blankEntry({ side: "instructor", instructorId: "t1", month: MONTH }).ot, null);
+  assert.equal(blankEntry({ side: "instructor", instructorId: "t1", month: MONTH, kind: "group" }).ot, false);
+  const unchosen = { ...row("x", "instructor"), ot: null };
+  assert.ok(entryErrors(unchosen).some((item) => item.code === "ot_choice_required"));
+  assert.ok(!entryErrors({ ...unchosen, ot: false }).some((item) => item.code === "ot_choice_required"));
+  assert.ok(!entryErrors({ ...row("g", "instructor"), kind: "group", ot: false, clientId: "", memberLabel: "박그룹", recordId: "" }).some((item) => item.code === "ot_choice_required"));
+  assert.equal(otBonusOf({ ...row("a", "instructor"), ot: true, share: 0.5 }), 60000);
+  assert.equal(otBonusOf({ ...row("a", "instructor"), ot: false }), 0);
+  assert.equal(entryLine({ ...row("a", "instructor"), ot: true }, LABELS), "재등록 · 1,200,000원 · OT 10% 받음 +120,000원");
+  assert.equal(entryLine({ ...row("a", "instructor"), ot: false }, LABELS), "재등록 · 1,200,000원 · OT 10% 안 받음");
+  assert.equal(entryLine({ ...row("g", "instructor"), kind: "group", amount: 900000 }, LABELS), "그룹 · 900,000원");
+  assert.deepEqual([...SALES_KIND_CHOICES_BY_SECTION.group], ["group", "group_refund"]);
+  assert.ok(!SALES_KIND_CHOICES_BY_SECTION.personal.includes("group"));
 });

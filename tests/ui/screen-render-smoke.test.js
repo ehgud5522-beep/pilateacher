@@ -3378,6 +3378,11 @@ test("매출 인센: 강사는 응원 · 후보 · 어긋난 줄, FC 는 두 장
   assert.match(board, /data-sales-section="group"/);
   assert.match(board, /data-fc-board="u1"/);
   /* 2026-11-21 대표: 제출 뒤에도 고치고, 무엇을 제출했는지 보인다 */
+  /* 2026-11-21 대표: 개인 · 그룹 반반 두 칸, OT 10% 받는지 안 받는지 줄마다 글로 */
+  assert.match(mine, /data-sales-columns/);
+  assert.match(mine, /OT 10% 안 받음/);
+  assert.match(mine, /\+ 그룹 회원 매출 추가/);
+  assert.doesNotMatch(mine, /OT 인센 \(\+10%\)/, "체크 하나로는 애매하다 -- 두 버튼으로");
   assert.match(mine, /data-sales-submitted="changed"/);
   assert.match(mine, /제출한 내용 · 11월 10일 09:30/);
   assert.match(mine, /제출 뒤 고침/);

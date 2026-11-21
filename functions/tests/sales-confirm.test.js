@@ -106,11 +106,11 @@ test("지난달 결제 환불은 그 달 줄로 환수를 계산해 숫자에 �
   assert.equal(result.snapshot.payout, -110000);
 });
 
-test("그룹 회원(명부에 없음)도 두 장부 이름이 맞으면 확정, 0.5% 가 숫자에 남는다", async () => {
+test("그룹 회원(명부에 없음)도 두 장부 이름이 맞으면 확정, 5% 가 숫자에 남는다", async () => {
   const group = (id, side, label) => entry(id, side, { kind: "group", amount: 2000000, clientId: "", memberLabel: label, recordId: "" });
   const store = fake(base(Object.fromEntries([group("g1", "instructor", "김민지 회원"), group("g2", "office", "김민지")])));
   const result = await confirm(store, "owner");
-  assert.equal(result.snapshot.groupBonus, 10000);
+  assert.equal(result.snapshot.groupBonus, 100000);
   assert.equal(result.snapshot.total, 0, "그룹은 개인 구간 합계에 안 든다");
 });
 

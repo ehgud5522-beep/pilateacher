@@ -26,7 +26,7 @@ class PayCloseError extends Error {
   }
 }
 
-function createPayCloseService({ firestore, membershipId, isOwnerLevel, now = () => new Date() }) {
+function createPayCloseService({ firestore, membershipId, isOwnerLevel, now = () => new Date(), payCheck = null }) {
   async function close({ callerUid, organizationId, month, expectedNet }) {
     const org = text(organizationId);
     const key = text(month);
@@ -35,7 +35,16 @@ function createPayCloseService({ firestore, membershipId, isOwnerLevel, now = ()
     const caller = await firestore.collection("memberships").doc(membershipId(org, callerUid)).get();
     if (!caller.exists || caller.data()?.status !== "active" || !isOwnerLevel(caller.data())) throw new PayCloseError("permission-denied", "not_closer");
 
-    const [{ kstMonthRange, lessonTotalsByInstructor, buildPayClose, PAYROLL_LEDGER_TYPES }, { canonicalInstructorIdFrom }] = await Promise.all([loadClose(), loadSwap()]);
+    /* 확정 직전에 그 달을 다시 점검한다 -- 밤 결과만으로 확정하지 않는다 (2026-11-22 정산 점검).
+       점검을 다 못 했거나, 확인하지 않은 차단 항목(완료인데 차감 없음 · 이 달 회원권 잔여 불일치)이 있으면 거절. 경고는 막지 않는다. */
+    let checkSummary = null;
+    if (payCheck) {
+      const checked = await payCheck.check(org, key, "close");
+      if (!checked.complete) throw new PayCloseError("failed-precondition", "check_incomplete", { failures: checked.failures });
+      if (checked.openBlocks) throw new PayCloseError("failed-precondition", "check_blocked", { openBlocks: checked.openBlocks });
+      checkSummary = { block: checked.counts.block, warn: checked.counts.warn, openWarns: checked.openWarns, ackedBlocks: checked.counts.block - checked.openBlocks };
+    }
+    const [{ kstMonthRange, lessonTotalsByInstructor, lessonSourceSummary, buildPayClose, PAYROLL_LEDGER_TYPES }, { canonicalInstructorIdFrom }] = await Promise.all([loadClose(), loadSwap()]);
     const centre = firestore.collection("organizations").doc(org);
     const { start, end } = kstMonthRange(key);
     const [ledger, members, demoClients, groups] = await Promise.all([
@@ -46,12 +55,14 @@ function createPayCloseService({ firestore, membershipId, isOwnerLevel, now = ()
       centre.collection("groupPayroll").doc(key).collection("locations").get(),
     ]);
     const canonicalInstructorId = canonicalInstructorIdFrom(members.docs.map((document) => document.data()));
-    const lessons = lessonTotalsByInstructor({
-      organizationId: org, month: key, canonicalInstructorId,
+    const sourceInput = {
+      organizationId: org, month: key,
       entries: ledger.docs.map((document) => document.data()),
       groupRows: groups.docs.flatMap((document) => (document.data()?.rows || []).map((row) => ({ ...row, locationId: document.id }))),
       excludedClientIds: new Set(demoClients.docs.map((document) => document.id)),
-    });
+    };
+    const lessons = lessonTotalsByInstructor({ ...sourceInput, canonicalInstructorId });
+    const sources = lessonSourceSummary(sourceInput);
 
     const monthRef = centre.collection("payMonths").doc(key);
     const at = now();
@@ -77,6 +88,10 @@ function createPayCloseService({ firestore, membershipId, isOwnerLevel, now = ()
         throw new PayCloseError("failed-precondition", "totals_changed", { expectedNet: Math.round(Number(expectedNet)), serverNet: result.totals.net });
       }
       const revision = Number(current?.revision || 0) + 1;
+      /* 급여 대상 원장 합 = 명세 수업료 합 이어야 한다 -- 기간 · 계정 연결 · 거르기에서 빠진 차감이 없는지 남긴다. */
+      const statementLessons = result.statements.reduce((sum, item) => sum + item.snapshot.lessons, 0);
+      const reconciliation = { ...sources, statementLessons, matched: statementLessons === sources.ledgerAmount + sources.groupAmount };
+      if (!reconciliation.matched) throw new PayCloseError("failed-precondition", "reconcile_mismatch", { statementLessons, sourceAmount: sources.ledgerAmount + sources.groupAmount });
       tx.set(monthRef, {
         organizationId: org, month: key, status: "closed", revision, totals: result.totals,
         closedBy: text(callerUid), closedAt: at, updatedBy: text(callerUid), updatedAt: at,
@@ -90,6 +105,7 @@ function createPayCloseService({ firestore, membershipId, isOwnerLevel, now = ()
         organizationId: org, month: key, revision, closedBy: text(callerUid), closedAt: at, totals: result.totals,
         statements: Object.fromEntries(result.statements.map((item) => [item.instructorId, item.snapshot])),
         sources: { ledger: ledger.size, adjustments: adjustments.size, salesMonths: salesMonths.size, fcMonths: fcMonths.size, groupLocations: groups.size },
+        reconciliation, check: checkSummary,
         previous: current ? { status: text(current.status), revision: Number(current.revision || 0), reopenReason: text(current.reopenReason) } : null,
       });
       return { status: "closed", revision, totals: result.totals, instructors: result.statements.length };

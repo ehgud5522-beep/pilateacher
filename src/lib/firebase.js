@@ -864,6 +864,8 @@ export const fbConsultTalkingPoints = callableAsOwner("consultTalkingPoints");
 export const fbConfirmSalesMonth = callableAsOwner("confirmSalesMonth");
 /** 서버 급여 확정 (2026-11-22): 서버가 원자료로 다시 계산해 확정 · 회차 이력. { organizationId, month, expectedNet }. */
 export const fbClosePayMonth = callableAsOwner("closePayMonth");
+/** 정산 점검 [다시 점검] (2026-11-22). { organizationId, month }. */
+export const fbRunPayCheck = callableAsOwner("runPayCheck");
 /** 강사 FC 복지 수업료 확정 (2026-11-21). 서버가 지정 강사 · FC 별 8회 · 받은 FC 본인 확정 금지를 다시 본다. */
 export const fbConfirmFcLessonMonth = callableAsOwner("confirmFcLessonMonth");
 

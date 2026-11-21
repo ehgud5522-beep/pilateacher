@@ -2134,6 +2134,27 @@ service cloud.firestore {
         allow get, list: if hasRole(organizationId, ownerLevel());
         allow write: if false;
       }
+      /* ── 정산 점검 (2026-11-22) ── 결과는 서버(payCheckNightly · runPayCheck · closePayMonth)만 쓴다. 대표급만 읽는다.
+         확인함(payCheckAcks)은 대표급이 사유와 함께 -- 같은 항목을 다시 확인하면 덮어쓴다(그때의 내용 signature 를 함께 남긴다). 지우지 않는다. */
+      match /payChecks/{checkMonth} {
+        allow get, list: if hasRole(organizationId, ownerLevel());
+        allow write: if false;
+      }
+      match /payCheckAcks/{ackId} {
+        allow get, list: if hasRole(organizationId, ownerLevel());
+        allow create, update: if hasRole(organizationId, ownerLevel())
+          && request.resource.data.keys().hasOnly(["organizationId", "month", "key", "kind", "signature", "reason", "ackedBy", "ackedAt"])
+          && request.resource.data.keys().hasAll(["organizationId", "month", "key", "signature", "reason", "ackedBy", "ackedAt"])
+          && request.resource.data.organizationId == organizationId
+          && salesMonthString(request.resource.data.month)
+          && request.resource.data.key is string && request.resource.data.key.size() > 0 && request.resource.data.key.size() <= 300
+          && request.resource.data.signature is string && request.resource.data.signature.size() <= 300
+          && ackId == request.resource.data.month + "__" + request.resource.data.key.replace("/", "_")
+          && request.resource.data.reason is string && request.resource.data.reason.size() > 0 && request.resource.data.reason.size() <= 200
+          && request.resource.data.ackedBy == request.auth.uid
+          && request.resource.data.ackedAt == request.time;
+        allow delete: if false;
+      }
       match /payrollSettings/{settingId} {
         allow get: if isCentreStaff(organizationId);
         allow create, update: if hasRole(organizationId, ownerLevel())

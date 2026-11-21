@@ -507,6 +507,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "급여 집계 · 수업료 외",
     "급여 집계 · 명세 · PC",
     "급여 집계 · 확정됨",
+    "급여 집계 · 정산 점검",
+    "급여 집계 · 정산 점검 미완료",
     "급여 집계 · 지급 완료 · 이력",
     "급여 집계 · 자료 누락",
     "급여 집계 · 이관 전",
@@ -3950,4 +3952,30 @@ test("급여 2차: 지급 완료 · 확정 이력 · 앞 회차 명세는 쓰지
   const none = markupOf("예상 급여 카드 · 공제 없음");
   assert.match(none, /11월분 · 12월 15일 지급 · 지급액 ₩500,000 \(공제는 따로\)/);
   assert.doesNotMatch(none, /실수령/);
+});
+
+/* 2026-11-22 정산 점검: 점검 시각 · 범위 · 완료 여부, 차단/확인 구분, 확인함 유지, 못 읽으면 점검 미완료, 지점 → 강사 상세 */
+test("정산 점검함: 시각 · 범위 먼저, 차단 · 확인 나눔, 확인함은 따로, 동기화 꺼진 강사는 범위에, 미완료는 0건이 아니다", async () => {
+  const { createAppScreenSmokeCases } = await screenModule();
+  const byName = new Map(createAppScreenSmokeCases().map((item) => [item.name, item.element]));
+  const markupOf = (name) => renderToStaticMarkup(byName.get(name));
+  const card = markupOf("급여 집계 · 정산 점검");
+  assert.match(card, /data-pay-check="blocked"/);
+  assert.match(card, /10월 정산 점검/);
+  assert.match(card, /10월 3일 03:00 밤 점검 · 전 지점 · 수업 120개 · 회원권 40개/);
+  assert.match(card, /차단 · 완료했는데 차감 없음 1건/);
+  assert.match(card, /차단 · 남은 횟수 불일치 0건 \(확인함 1\)/);
+  assert.match(card, /확인 · 지난 수업 미처리 1건/);
+  assert.match(card, /일정 동기화가 꺼진 강사 1명\(박서연\)/);
+  assert.match(card, /data-pay-check-detail/);
+  assert.match(card, /반송/, "지점부터");
+  assert.match(card, /확인함 · 이관 때 1회 더 넣음/);
+  assert.match(card, /남은 횟수 9회 · 원장 계산 8회 \(차이 \+1\)/);
+  assert.match(card, /data-pay-check-ack/);
+  assert.ok(card.indexOf("data-pay-check=") < card.indexOf("data-pay-close-bar"), "점검함이 급여 확정 줄보다 먼저");
+  const broken = markupOf("급여 집계 · 정산 점검 미완료");
+  assert.match(broken, /data-pay-check="incomplete"/);
+  assert.match(broken, /점검을 다 하지 못했어요/);
+  assert.match(broken, /회원권 원장 \(코드 unavailable\)/);
+  assert.doesNotMatch(broken, /걸린 것이 없어요/, "못 읽었으면 이상 없음이라고 말하지 않는다");
 });

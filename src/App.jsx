@@ -55,7 +55,7 @@ import {
   fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone, fbDeleteArchivedClient,
-  fbBeforeAfterShareStats, fbConfirmSalesMonth, fbConfirmFcLessonMonth, fbClosePayMonth,
+  fbBeforeAfterShareStats, fbConfirmSalesMonth, fbConfirmFcLessonMonth, fbClosePayMonth, fbRunPayCheck,
   fbVerifyMemberViews, fbMemberAppStatus,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
@@ -431,7 +431,7 @@ import {
 import { groupRowsByBranch, pickBranch } from "./features/records/branch-groups.js";
 import {
   CONFIRM_NOTICE_HINT, SALES_KIND_CHOICES_BY_SECTION, blankEntry, entryPreview, otBonusOf, confirmFailureText, entryErrors, entryFromSuggestion, entryLine, kstDate, monthStatusView, mySalesView, salesBoardRows,
-  submissionChangeText, submittedSummaryOf,
+  submissionChangeText, submittedSummaryOf, kstDateTimeLabel,
 } from "./features/sales/sales-board.js";
 import { MATCH_VIEW, PAIR, PAIR_VIEW, SALES_KIND_LABELS, isGroup, matchEntry, refundRangeMonths, salesRecordsOf, suggestionsFor } from "../functions/shared/sales-incentive.mjs";
 import { FC_LESSON_MONTHLY_CAP, FC_LESSON_RATE, fcLessonTotals } from "../functions/shared/fc-lessons.mjs";
@@ -443,6 +443,7 @@ import {
   addSalesEntry, deleteSalesEntry, listSalesEntries, listSalesEntriesOfMonth, listSalesLedger, listSalesMonths, readSalesMonth, reopenSalesMonth, submitSalesMonth, updateSalesEntry,
 } from "./data/repositories/sales-repository.js";
 import { EXTRA_STATE, extraPayOf, extrasByInstructor, extrasTotal } from "./features/sales/extra-pay.js";
+import { CHECK_KIND, CHECK_KIND_LABELS, CHECK_SEVERITY, withAcks } from "../functions/shared/pay-check.mjs";
 import {
   NET_LABELS, TAX_TYPE, TAX_TYPE_LABELS, adjustmentErrors, adjustmentsOf, isCanceled, payMonthStatusView, payPeriodLabel, payStatementCsv, payStatementOf,
   statementFromSnapshot, statementOfRevision, taxTypeOf,
@@ -450,6 +451,7 @@ import {
 import {
   addPayAdjustment, cancelPayAdjustment, listMyPayAdjustments, listPayAdjustments, listPayCloseRuns, listPayStatements,
   markPayMonthPaid, readPayMonth, readPayStatement, readPayTaxSettings, reopenPayMonth, savePayTaxSettings,
+  listPayCheckAcks, readPayCheck, savePayCheckAck,
 } from "./data/repositories/pay-statement-repository.js";
 import { nextAggregateSort, sortAggregateRows } from "./features/records/aggregate-table.js";
 import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
@@ -17718,6 +17720,115 @@ function PayExtrasSection({ extras, lessonConfirmed, compact = false }) {
   );
 }
 
+/* ── 정산 점검함 (2026-11-22) ── 서버가 밤마다(또는 [다시 점검] · 확정 직전) 기록끼리 맞춰 본 결과. 강사 일은 늘리지 않는다.
+   점검 시각 · 범위 · 완료 여부를 먼저 보인다 -- 못 읽었으면 "0건" 이 아니라 "점검 미완료". 차단은 급여 확정을 막고,
+   확인함(사유)을 남기면 풀린다(내용이 바뀌면 다시 뜬다). 상세는 지점 → 강사 순으로 (취합 화면 규칙). */
+const CHECK_SOURCE_LABELS = { lessons: "수업 일정", ledger_month: "이 달 차감 기록", ledger_all: "회원권 원장", passes: "회원권", memberships: "강사 명부", schedule_sync: "일정 동기화 설정", acks: "확인함 기록" };
+const CHECK_TRIGGER_LABELS = { nightly: "밤 점검", manual: "직접 점검", close: "확정 직전 점검" };
+function checkDetailText(item) {
+  const detail = item.detail || {};
+  if (item.kind === CHECK_KIND.UNSETTLED_PAST) return `회원 ${detail.members || 0}명 · 출석 · 취소 처리 없음`;
+  if (item.kind === CHECK_KIND.COMPLETED_NO_DEDUCT) return "완료로 저장됐는데 차감 기록이 없어요";
+  if (item.kind === CHECK_KIND.DEDUCT_SHORT) return `회원 ${detail.members || 0}명 · 차감 ${detail.deducts || 0}건 (한 회원권을 같이 쓰는 듀엣이면 정상)`;
+  if (item.kind === CHECK_KIND.BALANCE_MISMATCH) return `남은 횟수 ${detail.remaining ?? "?"}회 · 원장 계산 ${detail.ledgerTotal ?? "?"}회 (차이 ${detail.difference > 0 ? "+" : ""}${detail.difference ?? "?"})`;
+  if (item.kind === CHECK_KIND.DUPLICATE_DEDUCT) return `같은 시각 차감 ${detail.deducts || 0}건 · 수업 ${(detail.lessonIds || []).length}개`;
+  return "";
+}
+function PayCheckCard({ month, check, errorCode = "", busy = false, nameOfInstructor, nameOfLocation, nameOfClient, onRerun, onAck, initialOpen = false }) {
+  const [open, setOpen] = useState(initialOpen);
+  const [acking, setAcking] = useState("");
+  const [why, setWhy] = useState("");
+  const monthNumber = Number(String(month).slice(5, 7));
+  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
+  const rerun = <button type="button" disabled={busy} onClick={onRerun} className="h-9 px-3 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: BRAND_D, fontSize: TYPE.caption }} data-pay-check-rerun>다시 점검</button>;
+  if (!check) {
+    return (
+      <section style={sectionStyle} data-pay-check="none">
+        <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{monthNumber}월 정산 점검</p>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, color: errorCode ? WARN : SUB }}>{errorCode ? `점검 결과를 읽지 못했어요 (코드 ${errorCode}) -- 0건이 아니라 못 읽은 거예요` : "아직 점검 기록이 없어요. 밤 3시에 자동으로 점검해요."}</p>
+        <div className="mt-2">{rerun}</div>
+      </section>
+    );
+  }
+  const items = check.items || [];
+  const kindsOf = (severity) => Object.keys(CHECK_KIND_LABELS).map((kind) => ({ kind, all: items.filter((item) => item.kind === kind && item.severity === severity) }))
+    .filter((row) => row.all.length).map((row) => ({ ...row, open: row.all.filter((item) => !item.ack).length }));
+  const acked = items.filter((item) => item.ack).length;
+  const syncOff = check.scope?.syncOffInstructorIds || [];
+  const groups = new Map();
+  for (const item of items) {
+    const location = String(item.locationId || "");
+    if (!groups.has(location)) groups.set(location, new Map());
+    const byInstructor = groups.get(location);
+    const instructor = String(item.instructorId || "");
+    if (!byInstructor.has(instructor)) byInstructor.set(instructor, []);
+    byInstructor.get(instructor).push(item);
+  }
+  const statusPill = !check.complete ? salesPill("warn", "점검 미완료") : check.openBlocks ? salesPill("bad", `차단 ${check.openBlocks}건`) : salesPill("good", "차단 없음");
+  return (
+    <section style={sectionStyle} data-pay-check={check.complete ? (check.openBlocks ? "blocked" : "ok") : "incomplete"}>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="min-w-0 flex-1 font-bold" style={{ fontSize: TYPE.body, color: INK }}>{monthNumber}월 정산 점검</p>
+        {statusPill}
+      </div>
+      <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }} data-pay-check-at>
+        {kstDateTimeLabel(check.checkedAt)} {CHECK_TRIGGER_LABELS[check.trigger] || "점검"} · 전 지점 · 수업 {check.scope?.lessons ?? 0}개 · 회원권 {check.scope?.passes ?? 0}개
+      </p>
+      {!check.complete ? (
+        <p className="mt-1 rounded-lg px-3 py-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN, backgroundColor: WARN_S }} data-pay-check-incomplete>
+          점검을 다 하지 못했어요 -- 아래 건수는 일부만이에요. 못 읽은 자료: {(check.failures || []).map((item) => `${CHECK_SOURCE_LABELS[item.source] || item.source} (코드 ${item.code})`).join(" · ")}
+        </p>
+      ) : null}
+      <div className="mt-2 space-y-0.5" data-pay-check-counts>
+        {kindsOf(CHECK_SEVERITY.BLOCK).map((row) => <p key={`b-${row.kind}`} style={{ fontSize: TYPE.caption, color: row.open ? BAD : SUB }}>● 차단 · {CHECK_KIND_LABELS[row.kind]} {row.open}건{row.all.length > row.open ? ` (확인함 ${row.all.length - row.open})` : ""}</p>)}
+        {kindsOf(CHECK_SEVERITY.WARN).map((row) => <p key={`w-${row.kind}`} style={{ fontSize: TYPE.caption, color: row.open ? WARN : SUB }}>● 확인 · {CHECK_KIND_LABELS[row.kind]} {row.open}건{row.all.length > row.open ? ` (확인함 ${row.all.length - row.open})` : ""}</p>)}
+        {!items.length && check.complete ? <p style={{ fontSize: TYPE.caption, color: GOOD }}>점검한 범위에서 걸린 것이 없어요.</p> : null}
+        {acked ? <p style={{ fontSize: TYPE.caption, color: SUB }}>확인함 {acked}건 -- 내용이 바뀌면 다시 떠요.</p> : null}
+        {syncOff.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>일정 동기화가 꺼진 강사 {syncOff.length}명({syncOff.slice(0, 3).map(nameOfInstructor).join(", ")}{syncOff.length > 3 ? " …" : ""})은 지난 수업 미처리를 볼 수 없어요.</p> : null}
+        {check.truncated ? <p style={{ fontSize: TYPE.caption, color: SUB }}>항목이 많아 앞 {items.length}건만 보여요 (전체 {check.total}건).</p> : null}
+        <p style={{ fontSize: TYPE.caption, color: FAINT }}>차단은 급여 확정을 막고, 확인은 막지 않아요. 확정할 때 서버가 그 달을 다시 점검해요.</p>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {items.length ? <button type="button" onClick={() => setOpen(!open)} className="h-9 px-3 font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }} data-pay-check-open>{open ? "접기" : "내용 확인"}</button> : null}
+        {rerun}
+      </div>
+      {open ? (
+        <div className="mt-2 space-y-3" data-pay-check-detail>
+          {[...groups.entries()].map(([locationId, byInstructor]) => (
+            <div key={locationId || "none"}>
+              <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{locationId ? nameOfLocation(locationId) : "지점 없음"}</p>
+              {[...byInstructor.entries()].map(([instructorId, list]) => (
+                <details key={instructorId || "none"} className="mt-1 rounded-lg px-3 py-2" style={{ backgroundColor: CANVAS }}>
+                  <summary className="cursor-pointer" style={{ fontSize: TYPE.caption, fontWeight: 700, color: INK2 }}>
+                    {instructorId ? nameOfInstructor(instructorId) : "강사 없음"} · {list.length}건{list.some((item) => item.severity === CHECK_SEVERITY.BLOCK && !item.ack) ? " · 차단 있음" : ""}
+                  </summary>
+                  {list.map((item) => (
+                    <div key={item.key} className="mt-1.5" style={{ borderTop: `1px solid ${LINE}`, paddingTop: 6 }} data-pay-check-item={item.kind}>
+                      <p style={{ fontSize: TYPE.caption, color: item.ack ? SUB : item.severity === CHECK_SEVERITY.BLOCK ? BAD : WARN }}>
+                        <b>{item.severity === CHECK_SEVERITY.BLOCK ? "차단" : "확인"} · {CHECK_KIND_LABELS[item.kind]}</b>
+                        {item.startsAt ? ` · ${kstDateTimeLabel(item.startsAt)}` : ""}{item.clientId ? ` · ${nameOfClient(item.clientId)}` : ""}
+                      </p>
+                      <p style={{ fontSize: TYPE.caption, color: INK2 }}>{checkDetailText(item)}</p>
+                      {item.ack ? <p style={{ fontSize: TYPE.caption, color: GOOD }}>확인함 · {item.ack.reason}</p>
+                        : acking === item.key ? (
+                          <span className="mt-1 flex flex-wrap items-center gap-1.5">
+                            <input value={why} onChange={(event) => setWhy(event.target.value)} maxLength={200} placeholder="사유 (예: 체험 수업이라 차감 없음)" aria-label="확인 사유" className="h-8 min-w-0 flex-1 px-2" style={{ borderRadius: 6, border: `1px solid ${LINE}`, fontSize: TYPE.caption, backgroundColor: CARD, color: INK }} />
+                            <button type="button" disabled={busy || !why.trim()} onClick={() => { onAck(item, why.trim()); setAcking(""); setWhy(""); }} className="h-8 px-2 font-bold disabled:opacity-40" style={{ borderRadius: 6, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>확인함</button>
+                            <button type="button" onClick={() => { setAcking(""); setWhy(""); }} style={{ fontSize: TYPE.caption, color: SUB }}>그만</button>
+                          </span>
+                        ) : <button type="button" onClick={() => { setAcking(item.key); setWhy(""); }} className="mt-0.5 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }} data-pay-check-ack>확인함 (사유)</button>}
+                    </div>
+                  ))}
+                </details>
+              ))}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 /** 서버 급여 확정 거절 → 문구 (원본 코드 함께). */
 function payCloseFailureText(error) {
   const details = error?.details || {};
@@ -17728,6 +17839,9 @@ function payCloseFailureText(error) {
     nothing_to_close: "확정할 급여가 없어요",
     not_closer: "급여 확정은 대표 · 총괄만 할 수 있어요",
     target_required: "달을 다시 골라 주세요",
+    check_blocked: `정산 점검에 확인하지 않은 차단 항목이 ${Number(details.openBlocks) || 0}건 있어요. 점검함에서 확인한 뒤 다시 확정해 주세요`,
+    check_incomplete: "정산 점검을 다 하지 못했어요 (자료 일부를 못 읽음). 잠시 뒤 다시 확정해 주세요",
+    reconcile_mismatch: `원장 합계(₩${won(Number(details.sourceAmount) || 0)})와 명세 수업료 합계(₩${won(Number(details.statementLessons) || 0)})가 달라 확정하지 않았어요`,
   };
   if (known[reason]) return { code: reason, text: `${known[reason]} (코드 ${reason})` };
   if (/unavailable|deadline|network|aborted/.test(reason)) return { code: reason, text: `연결이 불안정해 확정하지 못했어요. 다시 눌러 주세요 (코드 ${reason})` };
@@ -24926,7 +25040,7 @@ const MEMBER_VIEW_MISMATCH_LABEL = {
 
 function PayrollSummary({
   organization, locationStore, instructorStore, payrollStore, clientStore, passStore,
-  onRetryOrganization, onToast, now = () => new Date(), initialState = null, currentUserId = "", onClosePay = fbClosePayMonth,
+  onRetryOrganization, onToast, now = () => new Date(), initialState = null, currentUserId = "", onClosePay = fbClosePayMonth, onRunCheck = fbRunPayCheck,
 }) {
   const [month, setMonth] = useState(initialState?.month || currentMonth(now()));
   const [summary, setSummary] = useState(initialState?.summary || null);
@@ -24978,7 +25092,7 @@ function PayrollSummary({
       /* 심사용 회원을 빼려면 명부가 필요하다 -- 원장 항목에는 그 표시가
          없다. 이 화면이 예전에는 명부를 읽지 않았고, 읽기 한 번이 느는 대신
          가짜 회차가 강사 급여에 섞이지 않는다. */
-      const [payrollClients, instructorResult, locationResult, passResult, groupPayroll, salesMonthResult, fcMonthResult, adjustmentResult, payMonthResult, statementResult, taxResult, runResult] = await Promise.all([
+      const [payrollClients, instructorResult, locationResult, passResult, groupPayroll, salesMonthResult, fcMonthResult, adjustmentResult, payMonthResult, statementResult, taxResult, runResult, checkResult, ackResult] = await Promise.all([
         toleratingReadFailure(listClients(organizationId, { store: clientStore })),
         toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
         toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
@@ -24994,6 +25108,8 @@ function PayrollSummary({
         toleratingReadFailure(listPayStatements(organizationId, month)),
         toleratingReadFailure(readPayTaxSettings(organizationId)),
         toleratingReadFailure(listPayCloseRuns(organizationId, month)),
+        toleratingReadFailure(readPayCheck(organizationId, month)),
+        toleratingReadFailure(listPayCheckAcks(organizationId, month)),
       ]);
       /* 집계보다 명부를 먼저 읽는다. 계정을 바꾼 강사를 한 사람으로 합치려면
          previousUids 가 있어야 하고, 그것은 소속 문서에만 있다 -- 나중에
@@ -25015,6 +25131,7 @@ function PayrollSummary({
       setExtraDocs({ salesMonths: salesMonthResult.items, fcMonths: fcMonthResult.items, errorCode: salesMonthResult.errorCode || fcMonthResult.errorCode || "" });
       setPayDocs({
         adjustments: adjustmentResult.items || [], payMonth: payMonthResult.items || null, statements: statementResult.items || [], tax: taxResult.items || null, runs: runResult.items || [],
+        check: checkResult.items || null, acks: ackResult.items || [], checkErrorCode: checkResult.errorCode || ackResult.errorCode || "",
         errorCode: adjustmentResult.errorCode || payMonthResult.errorCode || statementResult.errorCode || taxResult.errorCode || "",
       });
       setNamesFailed(
@@ -25169,6 +25286,17 @@ function PayrollSummary({
     } finally { setPayBusy(false); }
   };
   const markPaid = () => payWrite("paid", () => markPayMonthPaid(organizationId, month, { uid: currentUid }));
+  /* 정산 점검: [다시 점검] 은 서버가 지금 다시 돌린다, 확인함은 대표가 사유와 함께. */
+  const rerunCheck = async () => {
+    setPayBusy(true); setPayMessage("");
+    try { await onRunCheck({ organizationId, month }); await reload(); }
+    catch (error) {
+      const code = String(error?.details?.reason || error?.code || "unknown");
+      setPayMessage(`점검을 다시 돌리지 못했어요 (코드 ${code})`);
+      deviceLog("pay_check_rerun_failed", { feature: "pay_check", stage: "manual", errorDomain: "functions_callable", errorCode: code, appBuild: APP_BUILD_LABEL });
+    } finally { setPayBusy(false); }
+  };
+  const ackCheck = (item, reason) => payWrite("check_ack", () => savePayCheckAck(organizationId, month, item, reason, { uid: currentUid }));
   const downloadStatements = () => {
     try {
       const csv = payStatementCsv({ month, status: payStatus.label, revision: Number(payDocs.payMonth?.revision || 0),
@@ -25445,6 +25573,9 @@ function PayrollSummary({
             </section>
           ) : null}
 
+          <PayCheckCard month={month} check={payDocs.check ? withAcks(payDocs.check, payDocs.acks || []) : null} errorCode={payDocs.checkErrorCode || ""}
+            busy={payBusy} nameOfInstructor={nameOfInstructor} nameOfLocation={nameOfLocation} nameOfClient={nameOfClient}
+            onRerun={rerunCheck} onAck={ackCheck} initialOpen={Boolean(initialState?.checkOpen)} />
           {payCloseBar}
           {payWide ? <section style={sectionStyle}>{payWide}</section> : null}
           {!payWide && multiLocation ? summary.byLocation.map((location) => (
@@ -33550,6 +33681,26 @@ export function createAppScreenSmokeCases() {
       summary: smokePayroll, ...smokePayrollNames, wide: true, selected: "u1",
       payDocs: { adjustments: [], payMonth: { status: "closed" }, tax: null, errorCode: "",
         statements: [{ instructorId: "u1", lessons: 465000, extras: 0, adjustTotal: 0, gross: 1034000, incomeTax: 31020, localTax: 3100, net: 999999, taxType: "3.3" }] },
+    }) },
+    /* 2026-11-22 정산 점검: 차단 1(완료인데 차감 없음) · 확인함 1(남은 횟수, 이 달) · 확인 2 · 동기화 꺼진 강사 1, 상세 펼침. */
+    { name: "급여 집계 · 정산 점검", element: payrollSummary(smokeOwner, {
+      summary: smokePayroll, ...smokePayrollNames, wide: true, selected: "u1", checkOpen: true,
+      payDocs: { adjustments: [], payMonth: null, statements: [], tax: null, errorCode: "", acks: [{ key: "balance_mismatch:smoke-pass-a", signature: "9|8", reason: "이관 때 1회 더 넣음 -- 잔여 조정 예정" }],
+        check: { month: "2026-10", trigger: "nightly", checkedAt: new Date("2026-10-02T18:00:00Z"), complete: true, failures: [], total: 4, truncated: false,
+          scope: { lessons: 120, passes: 40, syncOffInstructorIds: ["u2"] }, counts: { block: 2, warn: 2, byKind: {} },
+          items: [
+            { key: "completed_no_deduct:L9", kind: "completed_no_deduct", severity: "block", instructorId: "u1", locationId: "bansong", lessonId: "L9", startsAt: new Date("2026-10-01T10:00:00Z").getTime(), detail: { members: 1, deducts: 0 }, signature: "x" },
+            { key: "balance_mismatch:smoke-pass-a", kind: "balance_mismatch", severity: "block", instructorId: "u1", locationId: "bansong", passId: "smoke-pass-a", clientId: "smoke-client-a", detail: { remaining: 9, ledgerTotal: 8, difference: 1 }, signature: "9|8" },
+            { key: "unsettled_past:L7", kind: "unsettled_past", severity: "warn", instructorId: "u1", locationId: "bansong", lessonId: "L7", startsAt: new Date("2026-10-01T01:00:00Z").getTime(), detail: { members: 1 }, signature: "y" },
+            { key: "duplicate_deduct:u1|smoke-client-a|1", kind: "duplicate_deduct", severity: "warn", instructorId: "u1", locationId: "bansong", clientId: "smoke-client-a", startsAt: 1, detail: { deducts: 2, lessonIds: ["a", "b"] }, signature: "a,b" },
+          ] } },
+    }) },
+    /* 점검을 다 못 한 날: 0건이 아니라 점검 미완료. */
+    { name: "급여 집계 · 정산 점검 미완료", element: payrollSummary(smokeOwner, {
+      summary: smokePayroll, ...smokePayrollNames,
+      payDocs: { adjustments: [], payMonth: null, statements: [], tax: null, errorCode: "", acks: [],
+        check: { month: "2026-10", trigger: "close", checkedAt: new Date("2026-10-02T18:00:00Z"), complete: false, failures: [{ source: "ledger_all", code: "unavailable" }], total: 0, truncated: false,
+          scope: { lessons: 120, passes: 0, syncOffInstructorIds: [] }, counts: { block: 0, warn: 0, byKind: {} }, items: [] } },
     }) },
     /* 2026-11-22 외부 검토 2차: 지급 완료 · 확정 이력 2회 · u2 명세는 앞 회차 것이라 숫자로 쓰지 않는다. */
     { name: "급여 집계 · 지급 완료 · 이력", element: payrollSummary(smokeOwner, {

@@ -134,6 +134,10 @@ export function runPayCheck({
     deductsByLesson.get(lessonId).push(entry);
   }
 
+  /* 회원권이 누구 것인가 -- 듀엣 회원권은 두 사람(clientIds)이 같이 쓴다 (pass-repository 의 passClientIds 와 같은 읽기).
+     회원권을 못 읽었으면 비어 있고, 그때는 "덮는지" 를 모르니 예전처럼 확인 항목으로 남긴다. */
+  const passesLoaded = !failures.some((failure) => text(failure?.source) === "passes");
+  const clientsOfPass = new Map(passes.map((pass) => [text(pass.id), sorted([...(Array.isArray(pass.clientIds) ? pass.clientIds : []), pass.clientId])]));
   const scheduledInstructors = new Set();
   for (const lesson of lessons) {
     const lessonId = text(lesson?.lessonId || lesson?.id);
@@ -155,8 +159,10 @@ export function runPayCheck({
       if (!found.length) {
         items.push({ ...base, key: `${CHECK_KIND.COMPLETED_NO_DEDUCT}:${lessonId}`, kind: CHECK_KIND.COMPLETED_NO_DEDUCT, severity: CHECK_SEVERITY.BLOCK,
           detail: { members: clientIds.length, deducts: 0 }, signature: signatureOf(`${who4}|${text(lesson.settledPassId)}|none`) });
-      } else if (clientIds.length > 1 && new Set(found.map((entry) => text(entry.passId))).size < clientIds.length) {
-        /* 듀엣은 회원권마다 하나씩 뺀다. 한 회원권을 둘이 쓰는 듀엣이면 정상이라 "확인" 으로만. */
+      } else if (clientIds.length > 1 && new Set(found.map((entry) => text(entry.passId))).size < clientIds.length
+        && !(passesLoaded && clientIds.every((clientId) => found.some((entry) => text(entry.clientId) === clientId || (clientsOfPass.get(text(entry.passId)) || []).includes(clientId))))) {
+        /* 듀엣은 회원권마다 하나씩 뺀다. 한 회원권을 둘이 같이 쓰는 듀엣이면 차감 하나가 두 사람을 다 덮는다 -- 정상이라 항목이 아니다
+           (2026-11-22 대표: 119건이 대부분 이 경우). 남는 것은 각자 회원권인데 한쪽 차감이 빠진 수업뿐. */
         items.push({ ...base, key: `${CHECK_KIND.DEDUCT_SHORT}:${lessonId}`, kind: CHECK_KIND.DEDUCT_SHORT, severity: CHECK_SEVERITY.WARN,
           detail: { members: clientIds.length, deducts: found.length }, signature: signatureOf(`${who4}|${evidence}`) });
       }

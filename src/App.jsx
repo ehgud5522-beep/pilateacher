@@ -24146,6 +24146,9 @@ function IssueReport({
   const [namesFailed, setNamesFailed] = useState(initialState?.namesFailed || "");
   const [loading, setLoading] = useState(!initialState);
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
+  const wide = useWideViewport(initialState?.wide);
+  const [issueBranch, setIssueBranch] = useState(initialState?.branch || "");
+  const [issueSelected, setIssueSelected] = useState(initialState?.selected || "");
   const organizationId = organization?.organizationId || "";
   const locked = organization?.status === "unknown";
   const thisMonth = `${now().getFullYear()}-${String(now().getMonth() + 1).padStart(2, "0")}`;
@@ -24236,6 +24239,51 @@ function IssueReport({
 
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
   const totals = summary?.totals;
+  /* ── PC (2026-11-21 "현황판 웹 배치안" 2단계): 지점 칩 → 발급자 표 → 오른쪽에 그 발급자의 발급 목록. 폰은 그대로. ── */
+  const issueGroups = summary ? summary.byLocation.map((location) => ({ id: location.locationId || "none", name: nameOfLocation(location.locationId), rows: location.byIssuer })) : [];
+  const issueGroup = issueGroups.find((group) => group.id === issueBranch) || issueGroups[0] || null;
+  const issueRow = issueGroup ? (issueGroup.rows.find((row) => (row.issuedBy || "none") === issueSelected) || issueGroup.rows[0] || null) : null;
+  const issueRows = (issuer) => issuer.rows.map((row) => (
+    <div key={row.entryId} style={{ padding: "9px 0", borderTop: `1px solid ${LINE}`, opacity: row.cancelled ? 0.5 : 1 }}>
+      <p className="flex items-center gap-1.5" style={{ fontSize: TYPE.caption, color: INK, textDecoration: row.cancelled ? "line-through" : "none" }}>
+        <span className="tabular-nums" style={{ color: SUB }}>{dayLabel(row.occurredAt)}</span>
+        <span style={{ fontWeight: 650 }}>{nameOfClient(row.clientId)}</span>
+        {row.isNew ? <span style={{ padding: "1px 5px", borderRadius: 5, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption, fontWeight: 700 }}>신규</span> : null}
+      </p>
+      <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+        {nameOfProduct(row.productId)}{" · "}{row.totalCount}회{" · "}{row.contractPrice === null ? "금액 확인 불가" : `₩${won(row.contractPrice)}`}
+        {row.paymentMethod ? ` · ${labelOf(PAYMENT_METHOD_LABELS, row.paymentMethod)}` : ""}{" · "}{labelOf(PAY_CATEGORY_LABELS, row.category)}
+      </p>
+      {row.cancelled ? <p className="mt-0.5" style={{ fontSize: TYPE.caption, fontWeight: 700, color: BAD }}>{row.cancelledAtLabel ? `${row.cancelledAtLabel} 취소` : "취소됨"}</p> : null}
+    </div>
+  ));
+  const issueWide = wide && summary && issueGroup ? (
+    <section style={sectionStyle} data-issue-wide>
+      <SummaryTiles items={[
+        { label: "발급", value: `${totals.count}건`, code: "issue_count" },
+        { label: "금액", value: `₩${won(totals.amount)}`, code: "issue_amount" },
+        { label: "그중 신규", value: `${totals.newCount}건 · ₩${won(totals.newAmount)}`, color: BRAND_D, code: "issue_new" },
+        { label: "취소 (합계에서 제외)", value: `${totals.cancelledCount || 0}건`, color: totals.cancelledCount ? BAD : INK, code: "issue_cancelled" },
+      ]} />
+      <BranchTabs groups={issueGroups} selected={issueGroup.id} onSelect={(id) => { setIssueBranch(id); setIssueSelected(""); }} countLabel={(group) => `${group.rows.reduce((sum, row) => sum + row.count, 0)}건`} />
+      <AggregateSplit wide detail={issueRow ? (
+        <div data-issue-detail={issueRow.issuedBy || "none"}>
+          <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{nameOfIssuer(issueRow.issuedBy)}</p>
+          <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{issueRow.count}건 · ₩{won(issueRow.amount)}{issueRow.newCount ? ` · 신규 ${issueRow.newCount}건` : ""}</p>
+          <div className="mt-1">{issueRows(issueRow)}</div>
+        </div>
+      ) : null}>
+        <InstructorTable rows={issueGroup.rows} rowKey={(row) => row.issuedBy || "none"} selected={issueRow ? (issueRow.issuedBy || "none") : ""} onSelect={setIssueSelected} columns={[
+          { key: "name", label: "발급자", firstDir: "asc", sortValue: (row) => nameOfIssuer(row.issuedBy), render: (row) => <span className="font-bold">{nameOfIssuer(row.issuedBy)}</span> },
+          { key: "count", label: "건수", align: "right", sortValue: (row) => row.count, render: (row) => `${row.count}건` },
+          { key: "new", label: "신규", align: "right", sortValue: (row) => row.newCount || 0, render: (row) => (row.newCount ? `${row.newCount}건` : "—") },
+          { key: "amount", label: "금액", align: "right", sortValue: (row) => row.amount, render: (row) => <span className="font-bold">₩{won(row.amount)}</span> },
+        ]} />
+      </AggregateSplit>
+      <button type="button" onClick={download} disabled={!summary.rows.length} className="mt-3 h-10 px-4 font-bold"
+        style={{ borderRadius: 10, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption, opacity: summary.rows.length ? 1 : 0.4 }}>CSV 내려받기</button>
+    </section>
+  ) : null;
   const notices = [];
   if (totals?.migratedCount) notices.push(`이관 ${totals.migratedCount}건 제외`);
   if (totals?.priorMonthCancelCount) notices.push(`이전 달 발급 취소 ${totals.priorMonthCancelCount}건`);
@@ -24289,7 +24337,8 @@ function IssueReport({
         </section>
       ) : null}
 
-      {!loading && !loadError && summary ? (
+      {!loading && !loadError && summary && issueWide ? issueWide : null}
+      {!loading && !loadError && summary && !issueWide ? (
         <>
           <section style={sectionStyle}>
             <div className="flex items-baseline justify-between">
@@ -24688,6 +24737,10 @@ function PayrollSummary({
   const [loading, setLoading] = useState(!initialState);
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
   const [open, setOpen] = useState(initialState?.open || "");
+  /* PC 배치 (2026-11-21 "현황판 웹 배치안" 2단계): 지점 칩 → 강사 표 → 오른쪽 상세. 폰은 지금 그대로. */
+  const wide = useWideViewport(initialState?.wide);
+  const [payBranch, setPayBranch] = useState(initialState?.branch || "all");
+  const [paySelected, setPaySelected] = useState(initialState?.selected || "");
   const organizationId = organization?.organizationId || "";
   const locked = organization?.status === "unknown";
   const thisMonth = `${now().getFullYear()}-${String(now().getMonth() + 1).padStart(2, "0")}`;
@@ -24823,6 +24876,69 @@ function PayrollSummary({
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
   const toggle = (key) => setOpen(open === key ? "" : key);
 
+  /* ── PC: 지점 칩 · 강사 표 · 오른쪽 상세 ──
+     "전 지점 합계" 가 처음이다 -- 지급은 지점을 가로지른 합계로 한다 (아래 폰 화면의 설명과 같다).
+     지점을 고르면 그 지점 안의 수업만. 상세 칸은 폰에서 펼치던 그 줄(단가별 · 회원별 · CSV)을 그대로 쓴다. */
+  const payGroups = summary ? [
+    { id: "all", name: multiLocation ? "전 지점 합계" : "강사별", rows: summary.byInstructor, sessions: summary.sessions, total: summary.total },
+    ...(multiLocation ? summary.byLocation.map((location) => ({
+      id: location.locationId || "none", locationId: location.locationId, name: nameOfLocation(location.locationId),
+      rows: location.byInstructor, sessions: location.sessions, total: location.total,
+    })) : []),
+  ] : [];
+  const payGroup = payGroups.find((group) => group.id === payBranch) || payGroups[0] || null;
+  const payRow = payGroup ? (payGroup.rows.find((row) => row.instructorId === paySelected) || payGroup.rows[0] || null) : null;
+  const payScope = (row) => ({ ...(payGroup?.id === "all" ? {} : { locationId: payGroup.locationId }), ...(row ? { instructorId: row.instructorId } : {}) });
+  const payWide = wide && summary && summary.byInstructor.length > 0 ? (
+    <div data-payroll-wide>
+      <SummaryTiles items={[
+        { label: `${payGroup.name} 수업료`, value: `₩${won(payGroup.total)}`, code: "payroll_total" },
+        { label: "수업", value: `${payGroup.sessions}회`, code: "payroll_sessions" },
+        { label: "강사", value: `${payGroup.rows.length}명`, code: "payroll_instructors" },
+        { label: "평균 회당", value: payGroup.sessions ? `₩${won(Math.round(payGroup.total / payGroup.sessions))}` : "—", code: "payroll_average" },
+      ]} />
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <BranchTabs groups={payGroups} selected={payGroup.id} onSelect={(id) => { setPayBranch(id); setPaySelected(""); }} countLabel={(group) => `₩${won(group.total)}`} />
+        </div>
+        <button type="button" onClick={() => download(payGroup.id === "all" ? {} : { locationId: payGroup.locationId }, payGroup.id === "all" ? "" : payGroup.name)}
+          className="mt-3 flex h-9 items-center gap-1.5 px-3 font-bold" style={{ borderRadius: 8, backgroundColor: TINT, color: BRAND_D, fontSize: TYPE.caption }}>
+          <Download size={13} />{payGroup.id === "all" ? "센터 전체 CSV" : `${payGroup.name} CSV`}
+        </button>
+      </div>
+      {payGroup.id === "all" && multiLocation ? (
+        <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>지점을 가로지른 합계입니다. 지급은 이 금액으로 합니다.</p>
+      ) : null}
+      <AggregateSplit wide detail={payRow ? (
+        <div data-payroll-detail={payRow.instructorId}>
+          <PayrollInstructorRow key={`${payGroup.id}/${payRow.instructorId}`} row={payRow}
+            name={nameOfInstructor(payRow.instructorId)} badge={badgeOfInstructor(payRow.instructorId)}
+            nameOfClient={nameOfClient} nameOfPass={nameOfPass} nameOfLocation={nameOfLocation}
+            open onToggle={() => {}}
+            initialView={initialState?.view || PAYROLL_VIEW.PRICE} initialOpenClient={initialState?.openClient || ""}
+            onDownload={() => download(payScope(payRow), nameOfInstructor(payRow.instructorId))} />
+        </div>
+      ) : null}>
+        <InstructorTable rows={payGroup.rows} selected={payRow?.instructorId} onSelect={setPaySelected} columns={[
+          { key: "name", label: "강사", firstDir: "asc", sortValue: (row) => nameOfInstructor(row.instructorId), render: (row) => {
+            const badge = badgeOfInstructor(row.instructorId);
+            return <span className="font-bold">{nameOfInstructor(row.instructorId)}{badge ? <span className="ml-1.5 rounded-full px-1.5 py-0.5" style={{ fontSize: TYPE.caption, backgroundColor: badge.bg, color: badge.color }}>{badge.label}</span> : null}</span>;
+          } },
+          { key: "sessions", label: "수업", align: "right", sortValue: (row) => row.sessions, render: (row) => `${row.sessions}회` },
+          { key: "clients", label: "회원", align: "right", sortValue: (row) => new Set((row.byClient || []).map((item) => item.clientId)).size, render: (row) => `${new Set((row.byClient || []).map((item) => item.clientId)).size}명` },
+          { key: "average", label: "회당", align: "right", sortValue: (row) => (row.sessions ? row.total / row.sessions : null), render: (row) => (row.sessions ? `₩${won(Math.round(row.total / row.sessions))}` : "—") },
+          { key: "total", label: "금액", align: "right", sortValue: (row) => row.total, render: (row) => <span className="font-bold">₩{won(row.total)}</span> },
+        ]} />
+      </AggregateSplit>
+      {summary.corrections?.priorMonth?.sessions ? (
+        <p className="mt-2 tabular-nums" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: WARN }}>
+          지난달 차감 {summary.corrections.priorMonth.sessions}회를 이 달에서 뺐습니다
+          {" ("}−₩{won(Math.abs(summary.corrections.priorMonth.amount))}{"). "}이미 지급된 달은 고치지 않습니다.
+        </p>
+      ) : null}
+    </div>
+  ) : null;
+
   return (
     <div className="space-y-3">
       <section style={sectionStyle}>
@@ -24905,7 +25021,8 @@ function PayrollSummary({
             </section>
           ) : null}
 
-          {multiLocation ? summary.byLocation.map((location) => (
+          {payWide ? <section style={sectionStyle}>{payWide}</section> : null}
+          {!payWide && multiLocation ? summary.byLocation.map((location) => (
             <section key={location.locationId} style={sectionStyle}>
               <div className="flex items-center gap-2">
                 <h3 className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>
@@ -24942,7 +25059,7 @@ function PayrollSummary({
             </section>
           )) : null}
 
-          {summary.byInstructor.length > 0 ? (
+          {!payWide && summary.byInstructor.length > 0 ? (
             <section style={sectionStyle}>
               <h3 style={{ fontSize: TYPE.body, fontWeight: 700, color: INK }}>
                 {multiLocation ? "강사별 합계 (전 지점)" : "강사별"}
@@ -24972,7 +25089,7 @@ function PayrollSummary({
             </section>
           ) : null}
 
-          <section style={sectionStyle}>
+          {payWide ? null : <section style={sectionStyle}>
             <div className="flex items-end gap-2">
               <p className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, color: SUB }}>
                 {monthLabel(`${summary.month}-01`)} 수업료 합계
@@ -25006,7 +25123,7 @@ function PayrollSummary({
               {" "}소계는 엑셀의 피벗으로 만드세요 -- 반대 방향은 할 수 없습니다.
               {" "}강사별·지점별은 각 묶음 안의 버튼으로 받습니다.
             </p>
-          </section>
+          </section>}
         </>
       ) : null}
     </div>
@@ -31985,6 +32102,14 @@ export function createAppScreenSmokeCases() {
       })]),
       issuers: smokeInstructors, locations: smokeLocations, clients: smokeClients, products: smokeProducts,
     }) },
+    { name: "발급 내역 · PC", element: issueReport(smokeOwner, {
+      wide: true,
+      summary: smokeIssueSummary([smokeIssueRow(), smokeIssueRow({
+        entryId: "e-2", passId: "pass-2", clientId: "smoke-client-c",
+        category: "pt_1_1_repurchase_event", contractPrice: 900000, isNew: false,
+      })]),
+      issuers: smokeInstructors, locations: smokeLocations, clients: smokeClients, products: smokeProducts,
+    }) },
     /* 취소는 줄을 긋고 합계에서 뺀다. 지우지 않는 이유는 대표가 "분명 팔았는데"
        를 찾게 되기 때문이다. */
     { name: "발급 내역 · 취소 · 이관 제외", element: issueReport(smokeOwner, {
@@ -32025,6 +32150,13 @@ export function createAppScreenSmokeCases() {
     }) },
     { name: "급여 집계 · 두 지점", element: payrollSummary(smokeOwner, {
       ...smokePayrollNames,
+      summary: smokePayrollOf(smokePayrollEntries.map((entry) => (
+        entry.instructorId === "u2" ? { ...entry, locationId: "centum" } : entry
+      ))),
+    }) },
+    /* PC 배치 (2026-11-21 현황판 웹 배치안 2단계): 지점 칩 · 강사 표 · 오른쪽 상세. */
+    { name: "급여 집계 · 두 지점 · PC", element: payrollSummary(smokeOwner, {
+      ...smokePayrollNames, wide: true,
       summary: smokePayrollOf(smokePayrollEntries.map((entry) => (
         entry.instructorId === "u2" ? { ...entry, locationId: "centum" } : entry
       ))),

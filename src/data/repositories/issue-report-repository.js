@@ -258,6 +258,17 @@ export function summarizeIssues(input) {
     issuer.newAmount += count(row.contractPrice);
   }
 
+  /* 화면은 최신이 맨 위 (2026-11-21 대표: "발급 내역 이름별로 누가 어떻게, 최신이 맨 위로").
+     발급자 안의 줄은 새것부터, 발급자는 가장 최근에 발급한 사람부터. CSV 는 위의 rows(오래된 것부터) 그대로 --
+     엑셀에서 날짜순으로 더해 내려가는 자리다. */
+  for (const location of byLocation) {
+    for (const issuer of location.byIssuer) {
+      issuer.rows.sort((left, right) => toDate(right.occurredAt) - toDate(left.occurredAt));
+      issuer.latestAt = issuer.rows[0] ? issuer.rows[0].occurredAt : null;
+    }
+    location.byIssuer.sort((left, right) => toDate(right.latestAt) - toDate(left.latestAt));
+  }
+
   return { month, start, end, rows, byLocation, totals };
 }
 

@@ -427,6 +427,7 @@ import { beforeAfterNudge, lastSentAtOf, recordNudge } from "./features/records/
 import {
   RADAR_EXPIRY_DAYS, RADAR_REMAINING_MAX, RATE_WINDOW_DAYS, radarPassLabel, radarSignalLabel, radarSummary, renewalRadar, renewalRateLabel,
 } from "./features/records/renewal-radar.js";
+import { groupRowsByBranch, pickBranch } from "./features/records/branch-groups.js";
 import { listRecentMemberSummaries, readClientName, readMemberSummary } from "./data/repositories/member-summary-repository.js";
 import { selectLessonBriefing } from "./features/lesson-record/briefing-view.js";
 import { RENEWAL_ALERT, livePassesOf, renewalForecast, renewalLine, renewalRates } from "../functions/shared/renewal-forecast.mjs";
@@ -26756,7 +26757,8 @@ const recordCheckedLabel = (millis) => {
 function InstructorRecordBoard({ organization, instructorStore, clientStore, initialState = null, initialMonth = null }) {
   const thisMonth = currentRatingMonth();
   const [month, setMonth] = useState(initialMonth || thisMonth);
-  const [state, setState] = useState(() => initialState || { rows: null, error: "", notesError: "", namesError: "" });
+  const [state, setState] = useState(() => initialState || { rows: null, error: "", notesError: "", namesError: "", instructors: [], locations: [] });
+  const [branch, setBranch] = useState("");
   const organizationId = organization?.organizationId || "";
   const load = useCallback(async () => {
     if (!organizationId) return;
@@ -26765,22 +26767,23 @@ function InstructorRecordBoard({ organization, instructorStore, clientStore, ini
     /* 회원에게 보낸 말은 수업 뒤 며칠 지나 쓰기도 한다 -- 만든 시각으로 15일 더 읽고, 짝은 수업 · 회원으로 맞춘다. */
     const notesEnd = new Date(end.getTime() + 15 * 24 * 60 * 60e3);
     try {
-      const [ledger, activities, notes, members, clients] = await Promise.all([
+      const [ledger, activities, notes, members, clients, locations] = await Promise.all([
         loadOrganizationLedger(organizationId, { start, end }),
         listRecordActivity(organizationId, month),
         toleratingReadFailure(listLessonNotesBetween(organizationId, start, notesEnd)),
         toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
         toleratingReadFailure(listClients(organizationId, { store: clientStore })),
+        toleratingReadFailure(listLocations(organizationId)),
       ]);
       const rows = instructorRecordBoard({
         ledger, activities, lessonNotes: notes.items, instructors: members.items,
         canonicalInstructorId: canonicalInstructorIdFrom(members.items),
         excludedClientIds: reviewDemoClientIds(clients.items),
       });
-      setState({ rows, error: "", notesError: notes.errorCode, namesError: members.errorCode || clients.errorCode });
+      setState({ rows, error: "", notesError: notes.errorCode, namesError: members.errorCode || clients.errorCode || locations.errorCode, instructors: members.items, locations: locations.items });
     } catch (thrown) {
       const code = String(thrown?.code || "unknown");
-      setState({ rows: [], error: `기록 현황을 읽지 못했어요 (코드 ${code})`, notesError: "", namesError: "" });
+      setState({ rows: [], error: `기록 현황을 읽지 못했어요 (코드 ${code})`, notesError: "", namesError: "", instructors: [], locations: [] });
       deviceLog("record_board_read_failed", {
         feature: "record_activity", stage: thrown?.feature ? `${thrown.feature}:${thrown.stage || "list"}` : "board_read",
         errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200),
@@ -26789,7 +26792,11 @@ function InstructorRecordBoard({ organization, instructorStore, clientStore, ini
     }
   }, [organizationId, month, instructorStore, clientStore, organization?.role]);
   useEffect(() => { if (!initialState) load(); }, [load, initialState]);
-  const summary = recordBoardSummary(state.rows || []);
+  /* 지점별로 (2026-11-21 대표: "취합하는 거 나올 땐 지점별로 강사 하나씩"). */
+  const recordGroups = groupRowsByBranch(state.rows || [], { instructors: state.instructors || [], locations: state.locations || [], canonicalInstructorId: canonicalInstructorIdFrom(state.instructors || []) });
+  const recordBranch = pickBranch(recordGroups, branch);
+  const recordShown = recordGroups.length > 1 ? (recordGroups.find((group) => group.id === recordBranch)?.rows || []) : (state.rows || []);
+  const summary = recordBoardSummary(recordShown);
   const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
   const chip = (tone, label, value) => (
     <span className="px-2 py-1 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: RECORD_TONE_COLOR[tone](), backgroundColor: RECORD_TONE_BG[tone]() }}>{label} {value}</span>
@@ -26810,6 +26817,7 @@ function InstructorRecordBoard({ organization, instructorStore, clientStore, ini
         {" "}<b style={{ color: INK }}>회원에게 보낸 말</b>은 확정한 수업 중 회원 앱으로 한마디를 보낸 수업이에요.
         {" "}기록 내용 · 회원 이름은 여기 오지 않아요. 기록이 적은 강사가 위에 있어요.
       </p>
+      <BranchTabs groups={recordGroups} selected={recordBranch} onSelect={setBranch} countLabel={(group) => `${group.rows.length}명`} />
       {state.rows && state.rows.length ? (
         <div className="mt-2 flex flex-wrap gap-1.5" data-record-summary>
           {chip(RECORD_TONE.GOOD, "잘함", summary.good)}
@@ -26824,7 +26832,7 @@ function InstructorRecordBoard({ organization, instructorStore, clientStore, ini
       {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
       {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>이 달에 확정한 수업 · 보고가 없어요.</p> : null}
       <div className="mt-3 space-y-2">
-        {(state.rows || []).map((row) => {
+        {recordShown.map((row) => {
           const view = recordRowView(row);
           return (
             <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-record-row={view.code}>
@@ -26867,28 +26875,30 @@ const SHARE_TONE_BG = { good: () => GOOD_S, warn: () => WARN_S, bad: () => BAD_S
 function BeforeAfterShareBoard({ organization, instructorStore, clientStore, passStore, onLoad = fbBeforeAfterShareStats, initialState = null }) {
   const thisMonth = currentRatingMonth();
   const [month, setMonth] = useState(thisMonth);
-  const [state, setState] = useState(() => initialState || { rows: null, error: "", namesError: "", truncated: false });
+  const [state, setState] = useState(() => initialState || { rows: null, error: "", namesError: "", truncated: false, instructors: [], locations: [] });
   const [open, setOpen] = useState("");
+  const [branch, setBranch] = useState("");
   const organizationId = organization?.organizationId || "";
   const load = useCallback(async () => {
     if (!organizationId) return;
     setState((current) => ({ ...current, rows: null, error: "" }));
     try {
-      const [stats, clients, passes, members] = await Promise.all([
+      const [stats, clients, passes, members, locations] = await Promise.all([
         onLoad({ organizationId }),
         toleratingReadFailure(listClients(organizationId, { store: clientStore })),
         toleratingReadFailure(listPasses(organizationId, { store: passStore })),
         toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
+        toleratingReadFailure(listLocations(organizationId)),
       ]);
       const rows = beforeAfterBoard({
         rows: Array.isArray(stats?.rows) ? stats.rows : [], clients: clients.items, passes: passes.items, instructors: members.items,
         canonicalInstructorId: canonicalInstructorIdFrom(members.items), excludedClientIds: reviewDemoClientIds(clients.items),
         month, now: new Date(),
       });
-      setState({ rows, error: "", namesError: clients.errorCode || passes.errorCode || members.errorCode, truncated: Boolean(stats?.truncated) });
+      setState({ rows, error: "", namesError: clients.errorCode || passes.errorCode || members.errorCode || locations.errorCode, truncated: Boolean(stats?.truncated), instructors: members.items, locations: locations.items });
     } catch (thrown) {
       const code = serverCodeOf(thrown) || "unknown";
-      setState({ rows: [], error: `비포애프터 공유 현황을 읽지 못했어요 (코드 ${code})`, namesError: "", truncated: false });
+      setState({ rows: [], error: `비포애프터 공유 현황을 읽지 못했어요 (코드 ${code})`, namesError: "", truncated: false, instructors: [], locations: [] });
       deviceLog("before_after_stats_failed", {
         feature: "before_after_stats", stage: "callable", errorDomain: "functions_callable",
         errorCode: String(thrown?.code || "unknown"), serverCode: code, message: String(thrown?.message || "").slice(0, 200),
@@ -26901,6 +26911,10 @@ function BeforeAfterShareBoard({ organization, instructorStore, clientStore, pas
   const badge = (view) => (
     <span className="shrink-0 px-2 py-0.5 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: SHARE_TONE_COLOR[view.tone](), backgroundColor: SHARE_TONE_BG[view.tone]() }}>{view.label}</span>
   );
+  /* 지점별로 · 강사는 하나씩 펼친다 (2026-11-21 대표). */
+  const shareGroups = groupRowsByBranch(state.rows || [], { instructors: state.instructors || [], locations: state.locations || [], canonicalInstructorId: canonicalInstructorIdFrom(state.instructors || []) });
+  const shareBranch = pickBranch(shareGroups, branch);
+  const shareShown = shareGroups.length > 1 ? (shareGroups.find((group) => group.id === shareBranch)?.rows || []) : (state.rows || []);
   return (
     <section className="mt-3" style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-before-after-board>
       <div className="flex items-center justify-between">
@@ -26921,8 +26935,9 @@ function BeforeAfterShareBoard({ organization, instructorStore, clientStore, pas
       {state.truncated ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>카드가 너무 많아 일부만 셌어요 (코드 share_stats_truncated)</p> : null}
       {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
       {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>담당 회원 · 보낸 카드가 없어요.</p> : null}
+      <BranchTabs groups={shareGroups} selected={shareBranch} onSelect={(id) => { setBranch(id); setOpen(""); }} countLabel={(group) => `${group.rows.length}명`} />
       <div className="mt-3 space-y-2">
-        {(state.rows || []).map((row) => {
+        {shareShown.map((row) => {
           const view = shareInstructorView(row);
           const expanded = open === row.instructorId;
           return (
@@ -26972,107 +26987,195 @@ const RADAR_TONE = { urgent: () => BAD, risk: () => WARN, calm: () => SUB };
 const RADAR_TONE_BG = { urgent: () => BAD_S, risk: () => WARN_S, calm: () => CANVAS };
 const RADAR_LEDGER_DAYS = 56;
 const RADAR_NOTES_DAYS = 45;
+/* 이 시간 안에 읽은 결과는 다시 열어도 새로 읽지 않는다. [새로고침] 은 언제든 새로 읽는다. */
+const RADAR_FRESH_MS = 5 * 60e3;
+
+/* ── 바로 뜨게 (2026-11-21 대표: "읽는 중이 왜 이렇게 오래 걸려? 누르면 바로 뜨게") ──
+   전에는 여덟 가지를 다 받은 뒤에야 그렸다. 이제는
+    1. 센터 운영 메뉴를 열 때 미리 읽기 시작한다 (prefetchRenewalRadar)
+    2. 지난 결과를 기억해 두었다가 다시 열면 바로 보이고, 뒤에서 새로 읽는다
+    3. 회원 · 회원권 · 차감이 오면 바로 그린다. 나머지 신호는 오는 대로 채운다 -- 그 사이 모르는 신호는 신호로 치지 않는다
+   기억은 메모리에만 둔다 (앱을 닫으면 사라진다) -- 기기 저장소에 회원 이름을 따로 남기지 않는다. */
+const radarCache = new Map();
+function radarEntry(organizationId) {
+  if (!radarCache.has(organizationId)) radarCache.set(organizationId, { data: {}, at: 0, loading: false, listeners: new Set() });
+  return radarCache.get(organizationId);
+}
+function startRadarLoad({ organizationId, clientStore, passStore, instructorStore, onLoadShares = fbBeforeAfterShareStats, role = "" }, { force = false } = {}) {
+  const entry = radarEntry(organizationId);
+  if (!organizationId || entry.loading || (!force && entry.at && Date.now() - entry.at < RADAR_FRESH_MS)) return entry;
+  entry.loading = true;
+  const now = new Date();
+  const thisMonth = currentRatingMonth();
+  /* 달 초에는 이 달 숫자가 아직 적다 -- 10일까지는 지난달 기록률을 쓴다. */
+  const activityMonth = now.getDate() <= 10 ? previousRecordMonth(thisMonth) : thisMonth;
+  const notify = () => entry.listeners.forEach((listener) => listener(entry));
+  const put = (key, value) => { entry.data = { ...entry.data, [key]: value }; notify(); };
+  const day = 86400000;
+  const jobs = [
+    /* 차감 · 되돌림만 읽는다 (급여가 쓰는 색인). 원장 전체를 읽으면 발급 · 담당 교체까지 딸려 와 몇 배가 된다. */
+    Promise.all([
+      listClients(organizationId, { store: clientStore }),
+      listPasses(organizationId, { store: passStore }),
+      listRecentDeductions({ organizationId, now, days: RADAR_LEDGER_DAYS }),
+    ]).then(([clients, passes, ledger]) => { put("core", { clients, passes, ledger, now: now.getTime(), activityMonth }); put("coreError", ""); })
+      .catch((thrown) => {
+        const code = String(thrown?.code || "unknown");
+        put("coreError", code);
+        deviceLog("renewal_radar_read_failed", {
+          feature: "renewal_radar", stage: thrown?.feature ? `${thrown.feature}:${thrown.stage || "list"}` : "radar_read",
+          errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200),
+          role, appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+        });
+      }),
+    toleratingReadFailure(listLessonNotesBetween(organizationId, new Date(now.getTime() - RADAR_NOTES_DAYS * day), new Date(now.getTime() + day))).then((value) => put("notes", value)),
+    Promise.resolve().then(() => onLoadShares({ organizationId }))
+      .then((result) => ({ rows: Array.isArray(result?.rows) ? result.rows : [], errorCode: "" }))
+      .catch((thrown) => ({ rows: null, errorCode: serverCodeOf(thrown) || String(thrown?.code || "unknown") }))
+      .then((value) => put("shares", value)),
+    toleratingReadFailure(listRecordActivity(organizationId, activityMonth)).then((value) => put("activities", value)),
+    listRenewalCandidates(organizationId)
+      .then((rows) => ({ rows, errorCode: "" }))
+      .catch((thrown) => ({ rows: null, errorCode: String(thrown?.code || "unknown").replace("firestore/", "") }))
+      .then((value) => put("candidates", value)),
+    toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })).then((value) => put("members", value)),
+    toleratingReadFailure(listLocations(organizationId)).then((value) => put("locations", value)),
+  ];
+  Promise.allSettled(jobs).then(() => { entry.loading = false; entry.at = Date.now(); notify(); });
+  notify();
+  return entry;
+}
+/** 센터 운영 메뉴가 열릴 때 미리 읽는다. 5분 안에 읽었으면 아무것도 안 한다. */
+function prefetchRenewalRadar(params) {
+  try { startRadarLoad(params); } catch (_ignored) { /* 미리 읽기가 메뉴를 깨뜨리면 안 된다 -- 화면을 열면 다시 읽는다. */ }
+}
+
+/** 지점 칩 (2026-11-21 대표: "취합하는 거 나올 땐 지점별로 강사 하나씩"). 강사별 집계 화면이 같이 쓴다. */
+function BranchTabs({ groups, selected, onSelect, countLabel = (group) => `${group.rows.length}` }) {
+  if (!Array.isArray(groups) || groups.length < 2) return null;
+  return (
+    <div className="mt-3 flex flex-wrap gap-1.5" role="tablist" aria-label="지점" data-branch-tabs>
+      {groups.map((group) => {
+        const active = group.id === selected;
+        return (
+          <button key={group.id} type="button" role="tab" aria-selected={active} data-branch-tab={group.id} onClick={() => onSelect(group.id)}
+            className="min-h-9 px-3 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 999, backgroundColor: active ? INK : CANVAS, color: active ? CARD : INK2 }}>
+            {group.name} <span style={{ opacity: 0.7 }}>{countLabel(group)}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 function RenewalRadarScreen({ organization, instructorStore, clientStore, passStore, onOpenClient, onLoadShares = fbBeforeAfterShareStats, initialState = null }) {
-  const [state, setState] = useState(() => initialState || { rows: null, error: "", warnings: [], candidatesEmpty: false, activityMonth: "" });
-  const [open, setOpen] = useState(() => new Set(initialState?.open || []));
   const organizationId = organization?.organizationId || "";
-  const load = useCallback(async () => {
-    if (!organizationId) return;
-    setState((current) => ({ ...current, rows: null, error: "" }));
-    const now = new Date();
-    const thisMonth = currentRatingMonth();
-    /* 달 초에는 이 달 숫자가 아직 적다 -- 10일까지는 지난달 기록률을 쓴다. */
-    const activityMonth = now.getDate() <= 10 ? previousRecordMonth(thisMonth) : thisMonth;
-    try {
-      const [clients, passes, ledger, notes, shares, activities, candidates, members] = await Promise.all([
-        listClients(organizationId, { store: clientStore }),
-        listPasses(organizationId, { store: passStore }),
-        loadOrganizationLedger(organizationId, { start: new Date(now.getTime() - RADAR_LEDGER_DAYS * 86400000), end: new Date(now.getTime() + 86400000) }),
-        toleratingReadFailure(listLessonNotesBetween(organizationId, new Date(now.getTime() - RADAR_NOTES_DAYS * 86400000), new Date(now.getTime() + 86400000))),
-        Promise.resolve().then(() => onLoadShares({ organizationId }))
-          .then((result) => ({ rows: Array.isArray(result?.rows) ? result.rows : [], errorCode: "" }))
-          .catch((thrown) => ({ rows: null, errorCode: serverCodeOf(thrown) || String(thrown?.code || "unknown") })),
-        toleratingReadFailure(listRecordActivity(organizationId, activityMonth)),
-        listRenewalCandidates(organizationId)
-          .then((rows) => ({ rows, errorCode: "" }))
-          .catch((thrown) => ({ rows: null, errorCode: String(thrown?.code || "unknown").replace("firestore/", "") })),
-        toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
-      ]);
-      const rows = renewalRadar({
-        clients, passes, ledger, lessonNotes: notes.failed ? [] : notes.items,
-        shares: shares.rows, activities: activities.items, activityMonth, candidates: candidates.rows,
-        instructors: members.items, canonicalInstructorId: canonicalInstructorIdFrom(members.items),
-        excludedClientIds: reviewDemoClientIds(clients), now,
-      });
-      const warnings = [
-        notes.failed ? `회원에게 보낸 말을 읽지 못해 그 신호는 빠졌어요 (코드 ${notes.errorCode})` : "",
-        shares.rows === null ? `비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 (코드 ${shares.errorCode})` : "",
-        activities.failed ? `강사 기록 숫자를 읽지 못했어요 (코드 ${activities.errorCode})` : "",
-        candidates.rows === null ? `재등록 결과를 읽지 못했어요 (코드 ${candidates.errorCode})` : "",
-        members.failed ? `강사 이름을 읽지 못했어요 (코드 ${members.errorCode})` : "",
-      ].filter(Boolean);
-      setState({ rows, error: "", warnings, candidatesEmpty: Array.isArray(candidates.rows) && !candidates.rows.length, activityMonth });
-    } catch (thrown) {
-      const code = String(thrown?.code || "unknown");
-      setState({ rows: [], error: `재등록 레이더를 읽지 못했어요 (코드 ${code})`, warnings: [], candidatesEmpty: false, activityMonth });
-      deviceLog("renewal_radar_read_failed", {
-        feature: "renewal_radar", stage: thrown?.feature ? `${thrown.feature}:${thrown.stage || "list"}` : "radar_read",
-        errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200),
-        role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
-      });
-    }
-  }, [organizationId, clientStore, passStore, instructorStore, onLoadShares, organization?.role]);
-  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
-  const summary = radarSummary(state.rows || []);
-  const toggle = (id) => setOpen((current) => {
-    const next = new Set(current);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
+  const params = useMemo(() => ({ organizationId, clientStore, passStore, instructorStore, onLoadShares, role: organization?.role || "" }),
+    [organizationId, clientStore, passStore, instructorStore, onLoadShares, organization?.role]);
+  const [snapshot, setSnapshot] = useState(() => {
+    if (initialState) return { data: initialState.data || {}, loading: false };
+    const entry = organizationId ? radarEntry(organizationId) : null;
+    return { data: entry?.data || {}, loading: Boolean(entry?.loading) };
   });
+  const [open, setOpen] = useState(initialState?.open || "");
+  const [branch, setBranch] = useState(initialState?.branch || "");
+  useEffect(() => {
+    if (initialState || !organizationId) return undefined;
+    const entry = radarEntry(organizationId);
+    const listener = (current) => setSnapshot({ data: current.data, loading: current.loading });
+    entry.listeners.add(listener);
+    startRadarLoad(params);
+    listener(entry);
+    return () => { entry.listeners.delete(listener); };
+  }, [initialState, organizationId, params]);
+  const refresh = () => { if (!initialState) startRadarLoad(params, { force: true }); };
+  const data = snapshot.data;
+  const members = data.members && !data.members.failed ? data.members.items : null;
+  const view = useMemo(() => {
+    if (!data.core) return null;
+    const instructors = members || [];
+    const canonical = canonicalInstructorIdFrom(instructors);
+    const rows = renewalRadar({
+      clients: data.core.clients, passes: data.core.passes, ledger: data.core.ledger,
+      lessonNotes: data.notes && !data.notes.failed ? data.notes.items : null,
+      shares: data.shares ? data.shares.rows : null,
+      activities: data.activities && !data.activities.failed ? data.activities.items : null,
+      activityMonth: data.core.activityMonth,
+      candidates: data.candidates ? data.candidates.rows : null,
+      instructors, canonicalInstructorId: canonical,
+      excludedClientIds: reviewDemoClientIds(data.core.clients), now: data.core.now,
+    });
+    /* 강사 명부가 오기 전에는 지점을 모른다 -- 칩 없이 전부 보이고, 명부가 오면 지점으로 나눈다. */
+    const groups = members
+      ? groupRowsByBranch(rows, { instructors, locations: data.locations && !data.locations.failed ? data.locations.items : [], canonicalInstructorId: canonical })
+      : [{ id: "", name: "", rows }];
+    return { rows, groups };
+  }, [data, members]);
+  const summary = radarSummary(view?.rows || []);
+  const selectedBranch = view ? pickBranch(view.groups, branch) : "";
+  const shown = view ? (view.groups.find((group) => group.id === selectedBranch)?.rows || []) : [];
   const chip = (tone, label) => (
     <span className="px-2 py-0.5 font-bold tabular-nums" style={{ fontSize: TYPE.caption, borderRadius: 8, color: RADAR_TONE[tone](), backgroundColor: RADAR_TONE_BG[tone]() }}>{label}</span>
   );
-  const monthLabel = state.activityMonth ? `${Number(state.activityMonth.slice(5, 7))}월` : "";
+  const warnings = [
+    data.core && data.coreError ? `새로 읽지 못해 지난 결과를 보여 드려요 (코드 ${data.coreError})` : "",
+    data.notes?.failed ? `회원에게 보낸 말을 읽지 못해 그 신호는 빠졌어요 (코드 ${data.notes.errorCode})` : "",
+    data.shares && data.shares.rows === null ? `비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 (코드 ${data.shares.errorCode})` : "",
+    data.activities?.failed ? `강사 기록 숫자를 읽지 못했어요 (코드 ${data.activities.errorCode})` : "",
+    data.candidates && data.candidates.rows === null ? `재등록 결과를 읽지 못했어요 (코드 ${data.candidates.errorCode})` : "",
+    data.members?.failed ? `강사 명부를 읽지 못해 지점으로 나누지 못했어요 (코드 ${data.members.errorCode})` : "",
+    data.locations?.failed ? `지점 이름을 읽지 못했어요 (코드 ${data.locations.errorCode})` : "",
+  ].filter(Boolean);
+  const pending = [
+    data.notes ? "" : "보낸 말", data.shares ? "" : "비포애프터", data.activities ? "" : "기록률", data.candidates ? "" : "재등록률",
+  ].filter(Boolean);
+  const candidatesEmpty = Array.isArray(data.candidates?.rows) && !data.candidates.rows.length;
+  const monthLabel = data.core?.activityMonth ? `${Number(data.core.activityMonth.slice(5, 7))}월` : "";
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-renewal-radar>
       <div className="flex items-center justify-between">
         <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>재등록 레이더</h2>
-        <button type="button" onClick={load} className="h-9 px-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
+        <span className="flex items-center gap-2">
+          {snapshot.loading && view ? <span style={{ fontSize: TYPE.caption, color: FAINT }} data-radar-refreshing>새로 읽는 중…</span> : null}
+          <button type="button" onClick={refresh} disabled={snapshot.loading} className="h-9 px-2 font-bold disabled:opacity-40" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
+        </span>
       </div>
       <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
         잔여 {RADAR_REMAINING_MAX}회 이하이거나 만료 {RADAR_EXPIRY_DAYS}일 안쪽, 또는 지금 속도로 다 못 쓸 회원이에요.
         {" "}신호는 출석 · 회원에게 보낸 말 · 비포애프터에서 저절로 나와요 — <b style={{ color: INK }}>강사가 따로 할 일은 없어요.</b>
         {" "}신호가 많은 회원이 위에 있어요. 회원별 수업기록 공백은 수업기록 서버 저장을 켜면 함께 보여요.
       </p>
-      {state.rows && state.rows.length ? (
+      {view && view.rows.length ? (
         <div className="mt-2 flex flex-wrap gap-1.5" data-radar-summary>
           {chip("calm", `대상 ${summary.total}명`)}
           {chip("urgent", `급함 ${summary.urgent}명`)}
           {chip("risk", `신호 있음 ${summary.atRisk}명`)}
         </div>
       ) : null}
-      {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
-      {state.warnings.map((line) => <p key={line} className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{line}</p>)}
-      {state.candidatesEmpty ? (
+      {!view && data.coreError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>재등록 레이더를 읽지 못했어요 (코드 {data.coreError})</p> : null}
+      {warnings.map((line) => <p key={line} className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{line}</p>)}
+      {view && pending.length ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: FAINT }} data-radar-pending>{pending.join(" · ")} 확인 중… 오는 대로 채워져요</p> : null}
+      {candidatesEmpty ? (
         <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }} data-radar-hint="renewal_candidates_empty">
           재등록률이 아직 비어 있어요. 운영 스위치에서 <b style={{ color: INK }}>재등록 알림</b>을 켠 뒤 만료 회원 현황의 [지난 6달 채우기]를 누르면 채워져요 (코드 renewal_candidates_empty)
         </p>
       ) : null}
-      {state.rows && state.rows.length ? (
+      {view && view.rows.length ? (
         <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: FAINT }}>
           강사 줄의 기록률({monthLabel})과 재등록률(최근 {RATE_WINDOW_DAYS}일)은 나란히 보는 참고 숫자예요. 대상이 적으면 크게 흔들리고, 같이 움직여도 그것이 원인이라고 단정할 수는 없어요.
         </p>
       ) : null}
-      {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
-      {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>곧 끝나는 회원권이 없어요.</p> : null}
+      {!view && !data.coreError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>회원 · 회원권을 읽는 중…</p> : null}
+      {view && !view.rows.length ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>곧 끝나는 회원권이 없어요.</p> : null}
+      {view ? <BranchTabs groups={view.groups} selected={selectedBranch} onSelect={(id) => { setBranch(id); setOpen(""); }} countLabel={(group) => `${group.rows.reduce((sum, row) => sum + row.members.length, 0)}명`} /> : null}
       <div className="mt-3 space-y-2">
-        {(state.rows || []).map((row) => {
-          const expanded = open.has(row.instructorId);
+        {shown.map((row) => {
+          const expanded = open === row.instructorId;
           const renewal = row.renewal ? renewalRateLabel(row.renewal) : null;
           return (
             <div key={row.instructorId || "none"} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-radar-row={row.instructorId || "none"}>
-              <button type="button" onClick={() => toggle(row.instructorId)} className="flex w-full items-center justify-between gap-2 text-left" aria-expanded={expanded}>
+              {/* 강사는 하나씩 -- 다른 강사를 열면 앞의 것은 닫힌다 (대표 2026-11-21). */}
+              <button type="button" onClick={() => setOpen(expanded ? "" : row.instructorId)} className="flex w-full items-center justify-between gap-2 text-left" aria-expanded={expanded}>
                 <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>
                   {row.name || (row.instructorId ? row.instructorId : "담당 강사 없음")}{row.active ? "" : " · 소속 아님"}
                 </span>
@@ -28372,7 +28475,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
      보게 되고, 그 차이는 아무 데도 적히지 않는다. 지난달 원장만 이 화면을
      열었을 때 따로 읽는다. */
   currentUserId = "", rosterClients = [], rosterPasses = [], monthReportState = null, onOpenPay,
-  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, onSnapshotBackup, snapshotBusy = false, onRosterChanged, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, onPreviewInstructorNames, onConfirmInstructorNames, noticeStore, onManageNotice, noticeWho = null, onOwnerMessageSaved, ownerMessageState = null, initialView = "hub", initialOpenGroups = null, nameConfirmState = null, noticeState = null }) {
+  onChangeSettings, onChangePhoto, onLogout, onDeleteAccount, onToast, themePref, onChangeTheme, onImport, onOpenSchedule, onOpenRecords, onOpenOnboarding, onOpenLessonExamples, backupStatus, onEnablePhotoBackup, onRetryBackup, onRestorePrevious, onSnapshotBackup, snapshotBusy = false, onRosterChanged, productStore, clientStore, locationStore, instructorStore, instructorRateStore, passStore, migrationStore, payrollStore, issueStore, auditStore, ledgerStore, onRetryOrganization, onOpenClient, onClearMigratedSettlements, onLoadRuntimeConfig, onSaveRuntimeConfig, onSwapInstructorAccount, onPreviewInstructorNames, onConfirmInstructorNames, noticeStore, onManageNotice, noticeWho = null, onOwnerMessageSaved, ownerMessageState = null, initialView = "hub", initialOpenGroups = null, nameConfirmState = null, noticeState = null, prefetchRadar = false }) {
   const aiRecording = useContext(AIRecordingStatusContext);
   const organization = useContext(OrganizationContext);
 
@@ -28490,6 +28593,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   const showAudit = organization.ready
     && !organization.isLegacy
     && isOwnerLevelRole(organization.role);
+  /* 재등록 레이더를 미리 읽는다 (2026-11-21 대표: "누르면 바로 뜨게"). 운영 앱만 -- 견본 화면 · 테스트는 읽지 않는다. */
+  useEffect(() => {
+    if (!prefetchRadar || !showAudit || !organization.organizationId) return;
+    prefetchRenewalRadar({ organizationId: organization.organizationId, clientStore, passStore, instructorStore, role: organization.role || "" });
+  }, [prefetchRadar, showAudit, organization.organizationId, organization.role, clientStore, passStore, instructorStore]);
   /* 수업 별점 (2026-11-16 대표: "별점 항목을 따로 빼고, 점장이 자기 지점 강사들 몇 점 받는지"). 운영 스위치
      화면 안에 있던 집계를 따로 뺐다. 대표 · 총괄은 전부, 점장(직함)은 자기 지점 강사만 -- 서버가 다시 거른다. */
   const showRatings = organization.ready
@@ -31434,39 +31542,41 @@ export function createAppScreenSmokeCases() {
     { name: "재등록 레이더", element: providerWith(smokeOwner, (
       <RenewalRadarScreen organization={readyOrganizationContext(smokeOwner)} onOpenClient={noop}
         initialState={{
-          error: "", candidatesEmpty: false, activityMonth: "2026-11", open: ["u1", "u2"],
-          warnings: ["비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 (코드 permission-denied)"],
-          rows: renewalRadar({
-            now: new Date(2026, 10, 21, 12),
-            clients: [
-              { id: "r1", name: "김하나", userId: "m1", instructorIds: ["u1"] },
-              { id: "r2", name: "이두리", instructorIds: ["u1"] },
-              { id: "r3", name: "박세나", instructorIds: ["u2"] },
-            ],
-            passes: [
-              { id: "rp1", clientId: "r1", instructorId: "u1", status: "active", remainingCount: 1, totalSessions: 30, createdAt: new Date(2026, 3, 1), expiresAt: new Date(2026, 11, 30) },
-              { id: "rp2", clientId: "r2", instructorId: "u1", status: "active", remainingCount: 6, totalSessions: 20, createdAt: new Date(2026, 6, 1), expiresAt: new Date(2026, 11, 2) },
-              { id: "rp3", clientId: "r3", instructorId: "u2", status: "active", remainingCount: 3, totalSessions: 10, createdAt: new Date(2026, 8, 1), expiresAt: new Date(2027, 1, 1) },
-            ],
-            ledger: [
-              { id: "d1", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 1) },
-              { id: "d2", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 8) },
-              { id: "d3", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 15) },
-              { id: "d4", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 10, 1) },
-              { id: "d5", type: "deduct", passId: "rp3", clientId: "r3", occurredAt: new Date(2026, 10, 18) },
-            ],
-            lessonNotes: [{ clientId: "r3", memberNote: "좋았어요", createdAt: new Date(2026, 10, 18) }],
-            /* 비포애프터를 못 읽은 경우 -- 위 안내와 짝. 그 신호는 회원 줄에 나오지 않아야 한다. */
-            shares: null,
-            activities: [{ userId: "u1", month: "2026-11", attended: 40, recorded: 31, checkedAt: new Date(2026, 10, 20) }],
-            activityMonth: "2026-11",
-            candidates: [
+          open: "u1",
+          data: {
+            core: {
+              now: new Date(2026, 10, 21, 12).getTime(), activityMonth: "2026-11",
+              clients: [
+                { id: "r1", name: "김하나", userId: "m1", instructorIds: ["u1"] },
+                { id: "r2", name: "이두리", instructorIds: ["u1"] },
+                { id: "r3", name: "박세나", instructorIds: ["u2"] },
+              ],
+              passes: [
+                { id: "rp1", clientId: "r1", instructorId: "u1", status: "active", remainingCount: 1, totalSessions: 30, createdAt: new Date(2026, 3, 1), expiresAt: new Date(2026, 11, 30) },
+                { id: "rp2", clientId: "r2", instructorId: "u1", status: "active", remainingCount: 6, totalSessions: 20, createdAt: new Date(2026, 6, 1), expiresAt: new Date(2026, 11, 2) },
+                { id: "rp3", clientId: "r3", instructorId: "u2", status: "active", remainingCount: 3, totalSessions: 10, createdAt: new Date(2026, 8, 1), expiresAt: new Date(2027, 1, 1) },
+              ],
+              ledger: [
+                { id: "d1", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 1) },
+                { id: "d2", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 8) },
+                { id: "d3", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 9, 15) },
+                { id: "d4", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 10, 1) },
+                { id: "d5", type: "deduct", passId: "rp3", clientId: "r3", occurredAt: new Date(2026, 10, 18) },
+              ],
+            },
+            coreError: "",
+            notes: { items: [{ clientId: "r3", memberNote: "좋았어요", createdAt: new Date(2026, 10, 18) }], failed: false, errorCode: "" },
+            /* 비포애프터를 못 읽은 경우 -- 그 신호는 회원 줄에 나오지 않고 안내만 선다. */
+            shares: { rows: null, errorCode: "permission-denied" },
+            activities: { items: [{ userId: "u1", month: "2026-11", attended: 40, recorded: 31, checkedAt: new Date(2026, 10, 20) }], failed: false, errorCode: "" },
+            candidates: { rows: [
               { instructorId: "u1", status: "renewed", decidedAt: new Date(2026, 9, 10) },
               { instructorId: "u1", status: "lapsed", decidedAt: new Date(2026, 9, 20) },
               { instructorId: "u2", status: "pending" },
-            ],
-            instructors: smokeInstructors,
-          }),
+            ], errorCode: "" },
+            members: { items: smokeInstructors, failed: false, errorCode: "" },
+            locations: { items: [{ id: "bansong", name: "반송" }], failed: false, errorCode: "" },
+          },
         }} />
     )) },
     /* 담당 강사. 셋을 나눈다 -- 정상, 빠진 회원이 있음, 아직 안 돌았음.
@@ -36668,7 +36778,7 @@ export default function App() {
                   onSaveMarks={(view, photoId, marks, options) => saveMarks(id, view, photoId, marks, options)} onSaveAssessmentRole={(assessmentId, role) => saveAssessmentRole(id, assessmentId, role)} onToggleAssessmentFavorite={(assessmentId, favorite) => toggleAssessmentFavorite(id, assessmentId, favorite)}
                   onToast={setToast} onSaved={(mode) => setAnalysisDone({ id, mode })} /></Guard>;
               }} />}
-            {tab === "settings" && <ReferenceSettingsTab syncStatus={syncStatus} key={`settings-${settingsEntry.key}`} initialView={settingsEntry.view} onRosterChanged={() => setRosterRevision((value) => value + 1)} dataRevision={rosterRevision} db={db} photos={Object.fromEntries(Object.entries(photos).filter(([id]) => allowedPhotoMembers.has(id)))} account={account} savedAt={savedAt} demoMode={demoMode}
+            {tab === "settings" && <ReferenceSettingsTab syncStatus={syncStatus} prefetchRadar key={`settings-${settingsEntry.key}`} initialView={settingsEntry.view} onRosterChanged={() => setRosterRevision((value) => value + 1)} dataRevision={rosterRevision} db={db} photos={Object.fromEntries(Object.entries(photos).filter(([id]) => allowedPhotoMembers.has(id)))} account={account} savedAt={savedAt} demoMode={demoMode}
               instructorPay={instructorPay} payMonth={payMonth} payLoading={payLoading} payError={payError}
               currentUserId={account?.id || ""} rosterClients={rosterClients} rosterPasses={rosterPasses}
               onOpenPay={canSeeOwnPay ? () => setPayOpen(true) : undefined} onChangeSettings={(s) => saveDb({ ...db, settings: s })} onChangePhoto={changePhoto} onToast={setToast} themePref={themePref} onChangeTheme={changeTheme} onLogout={handleLogout} onDeleteAccount={handleDeleteAccount} onImport={importHandoff}

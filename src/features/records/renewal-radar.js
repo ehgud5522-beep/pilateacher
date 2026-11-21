@@ -75,10 +75,10 @@ function confirmedDeductions(ledger) {
 
 /**
  * 회원 한 명의 신호.
- * @param {{ attendance: number[], notes: number[], share: null | { linked: boolean, lastSentAt: number }, shareKnown: boolean, now: number }} input
- *   attendance = 그 회원의 확정 차감 시각들, notes = 회원에게 보낸 말 시각들
+ * @param {{ attendance: number[], notes: number[], notesKnown?: boolean, share: null | { linked: boolean, lastSentAt: number }, shareKnown: boolean, now: number }} input
+ *   attendance = 그 회원의 확정 차감 시각들, notes = 회원에게 보낸 말 시각들. notesKnown = false 면(아직 읽는 중 · 못 읽음) 보낸 말 신호를 내지 않는다
  */
-export function memberSignals({ attendance, notes, share, shareKnown, now }) {
+export function memberSignals({ attendance, notes, notesKnown = true, share, shareKnown, now }) {
   const signals = [];
   const times = (attendance || []).filter(Number.isFinite);
   const recent = times.filter((at) => at > now - PACE_WINDOW_DAYS * DAY_MS && at <= now).length;
@@ -103,7 +103,7 @@ export function memberSignals({ attendance, notes, share, shareKnown, now }) {
 
   const since = now - MEMBER_NOTE_DAYS * DAY_MS;
   const attendedLately = times.some((at) => at > since);
-  if (attendedLately && !(notes || []).some((at) => Number.isFinite(at) && at > since)) signals.push({ code: RADAR_SIGNAL.NO_MEMBER_NOTE });
+  if (notesKnown && attendedLately && !(notes || []).some((at) => Number.isFinite(at) && at > since)) signals.push({ code: RADAR_SIGNAL.NO_MEMBER_NOTE });
   return signals;
 }
 
@@ -151,8 +151,9 @@ export function renewalRateLabel(rate) {
   return { label: `재등록 ${Math.round(rate.rate * 100)}% (${rate.decided}명 중 ${rate.renewed}명)`, code: "renewal_rate" };
 }
 
-/** 기록률 문구. activity = 그 강사의 recordActivity 한 달치(없으면 null). */
-export function recordRateLabel(activity) {
+/** 기록률 문구. activity = 그 강사의 recordActivity 한 달치(없으면 null). known = false 면 아직 읽는 중 · 못 읽음. */
+export function recordRateLabel(activity, known = true) {
+  if (!known) return { label: "기록률 확인 중", code: "record_rate_pending", rate: null };
   const attended = Number(activity?.attended) || 0;
   const recorded = Number(activity?.recorded) || 0;
   if (!activity) return { label: "기록률 — 폰 앱 보고 없음", code: "no_device_report", rate: null };
@@ -164,9 +165,10 @@ export function recordRateLabel(activity) {
 /**
  * 레이더 표.
  * @param {{
- *   clients?: any[], passes?: any[], ledger?: any[], lessonNotes?: any[],
+ *   clients?: any[], passes?: any[], ledger?: any[],
+ *   lessonNotes?: any[] | null,     null = 아직 모름 (보낸 말 신호를 내지 않는다)
  *   shares?: any[] | null,          비포애프터 카드 줄 (beforeAfterShareStats). null = 못 읽음
- *   activities?: any[],             recordActivity (이 달 · 지난달 섞여도 된다 -- month 로 고른다)
+ *   activities?: any[] | null,      null = 아직 모름. recordActivity (이 달 · 지난달 섞여도 된다 -- month 로 고른다)
  *   activityMonth?: string,         기록률에 쓸 달 "YYYY-MM"
  *   candidates?: any[] | null,      renewalCandidates. null = 못 읽음
  *   instructors?: any[], canonicalInstructorId?: (id: unknown) => string, excludedClientIds?: Set<string> | null,
@@ -189,8 +191,9 @@ export function renewalRadar(input) {
     if (!attendanceBy.has(id)) attendanceBy.set(id, []);
     attendanceBy.get(id).push(at);
   }
+  const notesKnown = Array.isArray(input.lessonNotes);
   const notesBy = new Map();
-  for (const note of input.lessonNotes || []) {
+  for (const note of notesKnown ? input.lessonNotes : []) {
     if (!note || !text(note.memberNote)) continue;
     const id = text(note.clientId);
     const at = timeOf(note.createdAt);
@@ -230,6 +233,7 @@ export function renewalRadar(input) {
     const signals = memberSignals({
       attendance: attendanceBy.get(clientId) || [],
       notes: notesBy.get(clientId) || [],
+      notesKnown,
       share: { linked: Boolean(text(client.userId)), lastSentAt: lastShareBy.get(clientId) || 0 },
       shareKnown,
       now,
@@ -246,9 +250,10 @@ export function renewalRadar(input) {
     rowOf(row.instructorId).candidates.push(row);
   }
 
+  const activitiesKnown = Array.isArray(input.activities);
   const month = text(input.activityMonth);
   const activityBy = new Map();
-  for (const activity of input.activities || []) {
+  for (const activity of activitiesKnown ? input.activities : []) {
     if (!activity || !text(activity.userId) || (month && text(activity.month) !== month)) continue;
     const key = canonical(activity.userId) || text(activity.userId);
     const at = timeOf(activity.checkedAt) || 0;
@@ -269,7 +274,7 @@ export function renewalRadar(input) {
       atRisk: members.filter((item) => item.signals.length > 0).length,
       urgent: members.filter((item) => item.urgent).length,
       renewal: candidatesKnown ? rate : null,
-      record: recordRateLabel(activityBy.get(row.instructorId) || null),
+      record: recordRateLabel(activityBy.get(row.instructorId) || null, activitiesKnown),
     };
   }).filter((row) => row.members.length > 0 || (row.renewal && (row.renewal.decided || row.renewal.pending)))
     .sort((left, right) => right.urgent - left.urgent || right.atRisk - left.atRisk || right.members.length - left.members.length || left.name.localeCompare(right.name, "ko"));

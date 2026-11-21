@@ -3292,7 +3292,10 @@ test("재등록 레이더: 급한 회원 · 신호 · 못 읽은 신호는 빼�
   assert.match(radar, /비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 \(코드 permission-denied\)/);
   assert.doesNotMatch(radar, /data-radar-signal="before_after_/, "못 읽은 비포애프터를 \"안 보냄\" 으로 칠하지 않는다");
   assert.match(radar, /재등록 2명 중 1명/, "표본이 적으면 퍼센트를 내지 않는다");
-  assert.match(radar, /코드 no_device_report/);
+  /* 지점별로 (2026-11-21 대표): 반송 칩이 먼저 고르고, 지점 없는 박서연은 "지점 없음" 칩 뒤에 있다 */
+  assert.match(radar, /data-branch-tab="bansong"/);
+  assert.match(radar, /지점 없음/);
+  assert.doesNotMatch(radar, /박세나/, "고르지 않은 지점의 회원은 그리지 않는다");
 });
 
 test("the member tab separates ongoing from expired, and says why it ended", async (t) => {

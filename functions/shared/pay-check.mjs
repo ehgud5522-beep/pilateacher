@@ -72,24 +72,39 @@ function hash(textValue) {
   }
   return value.toString(16).padStart(8, "0");
 }
+/** djb2 32비트 -- FNV 와 함께 써서 우연히 같은 값이 나올 가능성을 줄인다. */
+function hash2(textValue) {
+  let value = 5381;
+  for (let index = 0; index < textValue.length; index += 1) value = (Math.imul(value, 33) + textValue.charCodeAt(index)) >>> 0;
+  return value.toString(16).padStart(8, "0");
+}
+/**
+ * 확인함 기준값 -- 판단에 쓴 값을 모두 넣되 **고정 길이**로 (검토: 원장 id 를 이어 붙이면 기록 많은 회원권에서 규칙 2,000자를 넘어 확인함을 못 남겼다).
+ * 내용이 조금이라도 바뀌면 달라진다.
+ */
+export const signatureOf = (raw) => `${String(raw).length.toString(36)}-${hash(String(raw))}${hash2(String(raw))}`;
 
 /**
  * 점검 · 급여 계산에 쓴 자료의 지문. 급여 확정 트랜잭션이 같은 자료를 다시 읽어 이것과 견준다 --
  * 재점검과 확정 사이에 차감 · 보정 · 수업 상태 · 그룹 급여가 바뀌었으면 거절한다 (검토 지적 3).
- * @param {{ monthLedger?: any[], lessons?: any[], groupRows?: any[] }} input
+ * @param {{ monthLedger?: any[], lessons?: any[], groupRows?: any[], passes?: any[], passLedger?: any[] }} input
  */
-export function sourceFingerprint({ monthLedger = [], lessons = [], groupRows = [] }) {
-  const ledger = monthLedger.map((entry) => `${entryIdOf(entry)}:${text(entry.type)}:${Number(entry.delta) || 0}:${Number(entry.unitPrice) || 0}`).sort();
-  const lessonRows = lessons.map((lesson) => `${text(lesson.lessonId || lesson.id)}:${text(lesson.status)}:${sorted(lesson.clientIds).join("+")}`).sort();
+export function sourceFingerprint({ monthLedger = [], lessons = [], groupRows = [], passes = [], passLedger = [] }) {
+  const ledgerLine = (entry) => `${entryIdOf(entry)}:${text(entry.type)}:${Number(entry.delta) || 0}:${Number(entry.unitPrice) || 0}:${text(entry.instructorId)}:${text(entry.clientId)}:${text(entry.lessonId)}:${millisOf(entry.occurredAt)}`;
+  const ledger = monthLedger.map(ledgerLine).sort();
+  /* 점검이 쓰는 수업 칸 전부: 상태 · 회원 · 강사 · 시각 · 정산 회원권 · 지점 (검토: 강사 · 시간 · 정산 회원권이 빠져 있었다). */
+  const lessonRows = lessons.map((lesson) => [text(lesson.lessonId || lesson.id), text(lesson.status), sorted(lesson.clientIds).join("+"), text(lesson.instructorId),
+    millisOf(lesson.startsAt), text(lesson.settledPassId), text(lesson.locationId)].join(":")).sort();
   const groups = groupRows.map((row) => `${text(row.locationId)}:${text(row.instructorId)}:${Number(row.fullCount) || 0}:${Number(row.fullRate) || 0}:${Number(row.emptyCount) || 0}`).sort();
-  return {
-    ledger: `${ledger.length}-${hash(ledger.join("|"))}`,
-    lessons: `${lessonRows.length}-${hash(lessonRows.join("|"))}`,
-    groups: `${groups.length}-${hash(groups.join("|"))}`,
-  };
+  /* 잔여 검산이 쓰는 것: 회원권의 남은 횟수 · 담당 · 회원, 그리고 회원권 원장 전부 (검토: 점검 뒤 잔여가 8 → 7 로 바뀌어도 확정이 통과했다). */
+  const passRows = passes.map((pass) => `${text(pass.id)}:${String(pass.remainingCount)}:${text(pass.clientId)}:${text(pass.instructorId)}:${text(pass.locationId)}`).sort();
+  const passLedgerRows = passLedger.map(ledgerLine).sort();
+  const pack = (rows) => `${rows.length}-${hash(rows.join("|"))}${hash2(rows.join("|"))}`;
+  return { ledger: pack(ledger), lessons: pack(lessonRows), groups: pack(groups), passes: pack(passRows), passLedger: pack(passLedgerRows) };
 }
 
-export const sameFingerprint = (left, right) => Boolean(left && right) && ["ledger", "lessons", "groups"].every((key) => text(left[key]) === text(right[key]));
+export const FINGERPRINT_PARTS = Object.freeze(["ledger", "lessons", "groups", "passes", "passLedger"]);
+export const sameFingerprint = (left, right) => Boolean(left && right) && FINGERPRINT_PARTS.every((key) => text(left[key]) === text(right[key]));
 
 /**
  * 한 달 점검 -- **전체 항목** 을 돌려준다 (자르기는 storedCheck 가 한다).
@@ -132,18 +147,18 @@ export function runPayCheck({
     const who4 = `${startsAt}|${instructorId}|${clientIds.join("+")}`;
     if (status === "scheduled" && clientIds.length && startsAt < todayStart) {
       items.push({ ...base, key: `${CHECK_KIND.UNSETTLED_PAST}:${lessonId}`, kind: CHECK_KIND.UNSETTLED_PAST, severity: CHECK_SEVERITY.WARN,
-        detail: { members: clientIds.length }, signature: who4 });
+        detail: { members: clientIds.length }, signature: signatureOf(who4) });
     }
     if (status === "completed") {
       const found = deductsByLesson.get(lessonId) || [];
       const evidence = found.map((entry) => `${entryIdOf(entry)}@${text(entry.passId)}`).sort().join(",");
       if (!found.length) {
         items.push({ ...base, key: `${CHECK_KIND.COMPLETED_NO_DEDUCT}:${lessonId}`, kind: CHECK_KIND.COMPLETED_NO_DEDUCT, severity: CHECK_SEVERITY.BLOCK,
-          detail: { members: clientIds.length, deducts: 0 }, signature: `${who4}|${text(lesson.settledPassId)}|none` });
+          detail: { members: clientIds.length, deducts: 0 }, signature: signatureOf(`${who4}|${text(lesson.settledPassId)}|none`) });
       } else if (clientIds.length > 1 && new Set(found.map((entry) => text(entry.passId))).size < clientIds.length) {
         /* 듀엣은 회원권마다 하나씩 뺀다. 한 회원권을 둘이 쓰는 듀엣이면 정상이라 "확인" 으로만. */
         items.push({ ...base, key: `${CHECK_KIND.DEDUCT_SHORT}:${lessonId}`, kind: CHECK_KIND.DEDUCT_SHORT, severity: CHECK_SEVERITY.WARN,
-          detail: { members: clientIds.length, deducts: found.length }, signature: `${who4}|${evidence}` });
+          detail: { members: clientIds.length, deducts: found.length }, signature: signatureOf(`${who4}|${evidence}`) });
       }
     }
   }
@@ -161,7 +176,7 @@ export function runPayCheck({
     const [instructorId, clientId, at] = slot.split("|");
     items.push({ instructorId, locationId: text(list[0].locationId), clientId, clientIds: [clientId], startsAt: Number(at),
       key: `${CHECK_KIND.DUPLICATE_DEDUCT}:${slot}`, kind: CHECK_KIND.DUPLICATE_DEDUCT, severity: CHECK_SEVERITY.WARN,
-      detail: { deducts: list.length, lessonIds }, signature: list.map((entry) => `${entryIdOf(entry)}@${text(entry.lessonId)}`).sort().join(",") });
+      detail: { deducts: list.length, lessonIds }, signature: signatureOf(list.map((entry) => `${entryIdOf(entry)}@${text(entry.lessonId)}`).sort().join(",")) });
   }
 
   /* 남은 횟수 검산 (pass-reconcile 와 같은 판정). 이 달에 원장이 움직인 회원권이면 급여에 걸리니 차단. */
@@ -182,7 +197,7 @@ export function runPayCheck({
     items.push({ instructorId: who(pass.instructorId), locationId: text(pass.locationId), passId: result.passId, clientId: result.clientId, clientIds: result.clientId ? [result.clientId] : [],
       key: `${kind}:${result.passId}`, kind, severity: touched ? CHECK_SEVERITY.BLOCK : CHECK_SEVERITY.WARN,
       detail: { remaining: result.remainingCount, ledgerTotal: result.ledgerTotal, difference: result.difference, reason: unknown ? text(result.unknownReason) : "", entries: entries.length },
-      signature: `${result.clientId}|${who(pass.instructorId)}|${result.remainingCount}|${result.ledgerTotal}|${entries.map(entryIdOf).sort().join(",")}|${text(result.unknownReason)}` });
+      signature: signatureOf(`${result.clientId}|${who(pass.instructorId)}|${result.remainingCount}|${result.ledgerTotal}|${entries.map((entry) => `${entryIdOf(entry)}:${Number(entry.delta) || 0}`).sort().join(",")}|${text(result.unknownReason)}`) });
   }
 
   const order = { [CHECK_SEVERITY.BLOCK]: 0, [CHECK_SEVERITY.WARN]: 1 };

@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  CHECK_KIND, CHECK_SEVERITY, PAY_CHECK_WARN_LIMIT, ackDocId, kstTodayStart, runPayCheck, sameFingerprint, sourceFingerprint, storedCheck, withAcks,
+  CHECK_KIND, CHECK_SEVERITY, PAY_CHECK_WARN_LIMIT, ackDocId, signatureOf, kstTodayStart, runPayCheck, sameFingerprint, sourceFingerprint, storedCheck, withAcks,
 } from "../../functions/shared/pay-check.mjs";
 
 const ORG = "o1";
@@ -100,4 +100,26 @@ test("자료 지문: 차감 · 보정이 하나 붙거나 수업 상태 · 그�
   assert.equal(sameFingerprint(same, sourceFingerprint({ ...base, monthLedger: [...base.monthLedger, deduct("b")] })), false);
   assert.equal(sameFingerprint(same, sourceFingerprint({ ...base, lessons: [lesson("a", { status: "scheduled" })] })), false);
   assert.equal(sameFingerprint(same, sourceFingerprint({ ...base, groupRows: [{ ...base.groupRows[0], fullCount: 3 }] })), false);
+});
+
+/* 2026-11-22 외부 검토 3회차: 확정 순간 검증에 회원권 잔여 · 전체 원장 · 수업 강사/시간/정산 회원권 · 확인함 기준값 길이 */
+test("자료 지문은 회원권 잔여 · 회원권 원장 · 수업 강사 · 시각 · 정산 회원권이 바뀌어도 달라진다", () => {
+  const base = { lessons: [lesson("a", { status: "completed", settledPassId: "p1" })], passes: [{ id: "p1", clientId: "c1", instructorId: "t1", remainingCount: 8 }],
+    passLedger: [{ id: "i1", passId: "p1", type: "issue", delta: 10 }, { id: "d1", passId: "p1", type: "deduct", delta: -1 }, { id: "d2", passId: "p1", type: "deduct", delta: -1 }] };
+  const same = sourceFingerprint(base);
+  assert.equal(sameFingerprint(same, sourceFingerprint({ ...base, passes: [{ ...base.passes[0], remainingCount: 7 }] })), false, "잔여 8 → 7");
+  assert.equal(sameFingerprint(same, sourceFingerprint({ ...base, passLedger: [...base.passLedger, { id: "d3", passId: "p1", type: "deduct", delta: -1 }] })), false, "다른 달 원장도");
+  assert.equal(sameFingerprint(same, sourceFingerprint({ ...base, lessons: [lesson("a", { status: "completed", settledPassId: "p1", instructorId: "t9" })] })), false, "강사");
+  assert.equal(sameFingerprint(same, sourceFingerprint({ ...base, lessons: [lesson("a", { status: "completed", settledPassId: "p1", startsAt: at("2026-11-18T02:00:00Z") })] })), false, "시각");
+  assert.equal(sameFingerprint(same, sourceFingerprint({ ...base, lessons: [lesson("a", { status: "completed", settledPassId: "p2" })] })), false, "정산 회원권");
+});
+
+test("확인함 기준값은 기록이 많아도 고정 길이 -- 원장 110건(20자 id)이어도 규칙 한도 안, 한 건만 바뀌어도 달라진다", () => {
+  const entries = Array.from({ length: 110 }, (_, index) => ({ id: `entry-${String(index).padStart(14, "0")}`, passId: "big", type: index ? "deduct" : "issue", delta: index ? -1 : 200, occurredAt: at("2026-11-05T01:00:00Z") }));
+  const check = run({ passes: [{ id: "big", clientId: "c1", instructorId: "t1", remainingCount: 100 }], passLedger: entries });
+  const signature = check.items[0].signature;
+  assert.ok(signature.length <= 30, `${signature.length}자`);
+  const changed = run({ passes: [{ id: "big", clientId: "c1", instructorId: "t1", remainingCount: 100 }], passLedger: [...entries.slice(0, 109), { ...entries[109], id: "entry-other-00000000" }] });
+  assert.notEqual(changed.items[0].signature, signature);
+  assert.equal(signatureOf("a").length, signatureOf("a".repeat(5000)).length - 2, "길이 표시만 다르고 나머지는 고정");
 });

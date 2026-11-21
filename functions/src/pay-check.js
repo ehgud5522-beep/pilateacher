@@ -59,7 +59,7 @@ function createPayCheckService({ firestore, membershipId, isOwnerLevel, now = ()
     ].filter(Boolean);
     const full = runPayCheck({ organizationId: org, month, now: now(), lessons, monthLedger, passes, passLedger, failures, canonicalInstructorId, rosterInstructorIds: roster });
     const groupRows = groups.flatMap((document) => (document.rows || []).map((row) => ({ ...row, locationId: document.id })));
-    const fingerprint = sourceFingerprint({ monthLedger, lessons, groupRows });
+    const fingerprint = sourceFingerprint({ monthLedger, lessons, groupRows, passes, passLedger });
     const stored = storedCheck(full, acks);
     await centre.collection("payChecks").doc(month).set({ organizationId: org, month, trigger: text(trigger), checkedAt: now(), fingerprint, ...stored });
     const judged = withAcks(full, acks);

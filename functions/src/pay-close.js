@@ -47,7 +47,7 @@ function createPayCloseService({ firestore, membershipId, isOwnerLevel, now = ()
       checkSummary = { block: checked.counts.block, warn: checked.counts.warn, openWarns: checked.openWarns, ackedBlocks: checked.counts.block - checked.openBlocks, fingerprint: checked.fingerprint };
       checkedFingerprint = checked.fingerprint;
     }
-    const [{ kstMonthRange, lessonTotalsByInstructor, lessonSourceSummary, buildPayClose, PAYROLL_LEDGER_TYPES }, { canonicalInstructorIdFrom }, { sourceFingerprint, sameFingerprint }] = await Promise.all([loadClose(), loadSwap(), loadCheck()]);
+    const [{ kstMonthRange, lessonTotalsByInstructor, lessonSourceSummary, buildPayClose, PAYROLL_LEDGER_TYPES }, { canonicalInstructorIdFrom }, { sourceFingerprint, sameFingerprint, runPayCheck, withAcks }] = await Promise.all([loadClose(), loadSwap(), loadCheck()]);
     const centre = firestore.collection("organizations").doc(org);
     const { start, end } = kstMonthRange(key);
     const [members, demoClients] = await Promise.all([
@@ -62,7 +62,7 @@ function createPayCloseService({ firestore, membershipId, isOwnerLevel, now = ()
     return firestore.runTransaction(async (tx) => {
       /* 원장 · 수업 · 그룹 급여도 트랜잭션 안에서 읽는다 -- 재점검 뒤에 차감 · 보정이 붙었거나 그룹 급여가 바뀌었으면
          점검 때의 지문과 달라 거절한다 (2026-11-22 검토 지적 3). 원장은 고칠 수 없어도 새 항목은 붙을 수 있다. */
-      const [monthSnapshot, adjustments, salesMonths, fcMonths, tax, ledger, lessonDocs, groups] = await Promise.all([
+      const [monthSnapshot, adjustments, salesMonths, fcMonths, tax, ledger, lessonDocs, groups, passDocs, passLedgerDocs, ackDocs] = await Promise.all([
         tx.get(monthRef),
         tx.get(centre.collection("payAdjustments").where("month", "==", key)),
         tx.get(centre.collection("salesMonths").where("month", "==", key)),
@@ -72,12 +72,24 @@ function createPayCloseService({ firestore, membershipId, isOwnerLevel, now = ()
           .where("occurredAt", ">=", start).where("occurredAt", "<", end)),
         tx.get(centre.collection("lessons").where("startsAt", ">=", start).where("startsAt", "<", end)),
         tx.get(centre.collection("groupPayroll").doc(key).collection("locations")),
+        /* 잔여 검산이 쓰는 회원권 · 원장 전부와 확인함도 -- 점검 판단에 쓴 자료를 확정 안에서 다시 본다. */
+        tx.get(centre.collection("passes")),
+        tx.get(firestore.collectionGroup("ledger").where("organizationId", "==", org)),
+        tx.get(centre.collection("payCheckAcks").where("month", "==", key)),
       ]);
       const groupRows = groups.docs.flatMap((document) => (document.data()?.rows || []).map((row) => ({ ...row, locationId: document.id })));
       const monthLedger = rows(ledger);
-      const fingerprint = sourceFingerprint({ monthLedger, lessons: rows(lessonDocs), groupRows });
+      const passes = rows(passDocs);
+      const passLedger = rows(passLedgerDocs);
+      const lessonRows = rows(lessonDocs);
+      const fingerprint = sourceFingerprint({ monthLedger, lessons: lessonRows, groupRows, passes, passLedger });
       if (checkedFingerprint && !sameFingerprint(checkedFingerprint, fingerprint)) {
         throw new PayCloseError("failed-precondition", "check_stale", { checked: checkedFingerprint, now: fingerprint });
+      }
+      /* 지문이 같아도 한 번 더: 확정 안에서 읽은 자료로 점검을 다시 돌려 확인 안 한 차단이 없는지 본다. */
+      if (payCheck) {
+        const inside = withAcks(runPayCheck({ organizationId: org, month: key, now: at, lessons: lessonRows, monthLedger, passes, passLedger, canonicalInstructorId }), rows(ackDocs));
+        if (inside.openBlocks) throw new PayCloseError("failed-precondition", "check_blocked", { openBlocks: inside.openBlocks });
       }
       const sourceInput = { organizationId: org, month: key, entries: monthLedger, groupRows, excludedClientIds: new Set(demoClients.docs.map((document) => document.id)) };
       const lessons = lessonTotalsByInstructor({ ...sourceInput, canonicalInstructorId });

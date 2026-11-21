@@ -122,3 +122,20 @@ test("점검 범위: 명부의 강사인데 이 달 서버 일정이 없으면 �
   assert.deepEqual(result.scope.noScheduleInstructorIds, ["t2"]);
   assert.ok(store.docs.get(`organizations/${ORG}/payChecks/${MONTH}`).fingerprint.ledger.startsWith("2-"));
 });
+
+/* 2026-11-22 외부 검토 3회차 재현: 점검 때 잔여 8 · 원장 8 → 점검 직후 잔여 7 → 확정이 통과하면 안 된다. */
+test("점검 직후 회원권 잔여가 바뀌면 확정하지 않는다 (check_stale)", async () => {
+  const store = fake(base({ [`organizations/${ORG}/lessons/L3`]: { lessonId: "L3", instructorId: "t1", clientIds: ["c1"], status: "scheduled", startsAt: new Date("2026-11-12T03:00:00Z") } }));
+  const real = createPayCheckService(deps(store));
+  const payCheck = {
+    check: async (...args) => {
+      const result = await real.check(...args);
+      store.docs.set(`organizations/${ORG}/passes/p1`, { ...store.docs.get(`organizations/${ORG}/passes/p1`), remainingCount: 7 });
+      return result;
+    },
+  };
+  await assert.rejects(createPayCloseService({ ...deps(store), payCheck }).close({ callerUid: "owner", organizationId: ORG, month: MONTH }), (error) => error.reason === "check_stale");
+  assert.equal(store.docs.get(`organizations/${ORG}/payMonths/${MONTH}`), undefined);
+  const again = await real.check(ORG, MONTH, "manual");
+  assert.equal(again.openBlocks, 1, "다시 점검하면 잔여 불일치 차단");
+});

@@ -2148,7 +2148,7 @@ service cloud.firestore {
           && request.resource.data.organizationId == organizationId
           && salesMonthString(request.resource.data.month)
           && request.resource.data.key is string && request.resource.data.key.size() > 0 && request.resource.data.key.size() <= 300
-          && request.resource.data.signature is string && request.resource.data.signature.size() <= 2000
+          && request.resource.data.signature is string && request.resource.data.signature.size() <= 64
           && ackId == request.resource.data.month + "__" + request.resource.data.key.replace("/", "_")
           && request.resource.data.reason is string && request.resource.data.reason.size() > 0 && request.resource.data.reason.size() <= 200
           && request.resource.data.ackedBy == request.auth.uid
@@ -2164,7 +2164,7 @@ service cloud.firestore {
           && request.resource.data.organizationId == organizationId
           && salesMonthString(request.resource.data.month)
           && request.resource.data.key is string && request.resource.data.key.size() > 0 && request.resource.data.key.size() <= 300
-          && request.resource.data.signature is string && request.resource.data.signature.size() <= 2000
+          && request.resource.data.signature is string && request.resource.data.signature.size() <= 64
           && request.resource.data.reason is string && request.resource.data.reason.size() > 0 && request.resource.data.reason.size() <= 200
           && request.resource.data.ackedBy == request.auth.uid
           && request.resource.data.ackedAt == request.time;

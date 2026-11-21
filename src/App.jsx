@@ -430,7 +430,7 @@ import {
 } from "./features/records/renewal-radar.js";
 import { groupRowsByBranch, pickBranch } from "./features/records/branch-groups.js";
 import {
-  CONFIRM_NOTICE_HINT, SALES_KIND_CHOICES, blankEntry, confirmFailureText, entryErrors, entryFromSuggestion, entryLine, kstDate, monthStatusView, mySalesView, salesBoardRows,
+  CONFIRM_NOTICE_HINT, SALES_KIND_CHOICES_BY_SECTION, blankEntry, otBonusOf, confirmFailureText, entryErrors, entryFromSuggestion, entryLine, kstDate, monthStatusView, mySalesView, salesBoardRows,
   submissionChangeText, submittedSummaryOf,
 } from "./features/sales/sales-board.js";
 import { MATCH_VIEW, PAIR, PAIR_VIEW, SALES_KIND_LABELS, isGroup, matchEntry, salesRecordsOf, suggestionsFor } from "../functions/shared/sales-incentive.mjs";
@@ -27561,7 +27561,7 @@ function SalesEntryEditor({ draft, onChange, onSave, onCancel, clients, busy, mo
   return (
     <div className="space-y-2 p-3" style={{ borderRadius: 10, border: `1px solid ${LINE}`, backgroundColor: CARD }} data-sales-editor>
       <div className="flex flex-wrap gap-1.5" role="group" aria-label="구분">
-        {SALES_KIND_CHOICES.map((kind) => {
+        {SALES_KIND_CHOICES_BY_SECTION[group ? "group" : "personal"].map((kind) => {
           const active = draft.kind === kind;
           return <button key={kind} type="button" aria-pressed={active} onClick={() => set({ kind, ot: kind === "group" || kind === "group_refund" ? false : draft.ot, refundOfMonth: kind === "refund" || kind === "group_refund" ? draft.refundOfMonth : "" })}
             className="min-h-9 px-3 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 999, backgroundColor: active ? INK : CANVAS, color: active ? CARD : INK2 }}>{SALES_KIND_LABELS[kind]}</button>;
@@ -27600,16 +27600,20 @@ function SalesEntryEditor({ draft, onChange, onSave, onCancel, clients, busy, mo
       <label className="block" style={{ fontSize: TYPE.caption, color: SUB }}>수강권 · 계약세션 (메모)
         <input style={input} value={draft.productLabel} maxLength={60} onChange={(event) => set({ productLabel: event.target.value })} />
       </label>
-      <div className="flex flex-wrap gap-3">
-        <label className="flex items-center gap-1.5" style={{ fontSize: TYPE.caption, color: INK }}>
-          <input type="checkbox" checked={Number(draft.share) === 0.5} onChange={(event) => set({ share: event.target.checked ? 0.5 : 1 })} />FC 가 대신 상담 (반반 매출)
-        </label>
-        {group ? null : (
-          <label className="flex items-center gap-1.5" style={{ fontSize: TYPE.caption, color: INK }}>
-            <input type="checkbox" checked={draft.ot === true} onChange={(event) => set({ ot: event.target.checked })} />OT 인센 (+10%)
-          </label>
-        )}
-      </div>
+      {group ? null : (
+        <div style={{ fontSize: TYPE.caption, color: SUB }} data-sales-ot-choice>이 매출로 OT 10% 추가 인센을 받나요?
+          <div className="mt-1 grid grid-cols-2 gap-1.5">
+            {[[true, `받음 +${salesWon(otBonusOf({ ...draft, ot: true }))}`], [false, "안 받음"]].map(([value, label]) => {
+              const active = draft.ot === value;
+              return <button key={String(value)} type="button" aria-pressed={active} onClick={() => set({ ot: value })} className="h-10 font-bold"
+                style={{ borderRadius: 8, backgroundColor: active ? (value ? BRAND_D : INK) : CANVAS, color: active ? "#fff" : INK2, fontSize: TYPE.caption }} data-sales-ot={value ? "yes" : "no"}>{label}</button>;
+            })}
+          </div>
+        </div>
+      )}
+      <label className="flex items-center gap-1.5" style={{ fontSize: TYPE.caption, color: INK }}>
+        <input type="checkbox" checked={Number(draft.share) === 0.5} onChange={(event) => set({ share: event.target.checked ? 0.5 : 1 })} />FC 가 대신 상담 (반반 매출)
+      </label>
       {tried && errors.length ? <p style={{ fontSize: TYPE.caption, color: WARN }}>{errors.map((item) => `${item.text} (${item.code})`).join(" · ")}</p> : null}
       <div className="flex gap-2">
         <button type="button" onClick={onCancel} disabled={busy} className="h-10 flex-1 font-bold" style={{ borderRadius: 8, backgroundColor: CANVAS, color: SUB, fontSize: TYPE.caption }}>취소</button>
@@ -27763,36 +27767,49 @@ function MySalesScreen({ organization, currentUserId, passStore, clientStore, in
           {view.submission.submitted ? <SubmittedSummaryCard submission={view.submission} locked={view.locked} /> : null}
           {data.warning ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{data.warning}</p> : null}
           {message ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: message.startsWith("제출했어요") ? GOOD : WARN }}>{message}</p> : null}
-          {draft ? <div className="mt-3"><SalesEntryEditor draft={draft} onChange={setDraft} onSave={save} onCancel={() => setDraft(null)} clients={data.clients} busy={busy} month={month} /></div> : null}
-          {!view.locked && !draft && view.suggestions.length ? (
-            <div className="mt-3 space-y-1.5" data-sales-suggestions>
-              <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>앱이 찾은 이번 달 내 담당 결제 · 내가 낸 매출이면 넣어 주세요</p>
-              {view.suggestions.map((item) => (
-                <div key={item.recordId} className="flex items-center justify-between gap-2 px-3 py-2" style={{ borderRadius: 10, border: `1px dashed ${LINE}` }}>
-                  <span className="min-w-0 flex-1 truncate tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>{nameOf(item)} · {salesWon(item.amount)} · {kstDate(item.occurredAt)}{item.kind ? ` · ${SALES_KIND_LABELS[item.kind]}` : ""}</span>
-                  <button type="button" onClick={() => setDraft(entryFromSuggestion(item, { side: "instructor", instructorId: currentUserId, month }))} className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>넣기</button>
+          {/* 개인 · 그룹을 반반 두 칸으로 (2026-11-21 대표: "그룹 인센 칸도 크게 반반 나누면 -- 하나에 다 들어가 있게 말고"). 폰은 위아래. */}
+          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2" data-sales-columns>
+            {[false, true].map((group) => {
+              const list = view.rows.filter((entry) => isGroup(entry) === group);
+              const statement = view.statement;
+              const bracketAmount = statement.bracket?.amount ?? statement.bracketAmount ?? 0;
+              return (
+                <div key={group ? "group" : "personal"} className="min-w-0 space-y-2 p-3" style={{ borderRadius: 12, border: `1px solid ${LINE}`, backgroundColor: CARD }} data-sales-section={group ? "group" : "personal"}>
+                  <div>
+                    <p className="font-extrabold" style={{ fontSize: TYPE.body, color: INK }}>{group ? "그룹 인센" : "개인 매출 인센"}</p>
+                    <p className="mt-0.5 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
+                      {group ? `그룹 매출 ${salesWon(statement.groupBase)} × 0.5% = ${salesWon(statement.groupBonus)} · 개인 구간과 따로`
+                        : `합계 ${salesWon(statement.total)} · 구간 인센 ${salesWon(bracketAmount)} · OT 10% ${salesWon(statement.otBonus)}`}
+                    </p>
+                  </div>
+                  {!group && !view.locked && !draft && view.suggestions.length ? (
+                    <div className="space-y-1.5" data-sales-suggestions>
+                      <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>앱이 찾은 이번 달 내 담당 결제 · 내가 낸 매출이면 넣어 주세요</p>
+                      {view.suggestions.map((item) => (
+                        <div key={item.recordId} className="flex items-center justify-between gap-2 px-3 py-2" style={{ borderRadius: 10, border: `1px dashed ${LINE}` }}>
+                          <span className="min-w-0 flex-1 truncate tabular-nums" style={{ fontSize: TYPE.caption, color: INK }}>{nameOf(item)} · {salesWon(item.amount)} · {kstDate(item.occurredAt)}{item.kind ? ` · ${SALES_KIND_LABELS[item.kind]}` : ""}</span>
+                          <button type="button" onClick={() => setDraft(entryFromSuggestion(item, { side: "instructor", instructorId: currentUserId, month }))} className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>넣기</button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {draft && isGroup(draft) === group ? <SalesEntryEditor draft={draft} onChange={setDraft} onSave={save} onCancel={() => setDraft(null)} clients={data.clients} busy={busy} month={month} /> : null}
+                  {list.map((entry) => (
+                    <SalesEntryRow key={entry.id} entry={entry} name={nameOf(entry)} flagged={entry.flagged} locked={view.locked}
+                      extra={submissionPill(view.submission, entry)} onEdit={() => setDraft({ ...entry })} onDelete={() => remove(entry)} />
+                  ))}
+                  {!list.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>{group ? "아직 넣은 그룹 매출이 없어요." : "아직 넣은 개인 매출이 없어요."}</p> : null}
+                  {view.locked ? null : (
+                    <button type="button" disabled={Boolean(draft)} onClick={() => setDraft(blankEntry({ side: "instructor", instructorId: currentUserId, month, kind: group ? "group" : "" }))}
+                      className="h-10 w-full font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>{group ? "+ 그룹 회원 매출 추가" : "+ 개인 매출 추가"}</button>
+                  )}
                 </div>
-              ))}
-            </div>
-          ) : null}
-          {[["개인 매출", false, "아직 넣은 개인 매출이 없어요."], ["그룹 매출 · 0.5% · 개인 인센과 따로", true, "아직 넣은 그룹 매출이 없어요."]].map(([title, group, empty]) => {
-            const list = view.rows.filter((entry) => isGroup(entry) === group);
-            return (
-              <div key={title} className="mt-3 space-y-1.5" data-sales-section={group ? "group" : "personal"}>
-                <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{title}</p>
-                {list.map((entry) => (
-                  <SalesEntryRow key={entry.id} entry={entry} name={nameOf(entry)} flagged={entry.flagged} locked={view.locked}
-                    extra={submissionPill(view.submission, entry)} onEdit={() => setDraft({ ...entry })} onDelete={() => remove(entry)} />
-                ))}
-                {!list.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>{empty}</p> : null}
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
           {view.locked ? <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }}>확정된 달이라 고칠 수 없어요. 고칠 것이 있으면 FC · 대표에게 말해 주세요.</p> : (
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button type="button" disabled={Boolean(draft)} onClick={() => setDraft(blankEntry({ side: "instructor", instructorId: currentUserId, month }))} className="h-10 px-3 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>+ 직접 추가</button>
-              <button type="button" disabled={Boolean(draft)} onClick={() => setDraft(blankEntry({ side: "instructor", instructorId: currentUserId, month, kind: "group" }))} className="h-10 px-3 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>+ 그룹 회원</button>
-              <button type="button" disabled={busy || Boolean(draft)} onClick={submit} className="ml-auto h-10 px-4 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>{view.status.code === "submitted" ? "다시 제출" : "제출"}</button>
+            <div className="mt-3 flex justify-end">
+              <button type="button" disabled={busy || Boolean(draft)} onClick={submit} className="h-10 px-5 font-bold disabled:opacity-40" style={{ borderRadius: 8, backgroundColor: BRAND_D, color: "#fff", fontSize: TYPE.caption }}>{view.status.code === "submitted" ? "다시 제출" : "제출"}</button>
             </div>
           )}
         </>

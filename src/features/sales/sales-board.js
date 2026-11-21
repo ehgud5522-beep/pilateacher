@@ -6,7 +6,7 @@
  *   FC · 대표 화면 (매출 인센) : 강사별로 두 장부를 맞춰 보고, 같으면 확정 (서버). FC 가 확정하면 대표님에게 알림이 간다.
  */
 import {
-  CONFIRM_NOTICE_HINT, PAIR, SALES_KIND, SALES_SIDE, cheerLine, entryProblems, isRefund, monthStatement, pairSalesEntries, suggestionsFor,
+  CONFIRM_NOTICE_HINT, OT_BONUS_RATE, PAIR, SALES_KIND, SALES_SIDE, cheerLine, creditOf, entryProblems, isGroup, isRefund, monthStatement, pairSalesEntries, suggestionsFor,
 } from "../../../functions/shared/sales-incentive.mjs";
 
 const text = (value) => String(value ?? "").trim();
@@ -18,6 +18,14 @@ export { CONFIRM_NOTICE_HINT };
 export const SALES_KIND_CHOICES = Object.freeze([
   SALES_KIND.OT, SALES_KIND.CONVERSION, SALES_KIND.SESSION_UP, SALES_KIND.REPURCHASE, SALES_KIND.GROUP, SALES_KIND.REFUND, SALES_KIND.GROUP_REFUND,
 ]);
+/** 개인 칸 · 그룹 칸이 따로 고르는 구분 (2026-11-21 대표: "그룹 인센 칸도 크게 반반 나누면 -- 하나에 다 들어가 있게 말고"). */
+export const SALES_KIND_CHOICES_BY_SECTION = Object.freeze({
+  personal: Object.freeze([SALES_KIND.OT, SALES_KIND.CONVERSION, SALES_KIND.SESSION_UP, SALES_KIND.REPURCHASE, SALES_KIND.REFUND]),
+  group: Object.freeze([SALES_KIND.GROUP, SALES_KIND.GROUP_REFUND]),
+});
+
+/** 이 줄로 받는 OT 10% 추가 인센 (OT 를 받는 개인 줄만, 환불이면 음수). */
+export const otBonusOf = (entry) => (!isGroup(entry) && entry?.ot === true ? Math.round(creditOf(entry) * OT_BONUS_RATE) : 0);
 
 const millisOf = (value) => {
   if (!value) return NaN;
@@ -115,7 +123,8 @@ export function entryFromSuggestion(suggestion, { side, instructorId, month }) {
   return {
     instructorId: text(instructorId), side, month: text(month),
     paidOn: kstDate(suggestion.occurredAt) || `${text(month)}-01`,
-    kind: text(suggestion.kind), amount: Math.round(Number(suggestion.amount) || 0), share: 1, ot: false,
+    /* OT 10% 는 강사가 받음 · 안 받음을 꼭 고른다 (대표: "체크 표시 하나로는 받는지 안 받는지 애매함") -- 처음엔 비워 둔다. */
+    kind: text(suggestion.kind), amount: Math.round(Number(suggestion.amount) || 0), share: 1, ot: null,
     clientId: text(suggestion.clientId), memberLabel: "", productLabel: "", recordId: text(suggestion.recordId), passId: text(suggestion.passId),
     refundOfMonth: "", note: "",
   };
@@ -123,7 +132,8 @@ export function entryFromSuggestion(suggestion, { side, instructorId, month }) {
 
 /** 빈 줄 (앱 밖 결제 · 그룹 회원). */
 export const blankEntry = ({ side, instructorId, month, kind = "" }) => ({
-  instructorId: text(instructorId), side, month: text(month), paidOn: `${text(month)}-01`, kind, amount: 0, share: 1, ot: false,
+  instructorId: text(instructorId), side, month: text(month), paidOn: `${text(month)}-01`, kind, amount: 0, share: 1,
+  ot: kind === SALES_KIND.GROUP || kind === SALES_KIND.GROUP_REFUND ? false : null,
   clientId: "", memberLabel: "", productLabel: "", recordId: "", passId: "", refundOfMonth: "", note: "",
 });
 
@@ -138,11 +148,13 @@ const PROBLEM_TEXT = Object.freeze({
   refund_month_invalid: "환불한 결제의 달을 다시 골라 주세요",
   refund_month_future: "환불한 결제의 달은 이번 달보다 뒤일 수 없어요",
   ot_not_for_group: "그룹 수강권에는 OT 인센이 없어요",
+  ot_choice_required: "OT 10% 를 받는지 안 받는지 골라 주세요",
   paid_on_month: "결제일이 이 달이 아니에요",
 });
 export function entryErrors(entry) {
   const problems = entryProblems(entry);
   if (text(entry?.paidOn).slice(0, 7) !== text(entry?.month)) problems.push("paid_on_month");
+  if (!isGroup(entry) && typeof entry?.ot !== "boolean") problems.push("ot_choice_required");
   return problems.map((code) => ({ code, text: PROBLEM_TEXT[code] || code }));
 }
 
@@ -231,7 +243,8 @@ export function confirmFailureText(error) {
 export function entryLine(entry, kindLabels) {
   const bits = [kindLabels[text(entry.kind)] || "구분 없음", `${Math.round(Number(entry.amount) || 0).toLocaleString("ko-KR")}원`];
   if (Number(entry.share) === 0.5) bits.push("반반");
-  if (entry.ot === true) bits.push("OT");
+  /* OT 10% 는 받는지 안 받는지를 줄마다 글로 (대표: "이 매출에선 OT 10% 금액을 받는지 안 받는지 명확하게"). */
+  if (!isGroup(entry)) bits.push(entry.ot === true ? `OT 10% 받음 +${otBonusOf(entry).toLocaleString("ko-KR")}원` : "OT 10% 안 받음");
   if (isRefund(entry) && text(entry.refundOfMonth)) bits.push(`${Number(text(entry.refundOfMonth).slice(5, 7))}월 결제 환불`);
   return bits.join(" · ");
 }

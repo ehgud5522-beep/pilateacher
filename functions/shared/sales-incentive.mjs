@@ -419,3 +419,24 @@ export function confirmSnapshot(statement, entryCount) {
     incentive: intOf(statement.incentive), clawbackTotal: intOf(statement.clawbackTotal), payout: intOf(statement.payout), entryCount: intOf(entryCount),
   };
 }
+
+/* ── FC 단독 확정 + 대표 알림 (2026-11-21 대표 결정) ─────────────────────────────── */
+
+/** 확정 버튼 옆 문구 -- 누르기 전에 알린다. */
+export const CONFIRM_NOTICE_HINT = "확정하면 대표님에게 알림이 갑니다";
+export const SALES_CONFIRMED_INBOX_KIND = "sales_confirmed";
+
+const monthTitle = (month) => { const [year, value] = text(month).split("-").map(Number); return Number.isFinite(value) ? `${year}년 ${value}월` : text(month); };
+const won = (value) => `${intOf(value).toLocaleString("ko-KR")}원`;
+
+/** 대표 알림함 한 줄. 회원 이름은 없다 -- 강사 · 확정한 사람 이름과 금액만. */
+export function salesConfirmedNotice({ confirmerName, instructorName, month, snapshot }) {
+  const parts = [`개인 ${won(snapshot?.bracketAmount)}`];
+  if (intOf(snapshot?.otBonus)) parts.push(`OT ${won(snapshot.otBonus)}`);
+  if (intOf(snapshot?.groupBonus)) parts.push(`그룹 ${won(snapshot.groupBonus)}`);
+  const clawback = intOf(snapshot?.clawbackTotal) ? ` · 지난달 환수 −${won(snapshot.clawbackTotal)}` : "";
+  return {
+    title: "[매출 인센 확정]",
+    body: `${text(confirmerName)} 님이 ${text(instructorName)} 강사의 ${monthTitle(month)} 매출 인센을 확정했어요 · 지급 ${won(snapshot?.payout)} (${parts.join(" · ")}${clawback}) · 매출 ${won(snapshot?.total)}`,
+  };
+}

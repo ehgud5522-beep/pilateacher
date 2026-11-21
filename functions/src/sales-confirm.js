@@ -9,6 +9,11 @@
  *
  * 누가: 대표 · 총괄, 또는 그 강사가 맡은 지점 안인 FC매니저(규칙의 instructorInManagerScope 와 같은 판단).
  * **자기 매출은 자기가 확정하지 못한다** (대표가 강사로 수업해도) -- 두 사람이 맞춰 보는 구조다.
+ *
+ * ── FC 단독 확정 + 대표 알림 (2026-11-21 대표 결정) ──
+ * FC 가 혼자 확정한다. 확정하는 순간 대표 · 총괄의 알림함(users/{uid}/inbox)에 한 줄이 간다 -- 누가 · 어느 강사 · 몇 월 ·
+ * 얼마를 확정했는지. 확정한 본인에게는 보내지 않는다. 알림을 못 보내도 확정은 그대로다 (진단만 남긴다) -- 알림 때문에
+ * 급여 확정이 막히면 안 된다. 회원 이름은 넣지 않는다 (강사 · FC 이름과 금액만).
  */
 
 const text = (value) => String(value ?? "").trim();
@@ -35,7 +40,35 @@ function scopedLocations(data) {
 /**
  * @param {{ firestore: any, membershipId: (org: string, uid: string) => string, isOwnerLevel: (membership: any) => boolean, now?: () => Date }} deps
  */
-function createSalesConfirmService({ firestore, membershipId, isOwnerLevel, now = () => new Date() }) {
+function createSalesConfirmService({ firestore, membershipId, isOwnerLevel, now = () => new Date(), log = () => {} }) {
+  /** 대표 · 총괄 알림함에 확정 한 줄. 던지지 않는다 -- 보낸 수와 실패 코드를 돌려준다. */
+  async function notifyOwners({ org, instructor, key, callerUid, caller, snapshot, at, shared }) {
+    try {
+      const members = await firestore.collection("memberships").where("organizationId", "==", org).get();
+      const rows = members.docs.map((document) => document.data() || {});
+      const nameOf = (uid, fallback) => text(rows.find((row) => text(row.userId) === uid)?.displayName) || fallback;
+      const owners = rows.filter((row) => row.status === "active" && isOwnerLevel(row) && text(row.userId) && text(row.userId) !== text(callerUid));
+      const id = `sales_${instructor}_${key}_${at.getTime()}`;
+      const notice = shared.salesConfirmedNotice({
+        confirmerName: nameOf(text(callerUid), caller?.role === "manager" ? "FC" : "관리자"),
+        instructorName: nameOf(instructor, "강사"), month: key, snapshot,
+      });
+      let sent = 0;
+      for (const owner of owners) {
+        await firestore.collection("users").doc(text(owner.userId)).collection("inbox").doc(id).set({
+          kind: shared.SALES_CONFIRMED_INBOX_KIND, organizationId: org, instructorId: instructor, month: key,
+          confirmedBy: text(callerUid), title: notice.title, body: notice.body, createdAt: at,
+        });
+        sent += 1;
+      }
+      return { sent, errorCode: "" };
+    } catch (error) {
+      const errorCode = String(error?.code || "unknown");
+      log("error", "sales_confirm_notice_failed", { feature: "sales_incentive", stage: "notify_owner", errorDomain: "firestore", errorCode, organizationId: org, month: key, correlationId: instructor.slice(-8) });
+      return { sent: 0, errorCode };
+    }
+  }
+
   async function authorize(organizationId, callerUid, instructorId) {
     if (!callerUid) throw new SalesConfirmError("unauthenticated", "unauthenticated");
     if (callerUid === instructorId) throw new SalesConfirmError("permission-denied", "own_sales");
@@ -70,7 +103,7 @@ function createSalesConfirmService({ firestore, membershipId, isOwnerLevel, now 
     const instructor = text(instructorId);
     const key = text(month);
     if (!org || !instructor || org.includes("/") || instructor.includes("/") || !MONTH.test(key)) throw new SalesConfirmError("invalid-argument", "target_required");
-    await authorize(org, callerUid, instructor);
+    const caller = await authorize(org, callerUid, instructor);
 
     const monthRef = firestore.doc(`organizations/${org}/salesMonths/${instructor}_${key}`);
     const monthSnapshot = await monthRef.get();
@@ -110,7 +143,8 @@ function createSalesConfirmService({ firestore, membershipId, isOwnerLevel, now 
       lastCheck: { checkedAt: at, checkedBy: text(callerUid), agreed: counts[shared.PAIR.AGREED] || 0, differs: 0, instructorOnly: 0, officeOnly: 0, instructorEntryIds: [], officeEntryIds: [] },
       updatedBy: text(callerUid), updatedAt: at,
     }, { merge: true });
-    return { status: "confirmed", snapshot, counts };
+    const notified = await notifyOwners({ org, instructor, key, callerUid, caller, snapshot, at, shared });
+    return { status: "confirmed", snapshot, counts, notified };
   }
 
   return { confirm };

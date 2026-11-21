@@ -1834,7 +1834,7 @@ exports.backfillRenewalCandidates = onCall({
 /* ── 강사 개인매출 인센 확정 (2026-11-21 대표: "강사 입력 + FC · 대표 입력이 같아야 확정") ──
    확정은 이 함수만 한다 (규칙은 앱에 confirmed 를 열지 않는다). 두 쪽 줄을 직접 읽어 다시 짝짓고, 다르면 거절하며 어긋난 줄을 남긴다. */
 const { createSalesConfirmService } = require("./sales-confirm");
-const salesConfirmService = createSalesConfirmService({ firestore, membershipId, isOwnerLevel });
+const salesConfirmService = createSalesConfirmService({ firestore, membershipId, isOwnerLevel, log: (level, event, fields) => logger[level]?.(event, fields) });
 exports.confirmSalesMonth = onCall(CLIENT_PHONE_OPTIONS, async (request) => {
   const organizationId = String(request?.data?.organizationId || "").trim();
   const instructorId = String(request?.data?.instructorId || "").trim();
@@ -1842,7 +1842,7 @@ exports.confirmSalesMonth = onCall(CLIENT_PHONE_OPTIONS, async (request) => {
   const fields = { feature: "sales_incentive", organizationId, month, correlationId: instructorId.slice(-8) };
   try {
     const result = await salesConfirmService.confirm({ callerUid: request?.auth?.uid, organizationId, instructorId, month });
-    logger.info("sales_month_confirmed", { ...fields, stage: "confirm", agreed: result.counts?.agreed || 0, total: result.snapshot.total });
+    logger.info("sales_month_confirmed", { ...fields, stage: "confirm", agreed: result.counts?.agreed || 0, total: result.snapshot.total, ownersNotified: result.notified?.sent || 0, noticeErrorCode: result.notified?.errorCode || "" });
     return result;
   } catch (error) {
     if (error?.httpsCode) {

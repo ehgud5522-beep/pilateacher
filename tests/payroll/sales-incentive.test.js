@@ -193,3 +193,16 @@ test("확정 숫자에 그룹 인센이 함께 남는다", () => {
   const statement = monthStatement({ month: "2026-11", entries: [sale(5000000), sale(2000000, { kind: SALES_KIND.GROUP, clientId: "", memberLabel: "김민지" })] });
   assert.deepEqual(confirmSnapshot(statement, 2), { total: 5000000, otBonus: 0, groupBase: 2000000, groupBonus: 10000, bracketAmount: 250000, incentive: 260000, clawbackTotal: 0, payout: 260000, entryCount: 2 });
 });
+
+test("FC 단독 확정 + 대표 알림: 버튼 옆 문구 · 알림 본문 (그룹 · 환수 포함, 회원 이름 없음)", async () => {
+  const { CONFIRM_NOTICE_HINT, salesConfirmedNotice } = await import("../../functions/shared/sales-incentive.mjs");
+  assert.equal(CONFIRM_NOTICE_HINT, "확정하면 대표님에게 알림이 갑니다");
+  const notice = salesConfirmedNotice({
+    confirmerName: "박에프씨", instructorName: "정예진", month: "2026-11",
+    snapshot: { total: 5000000, bracketAmount: 250000, otBonus: 0, groupBonus: 10000, clawbackTotal: 110000, payout: 150000 },
+  });
+  assert.deepEqual(notice, {
+    title: "[매출 인센 확정]",
+    body: "박에프씨 님이 정예진 강사의 2026년 11월 매출 인센을 확정했어요 · 지급 150,000원 (개인 250,000원 · 그룹 10,000원 · 지난달 환수 −110,000원) · 매출 5,000,000원",
+  });
+});

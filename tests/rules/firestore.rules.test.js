@@ -8,6 +8,7 @@ import {
 } from "@firebase/rules-unit-testing";
 import {
   Timestamp,
+  addDoc,
   collection,
   collectionGroup,
   deleteDoc,
@@ -6738,5 +6739,123 @@ describe("회원 목표 · 주의사항(careNotes) -- 동의한 회원만", () =
     await assertFails(updateDoc(ref(users.instructor), notes(users.owner)), "남의 이름");
     await assertFails(updateDoc(ref(users.instructor), notes(users.instructor, { updatedAt: new Date() })), "기기 시각");
     await assertFails(updateDoc(ref(users.instructor), notes(users.instructor, { phone: "010" })), "모르는 칸");
+  });
+});
+
+/* ── 강사 개인매출 인센 (2026-11-21 대표 결정 3 · 4 · 5 · 6) ────────────────────────────
+   강사 본인 · FC(맡은 지점) · 대표 · 총괄이 넣고, 확정은 FC · 대표 · 총괄. 확정된 달은 아무도 못 고친다. */
+describe("강사 개인매출 인센 -- 입력 · 확정 · 잠금", () => {
+  const MONTH = "2026-11";
+  const OTHER = "instructor-b";
+  const entries = (userId) => collection(dbFor(userId), "organizations", ORG_A, "salesEntries");
+  const entryRef = (userId, id) => doc(dbFor(userId), "organizations", ORG_A, "salesEntries", id);
+  const monthRef = (userId, instructorId = users.instructor) => doc(dbFor(userId), "organizations", ORG_A, "salesMonths", `${instructorId}_${MONTH}`);
+  const roleOf = { [users.instructor]: "instructor", [users.manager]: "manager", [users.owner]: "owner", [users.area_manager]: "area_manager", [OTHER]: "instructor", [users.outsider]: "owner" };
+  const row = (author, extra = {}) => ({
+    organizationId: ORG_A, instructorId: users.instructor, month: MONTH, paidOn: "2026-11-05",
+    kind: "repurchase", amount: 1200000, share: 1, ot: false,
+    clientId: "client-member", memberLabel: "", productLabel: "1:1 20회", recordId: "p1_issue", passId: "p1", refundOfMonth: "", note: "",
+    createdBy: author, createdByRole: roleOf[author], createdAt: serverTimestamp(), updatedBy: author, updatedAt: serverTimestamp(), ...extra,
+  });
+  const seedEntry = async (id, author, extra = {}) => testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "organizations", ORG_A, "salesEntries", id), { ...row(author, extra), createdAt: new Date(), updatedAt: new Date() });
+  });
+  const confirmMonth = async (instructorId = users.instructor) => testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "organizations", ORG_A, "salesMonths", `${instructorId}_${MONTH}`), {
+      organizationId: ORG_A, instructorId, month: MONTH, status: "confirmed", updatedBy: users.owner, updatedAt: new Date(),
+      confirmedBy: users.owner, confirmedAt: new Date(),
+      snapshot: { total: 1200000, otBonus: 0, bracketAmount: 0, incentive: 0, clawbackTotal: 0, payout: 0, entryCount: 1 },
+    });
+  });
+  beforeEach(async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "memberships", `${ORG_A}_${OTHER}`), { organizationId: ORG_A, userId: OTHER, role: "instructor", status: "active" });
+    });
+  });
+
+  test("결정 3: 강사는 자기 매출, FC · 대표 · 총괄은 강사 대신 넣는다", async () => {
+    await assertSucceeds(addDoc(entries(users.instructor), row(users.instructor)));
+    await assertSucceeds(addDoc(entries(users.manager), row(users.manager)));
+    await assertSucceeds(addDoc(entries(users.owner), row(users.owner)));
+    await assertSucceeds(addDoc(entries(users.area_manager), row(users.area_manager)));
+    await assertFails(addDoc(entries(OTHER), row(OTHER)), "남의 매출");
+    await assertFails(addDoc(entries(users.staff), { ...row(users.instructor), createdBy: users.staff, updatedBy: users.staff, createdByRole: "staff" }));
+    await assertFails(addDoc(entries(users.outsider), row(users.outsider)));
+  });
+
+  test("결정 4 · 6: 반반(0.5) 만 · 정수 현금가 · 달과 결제일이 맞아야 · 환불은 지난 달만 가리킴 · 모르는 칸 거부", async () => {
+    await assertSucceeds(addDoc(entries(users.instructor), row(users.instructor, { share: 0.5 })));
+    await assertFails(addDoc(entries(users.instructor), row(users.instructor, { share: 0.3 })));
+    await assertFails(addDoc(entries(users.instructor), row(users.instructor, { amount: 1200000.5 })));
+    await assertFails(addDoc(entries(users.instructor), row(users.instructor, { amount: 0 })));
+    await assertFails(addDoc(entries(users.instructor), row(users.instructor, { paidOn: "2026-10-31" })));
+    await assertFails(addDoc(entries(users.instructor), row(users.instructor, { kind: "bonus" })));
+    await assertFails(addDoc(entries(users.instructor), row(users.instructor, { clientId: "", memberLabel: "" })));
+    await assertSucceeds(addDoc(entries(users.instructor), row(users.instructor, { kind: "refund", refundOfMonth: "2026-10" })));
+    await assertFails(addDoc(entries(users.instructor), row(users.instructor, { kind: "refund", refundOfMonth: "2026-12" })));
+    await assertFails(addDoc(entries(users.instructor), row(users.instructor, { refundOfMonth: "2026-10" })), "환불이 아닌 줄");
+    await assertFails(addDoc(entries(users.instructor), row(users.instructor, { phone: "01012345678" })));
+    await assertFails(addDoc(entries(users.instructor), row(users.instructor, { createdByRole: "owner" })), "역할을 속임");
+  });
+
+  test("읽기: 강사는 자기 줄만, FC · 대표 · 총괄은 강사별로", async () => {
+    await seedEntry("e1", users.instructor);
+    const byInstructor = (userId, instructorId = users.instructor) => getDocs(query(entries(userId), where("instructorId", "==", instructorId), where("month", "==", MONTH)));
+    await assertSucceeds(byInstructor(users.instructor));
+    await assertSucceeds(byInstructor(users.manager));
+    await assertSucceeds(byInstructor(users.owner));
+    await assertFails(byInstructor(OTHER), "남의 줄");
+    await assertFails(byInstructor(users.outsider));
+    await assertSucceeds(getDocs(query(entries(users.owner), where("month", "==", MONTH))), "대표는 달 전체");
+  });
+
+  test("FC 는 맡은 지점 강사만", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.manager}`), { locationId: "location-a" }, { merge: true });
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.instructor}`), { locationId: "location-a" }, { merge: true });
+      await setDoc(doc(db, "memberships", `${ORG_A}_${OTHER}`), { locationId: "location-b" }, { merge: true });
+    });
+    await assertSucceeds(addDoc(entries(users.manager), row(users.manager)));
+    await assertFails(addDoc(entries(users.manager), row(users.manager, { instructorId: OTHER })));
+    await assertFails(setDoc(monthRef(users.manager, OTHER), {
+      organizationId: ORG_A, instructorId: OTHER, month: MONTH, status: "confirmed", updatedBy: users.manager, updatedAt: serverTimestamp(),
+      confirmedBy: users.manager, confirmedAt: serverTimestamp(),
+      snapshot: { total: 0, otBonus: 0, bracketAmount: 0, incentive: 0, clawbackTotal: 0, payout: 0, entryCount: 0 },
+    }));
+  });
+
+  test("고치기 · 지우기: 강사는 자기가 넣은 줄만, FC 가 넣은 줄은 FC · 대표가", async () => {
+    await seedEntry("mine", users.instructor);
+    await seedEntry("byfc", users.manager);
+    await assertSucceeds(updateDoc(entryRef(users.instructor, "mine"), { amount: 1000000, updatedBy: users.instructor, updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(entryRef(users.instructor, "byfc"), { amount: 1, updatedBy: users.instructor, updatedAt: serverTimestamp() }));
+    await assertSucceeds(updateDoc(entryRef(users.owner, "byfc"), { amount: 900000, updatedBy: users.owner, updatedAt: serverTimestamp() }));
+    await assertFails(updateDoc(entryRef(users.owner, "byfc"), { instructorId: OTHER, updatedBy: users.owner, updatedAt: serverTimestamp() }), "누구의 매출인지는 못 바꾼다");
+    await assertFails(deleteDoc(entryRef(users.instructor, "byfc")));
+    await assertSucceeds(deleteDoc(entryRef(users.instructor, "mine")));
+  });
+
+  test("결정 5: 제출은 강사, 확정은 FC · 대표 · 총괄 (그때의 숫자와 함께), 강사는 확정 못 함", async () => {
+    const base = (userId, extra) => ({ organizationId: ORG_A, instructorId: users.instructor, month: MONTH, updatedBy: userId, updatedAt: serverTimestamp(), ...extra });
+    const snapshot = { total: 1200000, otBonus: 0, bracketAmount: 0, incentive: 0, clawbackTotal: 0, payout: 0, entryCount: 1 };
+    await assertSucceeds(setDoc(monthRef(users.instructor), base(users.instructor, { status: "submitted", submittedAt: serverTimestamp() })));
+    await assertFails(setDoc(monthRef(users.instructor), base(users.instructor, { status: "confirmed", confirmedBy: users.instructor, confirmedAt: serverTimestamp(), snapshot })));
+    await assertFails(setDoc(monthRef(users.manager), base(users.manager, { status: "confirmed", confirmedBy: users.manager, confirmedAt: serverTimestamp() })), "숫자 없는 확정");
+    await assertSucceeds(setDoc(monthRef(users.manager), base(users.manager, { status: "confirmed", confirmedBy: users.manager, confirmedAt: serverTimestamp(), snapshot })));
+    await assertFails(setDoc(monthRef(users.instructor), base(users.instructor, { status: "submitted", submittedAt: serverTimestamp() })), "확정된 달은 강사가 못 되돌림");
+    await assertFails(setDoc(monthRef(users.owner), base(users.owner, { status: "reopened" })), "사유 없음");
+    await assertSucceeds(setDoc(monthRef(users.owner), base(users.owner, { status: "reopened", reopenReason: "환불 누락 반영" })));
+    await assertFails(deleteDoc(monthRef(users.owner)));
+  });
+
+  test("확정된 달의 줄은 아무도 못 넣고 · 고치고 · 지운다", async () => {
+    await seedEntry("e1", users.instructor);
+    await confirmMonth();
+    await assertFails(addDoc(entries(users.instructor), row(users.instructor)));
+    await assertFails(addDoc(entries(users.owner), row(users.owner)));
+    await assertFails(updateDoc(entryRef(users.owner, "e1"), { amount: 1, updatedBy: users.owner, updatedAt: serverTimestamp() }));
+    await assertFails(deleteDoc(entryRef(users.instructor, "e1")));
+    await assertSucceeds(addDoc(entries(users.instructor), row(users.instructor, { month: "2026-12", paidOn: "2026-12-01" })), "다음 달은 열려 있다");
   });
 });

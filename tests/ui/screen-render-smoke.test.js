@@ -282,6 +282,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 만료일 순서 확인",
     "듀엣 출석 확인",
     "더보기 탭 · 묶음 펼침",
+    "더보기 탭 · PC",
+    "더보기 탭 · PC · 화면 고름",
     "더보기 탭 · 강사 이름 확정",
     "더보기 탭 · 강사 이름 확정 · 할 것 없음",
     "더보기 탭 · 묶음 펼침 · 매니저",
@@ -465,6 +467,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "만료 회원 · 강사",
     "만료 회원 · 조회 실패",
     "재등록 레이더",
+    "재등록 레이더 · PC",
     "담당 강사",
     "담당 강사 · 빠진 회원",
     "담당 강사 · 아직 안 돌았음",
@@ -1278,24 +1281,25 @@ test("the centre group stands only where there is something in it", async () => 
   const markupOf = (name) => renderToStaticMarkup(byName.get(name));
 
   const owner = markupOf("더보기 탭");
-  /* 2026-10-10 부터 "센터 운영" 한 묶음이 아니라 하는 일로 갈린다. 첫 묶음의
-     자리는 그대로다 -- 업무와 내 설정 사이다. */
-  assert.ok(owner.includes("회원 · 회원권"));
+  /* 2026-10-10 부터 "센터 운영" 한 묶음이 아니라 하는 일로 갈린다. 2026-11-21 "현황판 웹 배치안" 으로
+     현황판 · 돈 · 관리 -- 매일 보는 현황판이 맨 위다. */
+  assert.ok(owner.includes(">현황판<"));
   assert.match(owner, /내 설정/);
-  assert.ok(owner.indexOf("회원 · 회원권") < owner.indexOf("내 설정"), "운영이 위");
+  assert.ok(owner.indexOf(">현황판<") < owner.indexOf("내 설정"), "운영이 위");
 
   /* 대표가 아니면 그 그룹에 들어갈 항목이 하나도 없다. 머리글만 남기면
      "여기 뭔가 있어야 하는데 안 보인다"가 된다. */
   // FC매니저에게는 회원·회원권과 상품이 선다 -- 발급 · 회원 관리 · 상품 (2026-09-23).
   const manager = markupOf("더보기 탭 · 매니저");
-  assert.ok(manager.includes("회원 · 회원권"), "FC매니저도 발급과 회원 관리를 한다");
-  assert.ok(manager.includes("상품"));
-  assert.match(manager, /강사 · 급여/);
+  assert.ok(manager.includes(">관리<"), "FC매니저도 발급과 회원 관리를 한다");
+  assert.match(manager, /회원권 상품/);
+  assert.match(manager, />돈</);
+  assert.equal(manager.includes(">현황판<"), false, "현황판은 대표 · 총괄만");
   assert.match(manager, /그룹 급여 정산/);
   assert.doesNotMatch(manager, /급여 집계/);
   for (const name of ["더보기 탭 · 강사", "더보기 탭 · 개인 모드", "더보기 탭 · 소속 확인 실패"]) {
     const markup = markupOf(name);
-    assert.equal(markup.includes("회원 · 회원권"), false, name);
+    assert.equal(markup.includes(">관리<"), false, name);
     assert.doesNotMatch(markup, /그룹 급여 정산/, name);
     assert.match(markup, /내 설정/, `${name} — 내 설정은 모두에게`);
     assert.match(markup, /화면 설정/, name);
@@ -2792,7 +2796,7 @@ test("the settings hub groups the centre work, and folds the dangerous half", as
   const markupOf = await issueScreens(t);
   const hub = markupOf("더보기 탭");
 
-  for (const label of ["회원 · 회원권", "강사 · 급여", "상품", "점검", "대표 설정"]) {
+  for (const label of [">현황판<", ">돈<", ">관리<", "점검", "대표 설정"]) {
     assert.ok(hub.includes(label), `${label} 묶음 머리글이 보여야 한다`);
   }
   // 펼쳐진 묶음의 항목은 보인다.
@@ -2831,11 +2835,11 @@ test("owner-level hub puts owner work first, then 점검, then the folded instru
     }
     // 로그아웃은 접힌 묶음 안에 묻히지 않는다.
     assert.match(hub, /프로필 사진 · 이메일 계정 · 로그아웃/, folded);
-    assertInOrder(hub, ["회원권 발급", "강사 · 급여", "만료 회원", "공지사항", "화면 설정", "프로필 사진 · 이메일 계정 · 로그아웃", "앱 정보", ">점검<", "강사 메뉴 · 강사 화면에 보이는 항목"], folded);
+    assertInOrder(hub, ["재등록 레이더", "만료 회원", "급여 집계", "회원권 발급", "공지사항", "화면 설정", "프로필 사진 · 이메일 계정 · 로그아웃", "앱 정보", ">점검<", "강사 메뉴 · 강사 화면에 보이는 항목"], folded);
 
     const expanded = markupOf(open);
     assertInOrder(expanded, [
-      "회원권 발급", "만료 회원", "대표 설정", "내 설정", "화면 설정", "데이터 이관 · 백업", "프로필 사진 · 이메일 계정 · 로그아웃",
+      "재등록 레이더", "만료 회원", "급여 집계", "회원권 발급", "대표 설정", "내 설정", "화면 설정", "데이터 이관 · 백업", "프로필 사진 · 이메일 계정 · 로그아웃",
       "감사 로그", "강사 메뉴 · 강사 화면에 보이는 항목",
       "새 수업 · 상담 · 휴무 추가", "회원별 수업 · 비포애프터", "이번 달 내 수업 활동", "비포애프터 설정", "일정 색상", "사용법 다시 보기", "AI 수업기록 예시", "오늘의 지식",
     ], open);
@@ -2847,7 +2851,7 @@ test("instructor, FC manager and personal hubs keep today's order", async (t) =>
   const head = ["새 수업 · 상담 · 휴무 추가", "회원별 수업 · 비포애프터"];
   const tail = ["비포애프터 설정", "일정 색상", "화면 설정", "데이터 상태", "데이터 이관 · 백업", "사용법 다시 보기", "접근권한 안내", "AI 수업기록 예시", "오늘의 지식", "프로필 사진 · 이메일 계정 · 로그아웃", "앱 정보"];
   assertInOrder(markupOf("더보기 탭 · 강사"), [...head, "이번 달 내 수업 활동", "만료 회원", "공지사항", ...tail], "강사");
-  assertInOrder(markupOf("더보기 탭 · 매니저"), [...head, "이번 달 내 수업 활동", "만료 회원", "공지사항", "회원권 발급", "그룹 급여 정산", ...tail], "FC매니저");
+  assertInOrder(markupOf("더보기 탭 · 매니저"), [...head, "이번 달 내 수업 활동", "만료 회원", "공지사항", "그룹 급여 정산", "회원권 발급", ...tail], "FC매니저");
   assertInOrder(markupOf("더보기 탭 · 개인 모드"), [...head, "월간 리포트", tail[0], "센터명 · 담당자 · 그룹 단가", ...tail.slice(1)], "개인 모드");
   for (const name of ["더보기 탭 · 강사", "더보기 탭 · 매니저", "더보기 탭 · 개인 모드"]) {
     assert.equal(markupOf(name).includes("강사 메뉴"), false, `${name}: 강사 메뉴 묶음은 대표 배치에만`);
@@ -2860,7 +2864,9 @@ test("a role that sees none of a group never sees its heading", async (t) => {
   const markupOf = await issueScreens(t);
   const instructor = markupOf("더보기 탭 · 강사");
 
-  assert.equal(instructor.includes("강사 · 급여"), false);
+  assert.equal(instructor.includes(">현황판<"), false);
+  assert.equal(instructor.includes(">돈<"), false);
+  assert.equal(instructor.includes(">관리<"), false);
   assert.equal(instructor.includes("대표 설정"), false);
   assert.equal(instructor.includes("점검"), false);
 });
@@ -3286,7 +3292,7 @@ test("재등록 레이더: 급한 회원 · 신호 · 못 읽은 신호는 빼�
   const markupOf = await issueScreens(t);
   const radar = markupOf("재등록 레이더");
   assert.match(radar, /강사가 따로 할 일은 없어요/, "강사 일을 늘리지 않는다는 것을 화면이 말한다");
-  assert.match(radar, /급함 1명/);
+  assert.match(radar, /data-summary-tile="radar_urgent"><p[^>]*>급함<\/p><p[^>]*>1명</, "요약 줄의 급함 칸");
   assert.match(radar, /data-radar-signal="pace_drop"/);
   assert.match(radar, /data-radar-signal="no_attendance_8w"/);
   assert.match(radar, /비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 \(코드 permission-denied\)/);
@@ -3296,6 +3302,29 @@ test("재등록 레이더: 급한 회원 · 신호 · 못 읽은 신호는 빼�
   assert.match(radar, /data-branch-tab="bansong"/);
   assert.match(radar, /지점 없음/);
   assert.doesNotMatch(radar, /박세나/, "고르지 않은 지점의 회원은 그리지 않는다");
+});
+
+test("PC 에서는 메뉴 | 화면 두 칸, 현황판은 강사 표 + 오른쪽 상세 (2026-11-21 현황판 웹 배치안 1단계)", async (t) => {
+  const markupOf = await issueScreens(t);
+  const hub = markupOf("더보기 탭 · PC");
+  assert.match(hub, /data-wide-centre/);
+  assert.match(hub, /data-wide-nav-item="renewal-radar"/);
+  assert.match(hub, /data-wide-hub-card="renewal-radar"/, "첫 화면은 현황판 바로가기");
+  assert.match(hub, /왼쪽 메뉴에서 볼 화면을 고르세요/);
+  const picked = markupOf("더보기 탭 · PC · 화면 고름");
+  assert.match(picked, /data-wide-nav-item="payroll"[^>]*aria-current="page"|aria-current="page"[^>]*data-wide-nav-item="payroll"/, "고른 화면이 메뉴에 표시된다");
+  assert.match(picked, /data-wide-nav-item="renewal-radar"/, "화면을 골라도 메뉴가 남는다");
+  // 폰 배치(SSR 기본)는 그대로 한 칸
+  assert.doesNotMatch(markupOf("더보기 탭"), /data-wide-centre/);
+
+  const radar = markupOf("재등록 레이더 · PC");
+  assert.match(radar, /data-instructor-table/);
+  assert.match(radar, /data-aggregate-detail/);
+  assert.match(radar, /data-radar-detail="u1"/);
+  assert.match(radar, /data-radar-signal="pace_drop"/, "상세 칸에 회원 신호");
+  assert.match(radar, /data-summary-tile="radar_urgent"/);
+  assert.doesNotMatch(radar, /data-radar-row=/, "PC 에서는 카드 대신 표");
+  assert.match(markupOf("재등록 레이더"), /data-radar-row="u1"/, "폰은 카드 그대로");
 });
 
 test("the member tab separates ongoing from expired, and says why it ended", async (t) => {

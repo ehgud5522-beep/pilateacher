@@ -6860,6 +6860,19 @@ describe("강사 개인매출 인센 -- 두 장부 · 서버 확정 · 잠금", 
     await assertSucceeds(getDoc(monthRef(users.instructor)), "강사는 자기 달 상태(어긋난 줄 포함)를 본다");
   });
 
+  test("제출한 내용 요약: 강사가 제출하며 남기고 다시 제출하면 바뀐다 · 모양이 틀리면 거부 · 되돌림은 못 싣는다", async () => {
+    const base = (userId, extra) => ({ organizationId: ORG_A, instructorId: users.instructor, month: MONTH, updatedBy: userId, updatedAt: serverTimestamp(), ...extra });
+    const summary = { lines: 2, total: 1200000, groupBase: 900000, payout: 104500, entryIds: ["e1", "e2"] };
+    const submit = (extra) => base(users.instructor, { status: "submitted", submittedAt: serverTimestamp(), submittedSummary: { ...summary, ...extra } });
+    await assertSucceeds(setDoc(monthRef(users.instructor), submit({})));
+    await assertSucceeds(setDoc(monthRef(users.instructor), submit({ lines: 1, entryIds: ["e1"] })), "다시 제출");
+    await assertFails(setDoc(monthRef(users.instructor), submit({ lines: 1.5 })));
+    await assertFails(setDoc(monthRef(users.instructor), submit({ note: "x" })), "모르는 칸");
+    await assertFails(setDoc(monthRef(users.instructor), base(users.instructor, { status: "submitted", submittedAt: serverTimestamp(), submittedSummary: { lines: 1 } })), "칸이 빠짐");
+    await confirmMonth();
+    await assertFails(setDoc(monthRef(users.owner), base(users.owner, { status: "reopened", reopenReason: "다시", submittedSummary: summary })), "되돌리며 요약을 꾸밀 수 없다");
+  });
+
   test("확정된 달의 줄은 아무도 못 넣고 · 고치고 · 지운다", async () => {
     await seedEntry("e1", users.instructor);
     await seedEntry("e2", users.owner);

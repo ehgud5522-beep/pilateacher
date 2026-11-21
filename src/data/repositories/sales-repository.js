@@ -1,8 +1,10 @@
 /**
  * 강사 개인매출 인센 저장소 (2026-11-21 대표 결정). 계산 · 판정은 functions/shared/sales-incentive.mjs.
  *
- *   organizations/{센터}/salesEntries/{자동 id}        결제 한 줄 (강사 · FC · 대표 · 총괄이 넣는다)
- *   organizations/{센터}/salesMonths/{강사}_{YYYY-MM}  그 달 제출 · 확정 · 되돌림
+ *   organizations/{센터}/salesEntries/{자동 id}        결제 한 줄. side = instructor(강사 본인 장부) | office(FC · 대표 · 총괄 장부)
+ *   organizations/{센터}/salesMonths/{강사}_{YYYY-MM}  강사 제출 · 서버 확정(두 장부가 같을 때만) · 되돌림
+ *
+ * 확정은 여기 없다 -- 서버 함수 confirmSalesMonth(lib/firebase.js 의 fbConfirmSalesMonth)만 한다.
  *
  * 권한은 규칙이 가른다 (firestore.foundation.rules 의 salesEntries · salesMonths). 확정된 달의 줄은 규칙이 막는다 --
  * 화면도 먼저 막지만 마지막 문은 규칙이다.
@@ -17,9 +19,10 @@ const load = () => import("firebase/firestore");
 const text = (value) => String(value ?? "").trim();
 
 /** 저장하는 칸 (규칙의 hasOnly 와 같은 목록). 화면이 넘긴 그 밖의 칸은 버린다. */
-const ENTRY_FIELDS = ["instructorId", "month", "paidOn", "kind", "amount", "share", "ot", "clientId", "memberLabel", "productLabel", "recordId", "passId", "refundOfMonth", "note"];
+const ENTRY_FIELDS = ["instructorId", "side", "month", "paidOn", "kind", "amount", "share", "ot", "clientId", "memberLabel", "productLabel", "recordId", "passId", "refundOfMonth", "note"];
 const entryData = (entry) => ({
   instructorId: text(entry.instructorId),
+  side: text(entry.side) === "office" ? "office" : "instructor",
   month: text(entry.month),
   paidOn: text(entry.paidOn),
   kind: text(entry.kind),
@@ -31,22 +34,26 @@ const entryData = (entry) => ({
   productLabel: text(entry.productLabel).slice(0, 60),
   recordId: text(entry.recordId),
   passId: text(entry.passId),
-  refundOfMonth: text(entry.kind) === "refund" ? text(entry.refundOfMonth) : "",
+  refundOfMonth: ["refund", "group_refund"].includes(text(entry.kind)) ? text(entry.refundOfMonth) : "",
   note: text(entry.note).slice(0, 200),
 });
 export const SALES_ENTRY_FIELDS = Object.freeze(ENTRY_FIELDS);
 
-/** 강사 한 명 · 한 달의 줄 (강사 본인 · FC · 대표). */
-export function listSalesEntries(organizationId, { instructorId, month }) {
+/**
+ * 강사 한 명 · 한 달의 줄. side 를 주면 그 장부만 -- **강사 화면은 반드시 side "instructor"** (규칙이 사무실 장부를 강사에게
+ * 열지 않아, side 없이 물으면 질의 전체가 거부된다). FC · 대표 · 총괄은 side 없이 두 장부를 함께 읽는다.
+ */
+export function listSalesEntries(organizationId, { instructorId, month, side = "" }) {
   return readCollection({
     feature: "sales_incentive",
-    path: `organizations/${organizationId}/${SALES_ENTRIES}?instructorId=${instructorId}&month=${month}`,
+    path: `organizations/${organizationId}/${SALES_ENTRIES}?instructorId=${instructorId}&month=${month}${side ? `&side=${side}` : ""}`,
     read: async () => {
       const { collection, getDocs, getFirestore, query, where } = await load();
+      const filters = [where("instructorId", "==", String(instructorId)), where("month", "==", String(month))];
+      if (side) filters.push(where("side", "==", String(side)));
       const snapshot = await getDocs(query(
         collection(getFirestore(), "organizations", String(organizationId), SALES_ENTRIES),
-        where("instructorId", "==", String(instructorId)),
-        where("month", "==", String(month)),
+        ...filters,
       ));
       return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
     },
@@ -84,11 +91,12 @@ export async function addSalesEntry(organizationId, entry, { uid, role }) {
   return reference.id;
 }
 
-/** 줄 고치기. 누구의 매출인지 · 누가 넣었는지는 바꾸지 않는다 (규칙도 막는다). */
+/** 줄 고치기. 누구의 매출인지 · 어느 장부인지 · 누가 넣었는지는 바꾸지 않는다 (규칙도 막는다). */
 export async function updateSalesEntry(organizationId, entryId, entry, { uid }) {
   const { doc, getFirestore, serverTimestamp, updateDoc } = await load();
   const data = entryData(entry);
   delete data.instructorId;
+  delete data.side;
   await updateDoc(doc(getFirestore(), "organizations", String(organizationId), SALES_ENTRIES, String(entryId)), {
     ...data,
     updatedBy: String(uid),
@@ -141,16 +149,6 @@ async function writeMonth(organizationId, instructorId, month, fields, uid) {
 
 /** 강사(또는 대신 넣는 FC · 대표): 이 달 제출. 확정 전까지 다시 고칠 수 있다. */
 export const submitSalesMonth = (organizationId, instructorId, month, { uid }) => writeMonth(organizationId, instructorId, month, { status: "submitted", submittedAt: "now" }, uid);
-
-/** FC · 대표 · 총괄: 확정. 그때의 숫자(snapshot)를 함께 남긴다 -- 급여 집계가 이것을 읽는다. */
-export const confirmSalesMonth = (organizationId, instructorId, month, snapshot, { uid }) => writeMonth(organizationId, instructorId, month, {
-  status: "confirmed", confirmedBy: String(uid), confirmedAt: "now",
-  snapshot: {
-    total: Math.round(snapshot.total) || 0, otBonus: Math.round(snapshot.otBonus) || 0, bracketAmount: Math.round(snapshot.bracketAmount) || 0,
-    incentive: Math.round(snapshot.incentive) || 0, clawbackTotal: Math.round(snapshot.clawbackTotal) || 0, payout: Math.round(snapshot.payout) || 0,
-    entryCount: Math.round(snapshot.entryCount) || 0,
-  },
-}, uid);
 
 /** FC · 대표 · 총괄: 확정 되돌림. 사유 필수 (규칙도 막는다). */
 export const reopenSalesMonth = (organizationId, instructorId, month, reason, { uid }) => writeMonth(organizationId, instructorId, month, {

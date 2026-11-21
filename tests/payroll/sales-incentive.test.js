@@ -4,11 +4,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  HALF_SHARE, MATCH, MATCH_VIEW, SALES_KIND, bracketOf, cheerLine, creditOf, entryProblems, incentiveOf, matchEntry,
-  monthStatement, nextBracketOf, receivedCashPriceOfPass, salesRecordsOf, sessionUpCashPrice, suggestionsFor,
+  HALF_SHARE, MATCH, MATCH_VIEW, PAIR, PAIR_VIEW, SALES_KIND, bracketOf, cheerLine, confirmSnapshot, creditOf, entryProblems, incentiveOf, matchEntry,
+  monthStatement, nextBracketOf, normalizeMemberLabel, pairSalesEntries, receivedCashPriceOfPass, salesRecordsOf, sessionUpCashPrice, suggestionsFor,
 } from "../../functions/shared/sales-incentive.mjs";
 
-const sale = (amount, extra = {}) => ({ month: "2026-11", kind: SALES_KIND.REPURCHASE, amount, share: 1, clientId: "c1", ...extra });
+const sale = (amount, extra = {}) => ({ month: "2026-11", side: "instructor", kind: SALES_KIND.REPURCHASE, amount, share: 1, clientId: "c1", ...extra });
 
 test("1. 구간은 정액 -- 400만이든 490만이든 16만, 1,000만 위로는 100만", () => {
   assert.deepEqual(bracketOf(3999999), { threshold: 0, amount: 0 });
@@ -134,7 +134,8 @@ test("먼저 채워 둘 후보: 내 담당 · 이 달 · 아직 아무도 안 �
 
 test("저장 전 모양 검사 (규칙과 같은 판단)", () => {
   assert.deepEqual(entryProblems(sale(1000000)), []);
-  assert.deepEqual(entryProblems({ month: "2026-1", kind: "x", amount: 0, share: 0.3 }), ["month_invalid", "kind_required", "amount_invalid", "share_invalid", "member_required"]);
+  assert.deepEqual(entryProblems({ month: "2026-1", kind: "x", amount: 0, share: 0.3 }), ["month_invalid", "kind_required", "amount_invalid", "share_invalid", "member_required", "side_required"]);
+  assert.deepEqual(entryProblems(sale(1000, { kind: SALES_KIND.GROUP, ot: true, clientId: "", memberLabel: "김민지" })), ["ot_not_for_group"]);
   assert.deepEqual(entryProblems(sale(1000, { clientId: "", memberLabel: "앱 밖 회원" })), []);
   assert.deepEqual(entryProblems(sale(1000, { kind: SALES_KIND.REFUND, refundOfMonth: "2026-12" })), ["refund_month_future"]);
 });
@@ -147,4 +148,48 @@ test("저장소가 쓰는 칸 목록은 규칙의 hasOnly 와 같다", async () 
   for (const field of [...SALES_ENTRY_FIELDS, "organizationId", "createdBy", "createdByRole", "createdAt", "updatedBy", "updatedAt"]) {
     assert.ok(block.includes(`"${field}"`), `규칙에 ${field} 없음`);
   }
+});
+
+test("9. 그룹 수강권은 현금가의 0.5% -- 개인 구간 합계에는 안 든다, 그룹 환불도 같은 셈", () => {
+  const result = incentiveOf([
+    sale(4000000),
+    sale(3000000, { kind: SALES_KIND.GROUP, clientId: "", memberLabel: "김민지" }),
+    sale(1000000, { kind: SALES_KIND.GROUP, clientId: "", memberLabel: "이두리", share: HALF_SHARE }),
+    sale(400000, { kind: SALES_KIND.GROUP_REFUND, clientId: "", memberLabel: "김민지" }),
+  ]);
+  assert.equal(result.total, 4000000, "그룹은 구간 합계에 안 든다");
+  assert.equal(result.groupBase, 3100000, "300만 + 반반 50만 - 환불 40만");
+  assert.equal(result.groupBonus, 15500);
+  assert.equal(result.incentive, 160000 + 15500);
+  assert.equal(matchEntry(sale(3000000, { kind: SALES_KIND.GROUP, clientId: "", memberLabel: "김민지" }), { records: [], claims: [] }).code, MATCH.GROUP_MANUAL, "그룹 회원은 앱 기록이 없다");
+  assert.equal(MATCH_VIEW[MATCH.GROUP_MANUAL].attention, false);
+});
+
+test("두 장부 대조: 같음 · 다름(어느 칸) · 한쪽만 · 그룹 이름은 띄어쓰기 · 회원 · 님 무시", () => {
+  const mine = (id, extra) => ({ id, side: "instructor", month: "2026-11", paidOn: "2026-11-05", kind: SALES_KIND.REPURCHASE, amount: 1200000, share: 1, ot: false, clientId: "c1", recordId: "p1_issue", refundOfMonth: "", ...extra });
+  const office = (id, extra) => ({ ...mine(id, extra), side: "office" });
+  const same = pairSalesEntries([mine("a"), office("b")]);
+  assert.equal(same.canConfirm, true);
+  assert.equal(same.pairs[0].code, PAIR.AGREED);
+
+  const differs = pairSalesEntries([mine("a"), office("b", { amount: 1100000, ot: true })]);
+  assert.equal(differs.canConfirm, false);
+  assert.deepEqual(differs.pairs[0].diffs.map((item) => item.label), ["금액", "OT 인센"]);
+
+  const single = pairSalesEntries([mine("a"), office("b", { clientId: "c9", recordId: "p9_issue" })]);
+  assert.deepEqual(single.counts, { agreed: 0, differs: 0, instructor_only: 1, office_only: 1 });
+
+  const group = (side, id, label) => ({ id, side, month: "2026-11", paidOn: "2026-11-07", kind: SALES_KIND.GROUP, amount: 300000, share: 1, ot: false, clientId: "", memberLabel: label, recordId: "", refundOfMonth: "" });
+  assert.equal(pairSalesEntries([group("instructor", "g1", "김민지 회원"), group("office", "g2", "김민지님")]).canConfirm, true);
+  assert.equal(normalizeMemberLabel(" 김 민지 회원님 "), "김민지");
+  /* 결제일만 틀려도 짝은 짓고 "다름" 으로 보인다 -- 어디를 고칠지 바로 알게 */
+  const dated = pairSalesEntries([group("instructor", "g1", "김민지"), { ...group("office", "g2", "김민지"), paidOn: "2026-11-08" }]);
+  assert.deepEqual(dated.pairs.map((pair) => [pair.code, pair.diffs.map((item) => item.field)]), [[PAIR.DIFFERS, ["paidOn"]]]);
+  assert.equal(pairSalesEntries([]).canConfirm, true, "매출이 없는 달도 확정할 수 있다");
+  for (const code of Object.values(PAIR)) assert.ok(PAIR_VIEW[code]?.label);
+});
+
+test("확정 숫자에 그룹 인센이 함께 남는다", () => {
+  const statement = monthStatement({ month: "2026-11", entries: [sale(5000000), sale(2000000, { kind: SALES_KIND.GROUP, clientId: "", memberLabel: "김민지" })] });
+  assert.deepEqual(confirmSnapshot(statement, 2), { total: 5000000, otBonus: 0, groupBase: 2000000, groupBonus: 10000, bracketAmount: 250000, incentive: 260000, clawbackTotal: 0, payout: 260000, entryCount: 2 });
 });

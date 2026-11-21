@@ -1831,6 +1831,29 @@ exports.backfillRenewalCandidates = onCall({
 /* ── 재등록 상담 소재 초안 (설계 문서 5단계) ────────────────────────────────
    강사가 누를 때만 부른다. 스위치 scheduleSync.consultPoints (처음엔 꺼짐), 회원 AI 동의 필요. 결과는 저장하지
    않는다. 근거는 consult-points.js 머리말. */
+/* ── 강사 개인매출 인센 확정 (2026-11-21 대표: "강사 입력 + FC · 대표 입력이 같아야 확정") ──
+   확정은 이 함수만 한다 (규칙은 앱에 confirmed 를 열지 않는다). 두 쪽 줄을 직접 읽어 다시 짝짓고, 다르면 거절하며 어긋난 줄을 남긴다. */
+const { createSalesConfirmService } = require("./sales-confirm");
+const salesConfirmService = createSalesConfirmService({ firestore, membershipId, isOwnerLevel });
+exports.confirmSalesMonth = onCall(CLIENT_PHONE_OPTIONS, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const instructorId = String(request?.data?.instructorId || "").trim();
+  const month = String(request?.data?.month || "").trim();
+  const fields = { feature: "sales_incentive", organizationId, month, correlationId: instructorId.slice(-8) };
+  try {
+    const result = await salesConfirmService.confirm({ callerUid: request?.auth?.uid, organizationId, instructorId, month });
+    logger.info("sales_month_confirmed", { ...fields, stage: "confirm", agreed: result.counts?.agreed || 0, total: result.snapshot.total });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      logger.warn("sales_month_refused", { ...fields, stage: "confirm", errorDomain: "sales_confirm", errorCode: error.reason, details: error.details || {} });
+      throw new HttpsError(error.httpsCode, error.reason, { reason: error.reason, ...(error.details || {}) });
+    }
+    logger.error("sales_month_failed", { ...fields, stage: "confirm", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200) });
+    throw new HttpsError("internal", "sales_confirm_failed", { reason: "sales_confirm_failed" });
+  }
+});
+
 const { createConsultPointsService } = require("./consult-points");
 const consultPointsService = createConsultPointsService({
   firestore, membershipId, isOwnerLevel,

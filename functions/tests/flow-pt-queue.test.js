@@ -111,3 +111,36 @@ test("앱 저장소와 서버가 같은 이름 · 상태를 쓴다", async () =>
   assert.ok(repo.includes(`FLOW_PT_COLLECTION = "${FLOW_PT_COLLECTION}"`));
   for (const value of Object.values(FLOW_PT_STATE)) assert.ok(repo.includes(`"${value}"`));
 });
+
+/* 2026-11-24 첫 실행: 9개 보드 모두 network · HTTP 0, 원문은 로거가 message 칸을 덮어 사라졌다. */
+test("요청 전에 멈추면: 비밀값 모양은 코드로, 연결 실패는 원인 코드와 원문(detail)으로, 값은 남기지 않는다", async () => {
+  const firestore = fakeFirestore({ "organizations/org": {}, "organizations/org/locations/l1": { name: "삼계점" } });
+  const logs = [];
+  const log = (level, event, fields) => logs.push({ level, event, fields });
+  let calls = 0;
+  const badKey = createFlowPtQueueService({
+    firestore, fetchImpl: async () => { calls += 1; throw new Error("unreachable"); },
+    apiKey: () => "키\n값", userId: () => "owner@example.test", log,
+  });
+  const counts = await badKey.sync();
+  assert.equal(calls, 0, "헤더에 못 싣는 키면 부르지 않는다");
+  assert.equal(counts.failedProjects, 1, "비밀값 문제는 첫 보드에서 멈춘다");
+  assert.equal(logs[0].fields.errorCode, "api_key_invalid_chars");
+  assert.ok(!JSON.stringify(logs).includes("키"), "키 값은 남기지 않는다");
+
+  logs.length = 0;
+  const padded = createFlowPtQueueService({
+    firestore, apiKey: () => "  key-test \n", userId: () => " owner@example.test ", log,
+    fetchImpl: async (url, init) => {
+      assert.equal(init.headers["x-flow-api-key"], "key-test", "앞뒤 빈칸 · 줄바꿈은 지운다");
+      assert.match(url, /userId=owner%40example\.test&/);
+      throw Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("getaddrinfo ENOTFOUND api.flow.team"), { code: "ENOTFOUND" }) });
+    },
+  });
+  await padded.sync();
+  const failure = logs.find((entry) => entry.event === "flow_pt_queue_fetch_failed");
+  assert.equal(failure.fields.errorCode, "network");
+  assert.equal(failure.fields.causeCode, "ENOTFOUND");
+  assert.match(failure.fields.detail, /TypeError: fetch failed \/ getaddrinfo ENOTFOUND/);
+  assert.ok(!("message" in failure.fields), "로거가 덮는 message 칸에 원문을 두지 않는다");
+});

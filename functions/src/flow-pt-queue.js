@@ -21,12 +21,18 @@ const MAX_PAGES = 10;
 const text = (value) => String(value ?? "").trim();
 
 class FlowApiError extends Error {
-  constructor(code, message, status) {
+  constructor(code, message, status, causeCode = "") {
     super(message);
     this.code = code;
     this.status = status;
+    /* fetch 가 응답 전에 실패한 원인 (예 ENOTFOUND · UND_ERR_CONNECT_TIMEOUT · 헤더 값 오류). 원본 그대로. */
+    this.causeCode = causeCode;
   }
 }
+
+/* 헤더에 실을 수 있는 값인가 -- 줄바꿈 · 한글 · 빈칸이 섞이면 fetch 가 요청 전에 TypeError 로 멈춘다
+   (2026-11-24 첫 실행: 9개 보드 모두 network · HTTP 0). 값은 남기지 않고 어떤 모양이 틀렸는지만 말한다. */
+const HEADER_SAFE = /^[\x21-\x7e]+$/;
 
 /**
  * @param {{
@@ -36,16 +42,38 @@ class FlowApiError extends Error {
  * }} deps
  */
 function createFlowPtQueueService(deps) {
-  const { firestore, fetchImpl = globalThis.fetch, apiKey, userId, now = () => new Date(), log = () => {}, serverTimestamp = () => now() } = deps;
+  const { firestore, apiKey, userId, now = () => new Date(), log = () => {}, serverTimestamp = () => now() } = deps;
+  /* 떼어 부르면 this 를 잃는 구현이 있다 -- 늘 감싸서 부른다. */
+  const fetchImpl = deps.fetchImpl || ((...args) => globalThis.fetch(...args));
   const shared = () => import("../shared/flow-pt-queue.mjs");
 
+  /** 비밀값을 읽고 모양을 본다. 값 자체는 어디에도 남기지 않는다. */
+  function credentials() {
+    let key;
+    let account;
+    try {
+      key = text(apiKey());
+      account = text(userId());
+    } catch (error) {
+      throw new FlowApiError("secret_unreadable", text(error?.message).slice(0, 200), 0);
+    }
+    if (!key) throw new FlowApiError("api_key_missing", "FLOW_API_KEY 가 비어 있음", 0);
+    if (!HEADER_SAFE.test(key)) throw new FlowApiError("api_key_invalid_chars", `FLOW_API_KEY 에 헤더에 못 싣는 글자가 있음 (길이 ${key.length})`, 0);
+    if (!account) throw new FlowApiError("user_id_missing", "FLOW_USER_ID 가 비어 있음", 0);
+    if (!/^[A-Za-z0-9._@+-]{1,100}$/.test(account)) throw new FlowApiError("user_id_invalid_chars", `FLOW_USER_ID 모양이 아님 (길이 ${account.length})`, 0);
+    return { key, account };
+  }
+
   async function fetchPage(projectId, cursor) {
-    const url = `${API_BASE}/v1/posts/projects/${encodeURIComponent(projectId)}?userId=${encodeURIComponent(userId())}&cursor=${cursor}&pageSize=${PAGE_SIZE}`;
+    const { key, account } = credentials();
+    const url = `${API_BASE}/v1/posts/projects/${encodeURIComponent(projectId)}?userId=${encodeURIComponent(account)}&cursor=${cursor}&pageSize=${PAGE_SIZE}`;
     let response;
     try {
-      response = await fetchImpl(url, { headers: { "Content-Type": "application/json", "x-flow-api-key": apiKey() } });
+      response = await fetchImpl(url, { headers: { "Content-Type": "application/json", "x-flow-api-key": key } });
     } catch (error) {
-      throw new FlowApiError("network", String(error?.message || error).slice(0, 200), 0);
+      const cause = error?.cause;
+      throw new FlowApiError("network", `${text(error?.name)}: ${text(error?.message)}${cause?.message ? ` / ${text(cause.message)}` : ""}`.slice(0, 300), 0,
+        text(cause?.code || cause?.name || error?.code));
     }
     let body = null;
     try { body = await response.json(); } catch { body = null; }
@@ -113,11 +141,13 @@ function createFlowPtQueueService(deps) {
         posts = await recentPosts(projectId, since);
       } catch (error) {
         counts.failedProjects += 1;
+        const fatal = ["secret_unreadable", "api_key_missing", "api_key_invalid_chars", "user_id_missing", "user_id_invalid_chars"].includes(text(error?.code));
         log("error", "flow_pt_queue_fetch_failed", {
           feature: "flow_pt_queue", stage: "fetch_posts", flowProjectId: projectId,
           errorDomain: error instanceof FlowApiError ? "flow_api" : "unknown", errorCode: text(error?.code || "unknown"),
-          httpStatus: Number(error?.status) || 0, message: text(error?.message).slice(0, 200),
+          httpStatus: Number(error?.status) || 0, causeCode: text(error?.causeCode), detail: text(error?.message).slice(0, 300),
         });
+        if (fatal) break;
         continue;
       }
       counts.projects += 1;
@@ -144,7 +174,7 @@ function createFlowPtQueueService(deps) {
         } catch (error) {
           log("error", "flow_pt_queue_write_failed", {
             feature: "flow_pt_queue", stage: "write_queue", flowProjectId: projectId, organizationId: owners[0].organizationId,
-            errorDomain: "firestore", errorCode: text(error?.code || "unknown"), message: text(error?.message).slice(0, 200),
+            errorDomain: "firestore", errorCode: text(error?.code || "unknown"), detail: text(error?.message).slice(0, 300),
           });
         }
       }

@@ -16,6 +16,7 @@
  * 순수 함수다. 문구 · 색 · 정렬 · 기준 숫자는 여기서만 정한다.
  */
 
+import { daySpanLabel } from "../../../functions/shared/day-span.mjs";
 import { RENEWAL_ALERT, kstDaysBetween, livePassesOf, renewalForecast, timeOf } from "../../../functions/shared/renewal-forecast.mjs";
 
 const text = (value) => String(value ?? "").trim();
@@ -56,7 +57,7 @@ export function radarSignalLabel(signal) {
     case RADAR_SIGNAL.PACE_DROP: return `출석 줄어듦 (4주 ${signal.before}회 → ${signal.recent}회)`;
     case RADAR_SIGNAL.ABSENT: return `${signal.days}일째 출석 없음`;
     case RADAR_SIGNAL.NEVER_ATTENDED: return "8주 동안 출석 없음";
-    case RADAR_SIGNAL.BEFORE_AFTER_STALE: return `비포애프터 ${signal.days}일 전`;
+    case RADAR_SIGNAL.BEFORE_AFTER_STALE: return `비포애프터 ${daySpanLabel(signal.days)} 전`;
     case RADAR_SIGNAL.BEFORE_AFTER_NEVER: return "비포애프터 받은 적 없음";
     case RADAR_SIGNAL.NO_MEMBER_NOTE: return `${MEMBER_NOTE_DAYS}일 동안 보낸 말 없음`;
     default: return signal.code;
@@ -120,7 +121,7 @@ export function radarTarget(forecast) {
 export function radarPassLabel(forecast) {
   if (!forecast) return "";
   const parts = [`잔여 ${forecast.remaining}회`];
-  if (forecast.daysToExpiry !== null) parts.push(forecast.daysToExpiry <= 0 ? "오늘 만료" : `만료 ${forecast.daysToExpiry}일 전`);
+  if (forecast.daysToExpiry !== null) parts.push(forecast.daysToExpiry <= 0 ? "오늘 만료" : `만료까지 ${daySpanLabel(forecast.daysToExpiry)}`);
   if (forecast.alert === RENEWAL_ALERT.CANNOT_USE_UP && forecast.unusable > 0) parts.push(`이 속도면 ${forecast.unusable}회 남김`);
   return parts.join(" · ");
 }

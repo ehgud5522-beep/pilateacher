@@ -64,9 +64,19 @@ function createFlowPtQueueService(deps) {
     return { key, account };
   }
 
-  async function fetchPage(projectId, cursor) {
+  /**
+   * @param {string} projectId @param {number} cursor
+   * @param {{ withUser?: boolean, templateTypes?: string }} [options] 기본: userId 넣음, 종류 지정 없음. 시험(probe)이 바꿔 본다.
+   */
+  async function fetchPage(projectId, cursor, options = {}) {
     const { key, account } = credentials();
-    const url = `${API_BASE}/v1/posts/projects/${encodeURIComponent(projectId)}?userId=${encodeURIComponent(account)}&cursor=${cursor}&pageSize=${PAGE_SIZE}`;
+    const withUser = options.withUser !== false;
+    const params = [
+      ...(withUser ? [`userId=${encodeURIComponent(account)}`] : []),
+      `cursor=${cursor}`, `pageSize=${PAGE_SIZE}`,
+      ...(options.templateTypes ? [`templateTypes=${encodeURIComponent(options.templateTypes)}`] : []),
+    ];
+    const url = `${API_BASE}/v1/posts/projects/${encodeURIComponent(projectId)}?${params.join("&")}`;
     let response;
     try {
       response = await fetchImpl(url, { headers: { "Content-Type": "application/json", "x-flow-api-key": key } });
@@ -82,6 +92,37 @@ function createFlowPtQueueService(deps) {
       throw new FlowApiError(text(body?.error?.code) || `http_${response.status}`, text(body?.error?.message || body?.message).slice(0, 200), response.status);
     }
     return body?.data || {};
+  }
+
+  /**
+   * 글이 0건일 때 조회 방식을 바꿔 본다 (2026-11-24: 9개 보드가 200 으로 답하는데 글 0건 -- 원인 확정용).
+   * 방식마다 몇 건 · 응답 칸 이름 · 글 종류(templateType) · 상태 값 모양만 남긴다. 제목 · 본문 · 이름은 남기지 않는다.
+   */
+  async function probe(projectId) {
+    const variants = [
+      { key: "user", label: "userId 넣음", options: {} },
+      { key: "user_task", label: "userId + 업무만(2)", options: { templateTypes: "2" } },
+      { key: "no_user", label: "userId 뺌", options: { withUser: false } },
+      { key: "no_user_task", label: "userId 뺌 + 업무만(2)", options: { withUser: false, templateTypes: "2" } },
+    ];
+    const results = [];
+    for (const variant of variants) {
+      try {
+        const data = await fetchPage(projectId, 0, variant.options);
+        const posts = Array.isArray(data?.posts) ? data.posts : [];
+        results.push({
+          key: variant.key, label: variant.label, ok: true, posts: posts.length,
+          dataKeys: Object.keys(data || {}).slice(0, 12),
+          templateTypes: [...new Set(posts.map((post) => text(post?.templateType)))].slice(0, 6),
+          taskStatuses: [...new Set(posts.map((post) => text(post?.taskStatus)))].slice(0, 6),
+          hasNext: Boolean(data?.hasNext),
+        });
+      } catch (error) {
+        results.push({ key: variant.key, label: variant.label, ok: false, errorCode: text(error?.code || "unknown"), httpStatus: Number(error?.status) || 0 });
+      }
+    }
+    log("info", "flow_pt_queue_probe", { feature: "flow_pt_queue", stage: "probe", flowProjectId: projectId, results });
+    return { flowProjectId: projectId, results };
   }
 
   /** 한 보드의 최근 글 (LOOKBACK 안). */
@@ -138,6 +179,7 @@ function createFlowPtQueueService(deps) {
     const counts = { projects: 0, failedProjects: 0, posts: 0, pt: 0, created: 0, updated: 0, unmatchedBranch: 0 };
     /* 보드마다 실패 코드 -- [새로고침] 을 누른 사람에게 그대로 보여 준다 (원문 · 값은 로그에만). */
     const failures = [];
+    let probed = null;
     for (const board of FLOW_PT_BOARDS) {
       const { projectId } = board;
       let posts;
@@ -157,6 +199,10 @@ function createFlowPtQueueService(deps) {
       }
       counts.projects += 1;
       counts.posts += posts.length;
+      /* 첫 0건 보드 하나만 시험한다 -- 아홉 곳을 다 시험하면 요청이 서른여섯 번이다. */
+      if (!posts.length && !probed) {
+        probed = await probe(projectId).catch(() => null);
+      }
       for (const post of posts) {
         /* 목록 응답에는 projectId 가 비어 오기도 한다 -- 지금 읽는 보드로 채운다. */
         const item = { ...post, projectId: post.projectId || projectId };
@@ -186,7 +232,7 @@ function createFlowPtQueueService(deps) {
         }
       }
     }
-    return { ...counts, failures };
+    return { ...counts, failures, ...(probed ? { probe: probed } : {}) };
   }
 
   return { sync, fetchPage };

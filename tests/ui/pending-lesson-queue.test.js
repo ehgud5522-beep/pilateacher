@@ -36,12 +36,29 @@ test("legacy settled duet never requests locked attendance but retains missing r
 
 /* ---------------------------------------------------------------- A ------ */
 
-test("a lesson whose only record is an unconfirmed draft stays in the queue", () => {
-  // The state the user is in before saving: this is what the fix has to clear.
+/* 2026-11-24 대표 결정: AI 기록 확인은 선택이다. [수업확정] 도 하고 기록도 남긴
+   강사가 "기록 확인" 카드 때문에 "다 했는데 왜 뜨지?" 를 묻게 됐다. 확인하지
+   않은 AI 기록이 있는 수업은 "확인할 수업" 에 넣지 않는다. */
+test("a lesson whose only record is an unconfirmed AI draft is not in the queue", () => {
   const notes = [{ id: "n1", sid: "lesson-1", date: "2026-09-01", type: "개인레슨", body: "음성 초안", lessonRecord: { stage: "structured_draft", structuredDraft: { didToday: ["리포머"] } } }];
   const queue = queueFor([member(notes)], [lesson()]);
+  assert.equal(queue.count, 0);
+  // 확인 자체는 여전히 할 수 있다 -- 회원 상세의 수업 기록 줄이 이 값을 본다.
+  assert.equal(queue.sessions.length, 0);
+});
+
+test("unconfirmed AI records never add a confirmation reason, even on a lesson that is pending for another reason", () => {
+  const notes = [{ id: "n1", sid: "lesson-1", date: "2026-09-01", type: "개인레슨", body: "음성 초안", lessonRecord: { stage: "structured_draft", structuredDraft: { didToday: ["리포머"] } } }];
+  const booked = lesson({ attendees: [{ memberId: "m1", status: "booked" }] });
+  const queue = queueFor([member(notes)], [booked]);
   assert.equal(queue.count, 1);
-  assert.deepEqual(queue.sessions[0].reasons, ["confirmation"]);
+  assert.deepEqual(queue.sessions[0].reasons, ["attendance"]);
+});
+
+test("a device-only draft still stays in the queue -- it is not on the server yet", () => {
+  const queue = queueFor([member([])], [lesson()], [{ memberId: "m1", lessonId: "lesson-1", rawTranscript: "브릿지" }]);
+  assert.equal(queue.count, 1);
+  assert.ok(queue.sessions[0].reasons.includes("local_draft"));
 });
 
 test("a manually typed record clears the lesson, including an older draft on it", () => {
@@ -55,16 +72,14 @@ test("a manually typed record clears the lesson, including an older draft on it"
   assert.equal(queueFor([member(notes)], [lesson()]).count, 0);
 });
 
-test("stamping only the new note would leave the lesson in the queue", () => {
-  // Why the fix also has to confirm the sibling: a session is clear only when
-  // every confirmable note on it is confirmed.
+test("a partially confirmed lesson is not in the queue either", () => {
+  // 전에는 하나라도 확인 안 된 기록이 있으면 남았다. 이제 확인은 선택이다.
   const notes = [
     { id: "n2", sid: "lesson-1", date: "2026-09-01", type: "개인레슨", body: "직접 입력한 기록", lessonRecord: { stage: "confirmed_record", status: "confirmed_manual", confirmationStatus: "confirmed" } },
     { id: "n1", sid: "lesson-1", date: "2026-09-01", type: "개인레슨", body: "음성 초안", lessonRecord: { stage: "structured_draft", structuredDraft: { didToday: ["리포머"] } } },
   ];
   const queue = queueFor([member(notes)], [lesson()]);
-  assert.equal(queue.count, 1, "an unconfirmed sibling keeps the lesson pending");
-  assert.equal(queue.sessions[0].session.confirmationState, "partial");
+  assert.equal(queue.count, 0, "an unconfirmed sibling no longer keeps the lesson pending");
 });
 
 test("노코멘트 clears the lesson the same way a typed record does", () => {

@@ -74,13 +74,14 @@ test("E: legacy prefixes, origin tags, and date tags become structured render va
   assert.deepEqual(stripLessonRecordTags("[STT] [8/26] 호흡 패턴 확인"), { text: "호흡 패턴 확인", dateHint: "08.26" });
 });
 
-test("F: confirmation is aggregated per record and partial sessions stay pending", () => {
+test("F: confirmation is aggregated per record, and an unconfirmed AI record is not pending work", () => {
   const member = { id: "m", notes: [note("n1", "s1", "2026-09-01"), note("n2", "s1", "2026-09-01", pending())] };
   const [session] = selectMemberLessonSessions({ member });
   assert.equal(session.confirmationState, "partial");
   assert.equal(session.confirmedCount, 1);
   assert.equal(session.confirmableCount, 2);
-  assert.equal(selectPendingLessonSessions({ members: [member], now: new Date("2026-09-02T00:00:00") }).count, 1);
+  // 2026-11-24: AI 기록 확인은 선택이다 -- "확인할 수업" 에 넣지 않는다.
+  assert.equal(selectPendingLessonSessions({ members: [member], now: new Date("2026-09-02T00:00:00") }).count, 0);
 });
 
 test("record confirmation aggregates 3/3, 2/3, and 0/3 without multiplying pending sessions", () => {
@@ -93,18 +94,18 @@ test("record confirmation aggregates 3/3, 2/3, and 0/3 without multiplying pendi
   assert.equal(all.confirmationState, "confirmed");
   assert.deepEqual([partial.confirmationState, partial.confirmedCount, partial.confirmableCount], ["partial", 2, 3]);
   assert.deepEqual([none.confirmationState, none.confirmedCount, none.confirmableCount], ["pending", 0, 3]);
-  assert.equal(selectPendingLessonSessions({ members: [partialMember] }).count, 1);
-  assert.equal(selectPendingLessonSessions({ members: [noneMember] }).count, 1);
+  assert.equal(selectPendingLessonSessions({ members: [partialMember] }).count, 0);
+  assert.equal(selectPendingLessonSessions({ members: [noneMember] }).count, 0);
 });
 
-test("legacy pending mismatch becomes one shared pending session", () => {
+test("a lesson whose records are all unconfirmed AI drafts is not pending", () => {
   const member = { id: "m", notes: [note("n1", "s1", "2026-09-01", pending()), note("n2", "s1", "2026-09-01", pending()), note("n3", "s1", "2026-09-01", pending())] };
   const schedule = [{ id: "s1", date: "2026-09-01", start: "09:00", end: "09:50", type: "개인레슨", attendees: [{ memberId: "m", status: "done" }] }];
   const oldScheduleMissingOnly = 0;
   const oldMemberRecordCount = 3;
   const shared = selectPendingLessonSessions({ members: [member], schedule, now: new Date("2026-09-02T00:00:00") });
   assert.deepEqual([oldScheduleMissingOnly, oldMemberRecordCount], [0, 3]);
-  assert.deepEqual([shared.count, shared.countForMember("m")], [1, 1]);
+  assert.deepEqual([shared.count, shared.countForMember("m")], [0, 0]);
 });
 
 test("a completed lesson with no note is one pending session", () => {
@@ -131,7 +132,7 @@ test("attendance is the visible priority when the same session also has an uncon
   const schedule = [{ id: "s1", date: "2026-09-01", start: "09:00", end: "09:50", type: "개인레슨", attendees: [{ memberId: "m", status: "booked" }] }];
   const summary = selectPendingLessonSessions({ members: [member], schedule, now: new Date("2026-09-05T12:00:00") });
   assert.equal(summary.count, 1);
-  assert.deepEqual(summary.sessions[0].reasons.sort(), ["attendance", "confirmation"]);
+  assert.deepEqual(summary.sessions[0].reasons, ["attendance"]);
   assert.deepEqual(pendingLessonState(summary.sessions[0]), { key: "attendance", label: "출석 미처리", action: "출석 처리" });
 });
 
@@ -148,7 +149,8 @@ test("schedule banner and member detail share the same pending-session count", (
   const memberDetailTotal = members.reduce((sum, member) => sum + summary.countForMember(member.id), 0);
   const oldMissingRecordOnlyCount = 1;
   assert.equal(oldMissingRecordOnlyCount, 1);
-  assert.equal(summary.count, 2);
+  // m1 은 AI 기록이 있으니 할 일이 아니다. 기록이 없는 m2 만 남는다.
+  assert.equal(summary.count, 1);
   assert.equal(memberDetailTotal, summary.count);
 });
 

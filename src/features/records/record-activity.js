@@ -64,6 +64,9 @@ const kindOf = (note) => {
  * 기기에서 센다: 이 달에 끝난 수업 중 **출석(done)으로 처리한 회원 한 명** 이 한 건이다 (듀엣은 2건).
  *  - recorded  확정한 기록이 있다 (직접 입력 · 특이사항 없음 · 확인을 마친 AI 기록)
  *  - draft     기록은 있는데 아직 확인하지 않았다 (AI 초안)
+ * 둘은 겹치지 않는다. 기기는 이 둘을 따로 올리고, **기록률은 대표 화면이 둘을 더해서** 낸다 (instructorRecordBoard) --
+ * AI 기록 확인은 선택이다(2026-11-24, #273). 확인을 건너뛴 음성 기록을 "빠짐" 으로 세면 음성을 쓰는 강사가 부족으로 보인다.
+ * 기기 쪽 숫자를 그대로 둔 것은 이미 올라온 1.1.57~ 보고도 새 빌드 없이 바로 맞게 보이게 하려는 것이다.
  *  - 나머지는 기록 없음
  * 그룹(기구) 수업 · 개인 일정 · 예시 회원은 세지 않는다 -- 회원별 기록을 쓰는 자리가 아니다.
  *
@@ -196,7 +199,8 @@ export function instructorRecordBoard(input = {}) {
   return [...rows.values()].map(({ _keys, ...row }) => {
     const member = roster.get(row.instructorId) || null;
     const attended = row.activity ? count(row.activity.attended) : null;
-    const recorded = row.activity ? count(row.activity.recorded) : null;
+    /* 기록 = 확정 기록 + 확인 안 한 AI 기록 (위 countDeviceRecordActivity 머리말). 둘은 기기에서 겹치지 않게 센다. */
+    const recorded = row.activity ? Math.min(RECORD_ACTIVITY_MAX, count(row.activity.recorded) + count(row.activity.draft)) : null;
     const rate = attended ? Math.min(1, recorded / attended) : null;
     return {
       ...row,

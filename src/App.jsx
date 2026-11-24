@@ -27510,7 +27510,7 @@ function InstructorRecordBoard({ organization, instructorStore, clientStore, ini
         <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
           {row.attended === null
             ? `수업기록 — ${view.detail || ""}`
-            : `수업기록 ${row.recorded}/${row.attended}건${row.draft ? ` · 확인 안 한 AI 기록 ${row.draft}건` : ""}${view.detail ? ` · ${view.detail}` : ""}`}
+            : `수업기록 ${row.recorded}/${row.attended}건${row.draft ? ` (그중 확인 안 한 AI 기록 ${row.draft}건)` : ""}${view.detail ? ` · ${view.detail}` : ""}`}
         </div>
         <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>
           {state.notesError
@@ -27536,7 +27536,7 @@ function InstructorRecordBoard({ organization, instructorStore, clientStore, ini
         <button type="button" aria-label="다음 달" disabled={month >= thisMonth} onClick={() => setMonth((current) => shiftRatingMonth(current, 1))} className="flex items-center justify-center disabled:opacity-30" style={navButton}><ChevronRight size={16} /></button>
       </div>
       <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        <b style={{ color: INK }}>수업기록</b>은 강사 폰이 알려 준 숫자예요 — 출석 처리한 수업 중 기록(직접 입력 · 음성 · 특이사항 없음)을 남긴 비율.
+        <b style={{ color: INK }}>수업기록</b>은 강사 폰이 알려 준 숫자예요 — 출석 처리한 수업 중 기록(직접 입력 · 음성 · 특이사항 없음)을 남긴 비율. 확인을 건너뛴 AI 기록도 기록으로 셉니다.
         {" "}<b style={{ color: INK }}>회원에게 보낸 말</b>은 확정한 수업 중 회원 앱으로 한마디를 보낸 수업이에요.
         {" "}기록 내용 · 회원 이름은 여기 오지 않아요. 기록이 적은 강사가 위에 있어요.
       </p>

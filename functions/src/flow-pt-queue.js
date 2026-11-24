@@ -124,6 +124,7 @@ function createFlowPtQueueService(deps) {
     if (flowQueueSignature({ ...current }) === flowQueueSignature(fields)) return "same";
     await ref.update({
       title: fields.title, excerpt: fields.excerpt, mentionsRefund: fields.mentionsRefund, taskStatus: fields.taskStatus,
+      isBalance: fields.isBalance, isTrial: fields.isTrial,
       locationId: fields.locationId, branchName: fields.branchName, syncedAt: serverTimestamp(),
     });
     return "updated";
@@ -131,13 +132,14 @@ function createFlowPtQueueService(deps) {
 
   /** 한 번 돈다. 보드 하나가 실패해도 나머지는 계속한다. */
   async function sync() {
-    const { FLOW_PT_PROJECT_IDS, FLOW_PT_LOOKBACK_DAYS, isPtQueuePost, branchNameOfProject, matchLocationId, flowQueueFields } = await shared();
+    const { FLOW_PT_BOARDS, FLOW_PT_LOOKBACK_DAYS, isPtQueuePost, branchNameOfProject, matchLocationId, flowQueueFields } = await shared();
     const since = new Date(now().getTime() - FLOW_PT_LOOKBACK_DAYS * 86400000);
     const directory = await branchDirectory();
     const counts = { projects: 0, failedProjects: 0, posts: 0, pt: 0, created: 0, updated: 0, unmatchedBranch: 0 };
     /* 보드마다 실패 코드 -- [새로고침] 을 누른 사람에게 그대로 보여 준다 (원문 · 값은 로그에만). */
     const failures = [];
-    for (const projectId of FLOW_PT_PROJECT_IDS) {
+    for (const board of FLOW_PT_BOARDS) {
+      const { projectId } = board;
       let posts;
       try {
         posts = await recentPosts(projectId, since);
@@ -156,9 +158,11 @@ function createFlowPtQueueService(deps) {
       counts.projects += 1;
       counts.posts += posts.length;
       for (const post of posts) {
-        if (!isPtQueuePost(post)) continue;
+        /* 목록 응답에는 projectId 가 비어 오기도 한다 -- 지금 읽는 보드로 채운다. */
+        const item = { ...post, projectId: post.projectId || projectId };
+        if (!isPtQueuePost(item, board)) continue;
         counts.pt += 1;
-        const branchName = branchNameOfProject(post.projectTitle);
+        const branchName = board.branchName || branchNameOfProject(post.projectTitle);
         const owners = directory
           .map((entry) => ({ organizationId: entry.organizationId, locationId: matchLocationId(branchName, entry.locations) }))
           .filter((entry) => entry.locationId);
@@ -171,7 +175,7 @@ function createFlowPtQueueService(deps) {
           continue;
         }
         try {
-          const result = await upsert(owners[0].organizationId, flowQueueFields(post, owners[0]));
+          const result = await upsert(owners[0].organizationId, flowQueueFields(item, { ...owners[0], board }));
           if (result === "created") counts.created += 1;
           if (result === "updated") counts.updated += 1;
         } catch (error) {

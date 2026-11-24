@@ -12,10 +12,26 @@
  * 순수 함수. 플로우 호출 · 저장은 functions/src/flow-pt-queue.js.
  */
 
-/** 지점 업무보드 (2026-11-24 대표 계정에서 확인). 보드가 늘면 여기에 더한다. */
-export const FLOW_PT_PROJECT_IDS = Object.freeze([
-  "2955393", "2955389", "2955426", "2955391", "2955434", "2955398", "2955353", "2955433", "2955093",
-]);
+/**
+ * 지점 업무보드 (2026-11-24 대표 계정에서 확인). 보드가 늘면 여기에 더한다.
+ *
+ * successStatusId: 그 보드의 "성공" 단계 번호. 플로우는 업무 상태를 큰 분류(COMPLETE)가 아니라 **보드마다 다른
+ * 단계 번호**로 준다 -- 성공과 환불이 둘 다 COMPLETE 분류라, 번호로 봐야 성공만 고를 수 있다.
+ * branchName: 목록 응답에 보드 이름(projectTitle)이 비어 오는 일이 있어 지점 이름을 여기 둔다.
+ */
+export const FLOW_PT_BOARDS = Object.freeze([
+  { projectId: "2955393", branchName: "삼계점", successStatusId: "1035123" },
+  { projectId: "2955389", branchName: "율하점", successStatusId: "1035111" },
+  { projectId: "2955426", branchName: "토월점", successStatusId: "1035140" },
+  { projectId: "2955391", branchName: "대방점", successStatusId: "1035117" },
+  { projectId: "2955434", branchName: "좌동점", successStatusId: "1035157" },
+  { projectId: "2955398", branchName: "반송점", successStatusId: "1035129" },
+  { projectId: "2955353", branchName: "대원점", successStatusId: "1035105" },
+  { projectId: "2955433", branchName: "양산점", successStatusId: "1035146" },
+  { projectId: "2955093", branchName: "장유점", successStatusId: "1035099" },
+].map((board) => Object.freeze(board)));
+export const FLOW_PT_PROJECT_IDS = Object.freeze(FLOW_PT_BOARDS.map((board) => board.projectId));
+export const flowPtBoard = (projectId) => FLOW_PT_BOARDS.find((board) => board.projectId === String(projectId ?? "").trim()) || null;
 
 export const FLOW_PT_COLLECTION = "flowPtQueue";
 /** 이보다 오래된 글은 가져오지 않는다 -- 처음 켤 때 한 달 반치만. */
@@ -25,19 +41,43 @@ export const FLOW_PT_STATE = Object.freeze({ WAITING: "waiting", ISSUED: "issued
 
 const text = (value) => String(value ?? "").trim();
 
-/** "PT" 가 낱말로 적혔는가. "1:1pt" · "PT 10회" · "피티" 는 예, "opt" · "apt" 는 아니오. */
-export function mentionsPt(value) {
-  const body = text(value);
-  return /(^|[^a-z])pt([^a-z]|$)/i.test(body) || body.includes("피티");
+/* ── PT 줄 (2026-11-24 대표: "피티 · pt · 디오사 · 듀엣 · 패키지도 PT 수강권", "PT 체험도 넣어 줘") ──
+   양산점 · 장유점 업무 40건씩으로 맞췄다. FC 가 쓰는 줄의 모양:
+     [재등록] ○○님 1:1PT 깍두기EV 10s 55만 카드완납     ← PT
+     [신규] ○○님 1:1 40s 공동구매e …                     ← "pt" 없이 1:1 만 쓰기도 한다
+     [신규] ○○/○○님 2:1 듀엣 30s …   [신규] ○○님 디오사A 10s …   1:1 pt 24s 패키지e
+     [신규] ○○님 1:1 pt 일일체험비 5.5만                   ← PT 체험도 넣는다
+     [신규] ○○님 8:1 그룹 200s …                           ← 그룹은 뺀다 (한 글에 PT 줄 · 그룹 줄이 같이 오기도 한다)
+   그래서 **줄마다** 본다: PT 말이 있고 빼는 말이 없는 줄이 하나라도 있으면 PT. */
+const PT_WORDS = /(^|[^a-z])pt([^a-z]|$)|피티|(^|[^0-9])1\s*:\s*1([^0-9]|$)|(^|[^0-9])2\s*:\s*1([^0-9]|$)|듀엣|디오사|패키지/i;
+/* 그룹(8:1 · 6:1 … · "그룹"), 새 회원권이 아닌 것(세션업 · 결제변경 · 매출취소). */
+const NOT_PT_WORDS = /(^|[^0-9])([3-9]|[1-9][0-9])\s*:\s*1([^0-9]|$)|그룹|세션업|결제\s*변경|매출\s*취소/;
+
+/** 글에서 PT 줄만. */
+export function ptLines(value) {
+  return text(value).split(/\r?\n/).map((line) => line.trim()).filter((line) => line && PT_WORDS.test(line) && !NOT_PT_WORDS.test(line));
 }
 
-/** 업무 글이고 완료로 옮겨졌는가. 플로우 큰 분류: REQUEST · PROGRESS · FEEDBACK · COMPLETE · HOLD. */
-export const isCompletedTask = (post) => text(post?.taskStatus).toUpperCase() === "COMPLETE";
+/** "PT" 가 적힌 줄이 있는가 (옛 이름 -- 테스트 · 다른 곳이 쓴다). */
+export const mentionsPt = (value) => ptLines(value).length > 0;
+
+/**
+ * 그 보드의 "성공" 업무인가. 공개 API 문서는 큰 분류(COMPLETE)를 예로 들지만 실제로는 단계 번호가 온다 --
+ * 둘 다 받는다. 큰 분류만 오면 환불도 섞이므로 그때는 글의 "환불" 표시로 FC 에게 알린다 (mentionsRefund).
+ */
+export function isSuccessTask(post, board = flowPtBoard(post?.projectId)) {
+  const status = text(post?.taskStatus);
+  if (!status) return false;
+  if (board && status === board.successStatusId) return true;
+  return status.toUpperCase() === "COMPLETE";
+}
+/** 옛 이름. */
+export const isCompletedTask = (post) => isSuccessTask(post);
 
 /** 발급 대기에 세울 글인가. */
-export function isPtQueuePost(post) {
+export function isPtQueuePost(post, board = flowPtBoard(post?.projectId)) {
   if (!post || !text(post.postId)) return false;
-  return isCompletedTask(post) && mentionsPt(`${text(post.title)} ${text(post.content)}`);
+  return isSuccessTask(post, board) && ptLines(`${text(post.title)}\n${text(post.content)}`).length > 0;
 }
 
 /** "삼계점 업무보드" → "삼계점". 앱 지점 이름과 맞출 때 쓴다. */
@@ -82,18 +122,24 @@ export const flowPostUrl = (projectId, postId) => `https://flow.team/main.act?pr
  * 저장할 칸 (플로우에서 온 것만). 처리 칸(state · handledBy · handledAt)은 여기 없다 -- 처음 만들 때만
  * waiting 으로 넣고, 그 뒤 동기화는 처리 칸을 건드리지 않는다 (FC 가 누른 것을 되돌리지 않게).
  */
-export function flowQueueFields(post, { organizationId, locationId = "" }) {
+export function flowQueueFields(post, { organizationId, locationId = "", board = flowPtBoard(post?.projectId) }) {
   const title = text(post?.title).slice(0, 200);
   const body = text(post?.content);
+  const lines = ptLines(`${title}\n${body}`);
   return {
     organizationId: text(organizationId),
     postId: text(post?.postId),
     flowProjectId: text(post?.projectId),
-    branchName: branchNameOfProject(post?.projectTitle).slice(0, 60),
+    branchName: (text(board?.branchName) || branchNameOfProject(post?.projectTitle)).slice(0, 60),
     locationId: text(locationId),
     title,
-    excerpt: flowExcerpt(body),
+    /* FC 가 볼 것은 PT 줄이다 -- 본문 첫머리는 "매출 양산중부 ○○○" 라 쓸모가 없다. */
+    excerpt: flowExcerpt(lines.length ? lines.join(" / ") : body, 240),
     mentionsRefund: /환불/.test(`${title} ${body}`),
+    /* 잔금 글은 계약금 때 이미 발급했을 수 있다 -- FC 가 확인하게 표시한다. */
+    isBalance: /잔금/.test(`${title} ${lines.join(" ")}`),
+    /* PT 체험 (2026-11-24 대표: 넣는다). 체험 회원권인지 FC 가 보게 표시한다. */
+    isTrial: lines.some((line) => /체험/.test(line)),
     registerName: text(post?.registerName).slice(0, 60),
     registeredAt: flowDateTime(post?.registeredDateTime),
     taskStatus: text(post?.taskStatus).toUpperCase().slice(0, 20),
@@ -104,4 +150,5 @@ export function flowQueueFields(post, { organizationId, locationId = "" }) {
 /** 같은 글을 또 쓰지 않으려고 비교하는 열쇠. */
 export const flowQueueSignature = (fields) => [
   fields.title, fields.excerpt, fields.mentionsRefund, fields.taskStatus, fields.locationId, fields.branchName,
+  Boolean(fields.isBalance), Boolean(fields.isTrial),
 ].join("|");

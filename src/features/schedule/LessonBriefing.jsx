@@ -7,6 +7,7 @@
  * 문장을 누르면 그 근거 날짜의 기록이 바로 아래에 펼쳐진다 (시트를 떠나지 않는다).
  * 화면 문구에 "AI" 를 쓰지 않는다 -- 강사가 읽는 것은 기록이다.
  */
+import { daySpanLabel } from "../../../functions/shared/day-span.mjs";
 import { useState } from "react";
 import { BRAND_D, CANVAS, INK, INK2, LINE, SUB, WARN, WARN_S } from "../../design-system/theme/themes.js";
 import { TYPE } from "../ui/type-scale.js";
@@ -66,7 +67,7 @@ export default function LessonBriefing({ view, sessions, footer = null, fallback
   const { mustRemember, lastLesson, recentTrend } = view;
   const progress = [
     `${recentTrend.sessionNumber}회차`,
-    recentTrend.daysSinceLast === null ? "첫 출석" : recentTrend.daysSinceLast === 0 ? "같은 날 지난 수업" : `지난 수업 뒤 ${recentTrend.daysSinceLast}일`,
+    recentTrend.daysSinceLast === null ? "첫 출석" : recentTrend.daysSinceLast === 0 ? "같은 날 지난 수업" : `지난 수업 뒤 ${daySpanLabel(recentTrend.daysSinceLast)}`,
   ].join(" · ");
   return (
     <section data-lesson-briefing-v2 aria-label="수업 전 브리핑" className="min-w-0">

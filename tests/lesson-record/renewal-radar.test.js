@@ -56,7 +56,7 @@ test("신호 문구에는 숫자가 들어가고 모르는 코드는 코드 그�
 });
 
 test("회원권 문구", () => {
-  assert.equal(radarPassLabel({ remaining: 2, daysToExpiry: 5, alert: "expiry_soon", unusable: 0 }), "잔여 2회 · 만료 5일 전");
+  assert.equal(radarPassLabel({ remaining: 2, daysToExpiry: 5, alert: "expiry_soon", unusable: 0 }), "잔여 2회 · 만료까지 5일");
   assert.equal(radarPassLabel({ remaining: 9, daysToExpiry: 0, alert: "cannot_use_up", unusable: 4 }), "잔여 9회 · 오늘 만료 · 이 속도면 4회 남김");
   assert.equal(radarPassLabel({ remaining: 3, daysToExpiry: null, alert: "pace_unknown", unusable: 0 }), "잔여 3회");
 });

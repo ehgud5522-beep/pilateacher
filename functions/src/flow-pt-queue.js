@@ -135,6 +135,8 @@ function createFlowPtQueueService(deps) {
     const since = new Date(now().getTime() - FLOW_PT_LOOKBACK_DAYS * 86400000);
     const directory = await branchDirectory();
     const counts = { projects: 0, failedProjects: 0, posts: 0, pt: 0, created: 0, updated: 0, unmatchedBranch: 0 };
+    /* 보드마다 실패 코드 -- [새로고침] 을 누른 사람에게 그대로 보여 준다 (원문 · 값은 로그에만). */
+    const failures = [];
     for (const projectId of FLOW_PT_PROJECT_IDS) {
       let posts;
       try {
@@ -147,6 +149,7 @@ function createFlowPtQueueService(deps) {
           errorDomain: error instanceof FlowApiError ? "flow_api" : "unknown", errorCode: text(error?.code || "unknown"),
           httpStatus: Number(error?.status) || 0, causeCode: text(error?.causeCode), detail: text(error?.message).slice(0, 300),
         });
+        failures.push({ flowProjectId: projectId, errorCode: text(error?.code || "unknown"), causeCode: text(error?.causeCode), httpStatus: Number(error?.status) || 0 });
         if (fatal) break;
         continue;
       }
@@ -179,7 +182,7 @@ function createFlowPtQueueService(deps) {
         }
       }
     }
-    return counts;
+    return { ...counts, failures };
   }
 
   return { sync, fetchPage };

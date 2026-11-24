@@ -851,6 +851,8 @@ export const fbManageGroupPayroll = callableAsOwner("manageGroupPayroll");
 /* 수업 후 별점 평가 -- 대표 화면의 강사별 누적 응답 수 · 항목별 평균 (2026-11-09). 대표만.
    개별 응답은 서버도 돌려주지 않는다. functions/src/lesson-rating.js. */
 export const fbLessonRatingStats = callableAsOwner("lessonRatingStats");
+/** 플로우 PT 발급 대기 지금 가져오기 (2026-11-24). { organizationId } → 읽은 수 · 보드마다 실패 코드. 대표 · 총괄 · FC. */
+export const fbRefreshFlowPtQueue = callableAsOwner("refreshFlowPtQueue");
 
 /** AI 회원 요약 다시 만들기 (설계 문서 2단계, 대표 · 총괄). { organizationId, clientId? } -- clientId 가 없으면 요약이 있는 회원 전부. */
 export const fbRebuildMemberSummary = callableAsOwner("rebuildMemberSummary");

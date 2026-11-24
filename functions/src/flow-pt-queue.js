@@ -15,6 +15,10 @@
  */
 
 const API_BASE = "https://api.flow.team";
+/* 지점 업무보드의 업무는 플로우 안에서 종류 번호 92 로 나온다 (2026-11-24, 양산점 · 장유점 업무 목록으로 확인).
+   공개 API 는 종류를 안 주면 1 · 2 · 4 (글 · 업무 · 일정)만 돌려주는 것으로 보여 -- 9개 보드 모두 200 인데 0건 --
+   92 와 2 를 함께 달라고 한다. */
+const TASK_TEMPLATE_TYPES = "92,2";
 const PAGE_SIZE = 100;
 const MAX_PAGES = 10;
 
@@ -102,8 +106,8 @@ function createFlowPtQueueService(deps) {
     const variants = [
       { key: "user", label: "userId 넣음", options: {} },
       { key: "user_task", label: "userId + 업무만(2)", options: { templateTypes: "2" } },
-      { key: "no_user", label: "userId 뺌", options: { withUser: false } },
-      { key: "no_user_task", label: "userId 뺌 + 업무만(2)", options: { withUser: false, templateTypes: "2" } },
+      { key: "user_92", label: "userId + 보드 업무(92)", options: { templateTypes: TASK_TEMPLATE_TYPES } },
+      { key: "user_all", label: "userId + 전부(1,2,4,92)", options: { templateTypes: "1,2,4,92" } },
     ];
     const results = [];
     for (const variant of variants) {
@@ -125,13 +129,25 @@ function createFlowPtQueueService(deps) {
     return { flowProjectId: projectId, results };
   }
 
+  const typeFallback = new Set();
+  const typesFor = (projectId) => (typeFallback.has(projectId) ? "" : TASK_TEMPLATE_TYPES);
+
   /** 한 보드의 최근 글 (LOOKBACK 안). */
   async function recentPosts(projectId, since) {
     const { flowDateTime } = await shared();
     const posts = [];
     let cursor = 0;
     for (let page = 0; page < MAX_PAGES; page += 1) {
-      const data = await fetchPage(projectId, cursor);
+      let data;
+      try {
+        data = await fetchPage(projectId, cursor, { templateTypes: typesFor(projectId) });
+      } catch (error) {
+        /* 종류 값을 플로우가 거절하면(400 · VALIDATION) 이 보드는 기본 조회로 -- 아무것도 못 읽는 것보다 낫다. */
+        if (!(Number(error?.status) === 400 || text(error?.code) === "VALIDATION_ERROR") || !typesFor(projectId)) throw error;
+        typeFallback.add(projectId);
+        log("warn", "flow_pt_queue_types_rejected", { feature: "flow_pt_queue", stage: "fetch_posts", flowProjectId: projectId, errorDomain: "flow_api", errorCode: text(error?.code), httpStatus: Number(error?.status) || 0 });
+        data = await fetchPage(projectId, cursor);
+      }
       const batch = Array.isArray(data.posts) ? data.posts : [];
       posts.push(...batch);
       const oldest = batch.map((post) => flowDateTime(post?.registeredDateTime)).filter(Boolean).sort((a, b) => a - b)[0];

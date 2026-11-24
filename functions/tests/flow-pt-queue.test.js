@@ -89,7 +89,7 @@ test("가져오기: PT 완료만 만들고, 다시 돌아도 FC 처리를 되돌
   assert.equal(counts.failedProjects, 1);
   assert.deepEqual(counts.failures, [{ flowProjectId: "2955389", errorCode: "UNAUTHORIZED_ERROR", causeCode: "", httpStatus: 401 }], "[새로고침] 이 보여 줄 실패 코드");
   assert.equal(calls[0].key, "key-test");
-  assert.match(calls[0].url, /^https:\/\/api\.flow\.team\/v1\/posts\/projects\/2955393\?userId=owner%40example\.test&cursor=0&pageSize=100$/);
+  assert.match(calls[0].url, /^https:\/\/api\.flow\.team\/v1\/posts\/projects\/2955393\?userId=owner%40example\.test&cursor=0&pageSize=100&templateTypes=92%2C2$/);
   const saved = firestore.docs.get("organizations/org/flowPtQueue/p1");
   assert.equal(saved.state, "waiting");
   assert.equal(saved.locationId, "l1");
@@ -196,16 +196,32 @@ test("글 0건이면 첫 보드 하나만 조회 방식을 바꿔 시험한다",
   const urls = [];
   const fetchImpl = async (url) => {
     urls.push(url);
-    const withUser = url.includes("userId=");
-    const posts = withUser ? [] : [{ postId: "x1", templateType: "2", taskStatus: "1035123", title: "비밀 제목", content: "회원 이름", registeredDateTime: "20261124100000" }];
+    /* 본 조회(92,2)도 0건, 시험의 "전부(1,2,4,92)" 만 글이 온다고 꾸민다. */
+    const posts = url.includes("templateTypes=1%2C2%2C4%2C92") ? [{ postId: "x1", templateType: "92", taskStatus: "1035123", title: "비밀 제목", content: "회원 이름", registeredDateTime: "20261124100000" }] : [];
     return { ok: true, status: 200, json: async () => ({ success: true, data: { projectId: "p", hasNext: false, lastCursor: -1, posts } }) };
   };
   const service = createFlowPtQueueService({ firestore, fetchImpl, apiKey: () => "key", userId: () => "owner@example.test", now: () => new Date("2026-11-24T03:00:00Z") });
   const counts = await service.sync();
   assert.equal(counts.probe.flowProjectId, "2955393", "첫 0건 보드");
-  assert.deepEqual(counts.probe.results.map((result) => [result.key, result.posts]), [["user", 0], ["user_task", 0], ["no_user", 1], ["no_user_task", 1]]);
-  assert.ok(urls.some((url) => url.includes("templateTypes=2") && !url.includes("userId=")));
-  assert.deepEqual(counts.probe.results[2].templateTypes, ["2"]);
+  assert.deepEqual(counts.probe.results.map((result) => [result.key, result.posts]), [["user", 0], ["user_task", 0], ["user_92", 0], ["user_all", 1]]);
+  assert.deepEqual(counts.probe.results[3].templateTypes, ["92"]);
   assert.ok(!JSON.stringify(counts.probe).includes("비밀") && !JSON.stringify(counts.probe).includes("회원 이름"), "제목 · 본문은 남기지 않는다");
-  assert.equal(urls.filter((url) => url.includes("templateTypes")).length, 2, "시험은 한 보드만");
+  assert.equal(urls.filter((url) => url.includes("1%2C2%2C4%2C92")).length, 1, "시험은 한 보드만");
+});
+
+/* 2026-11-24: 지점 보드 업무는 종류 92. 본 조회는 92,2 로 부르고, 플로우가 그 값을 거절하면 기본 조회로. */
+test("본 조회는 보드 업무(92,2), 거절되면 기본 조회로 넘어간다", async () => {
+  const firestore = fakeFirestore({ "organizations/org": {}, "organizations/org/locations/l1": { name: "삼계점" } });
+  const urls = [];
+  const fetchImpl = async (url) => {
+    urls.push(url);
+    if (url.includes("templateTypes=92%2C2")) return { ok: false, status: 400, json: async () => ({ success: false, error: { code: "VALIDATION_ERROR" } }) };
+    const posts = url.includes("/2955393?") && !url.includes("templateTypes") ? [post({ taskStatus: "1035123" })] : [];
+    return { ok: true, status: 200, json: async () => ({ success: true, data: { hasNext: false, lastCursor: -1, posts } }) };
+  };
+  const counts = await createFlowPtQueueService({ firestore, fetchImpl, apiKey: () => "key", userId: () => "owner@example.test", now: () => new Date("2026-11-24T03:00:00Z") }).sync();
+  assert.equal(counts.failedProjects, 0, "거절돼도 실패로 끝나지 않는다");
+  assert.equal(counts.created, 1);
+  assert.ok(urls[0].includes("templateTypes=92%2C2"));
+  assert.ok(!urls[1].includes("templateTypes"), "같은 보드를 기본 조회로 다시");
 });

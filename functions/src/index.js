@@ -1782,6 +1782,38 @@ exports.sweepRenewalCandidatesNightly = onSchedule({
   }
 });
 
+/* ── 플로우 PT 발급 대기 (2026-11-24 대표) ─────────────────────────────────
+   지점 업무보드의 완료된 PT 업무를 flowPtQueue 에 둔다. FC 가 플로우 원문을 확인하고 발급한 뒤 처리 표시를 누른다
+   -- 앱이 발급하지 않는다 (flow-pt-queue.js). 스위치 scheduleSync.flowPtQueue (off · all), 꺼져 있으면 플로우를 부르지 않는다.
+   비밀값: FLOW_API_KEY(이용 기관 관리자 키), FLOW_USER_ID(9개 보드를 다 보는 플로우 계정 아이디). */
+const FLOW_API_KEY = defineSecret("FLOW_API_KEY");
+const FLOW_USER_ID = defineSecret("FLOW_USER_ID");
+const { createFlowPtQueueService } = require("./flow-pt-queue");
+const flowPtQueueOn = async () => {
+  const snapshot = await firestore.collection("runtimeConfig").doc("scheduleSync").get();
+  return String(snapshot.exists ? snapshot.data()?.flowPtQueue?.mode || "" : "") === "all";
+};
+
+exports.syncFlowPtQueue = onSchedule({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  schedule: "every 10 minutes",
+  timeZone: "Asia/Seoul",
+  memory: "256MiB",
+  timeoutSeconds: 300,
+  secrets: [FLOW_API_KEY, FLOW_USER_ID],
+}, async () => {
+  if (!(await flowPtQueueOn())) return;
+  const service = createFlowPtQueueService({
+    firestore,
+    apiKey: () => FLOW_API_KEY.value(),
+    userId: () => FLOW_USER_ID.value(),
+    serverTimestamp: () => FieldValue.serverTimestamp(),
+    log: (level, event, fields) => logger[level](event, fields),
+  });
+  const counts = await service.sync();
+  logger.info("flow_pt_queue_synced", { feature: "flow_pt_queue", stage: "schedule", counts });
+});
+
 exports.markRenewalOnPassCreated = onDocumentCreated({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",
   document: "organizations/{organizationId}/passes/{passId}",

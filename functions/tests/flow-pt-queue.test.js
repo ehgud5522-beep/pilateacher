@@ -189,3 +189,23 @@ test("성공은 보드의 단계 번호로 -- 환불 · 상담예정은 빠진�
   const trial = flowQueueFields({ ...base, title: "회원", content: "[신규] 회원님 1:1 pt 일일체험비 5.5만", taskStatus: "1035146" }, { organizationId: "org", board: yangsan });
   assert.equal(trial.isTrial, true);
 });
+
+/* 2026-11-24: 9개 보드가 200 인데 글 0건 -- 조회 방식을 바꿔 보는 시험. 건수 · 칸 이름 · 종류 · 상태 모양만, 제목 · 본문은 없다. */
+test("글 0건이면 첫 보드 하나만 조회 방식을 바꿔 시험한다", async () => {
+  const firestore = fakeFirestore({ "organizations/org": {}, "organizations/org/locations/l1": { name: "삼계점" } });
+  const urls = [];
+  const fetchImpl = async (url) => {
+    urls.push(url);
+    const withUser = url.includes("userId=");
+    const posts = withUser ? [] : [{ postId: "x1", templateType: "2", taskStatus: "1035123", title: "비밀 제목", content: "회원 이름", registeredDateTime: "20261124100000" }];
+    return { ok: true, status: 200, json: async () => ({ success: true, data: { projectId: "p", hasNext: false, lastCursor: -1, posts } }) };
+  };
+  const service = createFlowPtQueueService({ firestore, fetchImpl, apiKey: () => "key", userId: () => "owner@example.test", now: () => new Date("2026-11-24T03:00:00Z") });
+  const counts = await service.sync();
+  assert.equal(counts.probe.flowProjectId, "2955393", "첫 0건 보드");
+  assert.deepEqual(counts.probe.results.map((result) => [result.key, result.posts]), [["user", 0], ["user_task", 0], ["no_user", 1], ["no_user_task", 1]]);
+  assert.ok(urls.some((url) => url.includes("templateTypes=2") && !url.includes("userId=")));
+  assert.deepEqual(counts.probe.results[2].templateTypes, ["2"]);
+  assert.ok(!JSON.stringify(counts.probe).includes("비밀") && !JSON.stringify(counts.probe).includes("회원 이름"), "제목 · 본문은 남기지 않는다");
+  assert.equal(urls.filter((url) => url.includes("templateTypes")).length, 2, "시험은 한 보드만");
+});

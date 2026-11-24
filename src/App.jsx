@@ -28125,6 +28125,16 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
           {(refreshResult.ok ? refreshResult.counts?.failures || [] : refreshResult.failures || []).slice(0, 3).map((failure, index) => (
             <p key={`${failure.flowProjectId || "all"}-${index}`} className="mt-0.5" style={{ fontSize: TYPE.caption, color: WARN }}>{flowPtFailureText(failure)}</p>
           ))}
+          {refreshResult.ok && refreshResult.counts?.probe ? (
+            <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }} data-flow-pt-probe>
+              <p>글이 0건이라 조회 방식을 바꿔 시험했어요 (보드 {refreshResult.counts.probe.flowProjectId}):</p>
+              {(refreshResult.counts.probe.results || []).map((result) => (
+                <p key={result.key}>
+                  · {result.label}: {result.ok ? `${result.posts}건${result.templateTypes?.length ? ` · 종류 ${result.templateTypes.join(",")}` : ""}${result.taskStatuses?.filter(Boolean).length ? ` · 상태 ${result.taskStatuses.filter(Boolean).join(",")}` : ""}` : `실패 (코드 ${result.errorCode}${result.httpStatus ? ` / HTTP ${result.httpStatus}` : ""})`}
+                </p>
+              ))}
+            </div>
+          ) : null}
           {refreshResult.ok && (refreshResult.counts?.failures || []).length > 3 ? (
             <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: WARN }}>외 {(refreshResult.counts.failures.length - 3)}곳도 같은 이유로 읽지 못했어요</p>
           ) : null}

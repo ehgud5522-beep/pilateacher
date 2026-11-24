@@ -474,6 +474,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "만료 회원 · 강사",
     "만료 회원 · 조회 실패",
     "재등록 레이더",
+    "재등록 레이더 · 점장",
     "재등록 레이더 · PC",
     "매출 인센 · 강사",
     "매출 인센 · 강사 · 그룹 입력",
@@ -3308,6 +3309,22 @@ test("the expiry report says how many are still inside the 30-day window", async
   const failed = markupOf("만료 회원 · 조회 실패");
   assert.match(failed, /코드 permission-denied/);
   assert.doesNotMatch(failed, /만료된 회원이 없습니다/, "못 읽은 것을 없는 것으로 보이면 안 된다");
+});
+
+test("재등록 레이더 · 점장: 우리 지점 · 읽는 법 · 면담 · 기록률 · 비포애프터 없음 (2026-11-24)", async () => {
+  const markup = await screenMarkup();
+  const radar = markup("재등록 레이더 · 점장");
+  assert.match(radar, /우리 지점 재등록 레이더/);
+  assert.match(radar, /맡은 지점 회원만 보여요/);
+  assert.match(radar, /data-radar-guide="open"/);
+  assert.match(radar, /급함 \(빨간 표시\)/);
+  assert.match(radar, /이번 주 수업 안에 재등록 이야기를/);
+  assert.match(radar, /잔여 N회/);
+  assert.match(radar, /강사 면담할 때/);
+  assert.match(radar, /곧 끝남 1명/);
+  assert.doesNotMatch(radar, /기록률/, "점장 화면에는 강사 기록률이 없다");
+  assert.doesNotMatch(radar, /비포애프터 공유 현황을 읽지 못해/, "숨긴 신호를 실패로 말하지 않는다");
+  assert.doesNotMatch(radar, /확인 중… 오는 대로/);
 });
 
 test("재등록 레이더: 급한 회원 · 신호 · 못 읽은 신호는 빼고 코드로 말한다 (2026-11-21)", async (t) => {

@@ -142,10 +142,10 @@ test("레이더: 되돌린 차감은 출석으로 안 셈 · 후보를 못 읽�
   assert.deepEqual(rows[0].members[0].signals.map((item) => item.code), [RADAR_SIGNAL.NEVER_ATTENDED]);
 });
 
-test("화면 배선: 메뉴 항목 · 대표 · 총괄 조건 · 코드 표시", () => {
+test("화면 배선: 메뉴 항목 · 대표 · 총괄 · 점장 · 부원장 조건 · 코드 표시", () => {
   const app = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
   /* 실패 때 App.jsx 전체를 찍지 않게 includes 로 본다 */
-  for (const needle of ['key: "renewal-radar", title: "재등록 레이더"', 'view === "renewal-radar" && showAudit', "function RenewalRadarScreen(", "data-radar-signal={signal.code}"]) {
+  for (const needle of ['key: "renewal-radar", title: "재등록 레이더"', 'view === "renewal-radar" && (showAudit || showRadarStaff)', "staffMode={!showAudit}", "function RenewalRadarScreen(", "data-radar-signal={signal.code}"]) {
     assert.ok(app.includes(needle), `App.jsx 에 ${needle} 없음`);
   }
 });

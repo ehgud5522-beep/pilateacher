@@ -328,6 +328,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "강사 알림함 시트 · 열지 못함",
     "운영 설정 · 회원 앱 수업 취소",
     "운영 설정 · 수업 후 별점 집계",
+    "플로우 PT 발급 대기",
     "운영 설정 · 수업 후 별점 집계 · 지점별",
     "수업 별점 · 점장 · 이 달",
     "더보기 탭 · 점장",
@@ -3769,6 +3770,20 @@ test("lesson ratings: the owner sees per-instructor counts and averages only, fa
   assert.match(byBranch, /★ 4.0/);
   assert.equal((byBranch.match(/data-rating-open="true"/g) || []).length, 1, "펼친 카드는 하나");
   assert.match(byBranch, /몸 컨디션 · 참고 지표/, "펼친 카드에는 항목별");
+  /* 플로우 PT 발급 대기 (2026-11-24 대표): 지점 칩 → 고른 지점의 대기, FC 가 플로우 원문을 확인하고 처리 표시. 앱은 발급하지 않는다. */
+  const flow = markup("플로우 PT 발급 대기");
+  assert.match(flow, /data-flow-pt-queue/);
+  assert.match(flow, /data-branch-tabs/);
+  assert.doesNotMatch(flow, /가회원 잔금/, "다른 지점은 칩을 바꿔야 보인다");
+  assert.match(flow, /나회원 신규/);
+  assert.match(flow, /플로우에서 확인/);
+  assert.match(flow, /회원권 발급 열기/);
+  assert.match(flow, /발급함/);
+  assert.match(flow, /해당 없음/);
+  assert.match(flow, /data-flow-pt-refund/, "환불이라는 말이 있으면 경고");
+  assert.match(flow, /앱이 자동으로 발급하지 않아요/);
+  assert.match(flow, /처리한 것 1건/);
+  assert.match(flow, /되돌리기/);
   const failed = markup("운영 설정 · 수업 후 별점 집계 · 읽지 못함");
   assert.match(failed, /평가 집계를 읽지 못했어요 \(코드 not_owner\)/);
 });

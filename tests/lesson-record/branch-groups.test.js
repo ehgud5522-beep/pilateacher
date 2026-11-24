@@ -44,6 +44,6 @@ test("고른 지점이 없어지면 첫 지점으로", () => {
 test("화면 배선: 세 집계 화면 모두 지점 칩 · 강사 카드 하나씩", () => {
   const app = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
   /* 1단계 셋(레이더 · 기록 현황 · 비포애프터 현황) + 2단계 둘(급여 집계 · 발급 내역) */
-  assert.equal(app.match(/<BranchTabs /g)?.length, 7, "+ 매출 인센 + 수업 별점 (2026-11-24)");
+  assert.equal(app.match(/<BranchTabs /g)?.length, 8, "+ 매출 인센 + 수업 별점 · 플로우 PT 발급 대기 (2026-11-24)");
   assert.ok(app.includes("function BranchTabs("));
 });

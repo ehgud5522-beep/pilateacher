@@ -154,6 +154,12 @@ const WRITERS = Object.freeze({
   consultPoints: scheduleSyncPayload,
   /* 비포애프터 회원 공유 (2026-11-15). 대표 화면은 끔 · 전체만 고른다(allowListed 없음) -- 고른 계정만은 예전 시범 모양
      (mode test · teacherIds · memberIds)을 콘솔에서. 서버(beforeAfterSharing)만 읽는다. */
+  /* 플로우 PT 발급 대기 (2026-11-24). 끔 · 전체만 -- 센터 하나의 일이라 고른 계정이 없다. 서버(syncFlowPtQueue)만 읽는다. */
+  flowPtQueue: (input) => {
+    const mode = text(input?.mode);
+    if (!["off", "all"].includes(mode)) throw new Error("flow_pt_queue_mode_invalid");
+    return { mode };
+  },
   beforeAfterSharing: (input) => {
     const mode = text(input?.mode);
     if (!["off", "all"].includes(mode)) throw new Error("before_after_sharing_mode_invalid");
@@ -183,6 +189,8 @@ const FIELD_TARGETS = Object.freeze({
   lessonBriefingV2: { document: "scheduleSync", field: "lessonBriefingV2" },
   renewalAlerts: { document: "scheduleSync", field: "renewalAlerts" },
   consultPoints: { document: "scheduleSync", field: "consultPoints" },
+  /* 규칙 배포 없이 켜고 끈다. 서버만 읽는다. */
+  flowPtQueue: { document: "scheduleSync", field: "flowPtQueue" },
 });
 
 /**

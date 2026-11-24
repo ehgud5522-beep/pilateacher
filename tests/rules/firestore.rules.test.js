@@ -7096,3 +7096,57 @@ describe("정산 점검 -- 결과는 서버만 · 대표급만 읽음 · 확인�
     await assertFails(getDoc(logRef(users.instructor, "l1")));
   });
 });
+
+describe("플로우 PT 발급 대기 -- 서버가 만들고, 대표 · 총괄 · FC(맡은 지점)가 처리 칸만 고친다", () => {
+  const POST = "88635315";
+  const path = ["organizations", ORG_A, "flowPtQueue", POST];
+  const ref = (userId) => doc(dbFor(userId), ...path);
+  const row = (extra = {}) => ({
+    organizationId: ORG_A, postId: POST, flowProjectId: "2955393", branchName: "삼계점", locationId: "loc-samgye",
+    title: "회원 잔금", excerpt: "1:1pt 10s", mentionsRefund: false, registerName: "삼계점", registeredAt: new Date(2026, 10, 24),
+    taskStatus: "COMPLETE", flowUrl: "https://flow.team/main.act?projectId=2955393&postId=88635315",
+    state: "waiting", handledBy: "", handledAt: null, ...extra,
+  });
+  const seedRow = (extra) => testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), ...path), row(extra));
+  });
+  const scopeManager = (locationIds) => testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "memberships", `${ORG_A}_${users.manager}`), {
+      organizationId: ORG_A, userId: users.manager, role: "manager", status: "active", locationIds,
+    });
+  });
+  const handle = (userId, state, extra = {}) => updateDoc(ref(userId), { state, handledBy: userId, handledAt: serverTimestamp(), ...extra });
+
+  test("읽기: 대표 · 총괄 · 맡은 지점 FC 는 읽고, 다른 지점 FC · 강사 · 직원 · 다른 센터는 못 읽는다", async () => {
+    await seedRow();
+    await assertSucceeds(getDoc(ref(users.owner)));
+    await assertSucceeds(getDoc(ref(users.area_manager)));
+    await scopeManager(["loc-samgye"]);
+    await assertSucceeds(getDoc(ref(users.manager)));
+    await assertSucceeds(getDocs(query(collection(dbFor(users.manager), "organizations", ORG_A, "flowPtQueue"), where("locationId", "in", ["loc-samgye"]))));
+    await scopeManager(["loc-other"]);
+    await assertFails(getDoc(ref(users.manager)));
+    await assertFails(getDoc(ref(users.instructor)));
+    await assertFails(getDoc(ref(users.staff)));
+    await assertFails(getDoc(ref(users.outsider)));
+  });
+  test("처리: 발급함 · 해당 없음 · 되돌리기는 처리 칸만, 내 이름 · 지금 시각으로", async () => {
+    await seedRow();
+    await assertSucceeds(handle(users.owner, "issued"));
+    await assertSucceeds(handle(users.owner, "waiting"));
+    await scopeManager(["loc-samgye"]);
+    await assertSucceeds(handle(users.manager, "not_applicable"));
+  });
+  test("거부: 플로우 칸 고치기 · 모르는 상태 · 남의 이름 · 만들기 · 지우기 · 강사 · 다른 지점 FC", async () => {
+    await seedRow();
+    await assertFails(handle(users.owner, "issued", { title: "바꿈" }));
+    await assertFails(handle(users.owner, "done"));
+    await assertFails(updateDoc(ref(users.owner), { state: "issued", handledBy: users.manager, handledAt: serverTimestamp() }));
+    await assertFails(updateDoc(ref(users.owner), { state: "issued", handledBy: users.owner, handledAt: new Date(2020, 0, 1) }));
+    await assertFails(setDoc(doc(dbFor(users.owner), "organizations", ORG_A, "flowPtQueue", "new-post"), row({ postId: "new-post" })));
+    await assertFails(deleteDoc(ref(users.owner)));
+    await assertFails(handle(users.instructor, "issued"));
+    await scopeManager(["loc-other"]);
+    await assertFails(handle(users.manager, "issued"));
+  });
+});

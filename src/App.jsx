@@ -419,6 +419,7 @@ import { createRecordStore, migrationRecordsFor } from "./features/lesson-record
 import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/server-outbox.js";
 import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
 import { listLessonNotesBetween, listRecordActivity, writeRecordActivity } from "./data/repositories/record-activity-repository.js";
+import { listFlowPtQueue, markFlowPtQueue } from "./data/repositories/flow-pt-queue-repository.js";
 import {
   RECORD_RATE_GOOD, RECORD_RATE_LOW, RECORD_TONE, countDeviceRecordActivity, instructorRecordBoard, monthOf as monthOfRecord, previousRecordMonth,
   recordActivityDocument, recordActivitySignature, recordBoardSummary, recordRowView,
@@ -27955,6 +27956,151 @@ function BranchTabs({ groups, selected, onSelect, countLabel = (group) => `${gro
   );
 }
 
+/**
+ * 플로우 PT 발급 대기 (2026-11-24 대표: "플로우에 등록상품이 PT 라고 적힌 것만 발급 대기 화면으로 -- FC 가 플로우에
+ * 내용을 확인한 후에 발급할 수 있게"). 서버가 지점 업무보드의 **완료된** 업무 중 PT 가 적힌 것을 가져온다
+ * (functions/shared/flow-pt-queue.mjs). 플로우 API 가 칸 값 · 성공/환불을 주지 않아 판정은 FC 가 원문에서 한다.
+ * 앱은 발급하지 않는다 -- [회원권 발급 열기] 로 평소 발급 화면을 열고, 끝나면 [발급함].
+ */
+const flowPtWhen = (value) => {
+  const at = value && typeof value.toDate === "function" ? value.toDate() : value ? new Date(value) : null;
+  if (!at || Number.isNaN(at.getTime())) return "";
+  return `${at.getMonth() + 1}/${at.getDate()} ${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+};
+const flowPtTime = (value) => {
+  const at = value && typeof value.toDate === "function" ? value.toDate() : value ? new Date(value) : null;
+  return at && !Number.isNaN(at.getTime()) ? at.getTime() : 0;
+};
+const FLOW_PT_STATE_LABEL = { issued: "발급함", not_applicable: "해당 없음" };
+
+function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = listFlowPtQueue, onMark = markFlowPtQueue, initialState = null }) {
+  const organizationId = organization?.organizationId || "";
+  const ownerLevel = isOwnerLevelRole(organization?.role);
+  const scope = ownerLevel ? [] : [...new Set([...(organization?.locationIds || []), organization?.locationId || ""].filter(Boolean))];
+  const scopeKey = scope.join(",");
+  const [state, setState] = useState(() => initialState || { rows: null, error: "" });
+  const [branch, setBranch] = useState(initialState?.branch || "");
+  const [busy, setBusy] = useState("");
+  const [notice, setNotice] = useState("");
+  const [showDone, setShowDone] = useState(Boolean(initialState?.showDone));
+  const load = useCallback(async () => {
+    if (!organizationId) return;
+    setState((current) => ({ ...current, rows: null, error: "" }));
+    try {
+      const rows = await onLoad(organizationId, { locationIds: scopeKey ? scopeKey.split(",") : [] });
+      setState({ rows: Array.isArray(rows) ? rows : [], error: "" });
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setState({ rows: [], error: `PT 발급 대기를 읽지 못했어요 (코드 ${code})` });
+      deviceLog("flow_pt_queue_read_failed", {
+        feature: "flow_pt_queue", stage: "list", errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200),
+        role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+      });
+    }
+  }, [organizationId, onLoad, scopeKey, organization?.role]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const mark = async (row, next) => {
+    setBusy(row.id);
+    setNotice("");
+    try {
+      await onMark(organizationId, row.id, next, currentUserId);
+      setState((current) => ({ ...current, rows: (current.rows || []).map((item) => (item.id === row.id ? { ...item, state: next, handledBy: currentUserId, handledAt: new Date() } : item)) }));
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setNotice(`처리 표시를 저장하지 못했어요 (코드 ${code}). 다시 눌러 주세요.`);
+      deviceLog("flow_pt_queue_mark_failed", {
+        feature: "flow_pt_queue", stage: `mark_${next}`, errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200),
+        role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+      });
+    } finally {
+      setBusy("");
+    }
+  };
+  /* 지점별 (2026-11-21 대표: "취합하는 거 나올 땐 지점별로"). 지점은 서버가 플로우 보드 이름으로 맞춘 앱 지점. */
+  const groups = [];
+  for (const row of state.rows || []) {
+    const id = String(row.locationId || row.branchName || "기타");
+    let group = groups.find((item) => item.id === id);
+    if (!group) { group = { id, name: String(row.branchName || "지점 모름"), rows: [] }; groups.push(group); }
+    group.rows.push(row);
+  }
+  groups.sort((left, right) => left.name.localeCompare(right.name, "ko"));
+  const picked = groups.some((group) => group.id === branch) ? branch : (groups[0]?.id || "");
+  const shown = groups.length > 1 ? (groups.find((group) => group.id === picked)?.rows || []) : (state.rows || []);
+  const waiting = shown.filter((row) => (row.state || "waiting") === "waiting").sort((left, right) => flowPtTime(right.registeredAt) - flowPtTime(left.registeredAt));
+  const done = shown.filter((row) => (row.state || "waiting") !== "waiting").sort((left, right) => flowPtTime(right.handledAt) - flowPtTime(left.handledAt));
+  const smallButton = { height: 36, borderRadius: 8, fontSize: TYPE.caption, fontWeight: 700, padding: "0 10px" };
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-flow-pt-queue>
+      <div className="flex items-center justify-between">
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>PT 발급 대기 (플로우)</h2>
+        <button type="button" onClick={load} className="h-9 px-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
+      </div>
+      <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        지점 업무보드에서 <b style={{ color: INK }}>완료</b>로 옮긴 업무 중 PT 가 적힌 것입니다 (최근 45일, 10분마다 가져옴).
+        {" "}플로우 원문에서 <b style={{ color: INK }}>성공인지 · 상품이 맞는지</b> 확인하고 발급한 뒤 [발급함]을 눌러 주세요. 앱이 자동으로 발급하지 않아요.
+      </p>
+      <BranchTabs groups={groups} selected={picked} onSelect={(id) => setBranch(id)}
+        countLabel={(group) => `${group.rows.filter((row) => (row.state || "waiting") === "waiting").length}건`} />
+      {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
+      {notice ? <p role="alert" className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{notice}</p> : null}
+      {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
+      {state.rows && !waiting.length && !state.error ? (
+        <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }} data-flow-pt-empty>
+          확인할 PT 등록이 없어요. 처음이라면 대표 설정 → 앱 업데이트 · 운영 스위치 → "플로우 PT 발급 대기" 가 켜져 있는지 봐 주세요.
+        </p>
+      ) : null}
+      <div className="mt-3 space-y-2">
+        {waiting.map((row) => (
+          <div key={row.id} className="px-3 py-2.5" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-flow-pt-row={row.id}>
+            <div className="flex items-center justify-between gap-2">
+              <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>{row.title || "제목 없음"}</span>
+              <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{flowPtWhen(row.registeredAt)}</span>
+            </div>
+            <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{row.branchName || "지점 모름"}{row.registerName ? ` · 올린 사람 ${row.registerName}` : ""}</p>
+            {row.excerpt ? <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{row.excerpt}</p> : null}
+            {row.mentionsRefund ? (
+              <p className="mt-1 font-bold" style={{ fontSize: TYPE.caption, color: WARN }} data-flow-pt-refund>"환불" 이라는 말이 있어요 — 플로우에서 상태가 환불인지 꼭 확인하세요.</p>
+            ) : null}
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {row.flowUrl ? (
+                <a href={row.flowUrl} target="_blank" rel="noreferrer" className="inline-flex items-center"
+                  style={{ ...smallButton, backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>플로우에서 확인</a>
+              ) : null}
+              {onOpenIssue ? (
+                <button type="button" onClick={onOpenIssue} style={{ ...smallButton, backgroundColor: CARD, color: INK2, border: `1px solid ${LINE}` }}>회원권 발급 열기</button>
+              ) : null}
+              <button type="button" disabled={busy === row.id} onClick={() => mark(row, "issued")} className="disabled:opacity-50"
+                style={{ ...smallButton, backgroundColor: BRAND, color: "#fff" }}>발급함</button>
+              <button type="button" disabled={busy === row.id} onClick={() => mark(row, "not_applicable")} className="disabled:opacity-50"
+                style={{ ...smallButton, backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>해당 없음</button>
+            </div>
+          </div>
+        ))}
+      </div>
+      {done.length ? (
+        <div className="mt-3">
+          <button type="button" onClick={() => setShowDone((value) => !value)} className="h-9 font-bold" style={{ fontSize: TYPE.caption, color: SUB }} aria-expanded={showDone}>
+            처리한 것 {done.length}건 {showDone ? "접기" : "보기"}
+          </button>
+          {showDone ? (
+            <div className="mt-1 space-y-1" data-flow-pt-done>
+              {done.map((row) => (
+                <div key={row.id} className="flex items-center gap-2 px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }}>
+                  <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{row.title || "제목 없음"}</span>
+                  <span className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: row.state === "issued" ? GOOD : SUB }}>{FLOW_PT_STATE_LABEL[row.state] || row.state}</span>
+                  <button type="button" disabled={busy === row.id} onClick={() => mark(row, "waiting")} className="h-8 shrink-0 px-2 font-bold disabled:opacity-50"
+                    style={{ fontSize: TYPE.caption, color: BRAND_D }}>되돌리기</button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function RenewalRadarScreen({ organization, instructorStore, clientStore, passStore, onOpenClient, onLoadShares = fbBeforeAfterShareStats, initialState = null }) {
   const organizationId = organization?.organizationId || "";
   const params = useMemo(() => ({ organizationId, clientStore, passStore, instructorStore, onLoadShares, role: organization?.role || "" }),
@@ -30620,6 +30766,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     audit: "감사 로그",
     "renewal-radar": "재등록 레이더",
     "record-board": "강사 기록 현황",
+    "flow-pt": "PT 발급 대기",
     "before-after-board": "비포애프터 공유 현황",
     "lesson-ratings": "수업 별점",
     "phone-check": "번호 점검",
@@ -30678,6 +30825,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     ] },
     /* 회원 · 회원권 · 강사 · 상품을 다루는 일. */
     { label: "관리", items: [
+      /* 플로우 업무보드에서 완료된 PT 등록 -- FC 가 원문을 확인하고 발급 (2026-11-24 대표). 매출 인센과 같은 사람. */
+      ...(showSalesBoard ? [{ key: "flow-pt", title: "PT 발급 대기", description: "플로우에서 완료된 PT 등록 · 확인 후 발급", Icon: Ticket }] : []),
       ...(showClients ? [{ key: "pass-issue", title: "회원권 발급", description: "회원에게 회원권 발급", Icon: Ticket }] : []),
       ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
       ...(showClients ? [{ key: "branch-overview", title: "지점 회원 현황", description: "강사별 이름 · 연락처 · 잔여 한눈에", Icon: Users }] : []),
@@ -31255,6 +31404,10 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
           </div>
         )}
         {view === "backup" && <div className="space-y-3"><CloudBackupCard status={backupStatus} onEnablePhotos={onEnablePhotoBackup} onRetry={onRetryBackup} onRestorePrevious={onRestorePrevious} onSnapshot={onSnapshotBackup} snapshotBusy={snapshotBusy} /><HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} /></div>}
+        {view === "flow-pt" && showSalesBoard && (
+          <FlowPtQueueScreen organization={organization} currentUserId={account?.id || ""}
+            onOpenIssue={showClients ? () => setView("pass-issue") : undefined} />
+        )}
         {view === "pass-issue" && showClients && (
           <PassIssue organization={organization} currentUserId={account?.id || ""}
             clientStore={clientStore} productStore={productStore} instructorStore={instructorStore}
@@ -31419,6 +31572,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="renewalAlerts" title="재등록 알림"
               description="켜진 계정은 수업 관리 시트 브리핑 아래에 잔여 · 만료 · 소진 예상 한 줄이 섭니다 (최근 4주 출석 속도로 계산). 만료 회원 화면에 '다 못 쓸 회원' 묶음이 생깁니다." />
+            {/* 플로우 PT 발급 대기 (2026-11-24). 서버가 10분마다 지점 업무보드를 읽는다 -- 끔 · 전체만. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="flowPtQueue" title="플로우 PT 발급 대기" allowListed={false}
+              description="켜면 서버가 10분마다 지점 업무보드에서 완료로 옮긴 PT 업무를 가져와 더보기 → PT 발급 대기에 세웁니다. 앱이 발급하지는 않고, FC 가 플로우 원문을 확인한 뒤 발급합니다. 서버 비밀값 FLOW_API_KEY · FLOW_USER_ID 가 있어야 합니다." />
             <MemberSummaryAdmin organization={organization} />
             {/* 비포애프터 회원 공유 (2026-11-15). 켜면 모든 강사가 비교 카드를 보내고, 동의한 회원이 보니따 앱에서 본다. */}
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
@@ -32687,6 +32845,15 @@ export function createAppScreenSmokeCases() {
         ] }} />
     )) },
     /* 지점 칩 · 강사 카드 하나만 펼침 (2026-11-24 대표: "수업 별점도 지점별로"). */
+    /* 플로우 PT 발급 대기 (2026-11-24). 지점 칩 · 대기 카드(플로우에서 확인 · 발급함 · 해당 없음) · 처리한 것. */
+    { name: "플로우 PT 발급 대기", element: providerWith(smokeOwner, (
+      <FlowPtQueueScreen organization={readyOrganizationContext(smokeOwner)} currentUserId="u-owner" onOpenIssue={() => {}}
+        initialState={{ error: "", branch: "loc-b", showDone: true, rows: [
+          { id: "p1", locationId: "loc-a", branchName: "가지점", title: "가회원 잔금", excerpt: "1:1pt 10s", state: "waiting", registeredAt: new Date(2026, 10, 24, 11, 14) },
+          { id: "p2", locationId: "loc-b", branchName: "나지점", title: "나회원 신규", excerpt: "PT 20회 카드완납 010-****-****", registerName: "나지점", state: "waiting", mentionsRefund: true, flowUrl: "https://flow.team/main.act?projectId=1&postId=p2", registeredAt: new Date(2026, 10, 24, 10, 2) },
+          { id: "p3", locationId: "loc-b", branchName: "나지점", title: "다회원 재등록", state: "issued", handledAt: new Date(2026, 10, 24, 12, 0) },
+        ] }} />
+    )) },
     { name: "운영 설정 · 수업 후 별점 집계 · 지점별", element: providerWith(smokeOwner, (
       <LessonRatingStatsAdmin organization={readyOrganizationContext(smokeOwner)} onLoad={() => Promise.resolve(null)} initialMonth="2026-11"
         initialState={{ error: "", items: [{ id: "care", question: "항목 2 (스모크 예시)" }], branch: "loc-b", open: "u5",

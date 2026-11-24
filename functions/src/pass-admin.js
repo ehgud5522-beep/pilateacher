@@ -291,6 +291,8 @@ async function runHandover(firestore, input) {
     locationId: text(pass.locationId),
     productId: text(pass.productId),
     category: PAY_CATEGORY.PT_1_1_NEW,
+    /* 규칙 경로(transferPass)와 같은 칸 -- PT 발급 막기(flowPtGate)가 양도를 막지 않게 하는 표시 (2026-11-24). */
+    transferredFromPassId: passId,
     totalSessions: sessions,
     // 서비스 회차는 넘기지 않는다. 센터가 얹어 준 것이라 회원 사이에서 오가지 않는다.
     serviceSessions: 0,

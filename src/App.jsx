@@ -420,6 +420,7 @@ import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/serve
 import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
 import { listLessonNotesBetween, listRecordActivity, writeRecordActivity } from "./data/repositories/record-activity-repository.js";
 import { listFlowPtQueue, markFlowPtQueue } from "./data/repositories/flow-pt-queue-repository.js";
+import { FLOW_BYPASS_REASON_MAX, FLOW_BYPASS_REASON_MIN, isFlowGatedCategory } from "../functions/shared/flow-pt-queue.mjs";
 import {
   RECORD_RATE_GOOD, RECORD_RATE_LOW, RECORD_TONE, countDeviceRecordActivity, instructorRecordBoard, monthOf as monthOfRecord, previousRecordMonth,
   recordActivityDocument, recordActivitySignature, recordBoardSummary, recordRowView,
@@ -18654,9 +18655,21 @@ function PassIssue({
      권한은 한 곳에서만 판단한다. 상품을 만드는 것과 발급하는 것은 다른 일이고
      규칙도 다른 목록으로 묻는다. */
   onOpenProducts,
+  /* PT 발급 대기에서 고른 플로우 등록 (2026-11-24). 있으면 그 등록으로 발급한다. */
+  flowSeed = null, onFlowSeedUsed,
+  onLoadFlowQueue = listFlowPtQueue, onLoadGate = fbLoadScheduleSyncConfig,
   onRetryOrganization, onToast, now = () => new Date(), initialState = null,
 }) {
   const [allClients, setClients] = useState(initialState?.clients || []);
+  /* ── PT 발급은 발급 대기에서만 (2026-11-24 대표) ──
+     스위치 scheduleSync.flowPtGate 가 켜지면 PT(pt_…) 는 발급 대기의 등록을 고르거나, 플로우가 멈췄을 때 사유를 써야
+     발급된다. 규칙(passes create)이 같은 선을 다시 긋는다 -- 이 화면은 막히기 전에 말해 주는 자리다. */
+  const [flowGateOn, setFlowGateOn] = useState(Boolean(initialState?.flowGateOn));
+  const [flowItems, setFlowItems] = useState(initialState?.flowItems || []);
+  const [flowLoadError, setFlowLoadError] = useState("");
+  const [flowPostId, setFlowPostId] = useState(initialState?.flowPostId || flowSeed?.id || "");
+  const [flowBypass, setFlowBypass] = useState(Boolean(initialState?.flowBypass));
+  const [flowBypassReason, setFlowBypassReason] = useState(initialState?.flowBypassReason || "");
   const [products, setProducts] = useState(initialState?.products || []);
   const [allInstructors, setInstructors] = useState(initialState?.instructors || []);
   const [allLocations, setLocations] = useState(initialState?.locations || []);
@@ -18899,6 +18912,36 @@ function PassIssue({
   const priceChanged = product
     && String((Number(product.defaultPrice) || 0) / WON_PER_MANWON) !== form.contractPriceManwon;
 
+  /* 스위치와 발급 대기 목록. 스위치를 못 읽으면 꺼진 것으로 본다 -- 규칙이 다시 막으므로 새는 길은 없고,
+     켜졌는데 화면이 몰랐다면 저장에서 permission-denied 로 멈추고 코드가 남는다. */
+  useEffect(() => {
+    if (initialState || !organizationId) return undefined;
+    let alive = true;
+    Promise.resolve(onLoadGate?.())
+      .then((config) => { if (alive) setFlowGateOn(String(config?.flowPtGate?.mode || "") === "all"); })
+      .catch(() => { if (alive) setFlowGateOn(false); });
+    Promise.resolve(onLoadFlowQueue?.(organizationId, {
+      locationIds: isOwnerLevelRole(issueScope.role) ? [] : [...new Set([...(issueScope.locationIds || []), issueScope.locationId].filter(Boolean))],
+    }))
+      .then((rows) => { if (alive) setFlowItems((Array.isArray(rows) ? rows : []).filter((row) => (row.state || "waiting") === "waiting")); })
+      .catch((thrown) => {
+        if (!alive) return;
+        const code = String(thrown?.code || "unknown");
+        setFlowLoadError(`PT 발급 대기를 읽지 못했어요 (코드 ${code})`);
+        deviceLog("flow_pt_queue_read_failed", { feature: "flow_pt_queue", stage: "pass_issue_list", errorDomain: "firestore", errorCode: code, role: issueScope.role });
+      });
+    return () => { alive = false; };
+  }, [organizationId, initialState, onLoadGate, onLoadFlowQueue, issueScope]);
+  useEffect(() => { if (flowSeed?.id) { setFlowPostId(flowSeed.id); setFlowBypass(false); } }, [flowSeed?.id]);
+  const flowPt = isFlowGatedCategory(product?.payCategory);
+  const flowChoices = flowSeed?.id && !flowItems.some((row) => row.id === flowSeed.id) ? [flowSeed, ...flowItems] : flowItems;
+  const flowPicked = flowChoices.find((row) => row.id === flowPostId) || null;
+  const flowReasonText = flowBypassReason.trim();
+  /* 무엇을 보낼지: PT 가 아니면 아무것도, 사유를 골랐으면 사유, 등록을 골랐으면 등록. */
+  const flowPayload = !flowPt ? {}
+    : flowBypass ? (flowReasonText ? { flowBypassReason: flowReasonText } : {})
+    : flowPicked ? { flowPostId: flowPicked.id } : {};
+
   const review = (event) => {
     event.preventDefault();
     setFormError("");
@@ -18931,6 +18974,14 @@ function PassIssue({
     }
     if (asksUnitPriceReason && !form.unitPriceReason.trim()) {
       setFormError("제안 단가와 다르게 정한 사유를 적어 주세요."); return;
+    }
+    if (flowPt && flowBypass && flowReasonText.length < FLOW_BYPASS_REASON_MIN) {
+      setFormError("플로우 없이 발급하는 사유를 적어 주세요."); return;
+    }
+    if (flowPt && flowGateOn && !flowBypass && !flowPicked) {
+      deviceLog("pass_issue_blocked", { feature: "pass_issue", stage: "review", errorDomain: "app", errorCode: "flow_pt_required", role: issueScope.role });
+      setFormError("PT 는 PT 발급 대기에서 플로우 등록을 골라야 발급할 수 있어요. 플로우가 멈췄다면 '플로우 없이 발급' 에 사유를 적어 주세요.");
+      return;
     }
     setMode("confirm");
   };
@@ -18981,7 +19032,15 @@ function PassIssue({
         } : {}),
         issuerRole: issueScope.role,
         createdBy: currentUserId,
+        ...flowPayload,
       }, { store: passStore });
+      if (flowPayload.flowPostId) {
+        setFlowItems((current) => current.filter((row) => row.id !== flowPayload.flowPostId));
+        onFlowSeedUsed?.();
+      }
+      setFlowPostId("");
+      setFlowBypass(false);
+      setFlowBypassReason("");
       onToast?.({ ok: true, msg: form.duet && partner
         ? `${client.name}님과 ${partner.name}님에게 듀엣 회원권을 발급했습니다.`
         : `${client.name}님에게 회원권을 발급했습니다.` });
@@ -19105,6 +19164,12 @@ function PassIssue({
             담당 {instructor?.displayName || form.instructorId}
           </p>
           <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>만료 {form.expiresAt}</p>
+          {flowPayload.flowPostId ? (
+            <p style={{ fontSize: TYPE.caption, color: INK2 }} data-flow-pt-confirm>플로우 {[flowPicked?.branchName, flowPicked?.title].filter(Boolean).join(" · ")}</p>
+          ) : null}
+          {flowPayload.flowBypassReason ? (
+            <p className="font-bold" style={{ fontSize: TYPE.caption, color: WARN }} data-flow-pt-confirm>플로우 없이 발급 · {flowPayload.flowBypassReason}</p>
+          ) : null}
         </div>
         {/* 막지는 않는다. 다만 대표가 보고 넘어가야 한다 -- 발급한 뒤에는
             원장이 append-only 라 고칠 수 없다. */}
@@ -19461,6 +19526,33 @@ function PassIssue({
             </div>
           ) : null}
 
+          {flowPt ? (
+            <div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS, border: `1px solid ${flowGateOn ? BRAND : LINE}` }} data-flow-pt-pick>
+              <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
+                플로우 등록 {flowGateOn ? "(필수)" : "(골라 두면 발급 대기에서 저절로 빠져요)"}
+              </p>
+              {flowLoadError ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: WARN }}>{flowLoadError}</p> : null}
+              {!flowBypass ? (
+                <select value={flowPostId} onChange={(e) => setFlowPostId(e.target.value)} className={`${inputCls} mt-1.5`} aria-label="플로우 등록">
+                  <option value="">{flowChoices.length ? "발급 대기에서 고르기" : "발급 대기가 비어 있어요"}</option>
+                  {flowChoices.map((row) => (
+                    <option key={row.id} value={row.id}>{[row.branchName, row.title, flowPtWhen(row.registeredAt)].filter(Boolean).join(" · ")}</option>
+                  ))}
+                </select>
+              ) : null}
+              {flowPicked && !flowBypass && flowPicked.excerpt ? (
+                <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{flowPicked.excerpt}</p>
+              ) : null}
+              <label className="mt-2 flex items-center gap-2" style={{ fontSize: TYPE.caption, color: INK2 }}>
+                <input type="checkbox" checked={flowBypass} onChange={(e) => { setFlowBypass(e.target.checked); if (e.target.checked) setFlowPostId(""); }} />
+                플로우 없이 발급 (플로우가 멈췄을 때 · 사유가 회원권에 남아요)
+              </label>
+              {flowBypass ? (
+                <input value={flowBypassReason} maxLength={FLOW_BYPASS_REASON_MAX} placeholder="사유 (예: 플로우 접속 장애)"
+                  onChange={(e) => setFlowBypassReason(e.target.value)} className={`${inputCls} mt-1.5`} aria-label="플로우 없이 발급하는 사유" />
+              ) : null}
+            </div>
+          ) : null}
           {formError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
           <button type="submit" className="h-11 w-full font-bold"
             style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption }}>
@@ -28028,7 +28120,7 @@ const flowPtFailureText = (failure) => {
   return `${hint} (코드 ${codes || "unknown"})`;
 };
 
-function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = listFlowPtQueue, onMark = markFlowPtQueue, onRefresh = fbRefreshFlowPtQueue, initialState = null }) {
+function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = listFlowPtQueue, onMark = markFlowPtQueue, onRefresh = fbRefreshFlowPtQueue, initialState = null }) {
   const organizationId = organization?.organizationId || "";
   const ownerLevel = isOwnerLevelRole(organization?.role);
   const scope = ownerLevel ? [] : [...new Set([...(organization?.locationIds || []), organization?.locationId || ""].filter(Boolean))];
@@ -28135,8 +28227,8 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
         ) : null}
         {row.excerpt ? <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{row.excerpt}</p> : null}
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {onOpenIssue ? (
-            <button type="button" onClick={onOpenIssue} style={{ ...smallButton, backgroundColor: BRAND, color: "#fff" }}>발급하러 가기</button>
+          {onIssue ? (
+            <button type="button" onClick={() => onIssue(row)} style={{ ...smallButton, backgroundColor: BRAND, color: "#fff" }}>발급하러 가기</button>
           ) : null}
           <button type="button" disabled={busy === row.id} onClick={() => mark(row, "issued")} className="disabled:opacity-50"
             style={{ ...smallButton, backgroundColor: CARD, color: GOOD, border: `1px solid ${GOOD}` }}>이미 발급 완료</button>
@@ -28186,7 +28278,8 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
       ) : null}
       <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
         플로우에서 <b style={{ color: INK }}>성공</b>으로 옮긴 PT 등록이에요. 10분마다 가져오고, [새로고침]을 누르면 바로 가져와요.
-        {" "}<b style={{ color: INK }}>[발급하러 가기]</b>로 회원권을 발급한 뒤 <b style={{ color: INK }}>[이미 발급 완료]</b>를 눌러 주세요. 발급할 게 아니면 [해당 없음].
+        {" "}<b style={{ color: INK }}>[발급하러 가기]</b>를 누르면 이 등록과 이어진 발급 화면이 열리고, 발급하면 목록에서 저절로 빠져요.
+        {" "}이미 발급한 것이면 <b style={{ color: INK }}>[이미 발급 완료]</b>, 발급할 게 아니면 [해당 없음].
       </p>
       <BranchTabs groups={groups} selected={picked} onSelect={(id) => setBranch(id)}
         countLabel={(group) => `${group.rows.filter((row) => (row.state || "waiting") === "waiting" && !row.isBalance).length}건`} />
@@ -28226,8 +28319,11 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
                 <div key={row.id} className="flex items-center gap-2 px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }}>
                   <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{row.title || "제목 없음"}</span>
                   <span className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: row.state === "issued" ? GOOD : SUB }}>{FLOW_PT_STATE_LABEL[row.state] || row.state}</span>
-                  <button type="button" disabled={busy === row.id} onClick={() => mark(row, "waiting")} className="h-8 shrink-0 px-2 font-bold disabled:opacity-50"
-                    style={{ fontSize: TYPE.caption, color: BRAND_D }}>되돌리기</button>
+                  {/* 회원권과 이어진 것은 되돌리지 않는다 -- 같은 등록으로 두 번 발급된다 (규칙도 같은 선). */}
+                  {row.passId ? null : (
+                    <button type="button" disabled={busy === row.id} onClick={() => mark(row, "waiting")} className="h-8 shrink-0 px-2 font-bold disabled:opacity-50"
+                      style={{ fontSize: TYPE.caption, color: BRAND_D }}>되돌리기</button>
+                  )}
                 </div>
               ))}
             </div>
@@ -30792,6 +30888,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
      언제나 hub 에서 시작한다. */
   const [view, setView] = useState(initialView);
   const [busy, setBusy] = useState(false);
+  /* PT 발급 대기에서 [이걸로 발급] 으로 넘어온 등록 (2026-11-24). 발급하면 비운다. */
+  const [flowIssueSeed, setFlowIssueSeed] = useState(null);
   const [deleteStep, setDeleteStep] = useState("intro");
   const [deletePhrase, setDeletePhrase] = useState("");
   const [deletePassword, setDeletePassword] = useState("");
@@ -31670,10 +31768,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
         {view === "backup" && <div className="space-y-3"><CloudBackupCard status={backupStatus} onEnablePhotos={onEnablePhotoBackup} onRetry={onRetryBackup} onRestorePrevious={onRestorePrevious} onSnapshot={onSnapshotBackup} snapshotBusy={snapshotBusy} /><HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} /></div>}
         {view === "flow-pt" && showSalesBoard && (
           <FlowPtQueueScreen organization={organization} currentUserId={account?.id || ""}
-            onOpenIssue={showClients ? () => setView("pass-issue") : undefined} />
+            onIssue={showClients ? (row) => { setFlowIssueSeed(row); setView("pass-issue"); } : undefined} />
         )}
         {view === "pass-issue" && showClients && (
-          <PassIssue organization={organization} currentUserId={account?.id || ""}
+          <PassIssue organization={organization} currentUserId={account?.id || ""} flowSeed={flowIssueSeed}
+            onFlowSeedUsed={() => setFlowIssueSeed(null)}
             clientStore={clientStore} productStore={productStore} instructorStore={instructorStore}
             locationStore={locationStore} passStore={passStore}
             onOpenProducts={showProductAdmin ? () => setView("products") : undefined}
@@ -31842,6 +31941,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="flowPtQueue" title="플로우 PT 발급 대기" allowListed={false}
               description="켜면 서버가 10분마다 지점 업무보드에서 완료로 옮긴 PT 업무를 가져와 더보기 → PT 발급 대기에 세웁니다. 앱이 발급하지는 않고, FC 가 플로우 원문을 확인한 뒤 발급합니다. 서버 비밀값 FLOW_API_KEY · FLOW_USER_ID 가 있어야 합니다." />
+            {/* PT 발급은 발급 대기에서만 (2026-11-24). 플로우 가져오기가 제대로 도는 것을 본 뒤에 켠다. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="flowPtGate" title="PT 발급은 발급 대기에서만" allowListed={false}
+              description="켜면 PT 회원권은 PT 발급 대기에서 플로우 등록을 골라야 발급됩니다. 플로우가 멈췄을 때는 대표 · 총괄 · FC매니저가 사유를 쓰고 발급할 수 있고, 그 사유는 회원권에 남습니다. 위 '플로우 PT 발급 대기' 가 켜져 있고 목록이 들어오는 것을 확인한 뒤에 켜세요." />
             <MemberSummaryAdmin organization={organization} />
             {/* 비포애프터 회원 공유 (2026-11-15). 켜면 모든 강사가 비교 카드를 보내고, 동의한 회원이 보니따 앱에서 본다. */}
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
@@ -33112,7 +33216,7 @@ export function createAppScreenSmokeCases() {
     /* 지점 칩 · 강사 카드 하나만 펼침 (2026-11-24 대표: "수업 별점도 지점별로"). */
     /* 플로우 PT 발급 대기 (2026-11-24). 지점 칩 · 대기 카드(플로우에서 확인 · 발급함 · 해당 없음) · 처리한 것. */
     { name: "플로우 PT 발급 대기", element: providerWith(smokeOwner, (
-      <FlowPtQueueScreen organization={readyOrganizationContext(smokeOwner)} currentUserId="u-owner" onOpenIssue={() => {}}
+      <FlowPtQueueScreen organization={readyOrganizationContext(smokeOwner)} currentUserId="u-owner" onIssue={() => {}}
         initialState={{ error: "", branch: "loc-b", showDone: true, showBalances: true,
           refreshResult: { ok: true, counts: { projects: 8, posts: 120, pt: 3, created: 2, failures: [{ flowProjectId: "2955389", errorCode: "UNAUTHORIZED_ERROR", httpStatus: 401 }] } },
           rows: [

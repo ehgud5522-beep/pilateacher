@@ -62,49 +62,6 @@ const post = (extra) => ({
   taskStatus: "COMPLETE", registerName: "삼계점", registeredDateTime: "20261124111420", ...extra,
 });
 
-test("가져오기: PT 완료만 만들고, 다시 돌아도 FC 처리를 되돌리지 않는다, 보드 하나 실패해도 계속", async () => {
-  const firestore = fakeFirestore({
-    "organizations/org": {}, "organizations/org/locations/l1": { name: "삼계점" },
-  });
-  const calls = [];
-  const fetchImpl = async (url, init) => {
-    calls.push({ url, key: init.headers["x-flow-api-key"] });
-    if (url.includes("/projects/2955393?")) {
-      return { ok: true, status: 200, json: async () => ({ success: true, data: { hasNext: false, lastCursor: -1, posts: [
-        post(), post({ postId: "p2", content: "8:1 그룹" }), post({ postId: "p3", taskStatus: "REQUEST" }),
-      ] } }) };
-    }
-    if (url.includes("/projects/2955389?")) {
-      return { ok: false, status: 401, json: async () => ({ success: false, error: { code: "UNAUTHORIZED_ERROR", message: "API Key 정보가 올바르지 않습니다." } }) };
-    }
-    return { ok: true, status: 200, json: async () => ({ success: true, data: { hasNext: false, lastCursor: -1, posts: [] } }) };
-  };
-  const logs = [];
-  const service = createFlowPtQueueService({
-    firestore, fetchImpl, apiKey: () => "key-test", userId: () => "owner@example.test",
-    now: () => new Date("2026-11-24T03:00:00Z"), log: (level, event, fields) => logs.push({ level, event, fields }),
-  });
-  const counts = await service.sync();
-  assert.equal(counts.created, 1);
-  assert.equal(counts.failedProjects, 1);
-  assert.deepEqual(counts.failures, [{ flowProjectId: "2955389", errorCode: "UNAUTHORIZED_ERROR", causeCode: "", httpStatus: 401 }], "[새로고침] 이 보여 줄 실패 코드");
-  assert.equal(calls[0].key, "key-test");
-  assert.match(calls[0].url, /^https:\/\/api\.flow\.team\/v1\/posts\/projects\/2955393\?userId=owner%40example\.test&cursor=0&pageSize=100&templateTypes=92%2C2$/);
-  const saved = firestore.docs.get("organizations/org/flowPtQueue/p1");
-  assert.equal(saved.state, "waiting");
-  assert.equal(saved.locationId, "l1");
-  assert.ok(!firestore.docs.has("organizations/org/flowPtQueue/p2"));
-  assert.ok(!firestore.docs.has("organizations/org/flowPtQueue/p3"));
-  const failure = logs.find((entry) => entry.event === "flow_pt_queue_fetch_failed");
-  assert.equal(failure.fields.errorCode, "UNAUTHORIZED_ERROR", "플로우 원본 코드를 그대로");
-  assert.equal(failure.fields.errorDomain, "flow_api");
-  assert.ok(!JSON.stringify(logs).includes("key-test") && !JSON.stringify(logs).includes("owner@example.test"), "키 · 계정은 진단에 없다");
-
-  firestore.docs.set("organizations/org/flowPtQueue/p1", { ...saved, state: "issued", handledBy: "fc" });
-  await service.sync();
-  assert.equal(firestore.docs.get("organizations/org/flowPtQueue/p1").state, "issued", "FC 가 누른 처리는 그대로");
-});
-
 test("앱 저장소와 서버가 같은 이름 · 상태를 쓴다", async () => {
   const { FLOW_PT_COLLECTION, FLOW_PT_STATE } = await shared();
   const fs = require("node:fs");
@@ -114,39 +71,6 @@ test("앱 저장소와 서버가 같은 이름 · 상태를 쓴다", async () =>
 });
 
 /* 2026-11-24 첫 실행: 9개 보드 모두 network · HTTP 0, 원문은 로거가 message 칸을 덮어 사라졌다. */
-test("요청 전에 멈추면: 비밀값 모양은 코드로, 연결 실패는 원인 코드와 원문(detail)으로, 값은 남기지 않는다", async () => {
-  const firestore = fakeFirestore({ "organizations/org": {}, "organizations/org/locations/l1": { name: "삼계점" } });
-  const logs = [];
-  const log = (level, event, fields) => logs.push({ level, event, fields });
-  let calls = 0;
-  const badKey = createFlowPtQueueService({
-    firestore, fetchImpl: async () => { calls += 1; throw new Error("unreachable"); },
-    apiKey: () => "키\n값", userId: () => "owner@example.test", log,
-  });
-  const counts = await badKey.sync();
-  assert.equal(calls, 0, "헤더에 못 싣는 키면 부르지 않는다");
-  assert.equal(counts.failedProjects, 1, "비밀값 문제는 첫 보드에서 멈춘다");
-  assert.equal(logs[0].fields.errorCode, "api_key_invalid_chars");
-  assert.ok(!JSON.stringify(logs).includes("키"), "키 값은 남기지 않는다");
-
-  logs.length = 0;
-  const padded = createFlowPtQueueService({
-    firestore, apiKey: () => "  key-test \n", userId: () => " owner@example.test ", log,
-    fetchImpl: async (url, init) => {
-      assert.equal(init.headers["x-flow-api-key"], "key-test", "앞뒤 빈칸 · 줄바꿈은 지운다");
-      assert.match(url, /userId=owner%40example\.test&/);
-      throw Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("getaddrinfo ENOTFOUND api.flow.team"), { code: "ENOTFOUND" }) });
-    },
-  });
-  await padded.sync();
-  const failure = logs.find((entry) => entry.event === "flow_pt_queue_fetch_failed");
-  assert.equal(failure.fields.errorCode, "network");
-  assert.equal(failure.fields.causeCode, "ENOTFOUND");
-  assert.match(failure.fields.detail, /TypeError: fetch failed \/ getaddrinfo ENOTFOUND/);
-  assert.ok(!("message" in failure.fields), "로거가 덮는 message 칸에 원문을 두지 않는다");
-});
-
-/* 2026-11-24 대표: "피티 · pt · 디오사 · 듀엣 · 패키지도 PT", "PT 체험도 넣어 줘". 양산점 · 장유점 업무 모양 그대로. */
 test("PT 줄 판정: 실제 업무 모양 (양산점 · 장유점)", async () => {
   const { ptLines } = await shared();
   const pt = [
@@ -191,41 +115,83 @@ test("성공은 보드의 단계 번호로 -- 환불 · 상담예정은 빠진�
 });
 
 /* 2026-11-24: 9개 보드가 200 인데 글 0건 -- 조회 방식을 바꿔 보는 시험. 건수 · 칸 이름 · 종류 · 상태 모양만, 제목 · 본문은 없다. */
-test("글 0건이면 첫 보드 하나만 조회 방식을 바꿔 시험한다", async () => {
+
+/* ── 개인용 업무 필터 조회 (2026-11-24): GET /user/posts/projects/{id}/tasks/filter ── */
+const column = (columnId, value, columnType = "TEXT") => ({ columnId, columnType, columnData: [{ customColumnData: value, optionName: value }] });
+const task = (postId, product, extra = {}) => ({
+  taskId: `t${postId}`, postId, projectId: "2955393", content: "회원 이름", columns: [
+    { columnId: "12", columnType: "STATUS", columnData: [{ optionName: "성공", customColumnData: "1035123" }] },
+    column("117553", "재등록", "OPTION"), column("117554", product), column("117555", "55", "NUMBER"), column("117556", "카드완납", "OPTION"),
+    column("117557", "010-1234-5678"),
+  ], ...extra,
+});
+const ok = (tasks, extra = {}) => ({ ok: true, status: 200, json: async () => ({ success: true, code: 200, data: { hasNext: false, lastCursor: -1, mode: "TREE", tasks, ...extra } }) });
+
+test("가져오기: 개인용 업무 필터 -- 성공만 걸러 받고, 등록상품 칸으로 PT 를 고르고, FC 처리는 되돌리지 않는다", async () => {
   const firestore = fakeFirestore({ "organizations/org": {}, "organizations/org/locations/l1": { name: "삼계점" } });
-  const urls = [];
-  const fetchImpl = async (url) => {
-    urls.push(url);
-    /* 본 조회(92,2)도 0건, 시험의 "전부(1,2,4,92)" 만 글이 온다고 꾸민다. */
-    const posts = url.includes("templateTypes=1%2C2%2C4%2C92") ? [{ postId: "x1", templateType: "92", taskStatus: "1035123", title: "비밀 제목", content: "회원 이름", registeredDateTime: "20261124100000" }] : [];
-    return { ok: true, status: 200, json: async () => ({ success: true, data: { projectId: "p", hasNext: false, lastCursor: -1, posts } }) };
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, key: init.headers["x-flow-api-key"] });
+    if (url.includes("/2955393/")) return ok([task("p1", "1:1PT 깍두기EV 10s"), task("p2", "8:1 50+50"), task("p3", "디오사A 10s")]);
+    if (url.includes("/2955389/")) return { ok: false, status: 412, json: async () => ({ success: false, error: { code: "PRECONDITION_FAILED_ERROR", message: "참여자가 아님" } }) };
+    return ok([]);
   };
-  const service = createFlowPtQueueService({ firestore, fetchImpl, apiKey: () => "key", userId: () => "owner@example.test", now: () => new Date("2026-11-24T03:00:00Z") });
+  const logs = [];
+  const service = createFlowPtQueueService({ firestore, fetchImpl, apiKey: () => " key-test \n", now: () => new Date("2026-11-24T03:00:00Z"), log: (level, event, fields) => logs.push({ event, fields }) });
   const counts = await service.sync();
-  assert.equal(counts.probe.flowProjectId, "2955393", "첫 0건 보드");
-  assert.deepEqual(counts.probe.results.slice(0, 4).map((result) => [result.key, result.posts]), [["user", 0], ["user_task", 0], ["user_92", 0], ["user_all", 1]]);
-  /* 보드가 보이는지 · 아는 글 하나가 읽히는지 (2026-11-24) */
-  assert.deepEqual(counts.probe.results.slice(4).map((result) => result.key), ["projects", "known_post"]);
-  assert.ok(urls.some((url) => url.includes("/v1/projects?userId=")));
-  assert.ok(urls.some((url) => url.includes("postId=88574050")));
-  assert.deepEqual(counts.probe.results[3].templateTypes, ["92"]);
-  assert.ok(!JSON.stringify(counts.probe).includes("비밀") && !JSON.stringify(counts.probe).includes("회원 이름"), "제목 · 본문은 남기지 않는다");
-  assert.equal(urls.filter((url) => url.includes("1%2C2%2C4%2C92")).length, 1, "시험은 한 보드만");
+  assert.equal(calls[0].key, "key-test");
+  const url = new URL(calls[0].url);
+  assert.equal(url.pathname, "/user/posts/projects/2955393/tasks/filter");
+  assert.equal(url.searchParams.get("userId"), null, "개인용은 userId 가 없다");
+  assert.deepEqual(JSON.parse(url.searchParams.get("filterRecords")), [{ COLUMN_SRNO: "12", OPERATOR_TYPE: "EQUAL", FILTER_DATA: "1035123" }], "성공만");
+  assert.equal(counts.created, 2, "1:1PT · 디오사 (그룹은 뺀다)");
+  assert.deepEqual(counts.failures, [{ flowProjectId: "2955389", errorCode: "PRECONDITION_FAILED_ERROR", causeCode: "", httpStatus: 412 }]);
+  const saved = firestore.docs.get("organizations/org/flowPtQueue/p1");
+  assert.equal(saved.state, "waiting");
+  assert.equal(saved.branchName, "삼계점");
+  assert.equal(saved.excerpt, "재등록 · 1:1PT 깍두기EV 10s · 55 · 카드완납 · 010-****-****", "칸 값 전부, 전화는 가림");
+  assert.ok(saved.registeredAt instanceof Date, "업무 응답에 등록 시각이 없어 처음 본 때");
+  assert.ok(!firestore.docs.has("organizations/org/flowPtQueue/p2"));
+  assert.ok(!JSON.stringify(logs).includes("key-test") && !JSON.stringify(logs).includes("깍두기"), "키 · 칸 값은 진단에 없다");
+
+  firestore.docs.set("organizations/org/flowPtQueue/p1", { ...saved, state: "not_applicable", handledBy: "fc" });
+  await service.sync();
+  assert.equal(firestore.docs.get("organizations/org/flowPtQueue/p1").state, "not_applicable", "FC 가 누른 처리는 그대로");
 });
 
-/* 2026-11-24: 지점 보드 업무는 종류 92. 본 조회는 92,2 로 부르고, 플로우가 그 값을 거절하면 기본 조회로. */
-test("본 조회는 보드 업무(92,2), 거절되면 기본 조회로 넘어간다", async () => {
+test("상태 거르기를 플로우가 거절하면 거르지 않고 받아 칸 값의 상태로 고른다", async () => {
   const firestore = fakeFirestore({ "organizations/org": {}, "organizations/org/locations/l1": { name: "삼계점" } });
   const urls = [];
+  const refund = task("p9", "1:1pt 10s", { columns: [{ columnId: "12", columnType: "STATUS", columnData: [{ optionName: "환불", customColumnData: "1035126" }] }, column("117554", "1:1pt 10s")] });
   const fetchImpl = async (url) => {
     urls.push(url);
-    if (url.includes("templateTypes=92%2C2")) return { ok: false, status: 400, json: async () => ({ success: false, error: { code: "VALIDATION_ERROR" } }) };
-    const posts = url.includes("/2955393?") && !url.includes("templateTypes") ? [post({ taskStatus: "1035123" })] : [];
-    return { ok: true, status: 200, json: async () => ({ success: true, data: { hasNext: false, lastCursor: -1, posts } }) };
+    if (url.includes("filterRecords")) return { ok: false, status: 400, json: async () => ({ success: false, error: { code: "VALIDATION_ERROR" } }) };
+    return url.includes("/2955393/") ? ok([task("p1", "1:1pt 10s"), refund]) : ok([]);
   };
-  const counts = await createFlowPtQueueService({ firestore, fetchImpl, apiKey: () => "key", userId: () => "owner@example.test", now: () => new Date("2026-11-24T03:00:00Z") }).sync();
-  assert.equal(counts.failedProjects, 0, "거절돼도 실패로 끝나지 않는다");
-  assert.equal(counts.created, 1);
-  assert.ok(urls[0].includes("templateTypes=92%2C2"));
-  assert.ok(!urls[1].includes("templateTypes"), "같은 보드를 기본 조회로 다시");
+  const counts = await createFlowPtQueueService({ firestore, fetchImpl, apiKey: () => "key" }).sync();
+  assert.equal(counts.failedProjects, 0);
+  assert.equal(counts.unfiltered, 9);
+  assert.equal(counts.created, 1, "환불은 칸 값으로 빠진다");
+  assert.ok(firestore.docs.has("organizations/org/flowPtQueue/p1") && !firestore.docs.has("organizations/org/flowPtQueue/p9"));
+});
+
+test("키 모양이 틀리거나 플로우가 키를 거절하면 첫 보드에서 멈춘다 (값은 남기지 않는다)", async () => {
+  const firestore = fakeFirestore({ "organizations/org": {} });
+  let calls = 0;
+  const logs = [];
+  const bad = await createFlowPtQueueService({ firestore, fetchImpl: async () => { calls += 1; return ok([]); }, apiKey: () => "키\n값", log: (level, event, fields) => logs.push(fields) }).sync();
+  assert.equal(calls, 0);
+  assert.equal(bad.failures[0].errorCode, "api_key_invalid_chars");
+  assert.ok(!JSON.stringify(logs).includes("키\n값"));
+  const denied = await createFlowPtQueueService({ firestore, fetchImpl: async () => ({ ok: false, status: 401, json: async () => ({ success: false, error: { code: "UNAUTHORIZED_ERROR" } }) }), apiKey: () => "key" }).sync();
+  assert.equal(denied.failedProjects, 1, "키 거절은 아홉 번 부르지 않는다");
+});
+
+test("업무 칸 읽기: 다른 이름의 칸 모양도 받는다", async () => {
+  const { taskColumnValues, taskStatusOf, taskAsPost, isPtQueuePost, flowPtBoard } = await shared();
+  const other = { postId: "x", content: "회원", columns: [{ COLUMN_SRNO: "12", value: "1035146" }, { COLUMN_SRNO: "200", value: "2:1 듀엣 30s" }, { COLUMN_SRNO: "201", value: "잔금" }] };
+  assert.deepEqual(taskColumnValues(other), ["2:1 듀엣 30s", "잔금"]);
+  assert.equal(taskStatusOf(other), "1035146");
+  const board = flowPtBoard("2955433");
+  assert.equal(isPtQueuePost(taskAsPost(other, board, { filtered: false }), board), true);
 });

@@ -3,24 +3,28 @@
 /**
  * 플로우 PT 발급 대기 -- 가져오기 (2026-11-24 대표). 판정 · 칸은 shared/flow-pt-queue.mjs.
  *
- * 몇 분마다 지점 업무보드의 최근 게시글을 읽어, 완료된 PT 업무를
+ * 몇 분마다(또는 [새로고침]) 지점 업무보드의 **성공** 업무를 읽어, PT 인 것을
  * organizations/{센터}/flowPtQueue/{postId} 에 둔다. **쓰기는 이 문서뿐이다** -- 회원 · 회원권은 건드리지 않는다.
  * 처음 만들 때만 state=waiting, 그 뒤에는 플로우에서 온 칸만 고친다 (FC 가 누른 처리를 되돌리지 않는다).
  *
- * 어느 센터인가: 플로우 지점 이름("삼계점 업무보드" → 삼계점)과 앱 지점 이름이 맞는 센터. 맞는 지점이 없으면
- * 쓰지 않고 진단에 남긴다 -- 엉뚱한 센터에 쓰지 않는다.
+ * ── 어느 주소로 읽는가 (2026-11-24 확정) ──
+ * 이용 기관 관리자용 GET /v1/posts/projects/{id}?userId= 는 9개 보드 모두 200 인데 글이 0건이었다 -- 종류를 다 달라고 해도,
+ * 앱에서 보이는 업무를 글 번호로 콕 집어도. 그래서 **개인용** GET /user/posts/projects/{id}/tasks/filter 로 읽는다:
+ *   - 키 주인(대표 계정, 9개 보드 참여자) 기준이라 userId 가 없다. 참여자가 아니면 412 PRECONDITION_FAILED_ERROR
+ *   - filterRecords 로 상태 칸(COLUMN_SRNO 12) = 그 보드의 성공 번호만 달라고 한다. 거절되면 거르지 않고 받아 칸 값으로 고른다
+ *   - 응답의 업무에 칸 값(columns)이 함께 온다 -- 등록상품 · 구분 · 금액 · 결제. PT 판정은 그 값으로 한다
+ *
+ * 어느 센터인가: 보드 표의 지점 이름과 앱 지점 이름이 맞는 센터. 맞는 지점이 없으면 쓰지 않고 진단에 남긴다.
  *
  * 진단: feature flow_pt_queue · stage · errorDomain(flow_api · firestore) · errorCode(플로우 원본 코드 / HTTP) ·
- * message. 글 제목 · 본문 · 회원 이름 · API 키 · userId 는 남기지 않는다 (CLAUDE.md 7).
+ * detail. 업무 이름 · 칸 값 · 회원 이름 · API 키는 남기지 않는다 (CLAUDE.md 7).
  */
 
 const API_BASE = "https://api.flow.team";
-/* 지점 업무보드의 업무는 플로우 안에서 종류 번호 92 로 나온다 (2026-11-24, 양산점 · 장유점 업무 목록으로 확인).
-   공개 API 는 종류를 안 주면 1 · 2 · 4 (글 · 업무 · 일정)만 돌려주는 것으로 보여 -- 9개 보드 모두 200 인데 0건 --
-   92 와 2 를 함께 달라고 한다. */
-const TASK_TEMPLATE_TYPES = "92,2";
 const PAGE_SIZE = 100;
 const MAX_PAGES = 10;
+/* 상태 칸 번호 (플로우 문서: 커스텀 상태 컬럼 COLUMN_SRNO 12). */
+const STATUS_COLUMN = "12";
 
 const text = (value) => String(value ?? "").trim();
 
@@ -40,13 +44,13 @@ const HEADER_SAFE = /^[\x21-\x7e]+$/;
 
 /**
  * @param {{
- *   firestore: any, fetchImpl?: typeof fetch, apiKey: () => string, userId: () => string,
+ *   firestore: any, fetchImpl?: typeof fetch, apiKey: () => string, userId?: () => string,
  *   now?: () => Date, log?: (level: string, event: string, fields: object) => void,
  *   serverTimestamp?: () => any,
  * }} deps
  */
 function createFlowPtQueueService(deps) {
-  const { firestore, apiKey, userId, now = () => new Date(), log = () => {}, serverTimestamp = () => now() } = deps;
+  const { firestore, apiKey, now = () => new Date(), log = () => {}, serverTimestamp = () => now() } = deps;
   /* 떼어 부르면 this 를 잃는 구현이 있다 -- 늘 감싸서 부른다. */
   const fetchImpl = deps.fetchImpl || ((...args) => globalThis.fetch(...args));
   const shared = () => import("../shared/flow-pt-queue.mjs");
@@ -54,33 +58,28 @@ function createFlowPtQueueService(deps) {
   /** 비밀값을 읽고 모양을 본다. 값 자체는 어디에도 남기지 않는다. */
   function credentials() {
     let key;
-    let account;
     try {
       key = text(apiKey());
-      account = text(userId());
     } catch (error) {
       throw new FlowApiError("secret_unreadable", text(error?.message).slice(0, 200), 0);
     }
     if (!key) throw new FlowApiError("api_key_missing", "FLOW_API_KEY 가 비어 있음", 0);
     if (!HEADER_SAFE.test(key)) throw new FlowApiError("api_key_invalid_chars", `FLOW_API_KEY 에 헤더에 못 싣는 글자가 있음 (길이 ${key.length})`, 0);
-    if (!account) throw new FlowApiError("user_id_missing", "FLOW_USER_ID 가 비어 있음", 0);
-    if (!/^[A-Za-z0-9._@+-]{1,100}$/.test(account)) throw new FlowApiError("user_id_invalid_chars", `FLOW_USER_ID 모양이 아님 (길이 ${account.length})`, 0);
-    return { key, account };
+    return { key };
   }
 
   /**
-   * @param {string} projectId @param {number} cursor
-   * @param {{ withUser?: boolean, templateTypes?: string }} [options] 기본: userId 넣음, 종류 지정 없음. 시험(probe)이 바꿔 본다.
+   * 한 쪽의 업무. statusId 가 있으면 그 상태만 달라고 한다.
+   * @param {string} projectId @param {number} cursor @param {string} [statusId]
    */
-  async function fetchPage(projectId, cursor, options = {}) {
-    const { key, account } = credentials();
-    const withUser = options.withUser !== false;
-    const params = [
-      ...(withUser ? [`userId=${encodeURIComponent(account)}`] : []),
-      `cursor=${cursor}`, `pageSize=${PAGE_SIZE}`,
-      ...(options.templateTypes ? [`templateTypes=${encodeURIComponent(options.templateTypes)}`] : []),
-    ];
-    const url = `${API_BASE}/v1/posts/projects/${encodeURIComponent(projectId)}?${params.join("&")}`;
+  async function fetchTasks(projectId, cursor, statusId = "") {
+    const { key } = credentials();
+    const params = [`cursor=${cursor}`, `pageSize=${PAGE_SIZE}`];
+    if (statusId) {
+      const filter = JSON.stringify([{ COLUMN_SRNO: STATUS_COLUMN, OPERATOR_TYPE: "EQUAL", FILTER_DATA: String(statusId) }]);
+      params.push(`filterRecords=${encodeURIComponent(filter)}`);
+    }
+    const url = `${API_BASE}/user/posts/projects/${encodeURIComponent(projectId)}/tasks/filter?${params.join("&")}`;
     let response;
     try {
       response = await fetchImpl(url, { headers: { "Content-Type": "application/json", "x-flow-api-key": key } });
@@ -91,116 +90,47 @@ function createFlowPtQueueService(deps) {
     }
     let body = null;
     try { body = await response.json(); } catch { body = null; }
-    if (!response.ok || body?.success === false) {
-      /* 플로우 원본 코드(error.code, 예 UNAUTHORIZED_ERROR)를 그대로 -- 없으면 HTTP 상태. */
-      throw new FlowApiError(text(body?.error?.code) || `http_${response.status}`, text(body?.error?.message || body?.message).slice(0, 200), response.status);
+    /* 문서 예시는 { response: { … } } 로 한 번 더 감싸 보여 준다 -- 둘 다 받는다. */
+    const payload = body && typeof body.response === "object" && body.response && !("success" in body) ? body.response : body;
+    if (!response.ok || payload?.success === false) {
+      /* 플로우 원본 코드(error.code, 예 UNAUTHORIZED_ERROR · PRECONDITION_FAILED_ERROR)를 그대로 -- 없으면 HTTP 상태. */
+      throw new FlowApiError(text(payload?.error?.code) || `http_${response.status}`, text(payload?.error?.message || payload?.message).slice(0, 200), response.status);
     }
-    return body?.data || {};
+    return payload?.data || {};
   }
 
-  /**
-   * 글이 0건일 때 조회 방식을 바꿔 본다 (2026-11-24: 9개 보드가 200 으로 답하는데 글 0건 -- 원인 확정용).
-   * 방식마다 몇 건 · 응답 칸 이름 · 글 종류(templateType) · 상태 값 모양만 남긴다. 제목 · 본문 · 이름은 남기지 않는다.
-   */
-  async function probe(projectId) {
-    const variants = [
-      { key: "user", label: "userId 넣음", options: {} },
-      { key: "user_task", label: "userId + 업무만(2)", options: { templateTypes: "2" } },
-      { key: "user_92", label: "userId + 보드 업무(92)", options: { templateTypes: TASK_TEMPLATE_TYPES } },
-      { key: "user_all", label: "userId + 전부(1,2,4,92)", options: { templateTypes: "1,2,4,92" } },
-    ];
-    const results = [];
-    for (const variant of variants) {
-      try {
-        const data = await fetchPage(projectId, 0, variant.options);
-        const posts = Array.isArray(data?.posts) ? data.posts : [];
-        results.push({
-          key: variant.key, label: variant.label, ok: true, posts: posts.length,
-          dataKeys: Object.keys(data || {}).slice(0, 12),
-          templateTypes: [...new Set(posts.map((post) => text(post?.templateType)))].slice(0, 6),
-          taskStatuses: [...new Set(posts.map((post) => text(post?.taskStatus)))].slice(0, 6),
-          hasNext: Boolean(data?.hasNext),
-        });
-      } catch (error) {
-        results.push({ key: variant.key, label: variant.label, ok: false, errorCode: text(error?.code || "unknown"), httpStatus: Number(error?.status) || 0 });
-      }
-    }
-    /* 2026-11-24: 종류를 다 달라고 해도 0건 -- 보드가 이 계정 · 키로 보이기는 하는지, 아는 글 하나는 읽히는지 본다. */
-    results.push(await probeProjects());
-    results.push(await probeKnownPost());
-    log("info", "flow_pt_queue_probe", { feature: "flow_pt_queue", stage: "probe", flowProjectId: projectId, results });
-    return { flowProjectId: projectId, results };
-  }
-
-  /** 아무 주소나 GET. 시험에서만 쓴다. */
-  async function getJson(path, params) {
-    const { key, account } = credentials();
-    const query = [`userId=${encodeURIComponent(account)}`, ...params].join("&");
-    const response = await fetchImpl(`${API_BASE}${path}?${query}`, { headers: { "Content-Type": "application/json", "x-flow-api-key": key } });
-    let body = null;
-    try { body = await response.json(); } catch { body = null; }
-    if (!response.ok || body?.success === false) throw new FlowApiError(text(body?.error?.code) || `http_${response.status}`, text(body?.error?.message).slice(0, 200), response.status);
-    return body?.data ?? {};
-  }
-
-  /** 프로젝트 목록에 지점 보드가 보이는가 -- 개수와 맞는 보드 수만. */
-  async function probeProjects() {
-    const label = "프로젝트 목록에 지점 보드";
-    try {
-      const { FLOW_PT_PROJECT_IDS } = await shared();
-      const data = await getJson("/v1/projects", ["pageSize=100"]);
-      const list = Array.isArray(data) ? data : (Object.values(data || {}).find(Array.isArray) || []);
-      const ids = list.map((item) => text(item?.projectId || item?.colaboSrno || item?.id));
-      return {
-        key: "projects", label, ok: true, posts: list.length,
-        dataKeys: Array.isArray(data) ? ["(배열)"] : Object.keys(data || {}).slice(0, 12),
-        boardsFound: FLOW_PT_PROJECT_IDS.filter((id) => ids.includes(id)).length,
-        itemKeys: Object.keys(list[0] || {}).slice(0, 12),
-      };
-    } catch (error) {
-      return { key: "projects", label, ok: false, errorCode: text(error?.code || "unknown"), httpStatus: Number(error?.status) || 0 };
-    }
-  }
-
-  /** 앱에서 보이는 양산점 업무 하나(postId 88574050)를 글 번호로 콕 집어 읽는다. */
-  async function probeKnownPost() {
-    const label = "양산점 업무 하나를 글 번호로";
-    try {
-      const data = await getJson("/v1/posts/projects/2955433", ["postId=88574050", "pageSize=1"]);
-      const posts = Array.isArray(data?.posts) ? data.posts : [];
-      return { key: "known_post", label, ok: true, posts: posts.length, dataKeys: Object.keys(data || {}).slice(0, 12), templateTypes: [...new Set(posts.map((post) => text(post?.templateType)))] };
-    } catch (error) {
-      return { key: "known_post", label, ok: false, errorCode: text(error?.code || "unknown"), httpStatus: Number(error?.status) || 0 };
-    }
-  }
-
-  const typeFallback = new Set();
-  const typesFor = (projectId) => (typeFallback.has(projectId) ? "" : TASK_TEMPLATE_TYPES);
-
-  /** 한 보드의 최근 글 (LOOKBACK 안). */
-  async function recentPosts(projectId, since) {
-    const { flowDateTime } = await shared();
-    const posts = [];
+  /** 한 보드의 성공 업무. 상태 거르기를 플로우가 거절하면 거르지 않고 받아 칸 값으로 고른다. */
+  async function successTasks(board) {
+    const { taskStatusOf } = await shared();
+    let filtered = true;
+    const tasks = [];
     let cursor = 0;
     for (let page = 0; page < MAX_PAGES; page += 1) {
       let data;
       try {
-        data = await fetchPage(projectId, cursor, { templateTypes: typesFor(projectId) });
+        data = await fetchTasks(board.projectId, cursor, filtered ? board.successStatusId : "");
       } catch (error) {
-        /* 종류 값을 플로우가 거절하면(400 · VALIDATION) 이 보드는 기본 조회로 -- 아무것도 못 읽는 것보다 낫다. */
-        if (!(Number(error?.status) === 400 || text(error?.code) === "VALIDATION_ERROR") || !typesFor(projectId)) throw error;
-        typeFallback.add(projectId);
-        log("warn", "flow_pt_queue_types_rejected", { feature: "flow_pt_queue", stage: "fetch_posts", flowProjectId: projectId, errorDomain: "flow_api", errorCode: text(error?.code), httpStatus: Number(error?.status) || 0 });
-        data = await fetchPage(projectId, cursor);
+        if (!filtered || !(Number(error?.status) === 400 || text(error?.code) === "VALIDATION_ERROR")) throw error;
+        filtered = false;
+        log("warn", "flow_pt_queue_filter_rejected", { feature: "flow_pt_queue", stage: "fetch_tasks", flowProjectId: board.projectId, errorDomain: "flow_api", errorCode: text(error?.code), httpStatus: Number(error?.status) || 0 });
+        cursor = 0;
+        tasks.length = 0;
+        data = await fetchTasks(board.projectId, cursor, "");
       }
-      const batch = Array.isArray(data.posts) ? data.posts : [];
-      posts.push(...batch);
-      const oldest = batch.map((post) => flowDateTime(post?.registeredDateTime)).filter(Boolean).sort((a, b) => a - b)[0];
-      const next = Number(data.lastCursor);
-      if (!data.hasNext || !Number.isFinite(next) || next < 0 || (oldest && oldest < since)) break;
+      const batch = Array.isArray(data?.tasks) ? data.tasks : [];
+      tasks.push(...batch);
+      const next = Number(data?.lastCursor);
+      if (!data?.hasNext || !Number.isFinite(next) || next < 0) break;
       cursor = next;
     }
-    return posts;
+    /* 거르지 못했으면 칸 값의 상태로 고른다. 상태 칸이 안 오면 고를 수 없으니 그대로 두고 FC 가 원문을 본다. */
+    return filtered ? { tasks, filtered } : {
+      tasks: tasks.filter((task) => {
+        const status = taskStatusOf(task);
+        return !status || status === board.successStatusId || status === "성공";
+      }),
+      filtered,
+    };
   }
 
   /** 지점 이름 → { organizationId, locationId }. 센터 여럿이면 지점 이름이 하나만 맞는 센터. */
@@ -219,7 +149,8 @@ function createFlowPtQueueService(deps) {
     const ref = firestore.doc(`organizations/${organizationId}/${FLOW_PT_COLLECTION}/${fields.postId}`);
     const snapshot = await ref.get();
     if (!snapshot.exists) {
-      await ref.set({ ...fields, state: FLOW_PT_STATE.WAITING, handledBy: "", handledAt: null, createdAt: serverTimestamp(), syncedAt: serverTimestamp() });
+      /* 업무 응답에는 등록 시각이 없다 -- 처음 본 때를 넣는다 (목록이 45일 안을 읽는다). */
+      await ref.set({ ...fields, registeredAt: fields.registeredAt || now(), state: FLOW_PT_STATE.WAITING, handledBy: "", handledAt: null, createdAt: serverTimestamp(), syncedAt: serverTimestamp() });
       return "created";
     }
     const current = snapshot.data() || {};
@@ -234,23 +165,21 @@ function createFlowPtQueueService(deps) {
 
   /** 한 번 돈다. 보드 하나가 실패해도 나머지는 계속한다. */
   async function sync() {
-    const { FLOW_PT_BOARDS, FLOW_PT_LOOKBACK_DAYS, isPtQueuePost, branchNameOfProject, matchLocationId, flowQueueFields } = await shared();
-    const since = new Date(now().getTime() - FLOW_PT_LOOKBACK_DAYS * 86400000);
+    const { FLOW_PT_BOARDS, taskAsPost, isPtQueuePost, matchLocationId, flowQueueFields, flowExcerpt, taskColumnValues } = await shared();
     const directory = await branchDirectory();
-    const counts = { projects: 0, failedProjects: 0, posts: 0, pt: 0, created: 0, updated: 0, unmatchedBranch: 0 };
+    const counts = { projects: 0, failedProjects: 0, posts: 0, pt: 0, created: 0, updated: 0, unmatchedBranch: 0, unfiltered: 0 };
     /* 보드마다 실패 코드 -- [새로고침] 을 누른 사람에게 그대로 보여 준다 (원문 · 값은 로그에만). */
     const failures = [];
-    let probed = null;
     for (const board of FLOW_PT_BOARDS) {
       const { projectId } = board;
-      let posts;
+      let result;
       try {
-        posts = await recentPosts(projectId, since);
+        result = await successTasks(board);
       } catch (error) {
         counts.failedProjects += 1;
-        const fatal = ["secret_unreadable", "api_key_missing", "api_key_invalid_chars", "user_id_missing", "user_id_invalid_chars"].includes(text(error?.code));
+        const fatal = ["secret_unreadable", "api_key_missing", "api_key_invalid_chars", "UNAUTHORIZED_ERROR"].includes(text(error?.code));
         log("error", "flow_pt_queue_fetch_failed", {
-          feature: "flow_pt_queue", stage: "fetch_posts", flowProjectId: projectId,
+          feature: "flow_pt_queue", stage: "fetch_tasks", flowProjectId: projectId,
           errorDomain: error instanceof FlowApiError ? "flow_api" : "unknown", errorCode: text(error?.code || "unknown"),
           httpStatus: Number(error?.status) || 0, causeCode: text(error?.causeCode), detail: text(error?.message).slice(0, 300),
         });
@@ -259,19 +188,15 @@ function createFlowPtQueueService(deps) {
         continue;
       }
       counts.projects += 1;
-      counts.posts += posts.length;
-      /* 첫 0건 보드 하나만 시험한다 -- 아홉 곳을 다 시험하면 요청이 서른여섯 번이다. */
-      if (!posts.length && !probed) {
-        probed = await probe(projectId).catch(() => null);
-      }
-      for (const post of posts) {
-        /* 목록 응답에는 projectId 가 비어 오기도 한다 -- 지금 읽는 보드로 채운다. */
-        const item = { ...post, projectId: post.projectId || projectId };
+      counts.posts += result.tasks.length;
+      if (!result.filtered) counts.unfiltered += 1;
+      for (const task of result.tasks) {
+        /* 업무를 게시글 모양으로 -- 이름은 제목, 칸 값은 줄마다 본문, 상태는 (걸러 받았으면) 그 보드의 성공. */
+        const item = taskAsPost(task, board, { filtered: result.filtered });
         if (!isPtQueuePost(item, board)) continue;
         counts.pt += 1;
-        const branchName = board.branchName || branchNameOfProject(post.projectTitle);
         const owners = directory
-          .map((entry) => ({ organizationId: entry.organizationId, locationId: matchLocationId(branchName, entry.locations) }))
+          .map((entry) => ({ organizationId: entry.organizationId, locationId: matchLocationId(board.branchName, entry.locations) }))
           .filter((entry) => entry.locationId);
         if (owners.length !== 1) {
           counts.unmatchedBranch += 1;
@@ -282,9 +207,12 @@ function createFlowPtQueueService(deps) {
           continue;
         }
         try {
-          const result = await upsert(owners[0].organizationId, flowQueueFields(item, { ...owners[0], board }));
-          if (result === "created") counts.created += 1;
-          if (result === "updated") counts.updated += 1;
+          const fields = flowQueueFields(item, { ...owners[0], board });
+          /* FC 가 볼 줄: 칸 값 전부(구분 · 등록상품 · 금액 · 결제 …) -- 전화번호는 가린다. */
+          fields.excerpt = flowExcerpt(taskColumnValues(task).join(" · "), 240) || fields.excerpt;
+          const written = await upsert(owners[0].organizationId, fields);
+          if (written === "created") counts.created += 1;
+          if (written === "updated") counts.updated += 1;
         } catch (error) {
           log("error", "flow_pt_queue_write_failed", {
             feature: "flow_pt_queue", stage: "write_queue", flowProjectId: projectId, organizationId: owners[0].organizationId,
@@ -293,10 +221,10 @@ function createFlowPtQueueService(deps) {
         }
       }
     }
-    return { ...counts, failures, ...(probed ? { probe: probed } : {}) };
+    return { ...counts, failures };
   }
 
-  return { sync, fetchPage };
+  return { sync, fetchTasks };
 }
 
 module.exports = { createFlowPtQueueService, FlowApiError };

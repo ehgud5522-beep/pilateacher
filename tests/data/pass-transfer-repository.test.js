@@ -157,7 +157,10 @@ test("발급과 같은 필드를 쓴다", async () => {
 
   const transferred = byPath(transferStore, "passes/pass-new").data;
   const issued = byPath(issueStore, "passes/pass-issued").data;
-  assert.deepEqual(Object.keys(transferred).sort(), Object.keys(issued).sort());
+  /* 양도만의 표시 하나는 예외다: 어느 회원권에서 넘어왔는가 (PT 발급 대기 스위치가 양도를 막지 않게, 2026-11-24). */
+  const { transferredFromPassId, ...rest } = transferred;
+  assert.equal(transferredFromPassId, "pass-1");
+  assert.deepEqual(Object.keys(rest).sort(), Object.keys(issued).sort());
 });
 
 /* ── 막히는 자리 ─────────────────────────────────────────────────────── */

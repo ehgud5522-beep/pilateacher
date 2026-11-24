@@ -7150,3 +7150,64 @@ describe("플로우 PT 발급 대기 -- 서버가 만들고, 대표 · 총괄 ·
     await assertFails(handle(users.manager, "issued"));
   });
 });
+
+describe("PT 발급은 발급 대기에서만 (scheduleSync.flowPtGate) -- 2026-11-24 대표 \"오늘부터 바로 막기\"", () => {
+  const passRef = (db, passId) => doc(db, "organizations", ORG_A, "passes", passId);
+  const ledgerRef = (db, passId) => doc(db, "organizations", ORG_A, "passes", passId, "ledger", `${passId}_issue`);
+  const queueRef = (db, postId) => doc(db, "organizations", ORG_A, "flowPtQueue", postId);
+  const issueEntry = (passId, category = "pt_1_1_new") => ({
+    organizationId: ORG_A, passId, clientId: "client-member", locationId: "location-a", type: "issue", delta: 20,
+    category, unitPrice: 60000, instructorId: users.instructor, occurredAt: serverTimestamp(), createdAt: serverTimestamp(), createdBy: users.owner,
+  });
+  const gate = (mode) => testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "runtimeConfig", "scheduleSync"), { flowPtGate: { mode } }, { merge: true });
+  });
+  const seedQueue = (postId, state = "waiting") => testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "organizations", ORG_A, "flowPtQueue", postId), {
+      organizationId: ORG_A, postId, locationId: "location-a", branchName: "삼계점", title: "회원", state, handledBy: "", handledAt: null, registeredAt: new Date(),
+    });
+  });
+  const issue = (passId, extra = {}, { queue } = {}) => {
+    const db = dbFor(users.owner);
+    const batch = writeBatch(db);
+    batch.set(passRef(db, passId), passFixture(ORG_A, passId, { createdBy: users.owner, ...extra }));
+    batch.set(ledgerRef(db, passId), issueEntry(passId, extra.category));
+    if (queue) batch.update(queueRef(db, queue), { state: "issued", handledBy: users.owner, handledAt: serverTimestamp(), passId });
+    return batch.commit();
+  };
+
+  test("꺼져 있으면 지금처럼 발급된다", async () => {
+    await gate("off");
+    await assertSucceeds(issue("gate-off"));
+  });
+  test("켜지면 PT · 디오사는 발급 대기 없이 막히고, 그룹 같은 다른 종류는 그대로", async () => {
+    await gate("all");
+    await assertFails(issue("gate-plain"));
+    await assertFails(issue("gate-diosa", { category: "diosa_a" }));
+    await assertSucceeds(issue("gate-etc", { category: "etc" }));
+  });
+  test("발급 대기에서 고르면 된다 -- 같은 배치에서 그 등록이 이 회원권과 이어진다", async () => {
+    await gate("all");
+    await seedQueue("99000001");
+    await assertSucceeds(issue("gate-linked", { flowPostId: "99000001" }, { queue: "99000001" }));
+    await seedQueue("99000002");
+    await assertFails(issue("gate-unlinked", { flowPostId: "99000002" }), "등록을 이어 주지 않으면 거절");
+    await seedQueue("99000003", "issued");
+    await assertFails(issue("gate-used", { flowPostId: "99000003" }, { queue: "99000003" }), "이미 처리된 등록으로 두 번 발급 못 함");
+  });
+  test("플로우가 멈췄을 때: 사유를 쓰면 발급된다 (2자 이상)", async () => {
+    await gate("all");
+    await assertSucceeds(issue("gate-bypass", { flowBypassReason: "플로우 장애" }));
+    await assertFails(issue("gate-bypass-short", { flowBypassReason: "x" }));
+  });
+  test("이관(contractedAt) · 양도(원본 원장의 handover 항목과 한 배치)는 막지 않는다", async () => {
+    await gate("all");
+    await assertSucceeds(issue("gate-migrated", { contractedAt: Timestamp.fromDate(new Date(2026, 0, 1)) }));
+  });
+  test("이미 발급 완료 · 해당 없음은 회원권 없이도 누를 수 있다 (잔금 분납)", async () => {
+    await seedQueue("99000010");
+    await assertSucceeds(updateDoc(queueRef(dbFor(users.owner), "99000010"), { state: "issued", handledBy: users.owner, handledAt: serverTimestamp() }));
+    await seedQueue("99000011");
+    await assertFails(updateDoc(queueRef(dbFor(users.owner), "99000011"), { state: "issued", handledBy: users.owner, handledAt: serverTimestamp(), passId: "no-such-pass" }), "없는 회원권과 잇지 못한다");
+  });
+});

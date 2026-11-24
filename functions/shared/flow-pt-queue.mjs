@@ -54,6 +54,16 @@ export function isBaselineTask(postId, firstSeenAt) {
   return Number.isFinite(seen) && seen < FLOW_PT_BASELINE_UNTIL.getTime() && !(Number.isFinite(id) && id >= FLOW_PT_TODAY_POST_ID);
 }
 
+/* ── PT 발급은 발급 대기에서만 (2026-11-24 대표: "플로우 등록 → 발급 대기에 뜬 것만 발급 가능하게, 그 이후에 FC 가 발급") ──
+   스위치 scheduleSync.flowPtGate (off · all) 가 켜지면 PT 카테고리(pt_…) 회원권은 둘 중 하나로만 발급된다:
+     flowPostId       발급 대기의 글 하나를 골라 발급 -- 같은 배치에서 그 글이 issued 로 바뀌고 회원권과 이어진다
+     flowBypassReason 플로우가 멈췄을 때 대표 · 총괄 · FC매니저가 사유를 쓰고 발급 (회원권에 남는다)
+   이관(contractedAt · csv_) 은 해당 없다. 규칙(passes create)이 같은 선을 긋는다. */
+export const FLOW_BYPASS_REASON_MIN = 2;
+export const FLOW_BYPASS_REASON_MAX = 200;
+/* PT(1:1 · 2:1 듀엣)와 디오사(A · B). 2026-11-24 대표: "디오사 · 듀엣 · 패키지도 PT 수강권". 규칙(passes create)도 같은 선. */
+export const isFlowGatedCategory = (category) => /^(pt_|diosa_)/.test(text(category));
+
 const text = (value) => String(value ?? "").trim();
 
 /* ── PT 줄 (2026-11-24 대표: "피티 · pt · 디오사 · 듀엣 · 패키지도 PT 수강권", "PT 체험도 넣어 줘") ──

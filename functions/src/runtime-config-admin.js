@@ -160,6 +160,12 @@ const WRITERS = Object.freeze({
     if (!["off", "all"].includes(mode)) throw new Error("flow_pt_queue_mode_invalid");
     return { mode };
   },
+  /* PT 발급은 발급 대기에서만 (2026-11-24). 규칙(passes create)과 발급 화면이 읽는다. 끔 · 전체만. */
+  flowPtGate: (input) => {
+    const mode = text(input?.mode);
+    if (!["off", "all"].includes(mode)) throw new Error("flow_pt_gate_mode_invalid");
+    return { mode };
+  },
   beforeAfterSharing: (input) => {
     const mode = text(input?.mode);
     if (!["off", "all"].includes(mode)) throw new Error("before_after_sharing_mode_invalid");
@@ -191,6 +197,8 @@ const FIELD_TARGETS = Object.freeze({
   consultPoints: { document: "scheduleSync", field: "consultPoints" },
   /* 규칙 배포 없이 켜고 끈다. 서버만 읽는다. */
   flowPtQueue: { document: "scheduleSync", field: "flowPtQueue" },
+  /* 규칙이 scheduleSync 를 읽는다 -- 새 문서면 규칙 배포 없이 켤 수 없다. */
+  flowPtGate: { document: "scheduleSync", field: "flowPtGate" },
 });
 
 /**

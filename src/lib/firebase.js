@@ -853,6 +853,8 @@ export const fbManageGroupPayroll = callableAsOwner("manageGroupPayroll");
 export const fbLessonRatingStats = callableAsOwner("lessonRatingStats");
 /** 점장용 재등록 레이더 재료 (2026-11-24). 서버가 맡은 지점의 회원 · 회원권 · 출석 시각만 골라 준다. { organizationId } */
 export const fbRenewalRadarBranch = callableAsOwner("renewalRadarBranch");
+/** 플로우 PT 발급 대기 지금 가져오기 (2026-11-24). { organizationId } → 읽은 수 · 보드마다 실패 코드. 대표 · 총괄 · FC. */
+export const fbRefreshFlowPtQueue = callableAsOwner("refreshFlowPtQueue");
 
 /** AI 회원 요약 다시 만들기 (설계 문서 2단계, 대표 · 총괄). { organizationId, clientId? } -- clientId 가 없으면 요약이 있는 회원 전부. */
 export const fbRebuildMemberSummary = callableAsOwner("rebuildMemberSummary");

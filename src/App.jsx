@@ -8404,7 +8404,7 @@ function ReferenceMemberDetail({ openConsultOnMount = false, onConsumeConsultInt
               회원 상세가 원장으로 보여 준다. 빈 칸만 세우지 않는다. 정보 수정은 아래 "기본정보" 에도 있다. */}
           {(!organizationMode || (member.payments || []).length > 0 || holdHistory.length > 0 || (member.instructorHistory || []).length > 0 || isInactive(member) || isHold(member)) && <Section title={organizationMode ? "이 기기의 변경 이력" : "이용권 변경 이력 및 상세 설정"} action={organizationMode ? null : <button type="button" onClick={openMembership} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>관리</button>}>
             {(member.payments || []).length ? member.payments.slice(0, 4).map((p) => <div key={p.id || `${p.date}-${p.amount}`} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span className="min-w-0 flex-1"><span className="block truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(p.date)} · {p.name || p.passName || "이용권"}</span>{p.kind === "adjustment" && <span className="block truncate" style={{ fontSize: TYPE.caption, color: SUB }}>잔여 {p.before?.remaining}회 → {p.after?.remaining}회 · 총 {p.before?.total}회 → {p.after?.total}회</span>}</span><span className="tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{p.kind === "adjustment" ? "수정" : `${num(p.count || p.sessions)}회`}</span></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>저장된 변경 이력이 없습니다</p>}
-            {holdHistory.slice(0, 4).map((h) => <div key={h.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, backgroundColor: CANVAS }}><span style={{ padding: "2px 6px", borderRadius: 5, color: INK2, fontSize: TYPE.caption, fontWeight: 600 }}>홀딩</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(h.startDate)} ~ {ymd(h.releasedAt || h.endDate)}{h.extendDays ? ` · 만료 +${h.extendDays}일` : ""}</span></div>)}
+            {holdHistory.slice(0, 4).map((h) => <div key={h.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, backgroundColor: CANVAS }}><span style={{ padding: "2px 6px", borderRadius: 5, color: INK2, fontSize: TYPE.caption, fontWeight: 600 }}>홀딩</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(h.startDate)} ~ {ymd(h.releasedAt || h.endDate)}{h.extendDays ? ` · ${h.extendDays}일 멈춤(만료일 뒤로)` : ""}</span></div>)}
             {(member.instructorHistory || []).slice(0, 3).map((entry) => <div key={entry.id || entry.date} className="flex gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span style={{ fontSize: TYPE.caption, color: SUB }}>담당 변경</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(entry.date)} · {entry.before || "미지정"} → {entry.after || "미지정"}</span></div>)}
             {isHold(member) && <div className="mt-2 flex items-start gap-2" style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: CANVAS }}><AlertCircle size={14} className="mt-0.5 shrink-0" style={{ color: SUB }} /><p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{ymd(member.holdFrom)} ~ {ymd(member.holdUntil)}{member.holdReason ? ` · ${member.holdReason}` : ""}</p></div>}
             {isInactive(member) && <button type="button" onClick={async () => { const saved = await onReactivate?.(member.id); if (saved !== false) onBack?.(); }} className="mt-2 h-11 w-full rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>활성으로 되돌리기</button>}
@@ -8475,7 +8475,7 @@ function ReferenceMemberDetail({ openConsultOnMount = false, onConsumeConsultInt
       {sheet === "hold" && <Sheet title="홀딩 설정" sub={`${member.name} · 수업 기록과 비포애프터는 유지됩니다`} onClose={() => setSheet(null)}><div className="space-y-3">
         <div className="grid grid-cols-2 gap-2"><Field label="홀딩 시작일"><input type="date" value={hold.start} onChange={(e) => setHold({ ...hold, start: e.target.value })} className={inputCls} /></Field><Field label="종료 예정일"><input type="date" value={hold.end} onChange={(e) => setHold({ ...hold, end: e.target.value })} className={inputCls} /></Field></div>
         <Field label="홀딩 사유"><input value={hold.reason} onChange={(e) => setHold({ ...hold, reason: e.target.value })} placeholder="예: 개인 사정 · 부상 · 여행" className={inputCls} /></Field>
-        <button type="button" onClick={() => setHold({ ...hold, extend: !hold.extend })} className="flex w-full items-center justify-between" style={{ height: 42, padding: "0 12px", borderRadius: 8, border: `1px solid ${hold.extend ? BRAND : LINE}`, backgroundColor: hold.extend ? TINT : CARD, color: hold.extend ? BRAND_D : INK2, fontSize: TYPE.caption, fontWeight: 600 }}><span>이용권 만료일 연장</span><span>{hold.extend ? "연장" : "연장 안 함"}</span></button>
+        <button type="button" onClick={() => setHold({ ...hold, extend: !hold.extend })} className="flex w-full items-center justify-between" style={{ height: 42, padding: "0 12px", borderRadius: 8, border: `1px solid ${hold.extend ? BRAND : LINE}`, backgroundColor: hold.extend ? TINT : CARD, color: hold.extend ? BRAND_D : INK2, fontSize: TYPE.caption, fontWeight: 600 }}><span>홀딩 동안 이용권 기간 멈춤</span><span>{hold.extend ? "멈춤" : "안 멈춤"}</span></button>
         <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>홀딩은 예정된 수업을 자동 취소하지 않습니다. 일정 탭에서 직접 확인해 주세요.</p>
         <button type="button" disabled={!hold.start || !hold.end || hold.end < hold.start} onClick={() => { const days = Math.max(0, Math.round((new Date(`${hold.end}T00:00:00`).getTime() - new Date(`${hold.start}T00:00:00`).getTime()) / 86400000)); onPatch({ status: "hold", holdFrom: hold.start, holdUntil: hold.end, holdReason: hold.reason.trim(), holdExtendDays: hold.extend ? days : 0, contractEnd: hold.extend && member.contractEnd ? shift(member.contractEnd, days) : member.contractEnd }); setSheet(null); }} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>홀딩 시작</button>
       </div></Sheet>}
@@ -21273,7 +21273,7 @@ function PassEditSheet({
       <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
         {adjust
           ? "실제 잔여와 장부가 어긋났을 때 맞춥니다. 수업이 아니므로 급여에 잡히지 않고, 회원의 수업 이력에도 뜨지 않습니다."
-          : "홀딩 기간에는 예약·차감이 중지되고 잔여 횟수는 그대로 보관됩니다. 만료일은 연장되며 회원 앱에도 반영됩니다. 기존 예약은 자동 취소되지 않고, 듀엣 공유권은 두 분 모두 중지됩니다."}
+          : "홀딩은 회원권을 멈추는 것입니다. 홀딩 기간에는 예약·차감이 멈추고 잔여 횟수와 남은 기간이 그대로 보관됩니다 — 그래서 멈춘 날수만큼 만료일이 뒤로 갑니다(기간을 더 주는 연장이 아닙니다). 회원 앱에도 반영됩니다. 기존 예약은 자동 취소되지 않고, 듀엣 공유권은 두 분 모두 멈춥니다."}
       </p>
 
       {adjust ? (
@@ -21327,12 +21327,12 @@ function PassEditSheet({
                 }}>{label}</button>
             ))}
           </div>
-          {mode === "hold" && held ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>홀딩을 지금 해제합니다. 남은 홀딩 기간만큼 만료일 연장을 되돌리고 바로 이용할 수 있어요.</p> : mode === "hold" ? (
+          {mode === "hold" && held ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>홀딩을 지금 해제합니다. 아직 쓰지 않은 홀딩 날수만큼 만료일이 앞으로 돌아오고, 바로 이용할 수 있어요.</p> : mode === "hold" ? (
             <div className="mt-2 flex items-center gap-2">
               <input inputMode="numeric" value={days} placeholder="30"
                 onChange={(event) => setDays(event.target.value)} className={inputCls}
                 style={{ maxWidth: 110 }} />
-              <p style={{ fontSize: TYPE.caption, color: SUB }}>일 동안 이용을 중지합니다 (지금부터)</p>
+              <p style={{ fontSize: TYPE.caption, color: SUB }}>일 동안 회원권을 멈춥니다 (지금부터)</p>
             </div>
           ) : (
             <input type="date" value={date} onChange={(event) => setDate(event.target.value)}
@@ -21341,6 +21341,7 @@ function PassEditSheet({
           <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
             {currentExpiry ? dayLabel(currentExpiry) : "만료일 없음"}
             {nextExpiry ? ` → ${dayLabel(nextExpiry)}` : ""}
+            {mode === "hold" && !held && nextExpiry ? ` (멈춘 ${heldDays}일만큼 뒤로)` : ""}
           </p>
           {sameDay ? (
             <p role="alert" className="mt-1 font-bold" style={{ fontSize: TYPE.caption, color: WARN }}>
@@ -21753,7 +21754,7 @@ function ClientPassRow({
         </span>
       </div>
       <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-        {held ? `홀딩 중 · ${dayTimeLabel(pass.holdUntil)} 이용 재개 · ` : ""}{dayLabel(pass.createdAt)} 발급
+        {held ? `홀딩 중 · 기간 멈춤 · ${dayTimeLabel(pass.holdUntil)} 이용 재개 · ` : ""}{dayLabel(pass.createdAt)} 발급
         {" · "}{pass.totalSessions}회{Number(pass.serviceSessions) > 0 ? ` + 서비스 ${pass.serviceSessions}회` : ""}
         {" · "}{wonToManwonLabel(pass.contractPrice)}
         {" · "}{pass.purchaseRound}차

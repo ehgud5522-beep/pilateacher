@@ -3820,7 +3820,7 @@ test("lesson ratings: the owner sees per-instructor counts and averages only, fa
   assert.match(flow, /처리한 것 1건/);
   assert.match(flow, /되돌리기/);
   /* [새로고침] = 지금 가져오기 (2026-11-24): 몇 건 읽었는지 · 보드마다 실패 이유와 원본 코드. */
-  assert.match(flow, /방금 플로우에서 읽었어요 · 보드 8곳 · 글 120건 · PT 3건 \(새로 2건\)/);
+  assert.match(flow, /방금 플로우에서 읽었어요 · 보드 8곳 · 성공 업무 120건 · PT 3건 \(새로 2건\)/);
   assert.match(flow, /플로우가 API 키를 거절했어요[^<]*\(코드 UNAUTHORIZED_ERROR\)/);
   const failed = markup("운영 설정 · 수업 후 별점 집계 · 읽지 못함");
   assert.match(failed, /평가 집계를 읽지 못했어요 \(코드 not_owner\)/);

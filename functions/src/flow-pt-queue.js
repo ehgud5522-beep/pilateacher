@@ -145,15 +145,21 @@ function createFlowPtQueueService(deps) {
   }
 
   async function upsert(organizationId, fields) {
-    const { flowQueueSignature, FLOW_PT_COLLECTION, FLOW_PT_STATE } = await shared();
+    const { flowQueueSignature, FLOW_PT_COLLECTION, FLOW_PT_STATE, isBaselineTask } = await shared();
     const ref = firestore.doc(`organizations/${organizationId}/${FLOW_PT_COLLECTION}/${fields.postId}`);
     const snapshot = await ref.get();
     if (!snapshot.exists) {
-      /* 업무 응답에는 등록 시각이 없다 -- 처음 본 때를 넣는다 (목록이 45일 안을 읽는다). */
-      await ref.set({ ...fields, registeredAt: fields.registeredAt || now(), state: FLOW_PT_STATE.WAITING, handledBy: "", handledAt: null, createdAt: serverTimestamp(), syncedAt: serverTimestamp() });
-      return "created";
+      /* 업무 응답에는 등록 시각이 없다 -- 처음 본 때를 넣는다 (목록이 45일 안을 읽는다). 기준선 전이면 숨긴다. */
+      const baseline = isBaselineTask(fields.postId, now());
+      await ref.set({ ...fields, registeredAt: fields.registeredAt || now(), state: baseline ? FLOW_PT_STATE.BASELINE : FLOW_PT_STATE.WAITING, handledBy: "", handledAt: null, createdAt: serverTimestamp(), syncedAt: serverTimestamp() });
+      return baseline ? "baseline" : "created";
     }
     const current = snapshot.data() || {};
+    /* 기준선 전에 발급 대기로 만들어 둔 것(아무도 손대지 않은 것)은 기준선으로 돌린다 -- 첫 실행이 750건을 띄웠다. */
+    if (current.state === FLOW_PT_STATE.WAITING && !current.handledBy && isBaselineTask(fields.postId, current.registeredAt?.toDate ? current.registeredAt.toDate() : current.registeredAt)) {
+      await ref.update({ state: FLOW_PT_STATE.BASELINE, excerpt: fields.excerpt, syncedAt: serverTimestamp() });
+      return "baseline";
+    }
     if (flowQueueSignature({ ...current }) === flowQueueSignature(fields)) return "same";
     await ref.update({
       title: fields.title, excerpt: fields.excerpt, mentionsRefund: fields.mentionsRefund, taskStatus: fields.taskStatus,
@@ -167,7 +173,7 @@ function createFlowPtQueueService(deps) {
   async function sync() {
     const { FLOW_PT_BOARDS, taskAsPost, isPtQueuePost, matchLocationId, flowQueueFields, flowExcerpt, taskColumnValues } = await shared();
     const directory = await branchDirectory();
-    const counts = { projects: 0, failedProjects: 0, posts: 0, pt: 0, created: 0, updated: 0, unmatchedBranch: 0, unfiltered: 0 };
+    const counts = { projects: 0, failedProjects: 0, posts: 0, pt: 0, created: 0, updated: 0, unmatchedBranch: 0, unfiltered: 0, baseline: 0 };
     /* 보드마다 실패 코드 -- [새로고침] 을 누른 사람에게 그대로 보여 준다 (원문 · 값은 로그에만). */
     const failures = [];
     for (const board of FLOW_PT_BOARDS) {
@@ -212,6 +218,7 @@ function createFlowPtQueueService(deps) {
           fields.excerpt = flowExcerpt(taskColumnValues(task).join(" · "), 240) || fields.excerpt;
           const written = await upsert(owners[0].organizationId, fields);
           if (written === "created") counts.created += 1;
+          if (written === "baseline") counts.baseline += 1;
           if (written === "updated") counts.updated += 1;
         } catch (error) {
           log("error", "flow_pt_queue_write_failed", {

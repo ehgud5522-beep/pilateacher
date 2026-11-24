@@ -28119,7 +28119,7 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
         <div className="mt-2" data-flow-pt-refresh={refreshResult.ok && !(refreshResult.counts?.failures || []).length ? "ok" : "failed"}>
           {refreshResult.ok ? (
             <p style={{ fontSize: TYPE.caption, color: SUB }}>
-              방금 플로우에서 읽었어요 · 보드 {refreshResult.counts.projects || 0}곳 · 글 {refreshResult.counts.posts || 0}건 · PT {refreshResult.counts.pt || 0}건 (새로 {refreshResult.counts.created || 0}건)
+              방금 플로우에서 읽었어요 · 보드 {refreshResult.counts.projects || 0}곳 · 성공 업무 {refreshResult.counts.posts || 0}건 · PT {refreshResult.counts.pt || 0}건 (새로 {refreshResult.counts.created || 0}건{refreshResult.counts.baseline ? ` · 오늘 전 ${refreshResult.counts.baseline}건 숨김` : ""})
               {refreshResult.counts.unmatchedBranch ? ` · 지점을 못 맞춘 PT ${refreshResult.counts.unmatchedBranch}건` : ""}
             </p>
           ) : null}

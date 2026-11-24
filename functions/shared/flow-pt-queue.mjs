@@ -37,7 +37,22 @@ export const FLOW_PT_COLLECTION = "flowPtQueue";
 /** 이보다 오래된 글은 가져오지 않는다 -- 처음 켤 때 한 달 반치만. */
 export const FLOW_PT_LOOKBACK_DAYS = 45;
 /** 처리 상태. waiting 만 목록 위에 선다. */
-export const FLOW_PT_STATE = Object.freeze({ WAITING: "waiting", ISSUED: "issued", NOT_APPLICABLE: "not_applicable" });
+export const FLOW_PT_STATE = Object.freeze({ WAITING: "waiting", ISSUED: "issued", NOT_APPLICABLE: "not_applicable", BASELINE: "baseline" });
+
+/* ── 기준선 (2026-11-24 대표: "오늘부터") ──
+   업무 조회에는 등록 날짜가 없어, 처음 읽었을 때 보드를 만든 8월부터의 성공 업무 750건이 전부 발급 대기로 올라왔다.
+   **오늘부터 새로 성공한 것만** 띄운다: 이 시각 전에 처음 본 업무는 기준선(baseline)으로 숨긴다 -- 단 오늘 올라온
+   글(글 번호가 FLOW_PT_TODAY_POST_ID 이상)은 남긴다. 그 뒤로 새로 성공이 되는 업무는 모두 발급 대기에 뜬다
+   (며칠 전 상담예정으로 올렸다가 오늘 성공으로 옮긴 업무도). 글 번호는 플로우 전체에서 시간 순으로 늘어난다
+   (11/23 19:59 → 88613148, 11/24 11:14 → 88635315). */
+export const FLOW_PT_BASELINE_UNTIL = new Date("2026-11-24T19:20:00+09:00");
+export const FLOW_PT_TODAY_POST_ID = 88620000;
+/** 이 업무를 기준선으로 숨길까 -- 기준선 시각 전에 처음 봤고, 오늘 글이 아니면. */
+export function isBaselineTask(postId, firstSeenAt) {
+  const seen = firstSeenAt instanceof Date ? firstSeenAt.getTime() : new Date(firstSeenAt).getTime();
+  const id = Number(String(postId ?? "").trim());
+  return Number.isFinite(seen) && seen < FLOW_PT_BASELINE_UNTIL.getTime() && !(Number.isFinite(id) && id >= FLOW_PT_TODAY_POST_ID);
+}
 
 const text = (value) => String(value ?? "").trim();
 
@@ -182,8 +197,11 @@ export function taskColumnValues(task) {
   const values = [];
   for (const column of columns) {
     const type = text(column?.columnType || column?.defaultColumnType).toUpperCase();
-    if (["TASK_NM", "PROGRESS", "RGSR_ID", "RGSN_DTTM", "EDTR_DTTM", "TASK_NUM", "STATUS", "PRIORITY"].includes(type) || columnIdOf(column) === "12") continue;
-    values.push(...columnTexts(column));
+    const id = Number(columnIdOf(column));
+    /* 기본 칸(0~12)과 담당자 · 날짜 · 체크 칸은 FC 에게 쓸모가 없고 작성자 이메일까지 섞인다 (2026-11-24 첫 결과) -- 보드에서 만든 칸만. */
+    if (["TASK_NM", "PROGRESS", "RGSR_ID", "RGSN_DTTM", "EDTR_DTTM", "TASK_NUM", "STATUS", "PRIORITY", "USER", "DATE", "CHECKBOX"].includes(type)) continue;
+    if (Number.isFinite(id) && id >= 0 && id <= 12) continue;
+    values.push(...columnTexts(column).filter((value) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)));
   }
   return [...new Set(values)];
 }

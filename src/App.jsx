@@ -28130,7 +28130,7 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
               <p>글이 0건이라 조회 방식을 바꿔 시험했어요 (보드 {refreshResult.counts.probe.flowProjectId}):</p>
               {(refreshResult.counts.probe.results || []).map((result) => (
                 <p key={result.key}>
-                  · {result.label}: {result.ok ? `${result.posts}건${result.templateTypes?.length ? ` · 종류 ${result.templateTypes.join(",")}` : ""}${result.taskStatuses?.filter(Boolean).length ? ` · 상태 ${result.taskStatuses.filter(Boolean).join(",")}` : ""}` : `실패 (코드 ${result.errorCode}${result.httpStatus ? ` / HTTP ${result.httpStatus}` : ""})`}
+                  · {result.label}: {result.ok ? `${result.posts}건${typeof result.boardsFound === "number" ? ` (지점 보드 ${result.boardsFound}곳)` : ""}${result.templateTypes?.length ? ` · 종류 ${result.templateTypes.join(",")}` : ""}${result.taskStatuses?.filter(Boolean).length ? ` · 상태 ${result.taskStatuses.filter(Boolean).join(",")}` : ""}` : `실패 (코드 ${result.errorCode}${result.httpStatus ? ` / HTTP ${result.httpStatus}` : ""})`}
                 </p>
               ))}
             </div>

@@ -3809,14 +3809,20 @@ test("lesson ratings: the owner sees per-instructor counts and averages only, fa
   assert.match(flow, /data-branch-tabs/);
   assert.doesNotMatch(flow, /가회원 잔금/, "다른 지점은 칩을 바꿔야 보인다");
   assert.match(flow, /나회원 신규/);
-  assert.match(flow, /플로우에서 확인/);
-  assert.match(flow, /회원권 발급 열기/);
-  assert.match(flow, /발급함/);
+  /* 쉬운 말 · 크게 (2026-11-24 대표): 발급하러 가기 · 이미 발급 완료 · 날짜와 등록 시간 · 횟수와 금액 */
+  assert.match(flow, /발급하러 가기/);
+  assert.match(flow, /이미 발급 완료/);
   assert.match(flow, /해당 없음/);
+  assert.match(flow, /플로우에서 보기/);
+  assert.match(flow, /data-flow-pt-when[^>]*>11\/24 \(화\) 13:05</, "날짜 · 요일 · 시각 크게");
+  assert.match(flow, /data-flow-pt-big[^>]*>40회 · 30\.25만원</, "횟수 · 금액 크게");
+  /* 잔금 분납은 따로 묶는다 -- 새로 발급할 일이 아니라 확인만 */
+  assert.match(flow, /data-flow-pt-balances/);
+  assert.match(flow, /잔금 결제 1건/);
+  assert.match(flow, /첫 결제\(계약금\) 때 회원권을 전체 횟수 · 전체 금액으로 한 번 발급/);
   assert.match(flow, /data-flow-pt-refund/, "환불이라는 말이 있으면 경고");
   assert.match(flow, /data-flow-pt-balance/, "잔금 글 표시");
   assert.match(flow, /data-flow-pt-trial/, "PT 체험 표시");
-  assert.match(flow, /앱이 자동으로 발급하지 않아요/);
   assert.match(flow, /처리한 것 1건/);
   assert.match(flow, /되돌리기/);
   /* [새로고침] = 지금 가져오기 (2026-11-24): 몇 건 읽었는지 · 보드마다 실패 이유와 원본 코드. */

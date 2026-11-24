@@ -99,6 +99,22 @@ function createFlowPtQueueService(deps) {
     return payload?.data || {};
   }
 
+  /** 글 하나의 실제 등록 시각 (GET /user/posts/{postId}). 못 읽으면 null -- 그때는 처음 본 때로 둔다. */
+  async function registeredAtOf(postId) {
+    const { flowDateTime } = await shared();
+    try {
+      const { key } = credentials();
+      const response = await fetchImpl(`${API_BASE}/user/posts/${encodeURIComponent(postId)}`, { headers: { "Content-Type": "application/json", "x-flow-api-key": key } });
+      const body = await response.json().catch(() => null);
+      const payload = body && typeof body.response === "object" && body.response && !("success" in body) ? body.response : body;
+      const data = payload?.data?.post || payload?.data || {};
+      return flowDateTime(data.registeredDateTime || data.rgsnDttm || data.registerDateTime);
+    } catch (error) {
+      log("warn", "flow_pt_queue_post_detail_failed", { feature: "flow_pt_queue", stage: "post_detail", errorDomain: "flow_api", errorCode: text(error?.code || "unknown") });
+      return null;
+    }
+  }
+
   /** 한 보드의 성공 업무. 상태 거르기를 플로우가 거절하면 거르지 않고 받아 칸 값으로 고른다. */
   async function successTasks(board) {
     const { taskStatusOf } = await shared();
@@ -151,6 +167,11 @@ function createFlowPtQueueService(deps) {
     if (!snapshot.exists) {
       /* 업무 응답에는 등록 시각이 없다 -- 처음 본 때를 넣는다 (목록이 45일 안을 읽는다). 기준선 전이면 숨긴다. */
       const baseline = isBaselineTask(fields.postId, now());
+      /* 띄울 것만 상세를 한 번 읽어 실제 등록 시각을 넣는다 (하루 몇 건 -- 기준선 750건은 부르지 않는다). */
+      if (!baseline && !fields.registeredAt) {
+        const exact = await registeredAtOf(fields.postId);
+        if (exact) { fields.registeredAt = exact; fields.registeredAtExact = true; }
+      }
       await ref.set({ ...fields, registeredAt: fields.registeredAt || now(), state: baseline ? FLOW_PT_STATE.BASELINE : FLOW_PT_STATE.WAITING, handledBy: "", handledAt: null, createdAt: serverTimestamp(), syncedAt: serverTimestamp() });
       return baseline ? "baseline" : "created";
     }
@@ -164,6 +185,7 @@ function createFlowPtQueueService(deps) {
     await ref.update({
       title: fields.title, excerpt: fields.excerpt, mentionsRefund: fields.mentionsRefund, taskStatus: fields.taskStatus,
       isBalance: fields.isBalance, isTrial: fields.isTrial,
+      product: fields.product ?? "", sessions: fields.sessions ?? null, amountManwon: fields.amountManwon ?? "",
       locationId: fields.locationId, branchName: fields.branchName, syncedAt: serverTimestamp(),
     });
     return "updated";
@@ -171,7 +193,7 @@ function createFlowPtQueueService(deps) {
 
   /** 한 번 돈다. 보드 하나가 실패해도 나머지는 계속한다. */
   async function sync() {
-    const { FLOW_PT_BOARDS, taskAsPost, isPtQueuePost, matchLocationId, flowQueueFields, flowExcerpt, taskColumnValues } = await shared();
+    const { FLOW_PT_BOARDS, taskAsPost, isPtQueuePost, matchLocationId, flowQueueFields, flowExcerpt, taskColumnValues, taskAmountOf } = await shared();
     const directory = await branchDirectory();
     const counts = { projects: 0, failedProjects: 0, posts: 0, pt: 0, created: 0, updated: 0, unmatchedBranch: 0, unfiltered: 0, baseline: 0 };
     /* 보드마다 실패 코드 -- [새로고침] 을 누른 사람에게 그대로 보여 준다 (원문 · 값은 로그에만). */
@@ -216,6 +238,7 @@ function createFlowPtQueueService(deps) {
           const fields = flowQueueFields(item, { ...owners[0], board });
           /* FC 가 볼 줄: 칸 값 전부(구분 · 등록상품 · 금액 · 결제 …) -- 전화번호는 가린다. */
           fields.excerpt = flowExcerpt(taskColumnValues(task).join(" · "), 240) || fields.excerpt;
+          fields.amountManwon = taskAmountOf(task);
           const written = await upsert(owners[0].organizationId, fields);
           if (written === "created") counts.created += 1;
           if (written === "baseline") counts.baseline += 1;

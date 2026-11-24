@@ -231,3 +231,30 @@ test("칸 값에서 기본 칸 · 이메일은 뺀다", async () => {
   ] });
   assert.deepEqual(values, ["1:1pt 24s"]);
 });
+
+/* 2026-11-24 대표: "날짜랑 등록 시간 크게, 금액이랑 횟수". 첫 결과는 업무 이름이 비어 "제목 없음" 이었다. */
+test("카드 칸: 업무 이름(업무명 칸) · 금액(숫자 칸) · 횟수 · 실제 등록 시각(상세 조회, 띄울 것만)", async () => {
+  const { taskNameOf, taskAmountOf, sessionsOf } = await shared();
+  const named = { content: "", columns: [{ columnId: "6", columnType: "TASK_NM", columnData: [{ customColumnData: "회원 잔금" }] }, { columnId: "117555", columnType: "NUMBER", columnData: [{ customColumnData: "30.25" }] }, { columnId: "5", columnType: "NUMBER", columnData: [{ customColumnData: "4213" }] }] };
+  assert.equal(taskNameOf(named), "회원 잔금");
+  assert.equal(taskAmountOf(named), "30.25", "업무 번호(기본 칸)는 금액이 아니다");
+  assert.equal(sessionsOf("1:1pt 40s 공동구매e"), 40);
+  assert.equal(sessionsOf("2:1 듀엣 30s"), 30);
+  assert.equal(sessionsOf("1:1 pt 일일체험비 5.5만원"), null);
+
+  const firestore = fakeFirestore({ "organizations/org": {}, "organizations/org/locations/l1": { name: "삼계점" } });
+  const urls = [];
+  const fetchImpl = async (url) => {
+    urls.push(url);
+    if (url.includes("/user/posts/90000001")) return { ok: true, status: 200, json: async () => ({ success: true, data: { postId: "90000001", registeredDateTime: "20261125130500" } }) };
+    return url.includes("/2955393/") ? ok([task("90000001", "1:1pt 40s 공동구매e")]) : ok([]);
+  };
+  await createFlowPtQueueService({ firestore, fetchImpl, apiKey: () => "key", now: () => new Date("2026-11-25T05:00:00Z") }).sync();
+  const saved = firestore.docs.get("organizations/org/flowPtQueue/90000001");
+  assert.equal(saved.sessions, 40);
+  assert.equal(saved.amountManwon, "55");
+  assert.equal(saved.product, "1:1pt 40s 공동구매e");
+  assert.equal(saved.registeredAt.toISOString(), "2026-11-25T04:05:00.000Z", "상세의 등록 시각");
+  assert.equal(saved.registeredAtExact, true);
+  assert.equal(urls.filter((url) => url.includes("/user/posts/9")).length, 1, "상세는 새로 띄우는 것만 한 번");
+});

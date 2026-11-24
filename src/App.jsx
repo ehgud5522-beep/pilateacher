@@ -28152,6 +28152,13 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
               <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{flowPtWhen(row.registeredAt)}</span>
             </div>
             <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{row.branchName || "지점 모름"}{row.registerName ? ` · 올린 사람 ${row.registerName}` : ""}</p>
+            {/* 잔금 · 체험 (2026-11-24): 잔금 글은 계약금 때 이미 발급했을 수 있고, 체험은 체험 회원권인지 FC 가 본다. */}
+            {row.isBalance || row.isTrial ? (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {row.isBalance ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: WARN, backgroundColor: WARN_S }} data-flow-pt-balance>잔금 — 계약금 때 이미 발급했는지 확인</span> : null}
+                {row.isTrial ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: BRAND_D, backgroundColor: TINT }} data-flow-pt-trial>PT 체험</span> : null}
+              </div>
+            ) : null}
             {row.excerpt ? <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{row.excerpt}</p> : null}
             {row.mentionsRefund ? (
               <p className="mt-1 font-bold" style={{ fontSize: TYPE.caption, color: WARN }} data-flow-pt-refund>"환불" 이라는 말이 있어요 — 플로우에서 상태가 환불인지 꼭 확인하세요.</p>
@@ -33074,7 +33081,7 @@ export function createAppScreenSmokeCases() {
           refreshResult: { ok: true, counts: { projects: 8, posts: 120, pt: 3, created: 2, failures: [{ flowProjectId: "2955389", errorCode: "UNAUTHORIZED_ERROR", httpStatus: 401 }] } },
           rows: [
           { id: "p1", locationId: "loc-a", branchName: "가지점", title: "가회원 잔금", excerpt: "1:1pt 10s", state: "waiting", registeredAt: new Date(2026, 10, 24, 11, 14) },
-          { id: "p2", locationId: "loc-b", branchName: "나지점", title: "나회원 신규", excerpt: "PT 20회 카드완납 010-****-****", registerName: "나지점", state: "waiting", mentionsRefund: true, flowUrl: "https://flow.team/main.act?projectId=1&postId=p2", registeredAt: new Date(2026, 10, 24, 10, 2) },
+          { id: "p2", locationId: "loc-b", branchName: "나지점", title: "나회원 신규", excerpt: "PT 20회 카드완납 010-****-****", registerName: "나지점", state: "waiting", mentionsRefund: true, isBalance: true, isTrial: true, flowUrl: "https://flow.team/main.act?projectId=1&postId=p2", registeredAt: new Date(2026, 10, 24, 10, 2) },
           { id: "p3", locationId: "loc-b", branchName: "나지점", title: "다회원 재등록", state: "issued", handledAt: new Date(2026, 10, 24, 12, 0) },
         ] }} />
     )) },

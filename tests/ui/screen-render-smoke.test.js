@@ -3814,6 +3814,8 @@ test("lesson ratings: the owner sees per-instructor counts and averages only, fa
   assert.match(flow, /발급함/);
   assert.match(flow, /해당 없음/);
   assert.match(flow, /data-flow-pt-refund/, "환불이라는 말이 있으면 경고");
+  assert.match(flow, /data-flow-pt-balance/, "잔금 글 표시");
+  assert.match(flow, /data-flow-pt-trial/, "PT 체험 표시");
   assert.match(flow, /앱이 자동으로 발급하지 않아요/);
   assert.match(flow, /처리한 것 1건/);
   assert.match(flow, /되돌리기/);

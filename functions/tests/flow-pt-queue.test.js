@@ -145,3 +145,47 @@ test("요청 전에 멈추면: 비밀값 모양은 코드로, 연결 실패는 �
   assert.match(failure.fields.detail, /TypeError: fetch failed \/ getaddrinfo ENOTFOUND/);
   assert.ok(!("message" in failure.fields), "로거가 덮는 message 칸에 원문을 두지 않는다");
 });
+
+/* 2026-11-24 대표: "피티 · pt · 디오사 · 듀엣 · 패키지도 PT", "PT 체험도 넣어 줘". 양산점 · 장유점 업무 모양 그대로. */
+test("PT 줄 판정: 실제 업무 모양 (양산점 · 장유점)", async () => {
+  const { ptLines } = await shared();
+  const pt = [
+    "[재등록] 회원님 1:1PT 깍두기EV 10s 55만 카드완납(신규페이)",
+    "[신규] 회원님 1:1 pt 50s 330만원 카드완납(신규페이)",
+    "[결제] 회원님 1:1 40s 공동구매e 잔금 209만원",
+    "[신규] 회원/회원님 2:1 듀엣 30s 수능e 240만원 카드완납",
+    "[신규] 회원님 디오사A 10s 44만 카드완납(2만페이)",
+    "[신규] 회원님 1:1pt 1s+디오사A 1s 11만 카드완납",
+    "[신규] 회원님 1:1 pt 24s 패키지e 145.68만원 카드완납",
+    "[신규] 회원님 1:1 pt 일일체험비 5.5만원 카드완납(신규페이)",
+  ];
+  const notPt = [
+    "[신규] 회원님 8:1 그룹 200s 140만원 카드완납",
+    "[재등록] 회원님 8:1 50+50 79만 카드완납",
+    "[신규] 회원님 8:1 그룹 일일체험비 1만원 계좌완납",
+    "[세션업] 회원님 1:1pt 2차 20s->100s 세션업 미사용건 환불",
+    "[결제변경건] 회원님 1:1 40s 공동구매e 잔금 국민카드 취소 후",
+    "매출취소 양산중부",
+    "매출 양산중부 강사이름",
+    "잔금 11/13 결제예정 12:30",
+  ];
+  for (const line of pt) assert.equal(ptLines(line).length, 1, line);
+  for (const line of notPt) assert.equal(ptLines(line).length, 0, line);
+  assert.deepEqual(ptLines("매출 장유\n \n[신규] 회원님 1:1 pt 24s 패키지e\n \n[신규] 회원님 8:1 그룹 24s 패키지"), ["[신규] 회원님 1:1 pt 24s 패키지e"], "PT 줄 · 그룹 줄이 한 글에");
+});
+
+test("성공은 보드의 단계 번호로 -- 환불 · 상담예정은 빠진다, 잔금 · 체험 표시", async () => {
+  const { isPtQueuePost, flowQueueFields, flowPtBoard } = await shared();
+  const yangsan = flowPtBoard("2955433");
+  const base = { postId: "9", projectId: "2955433", projectTitle: "", title: "회원 잔금", content: "매출 양산중부\n[신규잔금] 회원님 1:1pt 10s 잔금11만", registeredDateTime: "20261120140531" };
+  assert.equal(isPtQueuePost({ ...base, taskStatus: "1035146" }, yangsan), true, "성공");
+  assert.equal(isPtQueuePost({ ...base, taskStatus: "1035149" }, yangsan), false, "환불");
+  assert.equal(isPtQueuePost({ ...base, taskStatus: "1035144" }, yangsan), false, "상담예정");
+  const fields = flowQueueFields({ ...base, taskStatus: "1035146" }, { organizationId: "org", locationId: "l1", board: yangsan });
+  assert.equal(fields.branchName, "양산점", "보드 이름이 비어도 지점은 보드 표에서");
+  assert.equal(fields.isBalance, true);
+  assert.equal(fields.isTrial, false);
+  assert.equal(fields.excerpt, "[신규잔금] 회원님 1:1pt 10s 잔금11만", "FC 가 볼 것은 PT 줄");
+  const trial = flowQueueFields({ ...base, title: "회원", content: "[신규] 회원님 1:1 pt 일일체험비 5.5만", taskStatus: "1035146" }, { organizationId: "org", board: yangsan });
+  assert.equal(trial.isTrial, true);
+});

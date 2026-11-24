@@ -27368,17 +27368,41 @@ const shiftRatingMonth = (month, delta) => {
 };
 const ratingMonthLabel = (month) => (month === "all" ? "지금까지 누적" : `${Number(String(month).slice(0, 4))}년 ${Number(String(month).slice(5, 7))}월`);
 
-function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, initialState = null, initialMonth = null }) {
+/* 강사 한 명의 대표 별점 -- 접힌 카드 한 줄. 항목 평균을 응답 수로 가중. "몸 컨디션" 은 참고 지표라 다른 항목이 있으면 뺀다. */
+const ratingHeadline = (row) => {
+  const answered = (row?.items || []).filter((item) => item && item.average !== null && item.average !== undefined && Number(item.count) > 0);
+  const scored = answered.some((item) => item.id !== "body") ? answered.filter((item) => item.id !== "body") : answered;
+  const weight = scored.reduce((sum, item) => sum + Number(item.count), 0);
+  return weight ? scored.reduce((sum, item) => sum + Number(item.average) * Number(item.count), 0) / weight : null;
+};
+
+function LessonRatingStatsAdmin({ organization, instructorStore, locationStore, onLoad = fbLessonRatingStats, onLoadBranches = null, initialState = null, initialMonth = null }) {
   /* 2026-11-16 대표: "별점 항목을 따로 빼고, 점장이 자기 지점 강사들 몇 점 받는지 · 한 달 단위로 누적 체크".
      달마다(수업 시각 기준) 또는 지금까지 누적. 누가 무엇을 보는지는 서버가 정한다(lesson-rating.mjs
      ratingViewerScope) -- 대표 · 총괄은 전부, 점장은 자기 지점 강사만 · 본인 제외. */
   const thisMonth = currentRatingMonth();
   const [month, setMonth] = useState(initialMonth || thisMonth);
   const [state, setState] = useState(() => initialState || { rows: null, items: [], scope: "", error: "" });
+  /* 지점 칩 (2026-11-24 대표: "수업 별점도 지점별로"). 지점은 소속 명부로 -- 별점 서버 함수는 강사 id 만 준다.
+     명부를 못 읽으면(점장 권한 등) 칩 없이 한 줄로 -- 별점은 그대로 보인다. */
+  const [branches, setBranches] = useState(() => ({ instructors: initialState?.instructors || [], locations: initialState?.locations || [], errorCode: "" }));
+  const [branch, setBranch] = useState(initialState?.branch || "");
+  const [open, setOpen] = useState(initialState?.open || "");
   const organizationId = organization?.organizationId || "";
+  const loadBranches = useCallback(async () => {
+    if (onLoadBranches) return onLoadBranches({ organizationId });
+    const [members, locations] = await Promise.all([
+      toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
+      toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+    ]);
+    return { instructors: members.items, locations: locations.items, errorCode: members.errorCode || locations.errorCode || "" };
+  }, [organizationId, instructorStore, locationStore, onLoadBranches]);
   const load = useCallback(async () => {
     if (!organizationId) return;
     setState((current) => ({ ...current, error: "", rows: null }));
+    loadBranches()
+      .then((value) => setBranches({ instructors: value?.instructors || [], locations: value?.locations || [], errorCode: String(value?.errorCode || "") }))
+      .catch((thrown) => setBranches({ instructors: [], locations: [], errorCode: String(thrown?.code || "unknown") }));
     try {
       const result = await onLoad({ organizationId, month });
       setState({ rows: Array.isArray(result?.rows) ? result.rows : [], items: Array.isArray(result?.items) ? result.items : [], scope: String(result?.scope || ""), error: "" });
@@ -27391,8 +27415,11 @@ function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, in
         role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
       });
     }
-  }, [organizationId, onLoad, organization?.role, month]);
+  }, [organizationId, onLoad, organization?.role, month, loadBranches]);
   useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const ratingGroups = groupRowsByBranch(state.rows || [], { instructors: branches.instructors, locations: branches.locations, canonicalInstructorId: canonicalInstructorIdFrom(branches.instructors) });
+  const ratingBranch = pickBranch(ratingGroups, branch);
+  const ratingShown = ratingGroups.length > 1 ? (ratingGroups.find((group) => group.id === ratingBranch)?.rows || []) : (state.rows || []);
   const questionOf = (id) => state.items.find((item) => item.id === id)?.question || id;
   const branchOnly = state.scope === "branch" || (!state.scope && organization?.title === "branch_manager" && !isOwnerLevelRole(organization?.role));
   const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
@@ -27414,17 +27441,26 @@ function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, in
           ? " 맡은 지점 강사만 보이고, 본인 점수는 보이지 않습니다. 회원 이름 · 개별 응답은 볼 수 없습니다."
           : " 담당 강사 본인에게는 공개되지 않고, 회원 이름 · 개별 응답은 대표님도 볼 수 없습니다."}
       </p>
+      <BranchTabs groups={ratingGroups} selected={ratingBranch} onSelect={(id) => { setBranch(id); setOpen(""); }} countLabel={(group) => `${group.rows.length}명`} />
+      {branches.errorCode && !branchOnly ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>강사 지점을 읽지 못해 지점별로 나누지 못했어요 (코드 {branches.errorCode})</p> : null}
       {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
       {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
       {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>{month === "all" ? "아직 받은 평가가 없습니다." : "이 달에 받은 평가가 없습니다."}</p> : null}
       <div className="mt-3 space-y-2">
-        {(state.rows || []).map((row) => (
-          <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-rating-row>
-            <div className="flex items-center justify-between gap-2">
+        {ratingShown.map((row) => {
+          const expanded = open === row.instructorId;
+          const headline = ratingHeadline(row);
+          return (
+          <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-rating-row data-rating-open={expanded ? "true" : "false"}>
+            {/* 강사 카드는 한 번에 하나만 펼친다 (2026-11-21 대표: "지점별로 강사 하나씩"). */}
+            <button type="button" aria-expanded={expanded} onClick={() => setOpen((current) => (current === row.instructorId ? "" : row.instructorId))}
+              className="flex min-h-9 w-full items-center justify-between gap-2 text-left">
               <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>{row.instructorName || "이름 모름"}</span>
+              <span className="tabular-nums font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{headline === null ? "—" : `★ ${headline.toFixed(1)}`}</span>
               <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{month === "all" ? "누적" : "이 달"} {row.count}건</span>
-            </div>
-            {(row.items || []).map((item) => (
+              <ChevronDown size={16} color={SUB} style={{ transform: expanded ? "rotate(180deg)" : "none" }} />
+            </button>
+            {expanded ? (row.items || []).map((item) => (
               <div key={item.id} className="mt-1 flex items-center justify-between gap-2">
                 <span className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, color: SUB }}>{item.id === "body" ? "몸 컨디션 · 참고 지표" : questionOf(item.id)}</span>
                 <span className="tabular-nums font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
@@ -27432,9 +27468,10 @@ function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, in
                   <span className="font-normal" style={{ color: SUB }}>{` · ${item.count}건`}</span>
                 </span>
               </div>
-            ))}
+            )) : null}
           </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );
@@ -31245,7 +31282,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
           <ExpiryOrderReview organization={organization} passStore={passStore} clientStore={clientStore}
             onOpenClient={onOpenClient} onRetryOrganization={onRetryOrganization} />
         )}
-        {view === "lesson-ratings" && showRatings && <LessonRatingStatsAdmin organization={organization} />}
+        {view === "lesson-ratings" && showRatings && <LessonRatingStatsAdmin organization={organization} instructorStore={instructorStore} locationStore={locationStore} />}
         {(view === "clients" || view === "branch-overview") && showClients && (
           <ClientDirectory key={view} overview={view === "branch-overview"} organization={organization} currentUserId={account?.id || ""}
             clientStore={clientStore} locationStore={locationStore} onOpenClient={onOpenClient}
@@ -32647,6 +32684,18 @@ export function createAppScreenSmokeCases() {
           { instructorId: "u1", instructorName: "정예진", count: 12, items: [{ id: "body", average: 4.6, count: 12 }] },
           { instructorId: "u2", instructorName: "", count: 1, items: [{ id: "body", average: null, count: 0 }] },
         ] }} />
+    )) },
+    /* 지점 칩 · 강사 카드 하나만 펼침 (2026-11-24 대표: "수업 별점도 지점별로"). */
+    { name: "운영 설정 · 수업 후 별점 집계 · 지점별", element: providerWith(smokeOwner, (
+      <LessonRatingStatsAdmin organization={readyOrganizationContext(smokeOwner)} onLoad={() => Promise.resolve(null)} initialMonth="2026-11"
+        initialState={{ error: "", items: [{ id: "care", question: "항목 2 (스모크 예시)" }], branch: "loc-b", open: "u5",
+          instructors: [{ userId: "u4", locationId: "loc-a" }, { userId: "u5", locationIds: ["loc-b"] }, { userId: "u6", locationId: "loc-b" }],
+          locations: [{ id: "loc-a", name: "가지점" }, { id: "loc-b", name: "나지점" }],
+          rows: [
+            { instructorId: "u4", instructorName: "가강사", count: 3, items: [{ id: "care", average: 4.2, count: 3 }] },
+            { instructorId: "u5", instructorName: "나강사", count: 5, items: [{ id: "care", average: 4.9, count: 5 }, { id: "body", average: 3.0, count: 5 }] },
+            { instructorId: "u6", instructorName: "다강사", count: 2, items: [{ id: "care", average: 4.0, count: 2 }] },
+          ] }} />
     )) },
     /* 점장(직함) 화면 -- 이 달, 자기 지점 강사만 (2026-11-16). 서버가 거른 결과라 줄은 그대로 그린다. */
     { name: "수업 별점 · 점장 · 이 달", element: providerWith({ ...smokeOwner, role: "instructor", title: "branch_manager" }, (

@@ -87,6 +87,7 @@ test("가져오기: PT 완료만 만들고, 다시 돌아도 FC 처리를 되돌
   const counts = await service.sync();
   assert.equal(counts.created, 1);
   assert.equal(counts.failedProjects, 1);
+  assert.deepEqual(counts.failures, [{ flowProjectId: "2955389", errorCode: "UNAUTHORIZED_ERROR", causeCode: "", httpStatus: 401 }], "[새로고침] 이 보여 줄 실패 코드");
   assert.equal(calls[0].key, "key-test");
   assert.match(calls[0].url, /^https:\/\/api\.flow\.team\/v1\/posts\/projects\/2955393\?userId=owner%40example\.test&cursor=0&pageSize=100$/);
   const saved = firestore.docs.get("organizations/org/flowPtQueue/p1");

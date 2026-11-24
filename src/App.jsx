@@ -55,7 +55,7 @@ import {
   fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone, fbDeleteArchivedClient,
-  fbBeforeAfterShareStats, fbConfirmSalesMonth, fbConfirmFcLessonMonth, fbClosePayMonth, fbRunPayCheck,
+  fbBeforeAfterShareStats, fbRefreshFlowPtQueue, fbConfirmSalesMonth, fbConfirmFcLessonMonth, fbClosePayMonth, fbRunPayCheck,
   fbVerifyMemberViews, fbMemberAppStatus,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
@@ -27972,8 +27972,25 @@ const flowPtTime = (value) => {
   return at && !Number.isNaN(at.getTime()) ? at.getTime() : 0;
 };
 const FLOW_PT_STATE_LABEL = { issued: "발급함", not_applicable: "해당 없음" };
+/* [새로고침] 결과의 실패 코드 → 무엇을 하면 되는지. 코드는 늘 함께 보인다 (CLAUDE.md 4). */
+const FLOW_PT_FAILURE_HINT = {
+  api_key_missing: "플로우 API 키가 비어 있어요 — 키를 다시 등록해야 해요",
+  api_key_invalid_chars: "플로우 API 키에 넣을 수 없는 글자(빈칸 · 줄바꿈 · 한글)가 섞여 있어요 — 키를 다시 등록해야 해요",
+  user_id_missing: "플로우 계정 아이디가 비어 있어요 — 다시 등록해야 해요",
+  user_id_invalid_chars: "플로우 계정 아이디가 이메일 모양이 아니에요 — 다시 등록해야 해요",
+  secret_unreadable: "서버가 플로우 키를 읽지 못했어요",
+  UNAUTHORIZED_ERROR: "플로우가 API 키를 거절했어요 — 키가 맞는지 · 이용 기관 관리자 키인지 확인해야 해요",
+  network: "플로우 서버에 닿지 못했어요",
+  switch_off: "운영 스위치 '플로우 PT 발급 대기' 가 꺼져 있어요",
+  not_allowed: "대표 · 총괄 · FC 만 지금 가져올 수 있어요",
+};
+const flowPtFailureText = (failure) => {
+  const hint = FLOW_PT_FAILURE_HINT[failure.errorCode] || (failure.httpStatus ? `플로우가 HTTP ${failure.httpStatus} 로 답했어요` : "가져오지 못했어요");
+  const codes = [failure.errorCode, failure.causeCode].filter(Boolean).join(" / ");
+  return `${hint} (코드 ${codes || "unknown"})`;
+};
 
-function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = listFlowPtQueue, onMark = markFlowPtQueue, initialState = null }) {
+function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = listFlowPtQueue, onMark = markFlowPtQueue, onRefresh = fbRefreshFlowPtQueue, initialState = null }) {
   const organizationId = organization?.organizationId || "";
   const ownerLevel = isOwnerLevelRole(organization?.role);
   const scope = ownerLevel ? [] : [...new Set([...(organization?.locationIds || []), organization?.locationId || ""].filter(Boolean))];
@@ -27983,6 +28000,9 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [showDone, setShowDone] = useState(Boolean(initialState?.showDone));
+  /* [새로고침] = 서버가 지금 플로우를 읽고, 그다음 목록을 다시 읽는다 (2026-11-24 대표: "새로고침으로 해줘"). */
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshResult, setRefreshResult] = useState(initialState?.refreshResult || null);
   const load = useCallback(async () => {
     if (!organizationId) return;
     setState((current) => ({ ...current, rows: null, error: "" }));
@@ -27999,6 +28019,25 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
     }
   }, [organizationId, onLoad, scopeKey, organization?.role]);
   useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const refreshFromFlow = async () => {
+    if (!organizationId || refreshing) return;
+    setRefreshing(true);
+    setRefreshResult(null);
+    try {
+      const counts = await onRefresh({ organizationId });
+      setRefreshResult({ ok: true, counts: counts || {} });
+    } catch (thrown) {
+      const code = serverCodeOf(thrown) || String(thrown?.code || "unknown").replace(/^functions\//, "");
+      setRefreshResult({ ok: false, failures: [{ errorCode: code }] });
+      deviceLog("flow_pt_queue_refresh_failed", {
+        feature: "flow_pt_queue", stage: "refresh", errorDomain: "functions_callable", errorCode: code, message: String(thrown?.message || "").slice(0, 200),
+        role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+      });
+    } finally {
+      setRefreshing(false);
+      load();
+    }
+  };
   const mark = async (row, next) => {
     setBusy(row.id);
     setNotice("");
@@ -28034,10 +28073,28 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-flow-pt-queue>
       <div className="flex items-center justify-between">
         <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>PT 발급 대기 (플로우)</h2>
-        <button type="button" onClick={load} className="h-9 px-2 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
+        <button type="button" onClick={refreshFromFlow} disabled={refreshing} className="h-9 px-2 font-bold disabled:opacity-40" style={{ fontSize: TYPE.caption, color: BRAND_D }}>
+          {refreshing ? "플로우 읽는 중…" : "새로고침"}
+        </button>
       </div>
+      {refreshResult ? (
+        <div className="mt-2" data-flow-pt-refresh={refreshResult.ok && !(refreshResult.counts?.failures || []).length ? "ok" : "failed"}>
+          {refreshResult.ok ? (
+            <p style={{ fontSize: TYPE.caption, color: SUB }}>
+              방금 플로우에서 읽었어요 · 보드 {refreshResult.counts.projects || 0}곳 · 글 {refreshResult.counts.posts || 0}건 · PT {refreshResult.counts.pt || 0}건 (새로 {refreshResult.counts.created || 0}건)
+              {refreshResult.counts.unmatchedBranch ? ` · 지점을 못 맞춘 PT ${refreshResult.counts.unmatchedBranch}건` : ""}
+            </p>
+          ) : null}
+          {(refreshResult.ok ? refreshResult.counts?.failures || [] : refreshResult.failures || []).slice(0, 3).map((failure, index) => (
+            <p key={`${failure.flowProjectId || "all"}-${index}`} className="mt-0.5" style={{ fontSize: TYPE.caption, color: WARN }}>{flowPtFailureText(failure)}</p>
+          ))}
+          {refreshResult.ok && (refreshResult.counts?.failures || []).length > 3 ? (
+            <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: WARN }}>외 {(refreshResult.counts.failures.length - 3)}곳도 같은 이유로 읽지 못했어요</p>
+          ) : null}
+        </div>
+      ) : null}
       <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        지점 업무보드에서 <b style={{ color: INK }}>완료</b>로 옮긴 업무 중 PT 가 적힌 것입니다 (최근 45일, 10분마다 가져옴).
+        지점 업무보드에서 <b style={{ color: INK }}>완료</b>로 옮긴 업무 중 PT 가 적힌 것입니다 (최근 45일, 10분마다 가져오고 [새로고침]을 누르면 바로 가져와요).
         {" "}플로우 원문에서 <b style={{ color: INK }}>성공인지 · 상품이 맞는지</b> 확인하고 발급한 뒤 [발급함]을 눌러 주세요. 앱이 자동으로 발급하지 않아요.
       </p>
       <BranchTabs groups={groups} selected={picked} onSelect={(id) => setBranch(id)}
@@ -32848,7 +32905,9 @@ export function createAppScreenSmokeCases() {
     /* 플로우 PT 발급 대기 (2026-11-24). 지점 칩 · 대기 카드(플로우에서 확인 · 발급함 · 해당 없음) · 처리한 것. */
     { name: "플로우 PT 발급 대기", element: providerWith(smokeOwner, (
       <FlowPtQueueScreen organization={readyOrganizationContext(smokeOwner)} currentUserId="u-owner" onOpenIssue={() => {}}
-        initialState={{ error: "", branch: "loc-b", showDone: true, rows: [
+        initialState={{ error: "", branch: "loc-b", showDone: true,
+          refreshResult: { ok: true, counts: { projects: 8, posts: 120, pt: 3, created: 2, failures: [{ flowProjectId: "2955389", errorCode: "UNAUTHORIZED_ERROR", httpStatus: 401 }] } },
+          rows: [
           { id: "p1", locationId: "loc-a", branchName: "가지점", title: "가회원 잔금", excerpt: "1:1pt 10s", state: "waiting", registeredAt: new Date(2026, 10, 24, 11, 14) },
           { id: "p2", locationId: "loc-b", branchName: "나지점", title: "나회원 신규", excerpt: "PT 20회 카드완납 010-****-****", registerName: "나지점", state: "waiting", mentionsRefund: true, flowUrl: "https://flow.team/main.act?projectId=1&postId=p2", registeredAt: new Date(2026, 10, 24, 10, 2) },
           { id: "p3", locationId: "loc-b", branchName: "나지점", title: "다회원 재등록", state: "issued", handledAt: new Date(2026, 10, 24, 12, 0) },

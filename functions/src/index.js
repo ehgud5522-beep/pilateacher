@@ -1794,6 +1794,47 @@ const flowPtQueueOn = async () => {
   return String(snapshot.exists ? snapshot.data()?.flowPtQueue?.mode || "" : "") === "all";
 };
 
+const flowPtQueueService = () => createFlowPtQueueService({
+  firestore,
+  apiKey: () => FLOW_API_KEY.value(),
+  userId: () => FLOW_USER_ID.value(),
+  serverTimestamp: () => FieldValue.serverTimestamp(),
+  log: (level, event, fields) => logger[level](event, fields),
+});
+
+/* [새로고침] = 지금 가져오기 (2026-11-24 대표: "새로고침으로 해줘"). 예약 실행을 기다리지 않고 그 자리에서 읽고,
+   몇 건 읽었는지 · 보드마다 실패 코드를 돌려준다. 대표 · 총괄 · FC. 스위치가 꺼져 있으면 부르지 않는다. */
+exports.refreshFlowPtQueue = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 300,
+  memory: "256MiB",
+  invoker: "public",
+  secrets: [FLOW_API_KEY, FLOW_USER_ID],
+}, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const uid = request?.auth?.uid;
+  if (!uid) throw new HttpsError("unauthenticated", "unauthenticated", { reason: "unauthenticated" });
+  if (!organizationId || organizationId.includes("/")) throw new HttpsError("invalid-argument", "missing_fields", { reason: "missing_fields" });
+  const membership = await firestore.collection("memberships").doc(membershipId(organizationId, uid)).get();
+  const data = membership.exists ? membership.data() || {} : {};
+  if (String(data.status || "") !== "active" || !["owner", "area_manager", "manager"].includes(String(data.role || ""))) {
+    logger.warn("flow_pt_queue_refresh_refused", { feature: "flow_pt_queue", stage: "refresh", organizationId, errorDomain: "flow_pt_queue", errorCode: "not_allowed", role: String(data.role || "none") });
+    throw new HttpsError("permission-denied", "not_allowed", { reason: "not_allowed" });
+  }
+  if (!(await flowPtQueueOn())) throw new HttpsError("failed-precondition", "switch_off", { reason: "switch_off" });
+  try {
+    const counts = await flowPtQueueService().sync();
+    logger.info("flow_pt_queue_synced", { feature: "flow_pt_queue", stage: "refresh", organizationId, counts });
+    return counts;
+  } catch (error) {
+    logger.error("flow_pt_queue_refresh_failed", {
+      feature: "flow_pt_queue", stage: "refresh", organizationId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), detail: String(error?.message || "").slice(0, 300),
+    });
+    throw new HttpsError("unavailable", "flow_pt_queue_refresh_failed", { reason: "flow_pt_queue_refresh_failed" });
+  }
+});
+
 exports.syncFlowPtQueue = onSchedule({
   region: process.env.FUNCTIONS_REGION || "asia-northeast3",
   schedule: "every 10 minutes",
@@ -1802,15 +1843,11 @@ exports.syncFlowPtQueue = onSchedule({
   timeoutSeconds: 300,
   secrets: [FLOW_API_KEY, FLOW_USER_ID],
 }, async () => {
-  if (!(await flowPtQueueOn())) return;
-  const service = createFlowPtQueueService({
-    firestore,
-    apiKey: () => FLOW_API_KEY.value(),
-    userId: () => FLOW_USER_ID.value(),
-    serverTimestamp: () => FieldValue.serverTimestamp(),
-    log: (level, event, fields) => logger[level](event, fields),
-  });
-  const counts = await service.sync();
+  /* 돌았다는 흔적을 늘 남긴다 -- 스위치가 꺼져 조용히 끝난 것과 아예 돌지 않은 것이 로그에서 구별돼야 한다. */
+  const on = await flowPtQueueOn();
+  logger.info("flow_pt_queue_tick", { feature: "flow_pt_queue", stage: "schedule", switchOn: on });
+  if (!on) return;
+  const counts = await flowPtQueueService().sync();
   logger.info("flow_pt_queue_synced", { feature: "flow_pt_queue", stage: "schedule", counts });
 });
 

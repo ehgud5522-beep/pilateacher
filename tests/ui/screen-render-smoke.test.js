@@ -328,6 +328,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "강사 알림함 시트 · 열지 못함",
     "운영 설정 · 회원 앱 수업 취소",
     "운영 설정 · 수업 후 별점 집계",
+    "운영 설정 · 수업 후 별점 집계 · 지점별",
     "수업 별점 · 점장 · 이 달",
     "더보기 탭 · 점장",
     "운영 설정 · 수업 후 별점 집계 · 읽지 못함",
@@ -3755,6 +3756,18 @@ test("lesson ratings: the owner sees per-instructor counts and averages only, fa
   assert.match(stats, /★ 4\.6/);
   assert.match(stats, /이름 모름/, "이름을 모르는 강사");
   assert.match(stats, /—/, "응답 없는 항목은 평균 대신 줄표");
+  /* 지점별 (2026-11-24): 지점 칩 → 고른 지점 강사만, 카드는 하나만 펼친다. 접힌 카드에도 대표 별점 한 줄. */
+  const byBranch = markup("운영 설정 · 수업 후 별점 집계 · 지점별");
+  assert.match(byBranch, /data-branch-tabs/);
+  assert.match(byBranch, /가지점/);
+  assert.match(byBranch, /나지점/);
+  assert.doesNotMatch(byBranch, /가강사/, "다른 지점 강사는 칩을 바꿔야 보인다");
+  assert.match(byBranch, /나강사/);
+  assert.match(byBranch, /다강사/);
+  assert.match(byBranch, /★ 4.9/, "몸 컨디션은 대표 별점에서 뺀다");
+  assert.match(byBranch, /★ 4.0/);
+  assert.equal((byBranch.match(/data-rating-open="true"/g) || []).length, 1, "펼친 카드는 하나");
+  assert.match(byBranch, /몸 컨디션 · 참고 지표/, "펼친 카드에는 항목별");
   const failed = markup("운영 설정 · 수업 후 별점 집계 · 읽지 못함");
   assert.match(failed, /평가 집계를 읽지 못했어요 \(코드 not_owner\)/);
 });

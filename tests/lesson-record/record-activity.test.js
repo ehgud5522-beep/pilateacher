@@ -88,6 +88,9 @@ test("대표 표: 차감 - 되돌린 차감, 회원에게 보낸 말은 수업 �
   assert.equal(byId.a.withNote, 1);
   assert.equal(byId.a.attended, 10);
   assert.equal(byId.a.rate, 0.9);
+  assert.equal(byId.b.recorded, 5, "확인 안 한 AI 기록도 기록이다 (AI 확인은 선택, #273)");
+  assert.equal(byId.b.draft, 1);
+  assert.equal(byId.b.rate, 0.5);
   assert.equal(byId.a.name, "김보현");
   assert.equal(byId.b.withNote, 0, "빈 말은 보낸 것이 아니다");
   assert.equal(byId.c.confirmed, 0);

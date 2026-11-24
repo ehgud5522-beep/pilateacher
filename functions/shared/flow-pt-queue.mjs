@@ -137,9 +137,10 @@ export function flowQueueFields(post, { organizationId, locationId = "", board =
     excerpt: flowExcerpt(lines.length ? lines.join(" / ") : body, 240),
     mentionsRefund: /환불/.test(`${title} ${body}`),
     /* 잔금 글은 계약금 때 이미 발급했을 수 있다 -- FC 가 확인하게 표시한다. */
-    isBalance: /잔금/.test(`${title} ${lines.join(" ")}`),
+    /* 업무 칸으로 오면 구분 칸이 "잔금" · "체험" 한 줄로 온다. */
+    isBalance: /잔금/.test(`${title} ${lines.join(" ")}`) || body.split(/\r?\n/).some((line) => line.trim() === "잔금"),
     /* PT 체험 (2026-11-24 대표: 넣는다). 체험 회원권인지 FC 가 보게 표시한다. */
-    isTrial: lines.some((line) => /체험/.test(line)),
+    isTrial: lines.some((line) => /체험/.test(line)) || body.split(/\r?\n/).some((line) => line.trim() === "체험"),
     registerName: text(post?.registerName).slice(0, 60),
     registeredAt: flowDateTime(post?.registeredDateTime),
     taskStatus: text(post?.taskStatus).toUpperCase().slice(0, 20),
@@ -152,3 +153,63 @@ export const flowQueueSignature = (fields) => [
   fields.title, fields.excerpt, fields.mentionsRefund, fields.taskStatus, fields.locationId, fields.branchName,
   Boolean(fields.isBalance), Boolean(fields.isTrial),
 ].join("|");
+
+/* ── 업무 필터 조회 응답 (개인용 GET /user/posts/projects/{id}/tasks/filter, 2026-11-24) ──
+   업무 한 건: { taskId, postId, projectId, content(업무 이름), columns: [...] }. 문서 예시의 columns 는 비어 있어
+   칸 모양을 확정하지 못했다 -- 플로우 앱의 업무 칸 모양(columnId · columnType · columnData[{ optionName, customColumnData }])과
+   다른 이름(COLUMN_SRNO · value …)을 함께 받는다. */
+const columnIdOf = (column) => text(column?.columnId ?? column?.columnSrno ?? column?.COLUMN_SRNO ?? column?.id);
+const columnTexts = (column) => {
+  const out = [];
+  const push = (value) => {
+    if (value === null || value === undefined) return;
+    if (typeof value === "object") return;
+    const item = text(value);
+    if (item) out.push(item);
+  };
+  const data = Array.isArray(column?.columnData) ? column.columnData : Array.isArray(column?.values) ? column.values : [];
+  for (const entry of data) {
+    if (entry && typeof entry === "object") push(entry.optionName || entry.customColumnData || entry.value || entry.text || entry.userName);
+    else push(entry);
+  }
+  if (!data.length) push(column?.optionName ?? column?.value ?? column?.text ?? column?.data ?? column?.columnValue);
+  return out;
+};
+
+/** 칸 값들 (빈 값 · 업무 이름 칸 · 번호 칸은 뺀다). FC 가 볼 줄과 PT 판정에 쓴다. */
+export function taskColumnValues(task) {
+  const columns = Array.isArray(task?.columns) ? task.columns : [];
+  const values = [];
+  for (const column of columns) {
+    const type = text(column?.columnType || column?.defaultColumnType).toUpperCase();
+    if (["TASK_NM", "PROGRESS", "RGSR_ID", "RGSN_DTTM", "EDTR_DTTM", "TASK_NUM", "STATUS", "PRIORITY"].includes(type) || columnIdOf(column) === "12") continue;
+    values.push(...columnTexts(column));
+  }
+  return [...new Set(values)];
+}
+
+/** 상태 칸의 값 (단계 번호 또는 이름). 없으면 빈 값. */
+export function taskStatusOf(task) {
+  const columns = Array.isArray(task?.columns) ? task.columns : [];
+  const status = columns.find((column) => columnIdOf(column) === "12" || text(column?.columnType || column?.defaultColumnType).toUpperCase() === "STATUS");
+  if (!status) return "";
+  const data = Array.isArray(status.columnData) ? status.columnData[0] : null;
+  return text(data?.customColumnData || data?.optionSrno || data?.optionName || status.value || status.optionSrno || status.optionName);
+}
+
+/**
+ * 업무를 게시글 모양으로 -- 판정(isPtQueuePost) · 칸(flowQueueFields)을 그대로 쓰려고.
+ * 상태: 성공만 걸러 받았으면 그 보드의 성공 번호, 아니면 칸 값의 상태.
+ */
+export function taskAsPost(task, board, { filtered = true } = {}) {
+  const status = filtered ? text(board?.successStatusId) : taskStatusOf(task);
+  return {
+    postId: text(task?.postId || task?.taskId),
+    projectId: text(task?.projectId) || text(board?.projectId),
+    projectTitle: text(task?.projectTitle),
+    title: text(task?.content),
+    content: taskColumnValues(task).join("\n"),
+    taskStatus: status === "성공" ? text(board?.successStatusId) : status,
+    registeredDateTime: text(task?.registeredDateTime),
+  };
+}

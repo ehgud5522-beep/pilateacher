@@ -1,3 +1,15 @@
+## 2026-11-24 — 플로우 PT 발급 대기 (#281, 병합 · 배포 완료, 스위치는 아직 꺼짐)
+
+- 대표: "플로우에 등록상품이 PT 라고 적힌 것만 발급 대기 화면으로 -- FC 가 플로우에 내용을 확인한 후에 발급"
+- 서버 `syncFlowPtQueue`(10분마다, 스위치 `scheduleSync.flowPtQueue` off · all) → 9개 지점 업무보드 `GET https://api.flow.team/v1/posts/projects/{id}`
+  → 업무 상태 COMPLETE + 제목 · 본문에 PT → `organizations/{센터}/flowPtQueue/{postId}`. 지점은 보드 이름 ↔ 앱 지점 이름
+- **플로우 API 한계**: 칸 값(구분 · 등록상품 · 금액 · 결제)과 보드 고유 상태(성공 · 환불)가 응답에 없다 → 판정은 FC 가 원문에서, 앱은 발급 안 함
+- 화면: 더보기 → PT 발급 대기 (대표 · 총괄 · FC). 규칙: 읽기 + 처리 칸(state · handledBy · handledAt)만
+- 비밀값 FLOW_API_KEY · FLOW_USER_ID 대표가 등록(각 versions/1). 키 값은 아무도 보지 않음
+- 배포(대표 지시): 색인 · 규칙 · Functions(syncFlowPtQueue 신규, updateRuntimeConfig) · 웹 -- main 5e458f9, deploy-main
+- **남은 것**: 운영 스위치 켜기 → 첫 실행 로그(`flow_pt_queue_synced` / `flow_pt_queue_fetch_failed` 의 errorCode)로 실제 API 응답 확인,
+  [플로우에서 확인] 링크(main.act?projectId&postId)가 원문을 여는지 확인 -- 둘 다 아직 확인 못 함
+
 ## 2026-11-24 — 브리핑 날 수를 "약 3주" · "약 4달 반" 으로 (#279, 병합 · 웹 배포 완료)
 
 - 대표: 브리핑 아래 "지난 수업 뒤 19일" · "만료 135일 전" 이 직관적이지 않음 -- "몇 달 · 일주일 · 이주일 이렇게"

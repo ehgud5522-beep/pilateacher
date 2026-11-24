@@ -203,7 +203,11 @@ test("글 0건이면 첫 보드 하나만 조회 방식을 바꿔 시험한다",
   const service = createFlowPtQueueService({ firestore, fetchImpl, apiKey: () => "key", userId: () => "owner@example.test", now: () => new Date("2026-11-24T03:00:00Z") });
   const counts = await service.sync();
   assert.equal(counts.probe.flowProjectId, "2955393", "첫 0건 보드");
-  assert.deepEqual(counts.probe.results.map((result) => [result.key, result.posts]), [["user", 0], ["user_task", 0], ["user_92", 0], ["user_all", 1]]);
+  assert.deepEqual(counts.probe.results.slice(0, 4).map((result) => [result.key, result.posts]), [["user", 0], ["user_task", 0], ["user_92", 0], ["user_all", 1]]);
+  /* 보드가 보이는지 · 아는 글 하나가 읽히는지 (2026-11-24) */
+  assert.deepEqual(counts.probe.results.slice(4).map((result) => result.key), ["projects", "known_post"]);
+  assert.ok(urls.some((url) => url.includes("/v1/projects?userId=")));
+  assert.ok(urls.some((url) => url.includes("postId=88574050")));
   assert.deepEqual(counts.probe.results[3].templateTypes, ["92"]);
   assert.ok(!JSON.stringify(counts.probe).includes("비밀") && !JSON.stringify(counts.probe).includes("회원 이름"), "제목 · 본문은 남기지 않는다");
   assert.equal(urls.filter((url) => url.includes("1%2C2%2C4%2C92")).length, 1, "시험은 한 보드만");

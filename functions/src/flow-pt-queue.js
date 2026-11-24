@@ -125,8 +125,53 @@ function createFlowPtQueueService(deps) {
         results.push({ key: variant.key, label: variant.label, ok: false, errorCode: text(error?.code || "unknown"), httpStatus: Number(error?.status) || 0 });
       }
     }
+    /* 2026-11-24: 종류를 다 달라고 해도 0건 -- 보드가 이 계정 · 키로 보이기는 하는지, 아는 글 하나는 읽히는지 본다. */
+    results.push(await probeProjects());
+    results.push(await probeKnownPost());
     log("info", "flow_pt_queue_probe", { feature: "flow_pt_queue", stage: "probe", flowProjectId: projectId, results });
     return { flowProjectId: projectId, results };
+  }
+
+  /** 아무 주소나 GET. 시험에서만 쓴다. */
+  async function getJson(path, params) {
+    const { key, account } = credentials();
+    const query = [`userId=${encodeURIComponent(account)}`, ...params].join("&");
+    const response = await fetchImpl(`${API_BASE}${path}?${query}`, { headers: { "Content-Type": "application/json", "x-flow-api-key": key } });
+    let body = null;
+    try { body = await response.json(); } catch { body = null; }
+    if (!response.ok || body?.success === false) throw new FlowApiError(text(body?.error?.code) || `http_${response.status}`, text(body?.error?.message).slice(0, 200), response.status);
+    return body?.data ?? {};
+  }
+
+  /** 프로젝트 목록에 지점 보드가 보이는가 -- 개수와 맞는 보드 수만. */
+  async function probeProjects() {
+    const label = "프로젝트 목록에 지점 보드";
+    try {
+      const { FLOW_PT_PROJECT_IDS } = await shared();
+      const data = await getJson("/v1/projects", ["pageSize=100"]);
+      const list = Array.isArray(data) ? data : (Object.values(data || {}).find(Array.isArray) || []);
+      const ids = list.map((item) => text(item?.projectId || item?.colaboSrno || item?.id));
+      return {
+        key: "projects", label, ok: true, posts: list.length,
+        dataKeys: Array.isArray(data) ? ["(배열)"] : Object.keys(data || {}).slice(0, 12),
+        boardsFound: FLOW_PT_PROJECT_IDS.filter((id) => ids.includes(id)).length,
+        itemKeys: Object.keys(list[0] || {}).slice(0, 12),
+      };
+    } catch (error) {
+      return { key: "projects", label, ok: false, errorCode: text(error?.code || "unknown"), httpStatus: Number(error?.status) || 0 };
+    }
+  }
+
+  /** 앱에서 보이는 양산점 업무 하나(postId 88574050)를 글 번호로 콕 집어 읽는다. */
+  async function probeKnownPost() {
+    const label = "양산점 업무 하나를 글 번호로";
+    try {
+      const data = await getJson("/v1/posts/projects/2955433", ["postId=88574050", "pageSize=1"]);
+      const posts = Array.isArray(data?.posts) ? data.posts : [];
+      return { key: "known_post", label, ok: true, posts: posts.length, dataKeys: Object.keys(data || {}).slice(0, 12), templateTypes: [...new Set(posts.map((post) => text(post?.templateType)))] };
+    } catch (error) {
+      return { key: "known_post", label, ok: false, errorCode: text(error?.code || "unknown"), httpStatus: Number(error?.status) || 0 };
+    }
   }
 
   const typeFallback = new Set();

@@ -55,7 +55,7 @@ import {
   fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone, fbDeleteArchivedClient,
-  fbBeforeAfterShareStats, fbRefreshFlowPtQueue, fbConfirmSalesMonth, fbConfirmFcLessonMonth, fbClosePayMonth, fbRunPayCheck,
+  fbBeforeAfterShareStats, fbRenewalRadarBranch, fbRefreshFlowPtQueue, fbConfirmSalesMonth, fbConfirmFcLessonMonth, fbClosePayMonth, fbRunPayCheck,
   fbVerifyMemberViews, fbMemberAppStatus,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
@@ -427,7 +427,8 @@ import {
 import { beforeAfterBoard, shareInstructorView, shareMemberLabel } from "./features/records/before-after-board.js";
 import { beforeAfterNudge, lastSentAtOf, recordNudge } from "./features/records/record-nudges.js";
 import {
-  RADAR_EXPIRY_DAYS, RADAR_REMAINING_MAX, RATE_WINDOW_DAYS, radarPassLabel, radarSignalLabel, radarSummary, renewalRadar, renewalRateLabel,
+  ABSENT_DAYS, MEMBER_NOTE_DAYS, RADAR_URGENT_DAYS, RADAR_URGENT_REMAINING, RATE_MIN_SAMPLE,
+  RADAR_EXPIRY_DAYS, RADAR_REMAINING_MAX, RATE_WINDOW_DAYS, interviewSections, isAttendanceSignal, radarPassLabel, radarSignalLabel, radarSummary, renewalRadar, renewalRateLabel,
 } from "./features/records/renewal-radar.js";
 import { groupRowsByBranch, pickBranch } from "./features/records/branch-groups.js";
 import {
@@ -27796,7 +27797,8 @@ function radarEntry(organizationId) {
   if (!radarCache.has(organizationId)) radarCache.set(organizationId, { data: {}, at: 0, loading: false, listeners: new Set() });
   return radarCache.get(organizationId);
 }
-function startRadarLoad({ organizationId, clientStore, passStore, instructorStore, onLoadShares = fbBeforeAfterShareStats, role = "" }, { force = false } = {}) {
+function startRadarLoad({ organizationId, clientStore, passStore, instructorStore, onLoadShares = fbBeforeAfterShareStats, role = "", staffMode = false, onLoadBranch = fbRenewalRadarBranch }, { force = false } = {}) {
+  if (staffMode) return startStaffRadarLoad({ organizationId, onLoadBranch, role }, { force });
   const entry = radarEntry(organizationId);
   if (!organizationId || entry.loading || (!force && entry.at && Date.now() - entry.at < RADAR_FRESH_MS)) return entry;
   entry.loading = true;
@@ -27840,6 +27842,41 @@ function startRadarLoad({ organizationId, clientStore, passStore, instructorStor
   notify();
   return entry;
 }
+/* 점장 · 부원장 (2026-11-24 대표). 원장(강사 단가가 들어 있다)을 직접 읽지 않고 서버가 맡은 지점의 것만 골라 준다
+   (functions/src/renewal-radar-branch.js). 비포애프터 · 강사 기록 숫자는 이 화면에 없다 -- 그 신호 · 칸을 그리지 않는다. */
+function startStaffRadarLoad({ organizationId, onLoadBranch, role }, { force = false } = {}) {
+  const entry = radarEntry(`${organizationId}#staff`);
+  if (!organizationId || entry.loading || (!force && entry.at && Date.now() - entry.at < RADAR_FRESH_MS)) return entry;
+  entry.loading = true;
+  const notify = () => entry.listeners.forEach((listener) => listener(entry));
+  Promise.resolve().then(() => onLoadBranch({ organizationId }))
+    .then((result) => {
+      const now = Number(result?.now) || Date.now();
+      entry.data = {
+        staff: { scope: String(result?.scope || "branch") },
+        core: { clients: result?.clients || [], passes: result?.passes || [], ledger: result?.ledger || [], now, activityMonth: "" },
+        coreError: "",
+        notes: { items: result?.lessonNotes || [], failed: false, errorCode: "" },
+        shares: { rows: null, hidden: true },
+        activities: { items: null, failed: false, hidden: true },
+        candidates: { rows: result?.candidates || [], errorCode: "" },
+        members: { items: result?.members || [], failed: false, errorCode: "" },
+        locations: { items: result?.locations || [], failed: false, errorCode: "" },
+      };
+    })
+    .catch((thrown) => {
+      const code = serverCodeOf(thrown) || String(thrown?.code || "unknown");
+      entry.data = { ...entry.data, coreError: code };
+      deviceLog("renewal_radar_read_failed", {
+        feature: "renewal_radar", stage: "staff_read", errorDomain: "functions_callable", errorCode: code,
+        message: String(thrown?.message || "").slice(0, 200), role, appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+      });
+    })
+    .finally(() => { entry.loading = false; entry.at = Date.now(); notify(); });
+  notify();
+  return entry;
+}
+
 /** 센터 운영 메뉴가 열릴 때 미리 읽는다. 5분 안에 읽었으면 아무것도 안 한다. */
 function prefetchRenewalRadar(params) {
   /* 브라우저가 한가할 때 (늦어도 3초 안). 더보기를 열자마자 읽기 시작하면 수천 건을 푸는 일이 첫 몇 번의 누름과 겹친다
@@ -28158,13 +28195,121 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
   );
 }
 
-function RenewalRadarScreen({ organization, instructorStore, clientStore, passStore, onOpenClient, onLoadShares = fbBeforeAfterShareStats, initialState = null }) {
+/**
+ * 재등록 레이더 읽는 법 (2026-11-24 대표: "점장이 처음 보면 무슨 말인지 모름 -- 뭐가 급함이고 횟수는 뭘 뜻하는지,
+ * 점장이 강사들 대상으로 면담할 때 생각해서 자세하게"). 기준 숫자는 renewal-radar.js 의 상수를 그대로 쓴다.
+ */
+/**
+ * 면담 화면 (2026-11-24 대표). 강사 한 명의 곧 끝나는 회원을 할 이야기별로 나누고, 묶음마다 물어볼 말을 함께 둔다.
+ * 묶음은 features/records/renewal-radar.js 의 interviewSections. 강사와 같이 보는 화면이라 글자를 크게, 숫자는 넷만.
+ */
+function RadarInterview({ row, onClose, onOpenClient }) {
+  const sections = interviewSections(row);
+  const renewal = row.renewal ? renewalRateLabel(row.renewal) : null;
+  const tiles = [
+    { label: "곧 끝나는 회원", value: `${row.members.length}명` },
+    { label: "이번 주 상담", value: `${sections[0].members.length}명`, color: sections[0].members.length ? BAD : INK },
+    { label: "요즘 덜 나옴", value: `${sections[1].members.length}명`, color: sections[1].members.length ? WARN : INK },
+    { label: "다시 등록", value: renewal ? renewal.label.replace(/^다시 등록 /, "") : "—" },
+  ];
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 16 }} data-radar-interview={row.instructorId || "none"}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p style={{ fontSize: TYPE.caption, color: SUB }}>면담</p>
+          <h2 className="truncate" style={{ fontSize: TYPE.title, fontWeight: 700, color: INK }}>{row.name || "담당 강사 없음"} 선생님</h2>
+        </div>
+        <button type="button" onClick={onClose} className="h-10 shrink-0 px-3 font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>닫기</button>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
+        {tiles.map((tile) => (
+          <div key={tile.label} style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: "10px 12px" }}>
+            <p style={{ fontSize: TYPE.caption, color: SUB }}>{tile.label}</p>
+            <p className="tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: tile.color || INK }}>{tile.value}</p>
+          </div>
+        ))}
+      </div>
+      <p className="mt-3" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: SUB }}>
+        위에서부터 차례로 이야기해요. 숫자는 대화를 시작하는 재료예요 — 강사를 평가하는 점수가 아니에요.
+      </p>
+      {sections.map((section, index) => (
+        <div key={section.key} className="mt-4" data-radar-interview-section={section.key}>
+          <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{index + 1}. {section.title} <span className="tabular-nums" style={{ color: SUB }}>{section.members.length}명</span></p>
+          <p className="mt-0.5" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: SUB }}>{section.why}</p>
+          <div className="mt-2" style={{ borderRadius: 10, backgroundColor: TINT, padding: "8px 12px" }}>
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: BRAND_D }}><b>이렇게 물어보세요</b> — {section.ask}</p>
+          </div>
+          {section.members.length ? (
+            <div className="mt-2 space-y-1.5">
+              {section.members.map((member) => (
+                <div key={member.clientId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }}>
+                  <button type="button" onClick={() => onOpenClient?.({ id: member.clientId, name: member.name })} className="text-left font-bold" style={{ fontSize: TYPE.body, color: INK }}>
+                    {member.name || "이름 모름"}{member.duet ? " · 듀엣" : ""}
+                  </button>
+                  <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{radarPassLabel(member.forecast)}</p>
+                  {section.key === "coming_less" ? (
+                    <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: WARN }}>{member.signals.filter(isAttendanceSignal).map(radarSignalLabel).join(" · ")}</p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : <p className="mt-2" style={{ fontSize: TYPE.caption, color: FAINT }}>해당하는 회원이 없어요.</p>}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function RadarGuide({ open, onToggle, staffMode }) {
+  const term = (title, body) => (
+    <div className="mt-2">
+      <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{title}</p>
+      <p className="mt-0.5" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: INK2 }}>{body}</p>
+    </div>
+  );
+  return (
+    <div className="mt-2" style={{ borderRadius: 10, border: `1px solid ${LINE}`, backgroundColor: CANVAS }} data-radar-guide={open ? "open" : "closed"}>
+      <button type="button" onClick={onToggle} aria-expanded={open} className="flex min-h-10 w-full items-center justify-between px-3 text-left font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
+        이 화면 읽는 법 · 면담할 때
+        <ChevronDown size={16} color={SUB} style={{ transform: open ? "rotate(180deg)" : "none" }} />
+      </button>
+      {open ? (
+        <div className="px-3 pb-3">
+          {term("곧 끝나는 회원", `아래 셋 중 하나면 이 목록에 올라와요. ① 남은 수업이 ${RADAR_REMAINING_MAX}회 이하 ② 끝나는 날까지 ${RADAR_EXPIRY_DAYS}일 이하 ③ 지금처럼 다니면 끝나는 날까지 수업을 다 못 씀.`)}
+          {term("이번 주 상담 (빨간 표시)", `곧 끝나는 회원 중에서도 남은 수업이 ${RADAR_URGENT_REMAINING}회 이하이거나 끝나는 날까지 ${RADAR_URGENT_DAYS}일 이하인 회원이에요. 다음 수업이 사실상 마지막일 수 있어서, 이번 주 수업 안에 재등록 이야기를 꺼내야 해요.`)}
+          {term("남은 수업 N회", "회원권에 남은 수업 횟수예요 (서비스로 준 수업 포함). 듀엣은 두 분이 함께 쓰는 횟수라, 남은 수업 4회면 둘이 합쳐 4번 남은 거예요.")}
+          {term("끝나는 날까지 약 2주", "계약서에 적힌 끝나는 날(만료일)까지 남은 기간이에요. 홀딩 중이면 멈춘 기간만큼 뒤로 가 있어요.")}
+          {term("지금처럼 다니면 N회 못 쓰고 끝남", "최근 4주처럼 다니면 끝나는 날에 N회가 쓰이지 못하고 사라진다는 뜻이에요. 수업 횟수를 늘리거나 홀딩을 권할 회원이에요.")}
+          {term("챙길 점 (노란 칸)", `강사가 평소 하는 일에서 저절로 나와요. 요즘 덜 나옴(4주 6회 → 2회): 최근 4주 출석이 그 전 4주의 절반 이하. N일째 안 나옴: 마지막 수업 뒤 ${ABSENT_DAYS}일 넘게 안 옴. 두 달째 안 나옴. 한 달째 회원에게 한마디 안 보냄: 수업은 했는데 회원 앱으로 한마디도 안 보냄.${staffMode ? "" : " 변화 사진 카드 안 보냄: 회원 앱에 연결된 회원에게 비포애프터 카드를 보낸 적이 없음."} 앞의 셋(출석)이 그만둘 걱정이 큰 쪽이에요.`)}
+          {term("다시 등록 (끝난 회원 N명 중 M명)", `최근 ${RATE_WINDOW_DAYS}일 동안 회원권이 끝난 회원 중 다시 등록한 회원이에요. ${RATE_MIN_SAMPLE}명이 안 되면 퍼센트 대신 사람 수로 보여요 — 사람이 적으면 한 명에 크게 흔들려요.`)}
+          <p className="mt-3 font-bold" style={{ fontSize: TYPE.caption, color: INK }}>강사 면담할 때</p>
+          <ol className="mt-1 space-y-1" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: INK2, paddingLeft: 18, listStyle: "decimal" }}>
+            <li>강사 카드에서 <b>[면담 화면 띄우기]</b>를 누르면 이야기할 순서대로 정리된 화면이 떠요. 강사와 같이 보세요.</li>
+            <li><b>이번 주 상담</b> 회원부터 — "다음 수업 때 재등록 이야기를 했는지, 회원 반응은 어땠는지".</li>
+            <li><b>요즘 덜 나옴 · 안 나옴</b> 회원은 — "왜 덜 나오는지 아는지 (일정 · 몸 상태 · 수업 만족 중 무엇인지)".</li>
+            <li><b>못 쓰고 끝남</b> 회원은 — 끝나기 전에 다 쓰도록 수업을 늘리거나 홀딩을 권했는지.</li>
+            <li><b>한마디 안 보냄</b>이 많으면 — 수업 뒤 회원 앱으로 한마디 보내는 습관을 같이 이야기해요.</li>
+            <li>숫자는 대화를 시작하는 재료예요. 강사를 평가하는 점수로 쓰지 말아 주세요.</li>
+          </ol>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RenewalRadarScreen({ organization, instructorStore, clientStore, passStore, onOpenClient, onLoadShares = fbBeforeAfterShareStats, onLoadBranch = fbRenewalRadarBranch, staffMode = false, initialState = null }) {
   const organizationId = organization?.organizationId || "";
-  const params = useMemo(() => ({ organizationId, clientStore, passStore, instructorStore, onLoadShares, role: organization?.role || "" }),
-    [organizationId, clientStore, passStore, instructorStore, onLoadShares, organization?.role]);
+  const cacheKey = staffMode ? `${organizationId}#staff` : organizationId;
+  const params = useMemo(() => ({ organizationId, clientStore, passStore, instructorStore, onLoadShares, onLoadBranch, staffMode, role: organization?.role || "" }),
+    [organizationId, clientStore, passStore, instructorStore, onLoadShares, onLoadBranch, staffMode, organization?.role]);
+  /* 점장 · 부원장에게는 이 화면 읽는 법을 펼쳐 둔다 (처음 보면 "급함" · "횟수" 가 무슨 뜻인지 모른다 -- 대표). */
+  const [guideOpen, setGuideOpen] = useState(initialState?.guideOpen ?? staffMode);
+  /* 면담 화면 (2026-11-24 대표: "면담 때 도움될 수 있게 화면을 띄울 수 있게"). 강사 한 명 -- 이야기할 순서대로. */
+  const [interviewId, setInterviewId] = useState(initialState?.interview ?? null);
+  const setInterview = (row) => setInterviewId(row ? (row.instructorId || "") : null);
   const [snapshot, setSnapshot] = useState(() => {
     if (initialState) return { data: initialState.data || {}, loading: false };
-    const entry = organizationId ? radarEntry(organizationId) : null;
+    const entry = organizationId ? radarEntry(cacheKey) : null;
     return { data: entry?.data || {}, loading: Boolean(entry?.loading) };
   });
   const [open, setOpen] = useState(initialState?.open || "");
@@ -28172,13 +28317,13 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
   const wide = useWideViewport(initialState?.wide);
   useEffect(() => {
     if (initialState || !organizationId) return undefined;
-    const entry = radarEntry(organizationId);
+    const entry = radarEntry(cacheKey);
     const listener = (current) => setSnapshot({ data: current.data, loading: current.loading });
     entry.listeners.add(listener);
     startRadarLoad(params);
     listener(entry);
     return () => { entry.listeners.delete(listener); };
-  }, [initialState, organizationId, params]);
+  }, [initialState, organizationId, params, cacheKey]);
   const refresh = () => { if (!initialState) startRadarLoad(params, { force: true }); };
   const data = snapshot.data;
   const members = data.members && !data.members.failed ? data.members.items : null;
@@ -28218,7 +28363,7 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
   const warnings = [
     data.core && data.coreError ? `새로 읽지 못해 지난 결과를 보여 드려요 (코드 ${data.coreError})` : "",
     data.notes?.failed ? `회원에게 보낸 말을 읽지 못해 그 신호는 빠졌어요 (코드 ${data.notes.errorCode})` : "",
-    data.shares && data.shares.rows === null ? `비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 (코드 ${data.shares.errorCode})` : "",
+    data.shares && data.shares.rows === null && !data.shares.hidden ? `비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 (코드 ${data.shares.errorCode})` : "",
     data.activities?.failed ? `강사 기록 숫자를 읽지 못했어요 (코드 ${data.activities.errorCode})` : "",
     data.candidates && data.candidates.rows === null ? `재등록 결과를 읽지 못했어요 (코드 ${data.candidates.errorCode})` : "",
     data.members?.failed ? `강사 명부를 읽지 못해 지점으로 나누지 못했어요 (코드 ${data.members.errorCode})` : "",
@@ -28227,7 +28372,11 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
   const pending = [
     data.notes ? "" : "보낸 말", data.shares ? "" : "비포애프터", data.activities ? "" : "기록률", data.candidates ? "" : "재등록률",
   ].filter(Boolean);
-  const candidatesEmpty = Array.isArray(data.candidates?.rows) && !data.candidates.rows.length;
+  const candidatesEmpty = !staffMode && Array.isArray(data.candidates?.rows) && !data.candidates.rows.length;
+  /* 점장 · 부원장 화면에는 강사 기록률이 없다 -- 그 줄을 그리지 않는다. */
+  const recordText = (row) => (staffMode ? "" : row.record.label);
+  const recordCode = (row) => (staffMode ? "" : `코드 ${row.record.code}`);
+  const joinLine = (...parts) => parts.filter(Boolean).join(" · ");
   const monthLabel = data.core?.activityMonth ? `${Number(data.core.activityMonth.slice(5, 7))}월` : "";
   /* 회원 목록 -- 폰은 강사 카드 펼침, PC 는 오른쪽 칸에서 같은 것을 그린다. */
   const radarMemberList = (row) => (
@@ -28238,7 +28387,7 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
             <button type="button" onClick={() => onOpenClient?.({ id: member.clientId, name: member.name })} className="min-w-0 flex-1 truncate text-left font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
               {member.name || "이름 모름"}{member.duet ? " · 듀엣" : ""}
             </button>
-            {member.urgent ? chip("urgent", "급함") : null}
+            {member.urgent ? chip("urgent", "이번 주 상담") : null}
           </div>
           <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{radarPassLabel(member.forecast)}</div>
           {member.signals.length ? (
@@ -28247,7 +28396,7 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
                 <span key={signal.code} className="px-1.5 py-0.5" style={{ fontSize: TYPE.caption, borderRadius: 6, color: WARN, backgroundColor: WARN_S }} data-radar-signal={signal.code}>{radarSignalLabel(signal)}</span>
               ))}
             </div>
-          ) : <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>신호 없음</div>}
+          ) : <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>챙길 점 없음</div>}
         </div>
       ))}
       {!row.members.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>지금 곧 끝나는 회원은 없어요.</p> : null}
@@ -28258,32 +28407,37 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
     return (
       <div data-radar-detail={row.instructorId || "none"}>
         <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{row.name || row.instructorId || "담당 강사 없음"}{row.active ? "" : " · 소속 아님"}</p>
-        <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{row.record.label}{renewal ? ` · ${renewal.label}` : ""}</p>
-        <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>코드 {row.record.code}{renewal ? ` · ${renewal.code}` : ""}</p>
+        <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{joinLine(recordText(row), renewal?.label)}</p>
+        <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>{joinLine(recordCode(row), renewal ? `코드 ${renewal.code}` : "")}</p>
+        <button type="button" onClick={() => setInterview(row)} className="mt-2 h-10 w-full font-bold" style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption }} data-radar-interview-open>면담 화면 띄우기</button>
         <div className="mt-2">{radarMemberList(row)}</div>
       </div>
     );
   };
+  const interviewRow = interviewId === null ? null : (view?.rows || []).find((row) => (row.instructorId || "") === interviewId) || null;
+  if (interviewRow) return <RadarInterview row={interviewRow} onClose={() => setInterview(null)} onOpenClient={onOpenClient} />;
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-renewal-radar>
       <div className="flex items-center justify-between">
-        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>재등록 레이더</h2>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{staffMode && data.staff?.scope !== "all" ? "우리 지점 재등록 레이더" : "재등록 레이더"}</h2>
         <span className="flex items-center gap-2">
           {snapshot.loading && view ? <span style={{ fontSize: TYPE.caption, color: FAINT }} data-radar-refreshing>새로 읽는 중…</span> : null}
           <button type="button" onClick={refresh} disabled={snapshot.loading} className="h-9 px-2 font-bold disabled:opacity-40" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
         </span>
       </div>
       <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        잔여 {RADAR_REMAINING_MAX}회 이하이거나 만료 {RADAR_EXPIRY_DAYS}일 안쪽, 또는 지금 속도로 다 못 쓸 회원이에요.
-        {" "}신호는 출석 · 회원에게 보낸 말 · 비포애프터에서 저절로 나와요 — <b style={{ color: INK }}>강사가 따로 할 일은 없어요.</b>
-        {" "}신호가 많은 회원이 위에 있어요. 회원별 수업기록 공백은 수업기록 서버 저장을 켜면 함께 보여요.
+        회원권이 곧 끝나는 회원을 담당 강사별로 모았어요. 챙길 점이 많은 회원이 위에 있어요.
+        {" "}신호는 출석 · 회원에게 보낸 말{staffMode ? "" : " · 비포애프터"}에서 저절로 나와요 — <b style={{ color: INK }}>강사가 따로 할 일은 없어요.</b>
+        {staffMode ? (data.staff?.scope === "all" ? " 부원장이라 모든 지점이 보여요." : " 맡은 지점 회원만 보여요.") : ""}
+        {staffMode ? " 회원 연락처 · 수업 단가는 이 화면에 없어요." : ""}
       </p>
+      <RadarGuide open={guideOpen} onToggle={() => setGuideOpen((value) => !value)} staffMode={staffMode} />
       {view && view.rows.length ? (
         <SummaryTiles items={[
           { label: "곧 끝나는 회원", value: `${summary.total}명`, code: "radar_total" },
-          { label: "급함", value: `${summary.urgent}명`, color: summary.urgent ? BAD : INK, code: "radar_urgent" },
-          { label: "신호 있음", value: `${summary.atRisk}명`, color: summary.atRisk ? WARN : INK, code: "radar_at_risk" },
-          { label: `재등록 · 최근 ${RATE_WINDOW_DAYS}일`, value: overallRenewal ? renewalRateLabel(overallRenewal).label.replace(/^재등록 /, "") : "—", code: "radar_renewal" },
+          { label: "이번 주 상담", value: `${summary.urgent}명`, color: summary.urgent ? BAD : INK, code: "radar_urgent" },
+          { label: "챙길 점 있음", value: `${summary.atRisk}명`, color: summary.atRisk ? WARN : INK, code: "radar_at_risk" },
+          { label: `다시 등록 · 최근 ${RATE_WINDOW_DAYS}일`, value: overallRenewal ? renewalRateLabel(overallRenewal).label.replace(/^다시 등록 /, "") : "—", code: "radar_renewal" },
         ]} />
       ) : null}
       {!view && data.coreError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>재등록 레이더를 읽지 못했어요 (코드 {data.coreError})</p> : null}
@@ -28294,7 +28448,7 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
           재등록률이 아직 비어 있어요. 운영 스위치에서 <b style={{ color: INK }}>재등록 알림</b>을 켠 뒤 만료 회원 현황의 [지난 6달 채우기]를 누르면 채워져요 (코드 renewal_candidates_empty)
         </p>
       ) : null}
-      {view && view.rows.length ? (
+      {view && view.rows.length && !staffMode ? (
         <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: FAINT }}>
           강사 줄의 기록률({monthLabel})과 재등록률(최근 {RATE_WINDOW_DAYS}일)은 나란히 보는 참고 숫자예요. 대상이 적으면 크게 흔들리고, 같이 움직여도 그것이 원인이라고 단정할 수는 없어요.
         </p>
@@ -28306,12 +28460,12 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
         <AggregateSplit wide detail={selectedRow ? radarDetail(selectedRow) : null}>
           <InstructorTable rows={shown} selected={selectedRow?.instructorId} onSelect={setOpen} columns={[
             { key: "name", label: "강사", firstDir: "asc", sortValue: (row) => row.name || row.instructorId, render: (row) => <span className="font-bold">{row.name || row.instructorId || "담당 강사 없음"}{row.active ? "" : " · 소속 아님"}</span> },
-            { key: "members", label: "대상", align: "right", sortValue: (row) => row.members.length, render: (row) => `${row.members.length}명` },
-            { key: "urgent", label: "급함", align: "right", sortValue: (row) => row.urgent, render: (row) => (row.urgent ? <TonePill color={BAD} background={BAD_S}>{row.urgent}</TonePill> : "—") },
-            { key: "risk", label: "신호", align: "right", sortValue: (row) => row.atRisk, render: (row) => (row.atRisk ? row.atRisk : "—") },
-            { key: "record", label: "기록률", align: "right", sortValue: (row) => row.record.rate, render: (row) => (row.record.rate === null ? <span style={{ color: SUB }}>{row.record.label.replace(/^기록률 — /, "")}</span>
-              : <TonePill color={row.record.rate >= RECORD_RATE_GOOD ? GOOD : row.record.rate >= RECORD_RATE_LOW ? WARN : BAD} background={row.record.rate >= RECORD_RATE_GOOD ? GOOD_S : row.record.rate >= RECORD_RATE_LOW ? WARN_S : BAD_S}>{Math.round(row.record.rate * 100)}%</TonePill>) },
-            { key: "renewal", label: "재등록", align: "right", sortValue: (row) => (row.renewal?.decided ? row.renewal.rate : null), render: (row) => (row.renewal ? renewalRateLabel(row.renewal).label.replace(/^재등록 /, "") : "확인 중") },
+            { key: "members", label: "곧 끝나는 회원", align: "right", sortValue: (row) => row.members.length, render: (row) => `${row.members.length}명` },
+            { key: "urgent", label: "이번 주 상담", align: "right", sortValue: (row) => row.urgent, render: (row) => (row.urgent ? <TonePill color={BAD} background={BAD_S}>{row.urgent}</TonePill> : "—") },
+            { key: "risk", label: "챙길 점", align: "right", sortValue: (row) => row.atRisk, render: (row) => (row.atRisk ? row.atRisk : "—") },
+            ...(staffMode ? [] : [{ key: "record", label: "기록률", align: "right", sortValue: (row) => row.record.rate, render: (row) => (row.record.rate === null ? <span style={{ color: SUB }}>{row.record.label.replace(/^기록률 — /, "")}</span>
+              : <TonePill color={row.record.rate >= RECORD_RATE_GOOD ? GOOD : row.record.rate >= RECORD_RATE_LOW ? WARN : BAD} background={row.record.rate >= RECORD_RATE_GOOD ? GOOD_S : row.record.rate >= RECORD_RATE_LOW ? WARN_S : BAD_S}>{Math.round(row.record.rate * 100)}%</TonePill>) }]),
+            { key: "renewal", label: "다시 등록", align: "right", sortValue: (row) => (row.renewal?.decided ? row.renewal.rate : null), render: (row) => (row.renewal ? renewalRateLabel(row.renewal).label.replace(/^다시 등록 /, "") : "확인 중") },
           ]} />
         </AggregateSplit>
       ) : (
@@ -28326,15 +28480,20 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
                   <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>
                     {row.name || (row.instructorId ? row.instructorId : "담당 강사 없음")}{row.active ? "" : " · 소속 아님"}
                   </span>
-                  {row.urgent ? chip("urgent", `급함 ${row.urgent}`) : null}
-                  {chip(row.atRisk ? "risk" : "calm", `대상 ${row.members.length}명`)}
+                  {row.urgent ? chip("urgent", `이번 주 상담 ${row.urgent}`) : null}
+                  {chip(row.atRisk ? "risk" : "calm", `곧 끝나는 회원 ${row.members.length}명`)}
                   <ChevronDown size={16} style={{ color: SUB, transform: expanded ? "rotate(180deg)" : "none" }} />
                 </button>
                 <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
-                  {row.record.label}{renewal ? ` · ${renewal.label}` : ""}
+                  {joinLine(recordText(row), renewal?.label)}
                 </div>
-                <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>코드 {row.record.code}{renewal ? ` · ${renewal.code}` : ""}</div>
-                {expanded ? <div className="mt-2">{radarMemberList(row)}</div> : null}
+                <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>{joinLine(recordCode(row), renewal ? `코드 ${renewal.code}` : "")}</div>
+                {expanded ? (
+                  <div className="mt-2">
+                    <button type="button" onClick={() => setInterview(row)} className="mb-2 h-10 w-full font-bold" style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption }} data-radar-interview-open>면담 화면 띄우기</button>
+                    {radarMemberList(row)}
+                  </div>
+                ) : null}
               </div>
             );
           })}
@@ -30564,6 +30723,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   const showRatings = organization.ready
     && !organization.isLegacy
     && (isOwnerLevelRole(organization.role) || (organization.role === ROLES.INSTRUCTOR && organization.title === "branch_manager"));
+  /* 재등록 레이더: 점장(맡은 지점) · 부원장(모든 지점)도 본다 (2026-11-24 대표 -- 강사 면담용). 서버가 범위를 다시 정한다. */
+  const showRadarStaff = organization.ready && !organization.isLegacy && !isOwnerLevelRole(organization.role)
+    && ((organization.role === ROLES.INSTRUCTOR && organization.title === "branch_manager")
+      || ([ROLES.INSTRUCTOR, ROLES.MANAGER].includes(organization.role) && organization.isDeputyDirector === true));
+  const radarStaffItem = { key: "renewal-radar", title: "재등록 레이더", description: organization.isDeputyDirector === true ? "곧 끝나는 회원 · 강사 면담용 · 모든 지점" : "곧 끝나는 회원 · 강사 면담용 · 우리 지점", Icon: Activity };
   const ratingsItem = { key: "lesson-ratings", title: "수업 별점", description: isOwnerLevelRole(organization.role) ? "강사별 회원 별점 · 월별 · 누적" : "우리 지점 강사 별점 · 월별 · 누적", Icon: Star };
   /* ── 앱 업데이트 안내는 대표만 ──────────────────────────────────────────
      총괄매니저는 다른 자리에서 전부 대표와 같지만 여기만은 아니다
@@ -30993,7 +31157,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       hint: "강사 계정에서 보이는 항목입니다. 대표 업무에는 필요 없어 접어 두었어요.",
       items: [scheduleItem, recordsItem, reportItem, assessmentItem, scheduleColorsItem, onboardingItem, lessonExamplesItem, knowledgeItem] },
   ].filter((group) => group.items.length > 0) : [
-    { label: "업무", items: [scheduleItem, recordsItem, reportItem, ...salesMineItems, ...(showRatings ? [ratingsItem] : []), ...expiryItems, ...noticeItems] },
+    { label: "업무", items: [scheduleItem, recordsItem, reportItem, ...salesMineItems, ...(showRatings ? [ratingsItem] : []), ...(showRadarStaff && !showAudit ? [radarStaffItem] : []), ...expiryItems, ...noticeItems] },
     ...centreGroups,
     { label: "내 설정", items: [assessmentItem, ...centerItems, scheduleColorsItem, themeItem, dataItem, backupItem] },
     { label: "기타", items: [onboardingItem, permissionsItem, lessonExamplesItem, knowledgeItem, accountItem, appItem] },
@@ -31540,8 +31704,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
             auditStore={auditStore} ledgerStore={ledgerStore}
             onRetryOrganization={onRetryOrganization} />
         )}
-        {view === "renewal-radar" && showAudit && (
+        {view === "renewal-radar" && (showAudit || showRadarStaff) && (
           <RenewalRadarScreen organization={organization} instructorStore={instructorStore} clientStore={clientStore} passStore={passStore}
+            staffMode={!showAudit}
             onOpenClient={(client) => onOpenClient?.({ id: client.id, name: client.name })} />
         )}
         {view === "sales-mine" && salesMineItems.length > 0 && (
@@ -33703,6 +33868,52 @@ export function createAppScreenSmokeCases() {
               { instructorId: "u1", status: "lapsed", decidedAt: new Date(2026, 9, 20) },
               { instructorId: "u2", status: "pending" },
             ], errorCode: "" },
+            members: { items: smokeInstructors, failed: false, errorCode: "" },
+            locations: { items: [{ id: "bansong", name: "반송" }], failed: false, errorCode: "" },
+          },
+        }} />
+    )) },
+    /* 점장 화면 (2026-11-24): 서버가 고른 맡은 지점 재료 · 읽는 법 펼침 · 기록률 · 비포애프터 없음. */
+    { name: "재등록 레이더 · 점장", element: providerWith({ ...smokeOwner, role: "instructor", title: "branch_manager" }, (
+      <RenewalRadarScreen organization={readyOrganizationContext({ ...smokeOwner, role: "instructor", title: "branch_manager" })} onOpenClient={noop} staffMode
+        initialState={{
+          open: "u1", guideOpen: true,
+          data: {
+            staff: { scope: "branch" },
+            core: {
+              now: new Date(2026, 10, 21, 12).getTime(), activityMonth: "",
+              clients: [{ id: "r1", name: "김하나", userId: "linked", instructorIds: ["u1"] }],
+              passes: [{ id: "rp1", clientId: "r1", instructorId: "u1", status: "active", remainingCount: 1, totalSessions: 30, createdAt: new Date(2026, 3, 1).getTime(), expiresAt: new Date(2026, 11, 30).getTime() }],
+              ledger: [{ id: "d1", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 10, 1).getTime() }],
+            },
+            coreError: "",
+            notes: { items: [], failed: false, errorCode: "" },
+            shares: { rows: null, hidden: true },
+            activities: { items: null, failed: false, hidden: true },
+            candidates: { rows: [], errorCode: "" },
+            members: { items: smokeInstructors, failed: false, errorCode: "" },
+            locations: { items: [{ id: "bansong", name: "반송" }], failed: false, errorCode: "" },
+          },
+        }} />
+    )) },
+    /* 면담 화면 (2026-11-24): 강사 한 명 -- 이야기할 순서대로 네 묶음. */
+    { name: "재등록 레이더 · 면담 화면", element: providerWith({ ...smokeOwner, role: "instructor", title: "branch_manager" }, (
+      <RenewalRadarScreen organization={readyOrganizationContext({ ...smokeOwner, role: "instructor", title: "branch_manager" })} onOpenClient={noop} staffMode
+        initialState={{
+          open: "u1", guideOpen: true, interview: "u1",
+          data: {
+            staff: { scope: "branch" },
+            core: {
+              now: new Date(2026, 10, 21, 12).getTime(), activityMonth: "",
+              clients: [{ id: "r1", name: "김하나", userId: "linked", instructorIds: ["u1"] }],
+              passes: [{ id: "rp1", clientId: "r1", instructorId: "u1", status: "active", remainingCount: 1, totalSessions: 30, createdAt: new Date(2026, 3, 1).getTime(), expiresAt: new Date(2026, 11, 30).getTime() }],
+              ledger: [{ id: "d1", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 10, 1).getTime() }],
+            },
+            coreError: "",
+            notes: { items: [], failed: false, errorCode: "" },
+            shares: { rows: null, hidden: true },
+            activities: { items: null, failed: false, hidden: true },
+            candidates: { rows: [], errorCode: "" },
             members: { items: smokeInstructors, failed: false, errorCode: "" },
             locations: { items: [{ id: "bansong", name: "반송" }], failed: false, errorCode: "" },
           },

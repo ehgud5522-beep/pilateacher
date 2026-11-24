@@ -474,6 +474,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "만료 회원 · 강사",
     "만료 회원 · 조회 실패",
     "재등록 레이더",
+    "재등록 레이더 · 점장",
+    "재등록 레이더 · 면담 화면",
     "재등록 레이더 · PC",
     "매출 인센 · 강사",
     "매출 인센 · 강사 · 그룹 입력",
@@ -3310,16 +3312,47 @@ test("the expiry report says how many are still inside the 30-day window", async
   assert.doesNotMatch(failed, /만료된 회원이 없습니다/, "못 읽은 것을 없는 것으로 보이면 안 된다");
 });
 
+test("재등록 레이더 · 점장: 우리 지점 · 읽는 법 · 면담 · 기록률 · 비포애프터 없음 (2026-11-24)", async () => {
+  const markup = await screenMarkup();
+  const radar = markup("재등록 레이더 · 점장");
+  assert.match(radar, /우리 지점 재등록 레이더/);
+  assert.match(radar, /맡은 지점 회원만 보여요/);
+  assert.match(radar, /data-radar-guide="open"/);
+  /* 쉬운 말 (2026-11-24 대표: "이해하기 쉬운 단어로") */
+  assert.match(radar, /이번 주 상담 \(빨간 표시\)/);
+  assert.match(radar, /이번 주 수업 안에 재등록 이야기를/);
+  assert.match(radar, /남은 수업 N회/);
+  assert.match(radar, /지금처럼 다니면 N회 못 쓰고 끝남/);
+  assert.match(radar, /강사 면담할 때/);
+  assert.match(radar, /곧 끝나는 회원 1명/);
+  assert.match(radar, /면담 화면 띄우기/, "펼친 강사 카드에서 면담 화면을 띄운다");
+  assert.doesNotMatch(radar, />급함</, "급함 · 잔여 · 만료 같은 말 대신 쉬운 말");
+  /* 면담 화면: 이야기할 순서대로 네 묶음 · 묶음마다 물어볼 말 */
+  const interview = markup("재등록 레이더 · 면담 화면");
+  assert.match(interview, /data-radar-interview=/);
+  assert.match(interview, /선생님/);
+  assert.match(interview, /data-radar-interview-section="this_week"/);
+  assert.match(interview, /data-radar-interview-section="coming_less"/);
+  assert.match(interview, /data-radar-interview-section="left_over"/);
+  assert.match(interview, /data-radar-interview-section="no_note"/);
+  assert.match(interview, /이렇게 물어보세요/);
+  assert.match(interview, /강사를 평가하는 점수가 아니에요/);
+  assert.match(interview, /닫기/);
+  assert.doesNotMatch(radar, /기록률/, "점장 화면에는 강사 기록률이 없다");
+  assert.doesNotMatch(radar, /비포애프터 공유 현황을 읽지 못해/, "숨긴 신호를 실패로 말하지 않는다");
+  assert.doesNotMatch(radar, /확인 중… 오는 대로/);
+});
+
 test("재등록 레이더: 급한 회원 · 신호 · 못 읽은 신호는 빼고 코드로 말한다 (2026-11-21)", async (t) => {
   const markupOf = await issueScreens(t);
   const radar = markupOf("재등록 레이더");
   assert.match(radar, /강사가 따로 할 일은 없어요/, "강사 일을 늘리지 않는다는 것을 화면이 말한다");
-  assert.match(radar, /data-summary-tile="radar_urgent"><p[^>]*>급함<\/p><p[^>]*>1명</, "요약 줄의 급함 칸");
+  assert.match(radar, /data-summary-tile="radar_urgent"><p[^>]*>이번 주 상담<\/p><p[^>]*>1명</, "요약 줄의 이번 주 상담 칸");
   assert.match(radar, /data-radar-signal="pace_drop"/);
   assert.match(radar, /data-radar-signal="no_attendance_8w"/);
   assert.match(radar, /비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 \(코드 permission-denied\)/);
   assert.doesNotMatch(radar, /data-radar-signal="before_after_/, "못 읽은 비포애프터를 \"안 보냄\" 으로 칠하지 않는다");
-  assert.match(radar, /재등록 2명 중 1명/, "표본이 적으면 퍼센트를 내지 않는다");
+  assert.match(radar, /끝난 회원 2명 중 1명 다시 등록/, "표본이 적으면 퍼센트를 내지 않는다");
   /* 지점별로 (2026-11-21 대표): 반송 칩이 먼저 고르고, 지점 없는 박서연은 "지점 없음" 칩 뒤에 있다 */
   assert.match(radar, /data-branch-tab="bansong"/);
   assert.match(radar, /지점 없음/);

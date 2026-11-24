@@ -1199,6 +1199,36 @@ exports.lessonRatingStats = onCall({
   }
 });
 
+/* ── 점장용 재등록 레이더 (2026-11-24 대표: "점장한테 보이게, 자기 지점만") ──────────────
+   점장(직함)에게 원장을 여는 대신 서버가 자기 지점의 회원 · 회원권 · 출석 시각만 골라 준다 (renewal-radar-branch.js). */
+const { renewalRadarBranch } = require("./renewal-radar-branch");
+exports.renewalRadarBranch = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 60,
+  memory: "512MiB",
+  invoker: "public",
+}, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  try {
+    const result = await renewalRadarBranch(firestore, { callerUid: request?.auth?.uid, organizationId });
+    logger.info("renewal_radar_branch_read", {
+      feature: "renewal_radar", stage: "branch", organizationId, locations: result.locationIds.length,
+      clients: result.clients.length, passes: result.passes.length, ledger: result.ledger.length,
+    });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      logger.warn("renewal_radar_branch_refused", { feature: "renewal_radar", stage: "branch", organizationId, errorDomain: "renewal_radar", errorCode: error.reason });
+      throw new HttpsError(error.httpsCode, error.reason, { reason: error.reason });
+    }
+    logger.error("renewal_radar_branch_failed", {
+      feature: "renewal_radar", stage: "branch", organizationId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), detail: String(error?.message || "").slice(0, 300),
+    });
+    throw new HttpsError("unavailable", "renewal_radar_branch_failed", { reason: "renewal_radar_branch_failed" });
+  }
+});
+
 /* ── 세션업과 회원 간 양도 ───────────────────────────────────────────────
    대표와 FC매니저가 쓴다. 근거는 pass-admin.js 머리말에 있다.
 

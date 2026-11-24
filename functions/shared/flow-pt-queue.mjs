@@ -37,7 +37,22 @@ export const FLOW_PT_COLLECTION = "flowPtQueue";
 /** 이보다 오래된 글은 가져오지 않는다 -- 처음 켤 때 한 달 반치만. */
 export const FLOW_PT_LOOKBACK_DAYS = 45;
 /** 처리 상태. waiting 만 목록 위에 선다. */
-export const FLOW_PT_STATE = Object.freeze({ WAITING: "waiting", ISSUED: "issued", NOT_APPLICABLE: "not_applicable" });
+export const FLOW_PT_STATE = Object.freeze({ WAITING: "waiting", ISSUED: "issued", NOT_APPLICABLE: "not_applicable", BASELINE: "baseline" });
+
+/* ── 기준선 (2026-11-24 대표: "오늘부터") ──
+   업무 조회에는 등록 날짜가 없어, 처음 읽었을 때 보드를 만든 8월부터의 성공 업무 750건이 전부 발급 대기로 올라왔다.
+   **오늘부터 새로 성공한 것만** 띄운다: 이 시각 전에 처음 본 업무는 기준선(baseline)으로 숨긴다 -- 단 오늘 올라온
+   글(글 번호가 FLOW_PT_TODAY_POST_ID 이상)은 남긴다. 그 뒤로 새로 성공이 되는 업무는 모두 발급 대기에 뜬다
+   (며칠 전 상담예정으로 올렸다가 오늘 성공으로 옮긴 업무도). 글 번호는 플로우 전체에서 시간 순으로 늘어난다
+   (11/23 19:59 → 88613148, 11/24 11:14 → 88635315). */
+export const FLOW_PT_BASELINE_UNTIL = new Date("2026-11-24T19:20:00+09:00");
+export const FLOW_PT_TODAY_POST_ID = 88620000;
+/** 이 업무를 기준선으로 숨길까 -- 기준선 시각 전에 처음 봤고, 오늘 글이 아니면. */
+export function isBaselineTask(postId, firstSeenAt) {
+  const seen = firstSeenAt instanceof Date ? firstSeenAt.getTime() : new Date(firstSeenAt).getTime();
+  const id = Number(String(postId ?? "").trim());
+  return Number.isFinite(seen) && seen < FLOW_PT_BASELINE_UNTIL.getTime() && !(Number.isFinite(id) && id >= FLOW_PT_TODAY_POST_ID);
+}
 
 const text = (value) => String(value ?? "").trim();
 
@@ -135,6 +150,9 @@ export function flowQueueFields(post, { organizationId, locationId = "", board =
     title,
     /* FC 가 볼 것은 PT 줄이다 -- 본문 첫머리는 "매출 양산중부 ○○○" 라 쓸모가 없다. */
     excerpt: flowExcerpt(lines.length ? lines.join(" / ") : body, 240),
+    /* 카드에 크게: 등록상품(PT 줄) · 횟수 (2026-11-24 대표: "금액이랑 횟수 크게"). 금액은 업무 칸에서 따로 넣는다. */
+    product: flowExcerpt(lines[0] || "", 80),
+    sessions: sessionsOf(lines[0] || ""),
     mentionsRefund: /환불/.test(`${title} ${body}`),
     /* 잔금 글은 계약금 때 이미 발급했을 수 있다 -- FC 가 확인하게 표시한다. */
     /* 업무 칸으로 오면 구분 칸이 "잔금" · "체험" 한 줄로 온다. */
@@ -151,7 +169,7 @@ export function flowQueueFields(post, { organizationId, locationId = "", board =
 /** 같은 글을 또 쓰지 않으려고 비교하는 열쇠. */
 export const flowQueueSignature = (fields) => [
   fields.title, fields.excerpt, fields.mentionsRefund, fields.taskStatus, fields.locationId, fields.branchName,
-  Boolean(fields.isBalance), Boolean(fields.isTrial),
+  Boolean(fields.isBalance), Boolean(fields.isTrial), text(fields.product), text(fields.amountManwon), fields.sessions ?? "",
 ].join("|");
 
 /* ── 업무 필터 조회 응답 (개인용 GET /user/posts/projects/{id}/tasks/filter, 2026-11-24) ──
@@ -182,8 +200,11 @@ export function taskColumnValues(task) {
   const values = [];
   for (const column of columns) {
     const type = text(column?.columnType || column?.defaultColumnType).toUpperCase();
-    if (["TASK_NM", "PROGRESS", "RGSR_ID", "RGSN_DTTM", "EDTR_DTTM", "TASK_NUM", "STATUS", "PRIORITY"].includes(type) || columnIdOf(column) === "12") continue;
-    values.push(...columnTexts(column));
+    const id = Number(columnIdOf(column));
+    /* 기본 칸(0~12)과 담당자 · 날짜 · 체크 칸은 FC 에게 쓸모가 없고 작성자 이메일까지 섞인다 (2026-11-24 첫 결과) -- 보드에서 만든 칸만. */
+    if (["TASK_NM", "PROGRESS", "RGSR_ID", "RGSN_DTTM", "EDTR_DTTM", "TASK_NUM", "STATUS", "PRIORITY", "USER", "DATE", "CHECKBOX"].includes(type)) continue;
+    if (Number.isFinite(id) && id >= 0 && id <= 12) continue;
+    values.push(...columnTexts(column).filter((value) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)));
   }
   return [...new Set(values)];
 }
@@ -201,13 +222,39 @@ export function taskStatusOf(task) {
  * 업무를 게시글 모양으로 -- 판정(isPtQueuePost) · 칸(flowQueueFields)을 그대로 쓰려고.
  * 상태: 성공만 걸러 받았으면 그 보드의 성공 번호, 아니면 칸 값의 상태.
  */
+/** 업무 이름. content 가 비어 오고 이름은 업무명 칸(TASK_NM, 번호 6)에 온다 (2026-11-24 첫 결과: 카드가 "제목 없음"). */
+export function taskNameOf(task) {
+  const columns = Array.isArray(task?.columns) ? task.columns : [];
+  const name = columns.find((column) => text(column?.columnType || column?.defaultColumnType).toUpperCase() === "TASK_NM" || columnIdOf(column) === "6");
+  return text(task?.content) || (name ? columnTexts(name)[0] || "" : "");
+}
+
+/** 금액(만원): 보드에서 만든 숫자 칸의 첫 값. "30.25" 처럼 온다. */
+export function taskAmountOf(task) {
+  const columns = Array.isArray(task?.columns) ? task.columns : [];
+  for (const column of columns) {
+    const id = Number(columnIdOf(column));
+    if (Number.isFinite(id) && id >= 0 && id <= 12) continue;
+    if (text(column?.columnType).toUpperCase() !== "NUMBER") continue;
+    const value = columnTexts(column)[0];
+    if (value && /^\d+(\.\d+)?$/.test(value)) return value;
+  }
+  return "";
+}
+
+/** 횟수: 등록상품 줄의 "40s" · "10S" · "20회" · "30s+5" … 첫 숫자. 못 읽으면 null. */
+export function sessionsOf(line) {
+  const match = /(^|[^0-9.])(\d{1,3})\s*(s|S|회)(?![a-zA-Z])/.exec(text(line));
+  return match ? Number(match[2]) : null;
+}
+
 export function taskAsPost(task, board, { filtered = true } = {}) {
   const status = filtered ? text(board?.successStatusId) : taskStatusOf(task);
   return {
     postId: text(task?.postId || task?.taskId),
     projectId: text(task?.projectId) || text(board?.projectId),
     projectTitle: text(task?.projectTitle),
-    title: text(task?.content),
+    title: taskNameOf(task),
     content: taskColumnValues(task).join("\n"),
     taskStatus: status === "성공" ? text(board?.successStatusId) : status,
     registeredDateTime: text(task?.registeredDateTime),

@@ -28002,13 +28002,13 @@ function BranchTabs({ groups, selected, onSelect, countLabel = (group) => `${gro
 const flowPtWhen = (value) => {
   const at = value && typeof value.toDate === "function" ? value.toDate() : value ? new Date(value) : null;
   if (!at || Number.isNaN(at.getTime())) return "";
-  return `${at.getMonth() + 1}/${at.getDate()} ${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+  return `${at.getMonth() + 1}/${at.getDate()} (${"일월화수목금토"[at.getDay()]}) ${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
 };
 const flowPtTime = (value) => {
   const at = value && typeof value.toDate === "function" ? value.toDate() : value ? new Date(value) : null;
   return at && !Number.isNaN(at.getTime()) ? at.getTime() : 0;
 };
-const FLOW_PT_STATE_LABEL = { issued: "발급함", not_applicable: "해당 없음" };
+const FLOW_PT_STATE_LABEL = { issued: "이미 발급 완료", not_applicable: "해당 없음" };
 /* [새로고침] 결과의 실패 코드 → 무엇을 하면 되는지. 코드는 늘 함께 보인다 (CLAUDE.md 4). */
 const FLOW_PT_FAILURE_HINT = {
   api_key_missing: "플로우 API 키가 비어 있어요 — 키를 다시 등록해야 해요",
@@ -28038,6 +28038,7 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [showDone, setShowDone] = useState(Boolean(initialState?.showDone));
+  const [showBalanceList, setShowBalanceList] = useState(Boolean(initialState?.showBalances));
   /* [새로고침] = 서버가 지금 플로우를 읽고, 그다음 목록을 다시 읽는다 (2026-11-24 대표: "새로고침으로 해줘"). */
   const [refreshing, setRefreshing] = useState(false);
   const [refreshResult, setRefreshResult] = useState(initialState?.refreshResult || null);
@@ -28104,9 +28105,51 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
   groups.sort((left, right) => left.name.localeCompare(right.name, "ko"));
   const picked = groups.some((group) => group.id === branch) ? branch : (groups[0]?.id || "");
   const shown = groups.length > 1 ? (groups.find((group) => group.id === picked)?.rows || []) : (state.rows || []);
-  const waiting = shown.filter((row) => (row.state || "waiting") === "waiting").sort((left, right) => flowPtTime(right.registeredAt) - flowPtTime(left.registeredAt));
+  const waitingAll = shown.filter((row) => (row.state || "waiting") === "waiting").sort((left, right) => flowPtTime(right.registeredAt) - flowPtTime(left.registeredAt));
+  /* 잔금 분납 (2026-11-24 대표: "잔금 몇 번씩 나눠 내는 사람은?") -- 회원권은 첫 결제 때 한 번 발급한다. 잔금 업무는
+     새로 발급할 일이 아니라 따로 묶어 확인만 받는다. */
+  const waiting = waitingAll.filter((row) => !row.isBalance);
+  const balances = waitingAll.filter((row) => row.isBalance);
+  const [showBalances, setShowBalances] = [showBalanceList, setShowBalanceList];
   const done = shown.filter((row) => (row.state || "waiting") !== "waiting").sort((left, right) => flowPtTime(right.handledAt) - flowPtTime(left.handledAt));
-  const smallButton = { height: 36, borderRadius: 8, fontSize: TYPE.caption, fontWeight: 700, padding: "0 10px" };
+  const smallButton = { height: 40, borderRadius: 8, fontSize: TYPE.caption, fontWeight: 700, padding: "0 12px" };
+  /* 카드 한 장 (2026-11-24 대표: "글을 쉽게 -- 발급하러 가기 · 이미 발급 완료, 날짜와 등록 시간 크게, 금액이랑 횟수"). */
+  const flowPtCard = (row) => {
+    const amount = String(row.amountManwon || "").trim();
+    const big = [row.sessions ? `${row.sessions}회` : "", amount ? `${amount}만원` : ""].filter(Boolean).join(" · ");
+    return (
+      <div key={row.id} className="px-3 py-3" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-flow-pt-row={row.id}>
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="tabular-nums font-extrabold" style={{ fontSize: TYPE.title, color: INK }} data-flow-pt-when>{flowPtWhen(row.registeredAt)}</span>
+          <span className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>{row.registeredAtExact ? "등록" : "가져온 때"} · {row.branchName || "지점 모름"}</span>
+        </div>
+        <p className="mt-1 truncate font-bold" style={{ fontSize: TYPE.body, color: INK }}>{row.title || "이름 없음"}</p>
+        {big ? <p className="mt-0.5 tabular-nums font-extrabold" style={{ fontSize: TYPE.title, color: BRAND_D }} data-flow-pt-big>{big}</p> : null}
+        {row.product ? <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: INK2 }}>{row.product}</p> : null}
+        {row.isBalance || row.isTrial || row.mentionsRefund ? (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {row.isBalance ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: WARN, backgroundColor: WARN_S }} data-flow-pt-balance>잔금</span> : null}
+            {row.isTrial ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: BRAND_D, backgroundColor: TINT }} data-flow-pt-trial>PT 체험</span> : null}
+            {row.mentionsRefund ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: BAD, backgroundColor: BAD_S }} data-flow-pt-refund>"환불" 이라는 말이 있어요</span> : null}
+          </div>
+        ) : null}
+        {row.excerpt ? <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{row.excerpt}</p> : null}
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {onOpenIssue ? (
+            <button type="button" onClick={onOpenIssue} style={{ ...smallButton, backgroundColor: BRAND, color: "#fff" }}>발급하러 가기</button>
+          ) : null}
+          <button type="button" disabled={busy === row.id} onClick={() => mark(row, "issued")} className="disabled:opacity-50"
+            style={{ ...smallButton, backgroundColor: CARD, color: GOOD, border: `1px solid ${GOOD}` }}>이미 발급 완료</button>
+          <button type="button" disabled={busy === row.id} onClick={() => mark(row, "not_applicable")} className="disabled:opacity-50"
+            style={{ ...smallButton, backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>해당 없음</button>
+          {row.flowUrl ? (
+            <a href={row.flowUrl} target="_blank" rel="noreferrer" className="inline-flex items-center"
+              style={{ ...smallButton, backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>플로우에서 보기</a>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-flow-pt-queue>
       <div className="flex items-center justify-between">
@@ -28119,7 +28162,7 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
         <div className="mt-2" data-flow-pt-refresh={refreshResult.ok && !(refreshResult.counts?.failures || []).length ? "ok" : "failed"}>
           {refreshResult.ok ? (
             <p style={{ fontSize: TYPE.caption, color: SUB }}>
-              방금 플로우에서 읽었어요 · 보드 {refreshResult.counts.projects || 0}곳 · 글 {refreshResult.counts.posts || 0}건 · PT {refreshResult.counts.pt || 0}건 (새로 {refreshResult.counts.created || 0}건)
+              방금 플로우에서 읽었어요 · 보드 {refreshResult.counts.projects || 0}곳 · 성공 업무 {refreshResult.counts.posts || 0}건 · PT {refreshResult.counts.pt || 0}건 (새로 {refreshResult.counts.created || 0}건{refreshResult.counts.baseline ? ` · 오늘 전 ${refreshResult.counts.baseline}건 숨김` : ""})
               {refreshResult.counts.unmatchedBranch ? ` · 지점을 못 맞춘 PT ${refreshResult.counts.unmatchedBranch}건` : ""}
             </p>
           ) : null}
@@ -28142,54 +28185,36 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
         </div>
       ) : null}
       <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        지점 업무보드에서 <b style={{ color: INK }}>완료</b>로 옮긴 업무 중 PT 가 적힌 것입니다 (최근 45일, 10분마다 가져오고 [새로고침]을 누르면 바로 가져와요).
-        {" "}플로우 원문에서 <b style={{ color: INK }}>성공인지 · 상품이 맞는지</b> 확인하고 발급한 뒤 [발급함]을 눌러 주세요. 앱이 자동으로 발급하지 않아요.
+        플로우에서 <b style={{ color: INK }}>성공</b>으로 옮긴 PT 등록이에요. 10분마다 가져오고, [새로고침]을 누르면 바로 가져와요.
+        {" "}<b style={{ color: INK }}>[발급하러 가기]</b>로 회원권을 발급한 뒤 <b style={{ color: INK }}>[이미 발급 완료]</b>를 눌러 주세요. 발급할 게 아니면 [해당 없음].
       </p>
       <BranchTabs groups={groups} selected={picked} onSelect={(id) => setBranch(id)}
-        countLabel={(group) => `${group.rows.filter((row) => (row.state || "waiting") === "waiting").length}건`} />
+        countLabel={(group) => `${group.rows.filter((row) => (row.state || "waiting") === "waiting" && !row.isBalance).length}건`} />
       {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
       {notice ? <p role="alert" className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{notice}</p> : null}
       {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
-      {state.rows && !waiting.length && !state.error ? (
+      {state.rows && !waiting.length && !balances.length && !state.error ? (
         <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }} data-flow-pt-empty>
           확인할 PT 등록이 없어요. 처음이라면 대표 설정 → 앱 업데이트 · 운영 스위치 → "플로우 PT 발급 대기" 가 켜져 있는지 봐 주세요.
         </p>
       ) : null}
       <div className="mt-3 space-y-2">
-        {waiting.map((row) => (
-          <div key={row.id} className="px-3 py-2.5" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-flow-pt-row={row.id}>
-            <div className="flex items-center justify-between gap-2">
-              <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>{row.title || "제목 없음"}</span>
-              <span className="shrink-0 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{flowPtWhen(row.registeredAt)}</span>
-            </div>
-            <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{row.branchName || "지점 모름"}{row.registerName ? ` · 올린 사람 ${row.registerName}` : ""}</p>
-            {/* 잔금 · 체험 (2026-11-24): 잔금 글은 계약금 때 이미 발급했을 수 있고, 체험은 체험 회원권인지 FC 가 본다. */}
-            {row.isBalance || row.isTrial ? (
-              <div className="mt-1 flex flex-wrap gap-1">
-                {row.isBalance ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: WARN, backgroundColor: WARN_S }} data-flow-pt-balance>잔금 — 계약금 때 이미 발급했는지 확인</span> : null}
-                {row.isTrial ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: BRAND_D, backgroundColor: TINT }} data-flow-pt-trial>PT 체험</span> : null}
-              </div>
-            ) : null}
-            {row.excerpt ? <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{row.excerpt}</p> : null}
-            {row.mentionsRefund ? (
-              <p className="mt-1 font-bold" style={{ fontSize: TYPE.caption, color: WARN }} data-flow-pt-refund>"환불" 이라는 말이 있어요 — 플로우에서 상태가 환불인지 꼭 확인하세요.</p>
-            ) : null}
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {row.flowUrl ? (
-                <a href={row.flowUrl} target="_blank" rel="noreferrer" className="inline-flex items-center"
-                  style={{ ...smallButton, backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>플로우에서 확인</a>
-              ) : null}
-              {onOpenIssue ? (
-                <button type="button" onClick={onOpenIssue} style={{ ...smallButton, backgroundColor: CARD, color: INK2, border: `1px solid ${LINE}` }}>회원권 발급 열기</button>
-              ) : null}
-              <button type="button" disabled={busy === row.id} onClick={() => mark(row, "issued")} className="disabled:opacity-50"
-                style={{ ...smallButton, backgroundColor: BRAND, color: "#fff" }}>발급함</button>
-              <button type="button" disabled={busy === row.id} onClick={() => mark(row, "not_applicable")} className="disabled:opacity-50"
-                style={{ ...smallButton, backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>해당 없음</button>
-            </div>
-          </div>
-        ))}
+        {waiting.map((row) => flowPtCard(row))}
       </div>
+      {/* 잔금 분납: 따로 묶는다 -- 보통 새로 발급할 일이 아니다. */}
+      {balances.length ? (
+        <div className="mt-3" style={{ borderRadius: 10, border: `1px solid ${LINE}`, padding: 10 }} data-flow-pt-balances>
+          <button type="button" onClick={() => setShowBalances(!showBalances)} aria-expanded={showBalances} className="flex w-full items-center justify-between text-left font-bold" style={{ fontSize: TYPE.body, color: INK }}>
+            잔금 결제 {balances.length}건
+            <ChevronDown size={16} color={SUB} style={{ transform: showBalances ? "rotate(180deg)" : "none" }} />
+          </button>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            잔금을 나눠 내는 회원은 <b style={{ color: INK }}>첫 결제(계약금) 때 회원권을 전체 횟수 · 전체 금액으로 한 번 발급</b>하고, 남은 금액은 발급 화면의 '잔금' 칸에 적어요.
+            {" "}그 뒤의 잔금 업무는 새로 발급할 일이 아니라 <b style={{ color: INK }}>[이미 발급 완료]</b>만 눌러 주세요. 계약금 때 발급을 못 했다면 [발급하러 가기].
+          </p>
+          {showBalances ? <div className="mt-2 space-y-2">{balances.map((row) => flowPtCard(row))}</div> : null}
+        </div>
+      ) : null}
       {done.length ? (
         <div className="mt-3">
           <button type="button" onClick={() => setShowDone((value) => !value)} className="h-9 font-bold" style={{ fontSize: TYPE.caption, color: SUB }} aria-expanded={showDone}>
@@ -33088,12 +33113,13 @@ export function createAppScreenSmokeCases() {
     /* 플로우 PT 발급 대기 (2026-11-24). 지점 칩 · 대기 카드(플로우에서 확인 · 발급함 · 해당 없음) · 처리한 것. */
     { name: "플로우 PT 발급 대기", element: providerWith(smokeOwner, (
       <FlowPtQueueScreen organization={readyOrganizationContext(smokeOwner)} currentUserId="u-owner" onOpenIssue={() => {}}
-        initialState={{ error: "", branch: "loc-b", showDone: true,
+        initialState={{ error: "", branch: "loc-b", showDone: true, showBalances: true,
           refreshResult: { ok: true, counts: { projects: 8, posts: 120, pt: 3, created: 2, failures: [{ flowProjectId: "2955389", errorCode: "UNAUTHORIZED_ERROR", httpStatus: 401 }] } },
           rows: [
           { id: "p1", locationId: "loc-a", branchName: "가지점", title: "가회원 잔금", excerpt: "1:1pt 10s", state: "waiting", registeredAt: new Date(2026, 10, 24, 11, 14) },
           { id: "p2", locationId: "loc-b", branchName: "나지점", title: "나회원 신규", excerpt: "PT 20회 카드완납 010-****-****", registerName: "나지점", state: "waiting", mentionsRefund: true, isBalance: true, isTrial: true, flowUrl: "https://flow.team/main.act?projectId=1&postId=p2", registeredAt: new Date(2026, 10, 24, 10, 2) },
           { id: "p3", locationId: "loc-b", branchName: "나지점", title: "다회원 재등록", state: "issued", handledAt: new Date(2026, 10, 24, 12, 0) },
+          { id: "p4", locationId: "loc-b", branchName: "나지점", title: "라회원", state: "waiting", product: "1:1pt 40s 공동구매e", sessions: 40, amountManwon: "30.25", registeredAtExact: true, excerpt: "재등록 · 1:1pt 40s 공동구매e · 30.25 · 카드완납", registeredAt: new Date(2026, 10, 24, 13, 5) },
         ] }} />
     )) },
     { name: "운영 설정 · 수업 후 별점 집계 · 지점별", element: providerWith(smokeOwner, (

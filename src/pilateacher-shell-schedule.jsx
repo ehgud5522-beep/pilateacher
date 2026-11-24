@@ -3242,7 +3242,7 @@ function MemberDetail({ m, stats, ledger, assessments, todayS, onBack, onEdit, o
             <AlertCircle size={15} color={T.ink2} className="shrink-0" style={{ marginTop: 1 }} />
             <p style={{ fontSize: 12.5, color: T.ink2, margin: 0, lineHeight: 1.5 }}>
               홀딩 중 · {ymdDot(m.hold.startDate)} ~ {ymdDot(m.hold.endDate)} 예정
-              {m.hold.extendDays > 0 ? ` · 만료 +${m.hold.extendDays}일 연장됨` : ""}
+              {m.hold.extendDays > 0 ? ` · 기간 ${m.hold.extendDays}일 멈춤(만료일 뒤로)` : ""}
               {m.hold.reason ? ` · ${m.hold.reason}` : ""}
             </p>
           </div>
@@ -3347,7 +3347,7 @@ function MemberDetail({ m, stats, ledger, assessments, todayS, onBack, onEdit, o
                   <span className="shrink-0" style={{ fontSize: 12, fontWeight: 700, color: T.ink2 }}>홀딩</span>
                   <span className="tnum truncate" style={{ fontSize: 12, color: T.ink2 }}>
                     {ymdDot(it.h.startDate)}~{ymdDot(it.h.releasedAt)}
-                    {it.h.extendDays > 0 ? ` · 만료 +${it.h.extendDays}일` : ""}
+                    {it.h.extendDays > 0 ? ` · ${it.h.extendDays}일 멈춤` : ""}
                     {it.h.reason ? ` · ${it.h.reason}` : ""}
                   </span>
                   <span className="flex-1" />
@@ -3450,9 +3450,9 @@ function HoldSheet({ m, todayS, upcomingCount, onConfirm, onClose }) {
             placeholder="예: 개인 사정 · 부상 · 여행" aria-label="홀딩 사유" style={input} />
         </div>
         <div>
-          {lab("이용권 만료일 연장")}
+          {lab("홀딩 동안 이용권 기간 멈춤")}
           <div className="flex items-center" style={{ gap: 8 }}>
-            {[[true, "연장"], [false, "연장 안 함"]].map(([v, l2]) => (
+            {[[true, "멈춤"], [false, "안 멈춤"]].map(([v, l2]) => (
               <button key={String(v)} onClick={() => { setExtendOn(v); if (v && dur >= 0) setDays(dur); }}
                 aria-pressed={extendOn === v}
                 style={{ flex: 1, minHeight: 40, borderRadius: 10, fontSize: 13, fontWeight: 600,

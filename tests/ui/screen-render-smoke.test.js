@@ -3594,7 +3594,8 @@ test("회원권 수정 화면은 바뀔 값을 미리 보여주고 강사에게�
   const expiry = markupOf("센터 회원 상세 · 만료일 변경");
   assert.match(expiry, /만료일 변경/);
   assert.match(expiry, /홀딩/);
-  assert.match(expiry, /잔여 횟수는 그대로 보관됩니다/);
+  assert.match(expiry, /잔여 횟수와 남은 기간이 그대로 보관됩니다/);
+  assert.match(expiry, /연장이 아닙니다/, "홀딩은 멈춤이다 (2026-11-24 대표)");
   /* 회원 앱에 반영된다는 사실을 말한다. 모르면 따로 연락해야 하는 줄 안다. */
   assert.match(expiry, /회원 앱에도 반영됩니다/);
 

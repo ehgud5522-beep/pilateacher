@@ -51,17 +51,57 @@ export const RADAR_SIGNAL = Object.freeze({
   NO_MEMBER_NOTE: "no_member_note",
 });
 
-/** 신호 문구. 같은 화면에 코드도 함께 적는다 (CLAUDE.md 4). */
+/** 신호 문구. 같은 화면에 코드도 함께 적는다 (CLAUDE.md 4).
+ *  2026-11-24 대표: "이해하기 쉬운 단어로" -- 점장이 강사 면담에서 그대로 읽어도 되는 말로. */
 export function radarSignalLabel(signal) {
   switch (signal.code) {
-    case RADAR_SIGNAL.PACE_DROP: return `출석 줄어듦 (4주 ${signal.before}회 → ${signal.recent}회)`;
-    case RADAR_SIGNAL.ABSENT: return `${signal.days}일째 출석 없음`;
-    case RADAR_SIGNAL.NEVER_ATTENDED: return "8주 동안 출석 없음";
-    case RADAR_SIGNAL.BEFORE_AFTER_STALE: return `비포애프터 ${daySpanLabel(signal.days)} 전`;
-    case RADAR_SIGNAL.BEFORE_AFTER_NEVER: return "비포애프터 받은 적 없음";
-    case RADAR_SIGNAL.NO_MEMBER_NOTE: return `${MEMBER_NOTE_DAYS}일 동안 보낸 말 없음`;
+    case RADAR_SIGNAL.PACE_DROP: return `요즘 덜 나옴 (4주 ${signal.before}회 → ${signal.recent}회)`;
+    case RADAR_SIGNAL.ABSENT: return `${signal.days}일째 안 나옴`;
+    case RADAR_SIGNAL.NEVER_ATTENDED: return "두 달째 안 나옴";
+    case RADAR_SIGNAL.BEFORE_AFTER_STALE: return `변화 사진 카드 ${daySpanLabel(signal.days)} 전에 보냄`;
+    case RADAR_SIGNAL.BEFORE_AFTER_NEVER: return "변화 사진 카드 안 보냄";
+    case RADAR_SIGNAL.NO_MEMBER_NOTE: return "한 달째 회원에게 한마디 안 보냄";
     default: return signal.code;
   }
+}
+
+/** 출석과 관련된 신호인가 -- 회원이 그만둘 걱정이 큰 쪽. 보낸 말 · 변화 사진 카드는 강사 습관 쪽이다. */
+export const isAttendanceSignal = (signal) => [RADAR_SIGNAL.PACE_DROP, RADAR_SIGNAL.ABSENT, RADAR_SIGNAL.NEVER_ATTENDED].includes(signal?.code);
+
+/**
+ * 면담 화면의 묶음 (2026-11-24 대표: "면담 때 도움될 수 있게 화면을 띄울 수 있게"). 강사 한 명의 회원을 할 이야기별로 나눈다.
+ * 한 회원이 여러 묶음에 설 수 있다 -- 이야기할 거리가 둘이면 둘 다 꺼내야 한다.
+ * @param {{ members: any[] }} row  renewalRadar 의 강사 줄
+ */
+export function interviewSections(row) {
+  const members = Array.isArray(row?.members) ? row.members : [];
+  const pick = (test) => members.filter(test);
+  return [
+    {
+      key: "this_week", title: "이번 주에 꼭 재등록 이야기할 회원",
+      why: `남은 수업 ${RADAR_URGENT_REMAINING}회 이하이거나 끝나는 날까지 ${RADAR_URGENT_DAYS}일 이하예요.`,
+      ask: "다음 수업 때 재등록 이야기를 꺼냈나요? 회원 반응은 어땠나요?",
+      members: pick((member) => member.urgent),
+    },
+    {
+      key: "coming_less", title: "요즘 덜 나오거나 안 나오는 회원",
+      why: "출석이 줄었거나 2주 넘게 안 나왔어요. 그만둘 걱정이 가장 큰 회원이에요.",
+      ask: "왜 덜 나오는지 알고 있나요? 일정 · 몸 상태 · 수업 만족 중 무엇인가요? 먼저 연락해 봤나요?",
+      members: pick((member) => (member.signals || []).some(isAttendanceSignal)),
+    },
+    {
+      key: "left_over", title: "지금처럼 다니면 수업이 남은 채 끝나는 회원",
+      why: "끝나는 날까지 다 못 쓰고 남는 수업이 있어요.",
+      ask: "수업을 주 몇 회로 늘리거나 홀딩을 권했나요?",
+      members: pick((member) => member.forecast?.alert === RENEWAL_ALERT.CANNOT_USE_UP && Number(member.forecast?.unusable) > 0),
+    },
+    {
+      key: "no_note", title: "한 달째 한마디를 못 받은 회원",
+      why: "수업은 했는데 회원 앱으로 보낸 말이 30일 동안 없어요.",
+      ask: "수업 뒤 회원에게 짧게 한마디 보내는 습관을 같이 이야기해요.",
+      members: pick((member) => (member.signals || []).some((signal) => signal.code === RADAR_SIGNAL.NO_MEMBER_NOTE)),
+    },
+  ];
 }
 
 const clientIdsOfPass = (pass) => [pass?.clientId, ...(Array.isArray(pass?.clientIds) ? pass.clientIds : [])].map(text).filter(Boolean);
@@ -120,9 +160,9 @@ export function radarTarget(forecast) {
 /** 회원 줄의 회원권 문구. */
 export function radarPassLabel(forecast) {
   if (!forecast) return "";
-  const parts = [`잔여 ${forecast.remaining}회`];
-  if (forecast.daysToExpiry !== null) parts.push(forecast.daysToExpiry <= 0 ? "오늘 만료" : `만료까지 ${daySpanLabel(forecast.daysToExpiry)}`);
-  if (forecast.alert === RENEWAL_ALERT.CANNOT_USE_UP && forecast.unusable > 0) parts.push(`이 속도면 ${forecast.unusable}회 남김`);
+  const parts = [`남은 수업 ${forecast.remaining}회`];
+  if (forecast.daysToExpiry !== null) parts.push(forecast.daysToExpiry <= 0 ? "오늘 끝남" : `끝나는 날까지 ${daySpanLabel(forecast.daysToExpiry)}`);
+  if (forecast.alert === RENEWAL_ALERT.CANNOT_USE_UP && forecast.unusable > 0) parts.push(`지금처럼 다니면 ${forecast.unusable}회 못 쓰고 끝남`);
   return parts.join(" · ");
 }
 
@@ -147,9 +187,9 @@ export function instructorRenewalRate(rows, now) {
 
 /** 재등록률 문구. 표본이 적으면 퍼센트를 내지 않는다 -- 4명 중 3명이 75% 로 보이면 흔들리는 숫자가 단단해 보인다. */
 export function renewalRateLabel(rate) {
-  if (!rate.decided) return { label: "재등록 결과 아직 없음", code: "renewal_rate_none" };
-  if (rate.decided < RATE_MIN_SAMPLE) return { label: `재등록 ${rate.decided}명 중 ${rate.renewed}명`, code: "renewal_rate_small" };
-  return { label: `재등록 ${Math.round(rate.rate * 100)}% (${rate.decided}명 중 ${rate.renewed}명)`, code: "renewal_rate" };
+  if (!rate.decided) return { label: "다시 등록 결과 아직 없음", code: "renewal_rate_none" };
+  if (rate.decided < RATE_MIN_SAMPLE) return { label: `끝난 회원 ${rate.decided}명 중 ${rate.renewed}명 다시 등록`, code: "renewal_rate_small" };
+  return { label: `다시 등록 ${Math.round(rate.rate * 100)}% (끝난 회원 ${rate.decided}명 중 ${rate.renewed}명)`, code: "renewal_rate" };
 }
 
 /** 기록률 문구. activity = 그 강사의 recordActivity 한 달치(없으면 null). known = false 면 아직 읽는 중 · 못 읽음. */

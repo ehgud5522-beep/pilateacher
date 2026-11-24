@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   RADAR_SIGNAL, RATE_MIN_SAMPLE, memberSignals, radarPassLabel, radarSignalLabel, radarSummary, radarTarget,
-  recordRateLabel, renewalRadar, renewalRateLabel, instructorRenewalRate,
+  recordRateLabel, renewalRadar, renewalRateLabel, instructorRenewalRate, interviewSections, isAttendanceSignal,
 } from "../../src/features/records/renewal-radar.js";
 
 const NOW = Date.parse("2026-11-21T03:00:00.000Z");
@@ -50,15 +50,15 @@ test("신호: 출석 줄어듦 · 출석 없음 · 비포애프터 · 보낸 말
 });
 
 test("신호 문구에는 숫자가 들어가고 모르는 코드는 코드 그대로", () => {
-  assert.equal(radarSignalLabel({ code: RADAR_SIGNAL.PACE_DROP, before: 4, recent: 1 }), "출석 줄어듦 (4주 4회 → 1회)");
-  assert.equal(radarSignalLabel({ code: RADAR_SIGNAL.ABSENT, days: 20 }), "20일째 출석 없음");
+  assert.equal(radarSignalLabel({ code: RADAR_SIGNAL.PACE_DROP, before: 4, recent: 1 }), "요즘 덜 나옴 (4주 4회 → 1회)");
+  assert.equal(radarSignalLabel({ code: RADAR_SIGNAL.ABSENT, days: 20 }), "20일째 안 나옴");
   assert.equal(radarSignalLabel({ code: "mystery" }), "mystery");
 });
 
 test("회원권 문구", () => {
-  assert.equal(radarPassLabel({ remaining: 2, daysToExpiry: 5, alert: "expiry_soon", unusable: 0 }), "잔여 2회 · 만료까지 5일");
-  assert.equal(radarPassLabel({ remaining: 9, daysToExpiry: 0, alert: "cannot_use_up", unusable: 4 }), "잔여 9회 · 오늘 만료 · 이 속도면 4회 남김");
-  assert.equal(radarPassLabel({ remaining: 3, daysToExpiry: null, alert: "pace_unknown", unusable: 0 }), "잔여 3회");
+  assert.equal(radarPassLabel({ remaining: 2, daysToExpiry: 5, alert: "expiry_soon", unusable: 0 }), "남은 수업 2회 · 끝나는 날까지 5일");
+  assert.equal(radarPassLabel({ remaining: 9, daysToExpiry: 0, alert: "cannot_use_up", unusable: 4 }), "남은 수업 9회 · 오늘 끝남 · 지금처럼 다니면 4회 못 쓰고 끝남");
+  assert.equal(radarPassLabel({ remaining: 3, daysToExpiry: null, alert: "pace_unknown", unusable: 0 }), "남은 수업 3회");
 });
 
 test("재등록률: 최근 90일 결정만 · 표본 적으면 퍼센트 대신 명수", () => {
@@ -70,10 +70,10 @@ test("재등록률: 최근 90일 결정만 · 표본 적으면 퍼센트 대신 
   ];
   const rate = instructorRenewalRate(rows, NOW);
   assert.deepEqual(rate, { renewed: 1, decided: 2, pending: 1, rate: 0.5 });
-  assert.deepEqual(renewalRateLabel(rate), { label: "재등록 2명 중 1명", code: "renewal_rate_small" });
+  assert.deepEqual(renewalRateLabel(rate), { label: "끝난 회원 2명 중 1명 다시 등록", code: "renewal_rate_small" });
   const many = Array.from({ length: RATE_MIN_SAMPLE }, (_, index) => ({ status: index < 4 ? "renewed" : "lapsed", decidedAt: ago(5) }));
-  assert.deepEqual(renewalRateLabel(instructorRenewalRate(many, NOW)), { label: "재등록 80% (5명 중 4명)", code: "renewal_rate" });
-  assert.deepEqual(renewalRateLabel(instructorRenewalRate([], NOW)), { label: "재등록 결과 아직 없음", code: "renewal_rate_none" });
+  assert.deepEqual(renewalRateLabel(instructorRenewalRate(many, NOW)), { label: "다시 등록 80% (끝난 회원 5명 중 4명)", code: "renewal_rate" });
+  assert.deepEqual(renewalRateLabel(instructorRenewalRate([], NOW)), { label: "다시 등록 결과 아직 없음", code: "renewal_rate_none" });
 });
 
 test("기록률 문구: 보고 없음 · 수업 없음 · 비율", () => {
@@ -148,6 +148,20 @@ test("화면 배선: 메뉴 항목 · 대표 · 총괄 · 점장 · 부원장 �
   for (const needle of ['key: "renewal-radar", title: "재등록 레이더"', 'view === "renewal-radar" && (showAudit || showRadarStaff)', "staffMode={!showAudit}", "function RenewalRadarScreen(", "data-radar-signal={signal.code}"]) {
     assert.ok(app.includes(needle), `App.jsx 에 ${needle} 없음`);
   }
+});
+
+test("면담 화면 묶음: 이번 주 상담 · 덜 나옴 · 못 쓰고 끝남 · 한마디 없음 (2026-11-24)", () => {
+  const member = (id, extra) => ({ clientId: id, name: id, urgent: false, forecast: { remaining: 3, daysToExpiry: 20, alert: "normal", unusable: 0 }, signals: [], ...extra });
+  const sections = interviewSections({ members: [
+    member("a", { urgent: true }),
+    member("b", { signals: [{ code: RADAR_SIGNAL.ABSENT, days: 20 }, { code: RADAR_SIGNAL.NO_MEMBER_NOTE }] }),
+    member("c", { forecast: { remaining: 9, daysToExpiry: 10, alert: "cannot_use_up", unusable: 4 } }),
+    member("d", { signals: [{ code: RADAR_SIGNAL.BEFORE_AFTER_NEVER }] }),
+  ] });
+  assert.deepEqual(sections.map((section) => section.key), ["this_week", "coming_less", "left_over", "no_note"]);
+  assert.deepEqual(sections.map((section) => section.members.map((item) => item.clientId)), [["a"], ["b"], ["c"], ["b"]]);
+  assert.ok(sections.every((section) => section.ask && section.why), "묶음마다 왜 · 물어볼 말");
+  assert.equal(isAttendanceSignal({ code: RADAR_SIGNAL.NO_MEMBER_NOTE }), false, "한마디는 강사 습관 쪽");
 });
 
 test("아직 모르는 것은 신호로 치지 않는다: 보낸 말 · 기록률 (먼저 온 것부터 보여 줄 때)", () => {

@@ -428,7 +428,7 @@ import { beforeAfterBoard, shareInstructorView, shareMemberLabel } from "./featu
 import { beforeAfterNudge, lastSentAtOf, recordNudge } from "./features/records/record-nudges.js";
 import {
   ABSENT_DAYS, MEMBER_NOTE_DAYS, RADAR_URGENT_DAYS, RADAR_URGENT_REMAINING, RATE_MIN_SAMPLE,
-  RADAR_EXPIRY_DAYS, RADAR_REMAINING_MAX, RATE_WINDOW_DAYS, radarPassLabel, radarSignalLabel, radarSummary, renewalRadar, renewalRateLabel,
+  RADAR_EXPIRY_DAYS, RADAR_REMAINING_MAX, RATE_WINDOW_DAYS, interviewSections, isAttendanceSignal, radarPassLabel, radarSignalLabel, radarSummary, renewalRadar, renewalRateLabel,
 } from "./features/records/renewal-radar.js";
 import { groupRowsByBranch, pickBranch } from "./features/records/branch-groups.js";
 import {
@@ -28199,6 +28199,67 @@ function FlowPtQueueScreen({ organization, currentUserId, onOpenIssue, onLoad = 
  * 재등록 레이더 읽는 법 (2026-11-24 대표: "점장이 처음 보면 무슨 말인지 모름 -- 뭐가 급함이고 횟수는 뭘 뜻하는지,
  * 점장이 강사들 대상으로 면담할 때 생각해서 자세하게"). 기준 숫자는 renewal-radar.js 의 상수를 그대로 쓴다.
  */
+/**
+ * 면담 화면 (2026-11-24 대표). 강사 한 명의 곧 끝나는 회원을 할 이야기별로 나누고, 묶음마다 물어볼 말을 함께 둔다.
+ * 묶음은 features/records/renewal-radar.js 의 interviewSections. 강사와 같이 보는 화면이라 글자를 크게, 숫자는 넷만.
+ */
+function RadarInterview({ row, onClose, onOpenClient }) {
+  const sections = interviewSections(row);
+  const renewal = row.renewal ? renewalRateLabel(row.renewal) : null;
+  const tiles = [
+    { label: "곧 끝나는 회원", value: `${row.members.length}명` },
+    { label: "이번 주 상담", value: `${sections[0].members.length}명`, color: sections[0].members.length ? BAD : INK },
+    { label: "요즘 덜 나옴", value: `${sections[1].members.length}명`, color: sections[1].members.length ? WARN : INK },
+    { label: "다시 등록", value: renewal ? renewal.label.replace(/^다시 등록 /, "") : "—" },
+  ];
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 16 }} data-radar-interview={row.instructorId || "none"}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p style={{ fontSize: TYPE.caption, color: SUB }}>면담</p>
+          <h2 className="truncate" style={{ fontSize: TYPE.title, fontWeight: 700, color: INK }}>{row.name || "담당 강사 없음"} 선생님</h2>
+        </div>
+        <button type="button" onClick={onClose} className="h-10 shrink-0 px-3 font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>닫기</button>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
+        {tiles.map((tile) => (
+          <div key={tile.label} style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: "10px 12px" }}>
+            <p style={{ fontSize: TYPE.caption, color: SUB }}>{tile.label}</p>
+            <p className="tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: tile.color || INK }}>{tile.value}</p>
+          </div>
+        ))}
+      </div>
+      <p className="mt-3" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: SUB }}>
+        위에서부터 차례로 이야기해요. 숫자는 대화를 시작하는 재료예요 — 강사를 평가하는 점수가 아니에요.
+      </p>
+      {sections.map((section, index) => (
+        <div key={section.key} className="mt-4" data-radar-interview-section={section.key}>
+          <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{index + 1}. {section.title} <span className="tabular-nums" style={{ color: SUB }}>{section.members.length}명</span></p>
+          <p className="mt-0.5" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: SUB }}>{section.why}</p>
+          <div className="mt-2" style={{ borderRadius: 10, backgroundColor: TINT, padding: "8px 12px" }}>
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: BRAND_D }}><b>이렇게 물어보세요</b> — {section.ask}</p>
+          </div>
+          {section.members.length ? (
+            <div className="mt-2 space-y-1.5">
+              {section.members.map((member) => (
+                <div key={member.clientId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }}>
+                  <button type="button" onClick={() => onOpenClient?.({ id: member.clientId, name: member.name })} className="text-left font-bold" style={{ fontSize: TYPE.body, color: INK }}>
+                    {member.name || "이름 모름"}{member.duet ? " · 듀엣" : ""}
+                  </button>
+                  <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{radarPassLabel(member.forecast)}</p>
+                  {section.key === "coming_less" ? (
+                    <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: WARN }}>{member.signals.filter(isAttendanceSignal).map(radarSignalLabel).join(" · ")}</p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : <p className="mt-2" style={{ fontSize: TYPE.caption, color: FAINT }}>해당하는 회원이 없어요.</p>}
+        </div>
+      ))}
+    </section>
+  );
+}
+
 function RadarGuide({ open, onToggle, staffMode }) {
   const term = (title, body) => (
     <div className="mt-2">
@@ -28214,19 +28275,20 @@ function RadarGuide({ open, onToggle, staffMode }) {
       </button>
       {open ? (
         <div className="px-3 pb-3">
-          {term("곧 끝나는 회원 (곧 끝남 N명)", `아래 셋 중 하나에 해당하면 이 목록에 올라와요. ① 남은 횟수가 ${RADAR_REMAINING_MAX}회 이하 ② 만료일까지 ${RADAR_EXPIRY_DAYS}일 이하 ③ 최근 4주처럼 다니면 만료일 전에 회원권을 다 쓰지 못함.`)}
-          {term("급함 (빨간 표시)", `곧 끝나는 회원 중에서도 남은 횟수가 ${RADAR_URGENT_REMAINING}회 이하이거나 만료일까지 ${RADAR_URGENT_DAYS}일 이하인 회원이에요. 다음 수업이 사실상 마지막일 수 있어서, 이번 주 수업 안에 재등록 이야기를 꺼내야 해요.`)}
-          {term("잔여 N회", "회원권에 남은 수업 횟수예요 (서비스 회차 포함). 듀엣은 두 분이 함께 쓰는 횟수라, 잔여 4회면 둘이 합쳐 4번 남은 거예요.")}
-          {term("만료까지 약 2주", "계약서에 적힌 만료일까지 남은 기간이에요. 홀딩 중이면 멈춘 기간만큼 뒤로 가 있어요.")}
-          {term("이 속도면 N회 남김", "최근 4주처럼 다니면 만료일에 N회가 쓰이지 못하고 남는다는 뜻이에요. 수업 횟수를 늘리거나 홀딩을 권할 회원이에요.")}
-          {term("주의 신호 (노란 칸)", `강사가 평소 하는 일에서 저절로 나와요. 출석 줄어듦(4주 6회 → 2회): 최근 4주 출석이 그 전 4주의 절반 이하. N일째 출석 없음: 마지막 출석 뒤 ${ABSENT_DAYS}일 넘게 안 옴. 8주 동안 출석 없음. ${MEMBER_NOTE_DAYS}일 동안 보낸 말 없음: 수업은 했는데 회원 앱으로 한마디도 안 보냄.${staffMode ? "" : " 비포애프터 받은 적 없음 · 오래전: 회원 앱에 연결된 회원에게 변화 카드를 보내지 않음."}`)}
-          {term("재등록 N명 중 M명", `최근 ${RATE_WINDOW_DAYS}일 동안 회원권이 끝난 회원 중 다시 등록한 회원이에요. ${RATE_MIN_SAMPLE}명이 안 되면 퍼센트 대신 사람 수로 보여요 — 사람이 적으면 한 명에 크게 흔들려요.`)}
+          {term("곧 끝나는 회원", `아래 셋 중 하나면 이 목록에 올라와요. ① 남은 수업이 ${RADAR_REMAINING_MAX}회 이하 ② 끝나는 날까지 ${RADAR_EXPIRY_DAYS}일 이하 ③ 지금처럼 다니면 끝나는 날까지 수업을 다 못 씀.`)}
+          {term("이번 주 상담 (빨간 표시)", `곧 끝나는 회원 중에서도 남은 수업이 ${RADAR_URGENT_REMAINING}회 이하이거나 끝나는 날까지 ${RADAR_URGENT_DAYS}일 이하인 회원이에요. 다음 수업이 사실상 마지막일 수 있어서, 이번 주 수업 안에 재등록 이야기를 꺼내야 해요.`)}
+          {term("남은 수업 N회", "회원권에 남은 수업 횟수예요 (서비스로 준 수업 포함). 듀엣은 두 분이 함께 쓰는 횟수라, 남은 수업 4회면 둘이 합쳐 4번 남은 거예요.")}
+          {term("끝나는 날까지 약 2주", "계약서에 적힌 끝나는 날(만료일)까지 남은 기간이에요. 홀딩 중이면 멈춘 기간만큼 뒤로 가 있어요.")}
+          {term("지금처럼 다니면 N회 못 쓰고 끝남", "최근 4주처럼 다니면 끝나는 날에 N회가 쓰이지 못하고 사라진다는 뜻이에요. 수업 횟수를 늘리거나 홀딩을 권할 회원이에요.")}
+          {term("챙길 점 (노란 칸)", `강사가 평소 하는 일에서 저절로 나와요. 요즘 덜 나옴(4주 6회 → 2회): 최근 4주 출석이 그 전 4주의 절반 이하. N일째 안 나옴: 마지막 수업 뒤 ${ABSENT_DAYS}일 넘게 안 옴. 두 달째 안 나옴. 한 달째 회원에게 한마디 안 보냄: 수업은 했는데 회원 앱으로 한마디도 안 보냄.${staffMode ? "" : " 변화 사진 카드 안 보냄: 회원 앱에 연결된 회원에게 비포애프터 카드를 보낸 적이 없음."} 앞의 셋(출석)이 그만둘 걱정이 큰 쪽이에요.`)}
+          {term("다시 등록 (끝난 회원 N명 중 M명)", `최근 ${RATE_WINDOW_DAYS}일 동안 회원권이 끝난 회원 중 다시 등록한 회원이에요. ${RATE_MIN_SAMPLE}명이 안 되면 퍼센트 대신 사람 수로 보여요 — 사람이 적으면 한 명에 크게 흔들려요.`)}
           <p className="mt-3 font-bold" style={{ fontSize: TYPE.caption, color: INK }}>강사 면담할 때</p>
           <ol className="mt-1 space-y-1" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: INK2, paddingLeft: 18, listStyle: "decimal" }}>
-            <li>강사 카드를 하나씩 열고 <b>급함</b> 회원부터 봐요 — "다음 수업 때 재등록 이야기를 했는지, 회원 반응은 어땠는지".</li>
-            <li>노란 <b>주의 신호</b>가 있는 회원은 — "출석이 줄어든 이유를 아는지 (일정 · 몸 상태 · 만족도 중 무엇인지)".</li>
-            <li><b>이 속도면 N회 남김</b> 회원은 — 만료 전에 다 쓰도록 수업을 늘리거나 홀딩을 권했는지.</li>
-            <li><b>보낸 말 없음</b>이 많으면 — 수업 뒤 회원 앱으로 한마디 보내는 습관을 같이 이야기해요.</li>
+            <li>강사 카드에서 <b>[면담 화면 띄우기]</b>를 누르면 이야기할 순서대로 정리된 화면이 떠요. 강사와 같이 보세요.</li>
+            <li><b>이번 주 상담</b> 회원부터 — "다음 수업 때 재등록 이야기를 했는지, 회원 반응은 어땠는지".</li>
+            <li><b>요즘 덜 나옴 · 안 나옴</b> 회원은 — "왜 덜 나오는지 아는지 (일정 · 몸 상태 · 수업 만족 중 무엇인지)".</li>
+            <li><b>못 쓰고 끝남</b> 회원은 — 끝나기 전에 다 쓰도록 수업을 늘리거나 홀딩을 권했는지.</li>
+            <li><b>한마디 안 보냄</b>이 많으면 — 수업 뒤 회원 앱으로 한마디 보내는 습관을 같이 이야기해요.</li>
             <li>숫자는 대화를 시작하는 재료예요. 강사를 평가하는 점수로 쓰지 말아 주세요.</li>
           </ol>
         </div>
@@ -28242,6 +28304,9 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
     [organizationId, clientStore, passStore, instructorStore, onLoadShares, onLoadBranch, staffMode, organization?.role]);
   /* 점장 · 부원장에게는 이 화면 읽는 법을 펼쳐 둔다 (처음 보면 "급함" · "횟수" 가 무슨 뜻인지 모른다 -- 대표). */
   const [guideOpen, setGuideOpen] = useState(initialState?.guideOpen ?? staffMode);
+  /* 면담 화면 (2026-11-24 대표: "면담 때 도움될 수 있게 화면을 띄울 수 있게"). 강사 한 명 -- 이야기할 순서대로. */
+  const [interviewId, setInterviewId] = useState(initialState?.interview ?? null);
+  const setInterview = (row) => setInterviewId(row ? (row.instructorId || "") : null);
   const [snapshot, setSnapshot] = useState(() => {
     if (initialState) return { data: initialState.data || {}, loading: false };
     const entry = organizationId ? radarEntry(cacheKey) : null;
@@ -28322,7 +28387,7 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
             <button type="button" onClick={() => onOpenClient?.({ id: member.clientId, name: member.name })} className="min-w-0 flex-1 truncate text-left font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
               {member.name || "이름 모름"}{member.duet ? " · 듀엣" : ""}
             </button>
-            {member.urgent ? chip("urgent", "급함") : null}
+            {member.urgent ? chip("urgent", "이번 주 상담") : null}
           </div>
           <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{radarPassLabel(member.forecast)}</div>
           {member.signals.length ? (
@@ -28331,7 +28396,7 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
                 <span key={signal.code} className="px-1.5 py-0.5" style={{ fontSize: TYPE.caption, borderRadius: 6, color: WARN, backgroundColor: WARN_S }} data-radar-signal={signal.code}>{radarSignalLabel(signal)}</span>
               ))}
             </div>
-          ) : <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>신호 없음</div>}
+          ) : <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>챙길 점 없음</div>}
         </div>
       ))}
       {!row.members.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>지금 곧 끝나는 회원은 없어요.</p> : null}
@@ -28344,10 +28409,13 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
         <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{row.name || row.instructorId || "담당 강사 없음"}{row.active ? "" : " · 소속 아님"}</p>
         <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{joinLine(recordText(row), renewal?.label)}</p>
         <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>{joinLine(recordCode(row), renewal ? `코드 ${renewal.code}` : "")}</p>
+        <button type="button" onClick={() => setInterview(row)} className="mt-2 h-10 w-full font-bold" style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption }} data-radar-interview-open>면담 화면 띄우기</button>
         <div className="mt-2">{radarMemberList(row)}</div>
       </div>
     );
   };
+  const interviewRow = interviewId === null ? null : (view?.rows || []).find((row) => (row.instructorId || "") === interviewId) || null;
+  if (interviewRow) return <RadarInterview row={interviewRow} onClose={() => setInterview(null)} onOpenClient={onOpenClient} />;
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-renewal-radar>
       <div className="flex items-center justify-between">
@@ -28358,7 +28426,7 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
         </span>
       </div>
       <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        회원권이 곧 끝나는 회원을 담당 강사별로 모았어요. 주의 신호가 많은 회원이 위에 있어요.
+        회원권이 곧 끝나는 회원을 담당 강사별로 모았어요. 챙길 점이 많은 회원이 위에 있어요.
         {" "}신호는 출석 · 회원에게 보낸 말{staffMode ? "" : " · 비포애프터"}에서 저절로 나와요 — <b style={{ color: INK }}>강사가 따로 할 일은 없어요.</b>
         {staffMode ? (data.staff?.scope === "all" ? " 부원장이라 모든 지점이 보여요." : " 맡은 지점 회원만 보여요.") : ""}
         {staffMode ? " 회원 연락처 · 수업 단가는 이 화면에 없어요." : ""}
@@ -28367,9 +28435,9 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
       {view && view.rows.length ? (
         <SummaryTiles items={[
           { label: "곧 끝나는 회원", value: `${summary.total}명`, code: "radar_total" },
-          { label: "급함", value: `${summary.urgent}명`, color: summary.urgent ? BAD : INK, code: "radar_urgent" },
-          { label: "신호 있음", value: `${summary.atRisk}명`, color: summary.atRisk ? WARN : INK, code: "radar_at_risk" },
-          { label: `재등록 · 최근 ${RATE_WINDOW_DAYS}일`, value: overallRenewal ? renewalRateLabel(overallRenewal).label.replace(/^재등록 /, "") : "—", code: "radar_renewal" },
+          { label: "이번 주 상담", value: `${summary.urgent}명`, color: summary.urgent ? BAD : INK, code: "radar_urgent" },
+          { label: "챙길 점 있음", value: `${summary.atRisk}명`, color: summary.atRisk ? WARN : INK, code: "radar_at_risk" },
+          { label: `다시 등록 · 최근 ${RATE_WINDOW_DAYS}일`, value: overallRenewal ? renewalRateLabel(overallRenewal).label.replace(/^다시 등록 /, "") : "—", code: "radar_renewal" },
         ]} />
       ) : null}
       {!view && data.coreError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>재등록 레이더를 읽지 못했어요 (코드 {data.coreError})</p> : null}
@@ -28392,12 +28460,12 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
         <AggregateSplit wide detail={selectedRow ? radarDetail(selectedRow) : null}>
           <InstructorTable rows={shown} selected={selectedRow?.instructorId} onSelect={setOpen} columns={[
             { key: "name", label: "강사", firstDir: "asc", sortValue: (row) => row.name || row.instructorId, render: (row) => <span className="font-bold">{row.name || row.instructorId || "담당 강사 없음"}{row.active ? "" : " · 소속 아님"}</span> },
-            { key: "members", label: "곧 끝남", align: "right", sortValue: (row) => row.members.length, render: (row) => `${row.members.length}명` },
-            { key: "urgent", label: "급함", align: "right", sortValue: (row) => row.urgent, render: (row) => (row.urgent ? <TonePill color={BAD} background={BAD_S}>{row.urgent}</TonePill> : "—") },
-            { key: "risk", label: "주의 신호", align: "right", sortValue: (row) => row.atRisk, render: (row) => (row.atRisk ? row.atRisk : "—") },
+            { key: "members", label: "곧 끝나는 회원", align: "right", sortValue: (row) => row.members.length, render: (row) => `${row.members.length}명` },
+            { key: "urgent", label: "이번 주 상담", align: "right", sortValue: (row) => row.urgent, render: (row) => (row.urgent ? <TonePill color={BAD} background={BAD_S}>{row.urgent}</TonePill> : "—") },
+            { key: "risk", label: "챙길 점", align: "right", sortValue: (row) => row.atRisk, render: (row) => (row.atRisk ? row.atRisk : "—") },
             ...(staffMode ? [] : [{ key: "record", label: "기록률", align: "right", sortValue: (row) => row.record.rate, render: (row) => (row.record.rate === null ? <span style={{ color: SUB }}>{row.record.label.replace(/^기록률 — /, "")}</span>
               : <TonePill color={row.record.rate >= RECORD_RATE_GOOD ? GOOD : row.record.rate >= RECORD_RATE_LOW ? WARN : BAD} background={row.record.rate >= RECORD_RATE_GOOD ? GOOD_S : row.record.rate >= RECORD_RATE_LOW ? WARN_S : BAD_S}>{Math.round(row.record.rate * 100)}%</TonePill>) }]),
-            { key: "renewal", label: "재등록", align: "right", sortValue: (row) => (row.renewal?.decided ? row.renewal.rate : null), render: (row) => (row.renewal ? renewalRateLabel(row.renewal).label.replace(/^재등록 /, "") : "확인 중") },
+            { key: "renewal", label: "다시 등록", align: "right", sortValue: (row) => (row.renewal?.decided ? row.renewal.rate : null), render: (row) => (row.renewal ? renewalRateLabel(row.renewal).label.replace(/^다시 등록 /, "") : "확인 중") },
           ]} />
         </AggregateSplit>
       ) : (
@@ -28412,15 +28480,20 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
                   <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>
                     {row.name || (row.instructorId ? row.instructorId : "담당 강사 없음")}{row.active ? "" : " · 소속 아님"}
                   </span>
-                  {row.urgent ? chip("urgent", `급함 ${row.urgent}`) : null}
-                  {chip(row.atRisk ? "risk" : "calm", `곧 끝남 ${row.members.length}명`)}
+                  {row.urgent ? chip("urgent", `이번 주 상담 ${row.urgent}`) : null}
+                  {chip(row.atRisk ? "risk" : "calm", `곧 끝나는 회원 ${row.members.length}명`)}
                   <ChevronDown size={16} style={{ color: SUB, transform: expanded ? "rotate(180deg)" : "none" }} />
                 </button>
                 <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
                   {joinLine(recordText(row), renewal?.label)}
                 </div>
                 <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>{joinLine(recordCode(row), renewal ? `코드 ${renewal.code}` : "")}</div>
-                {expanded ? <div className="mt-2">{radarMemberList(row)}</div> : null}
+                {expanded ? (
+                  <div className="mt-2">
+                    <button type="button" onClick={() => setInterview(row)} className="mb-2 h-10 w-full font-bold" style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption }} data-radar-interview-open>면담 화면 띄우기</button>
+                    {radarMemberList(row)}
+                  </div>
+                ) : null}
               </div>
             );
           })}
@@ -33805,6 +33878,29 @@ export function createAppScreenSmokeCases() {
       <RenewalRadarScreen organization={readyOrganizationContext({ ...smokeOwner, role: "instructor", title: "branch_manager" })} onOpenClient={noop} staffMode
         initialState={{
           open: "u1", guideOpen: true,
+          data: {
+            staff: { scope: "branch" },
+            core: {
+              now: new Date(2026, 10, 21, 12).getTime(), activityMonth: "",
+              clients: [{ id: "r1", name: "김하나", userId: "linked", instructorIds: ["u1"] }],
+              passes: [{ id: "rp1", clientId: "r1", instructorId: "u1", status: "active", remainingCount: 1, totalSessions: 30, createdAt: new Date(2026, 3, 1).getTime(), expiresAt: new Date(2026, 11, 30).getTime() }],
+              ledger: [{ id: "d1", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 10, 1).getTime() }],
+            },
+            coreError: "",
+            notes: { items: [], failed: false, errorCode: "" },
+            shares: { rows: null, hidden: true },
+            activities: { items: null, failed: false, hidden: true },
+            candidates: { rows: [], errorCode: "" },
+            members: { items: smokeInstructors, failed: false, errorCode: "" },
+            locations: { items: [{ id: "bansong", name: "반송" }], failed: false, errorCode: "" },
+          },
+        }} />
+    )) },
+    /* 면담 화면 (2026-11-24): 강사 한 명 -- 이야기할 순서대로 네 묶음. */
+    { name: "재등록 레이더 · 면담 화면", element: providerWith({ ...smokeOwner, role: "instructor", title: "branch_manager" }, (
+      <RenewalRadarScreen organization={readyOrganizationContext({ ...smokeOwner, role: "instructor", title: "branch_manager" })} onOpenClient={noop} staffMode
+        initialState={{
+          open: "u1", guideOpen: true, interview: "u1",
           data: {
             staff: { scope: "branch" },
             core: {

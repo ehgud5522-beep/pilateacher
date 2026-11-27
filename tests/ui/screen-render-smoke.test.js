@@ -3832,6 +3832,17 @@ test("lesson ratings: the owner sees per-instructor counts and averages only, fa
   assert.match(flow, /data-flow-pt-left="true"/, "실패 표시");
   assert.match(flow, /data-flow-pt-resucceeded/, "다시 성공 표시");
   assert.match(flow, /data-branch-tab="loc-b"[^>]*>[\s\S]*?2건/, "지점 칩 숫자는 발급할 수 있는 대기만");
+  /* 3단계 (2026-11-28): 발급 뒤 플로우 내용이 바뀐 것 · 잔금 받음 (회원권 잔금 칸 줄이기). */
+  assert.match(flow, /data-flow-pt-changed/);
+  assert.match(flow, /발급 뒤 플로우 내용이 바뀐 것 1건/);
+  assert.match(flow, /다회원 재등록 · 횟수 · 금액 바뀜/);
+  assert.match(flow, /잔금 받음 처리/);
+  assert.match(flow, /회원권 없이 확인함/);
+  assert.match(flow, /data-flow-pt-balance-panel/);
+  assert.match(flow, /data-flow-pt-balance-pass="bp1"/, "글 이름(나회원)이 들어간 회원권이 먼저 뜬다");
+  assert.doesNotMatch(flow, /data-flow-pt-balance-pass="bp2"/, "이름이 안 맞는 회원권은 찾기 전에는 안 뜬다");
+  assert.match(flow, /잔금 500,000원/);
+  assert.match(flow, /잔금 줄이기/);
   assert.match(flow, /처리한 것 1건/);
   assert.match(flow, /되돌리기/);
   /* [새로고침] = 지금 가져오기 (2026-11-24): 몇 건 읽었는지 · 보드마다 실패 이유와 원본 코드. */

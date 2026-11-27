@@ -354,3 +354,23 @@ test("실패 → 다시 성공: 대기로 돌아온다 -- 해당 없음이었어
   assert.equal(row("90000023").resucceededAt, undefined);
   assert.equal(counts.resucceeded, 3);
 });
+
+/* 2026-11-28 3단계: 발급한 업무의 상품 · 횟수 · 금액이 플로우에서 바뀌면 표시한다 -- 회원권은 따라가지 않는다. */
+test("발급 뒤 바뀜: 발급된 줄의 상품 · 횟수 · 금액이 바뀌면 시각과 칸을 남긴다 -- 대기 줄 · 처음 채워진 칸은 아니다", async () => {
+  const base = { flowProjectId: "2955393", handledBy: "fc", createdAt: new Date("2026-11-26T00:00:00Z"), registeredAt: new Date("2026-11-26T00:00:00Z"), title: "회원", product: "1:1pt 10s", sessions: 10, amountManwon: "55" };
+  const firestore = fakeFirestore({
+    "organizations/org": {}, "organizations/org/locations/l1": { name: "삼계점" },
+    "organizations/org/flowPtQueue/90000030": { ...base, postId: "90000030", state: "issued", passId: "pass-1" },
+    "organizations/org/flowPtQueue/90000031": { ...base, postId: "90000031", state: "waiting", handledBy: "" },
+    "organizations/org/flowPtQueue/90000032": { ...base, postId: "90000032", state: "issued", product: "", sessions: null, amountManwon: "" },
+  });
+  const fetchImpl = async (url) => (url.includes("/2955393/") ? ok(["90000030", "90000031", "90000032"].map((id) => task(id, "1:1pt 20s"))) : ok([]));
+  const counts = await createFlowPtQueueService({ firestore, fetchImpl, apiKey: () => "key", now: () => new Date("2026-11-28T03:00:00Z") }).sync();
+  const row = (id) => firestore.docs.get(`organizations/org/flowPtQueue/${id}`);
+  assert.deepEqual(row("90000030").changedAfterIssueFields.includes("product"), true);
+  assert.ok(row("90000030").changedAfterIssueFields.includes("sessions"));
+  assert.equal(row("90000030").changedAfterIssueAt.toISOString(), "2026-11-28T03:00:00.000Z");
+  assert.equal(row("90000031").changedAfterIssueAt, undefined, "대기 줄은 발급 전이라 그냥 내용만 바뀐다");
+  assert.equal(row("90000032").changedAfterIssueAt, undefined, "비어 있던 칸이 처음 채워진 것은 바뀜이 아니다");
+  assert.equal(counts.changedAfterIssue, 1);
+});

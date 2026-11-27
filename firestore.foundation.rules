@@ -1279,6 +1279,31 @@ service cloud.firestore {
         // nothing else: handovers happen while the owner is not at the centre,
         // and the transfer is safe because it rewrites no past entry — every
         // deducted session already carries the instructor it was taught by.
+        function passBalanceReceiptLinked(post, passId, received) {
+          return post.get("balancePassId", "") == passId
+            && post.get("balanceReceivedWon", -1) == received
+            && post.get("isBalance", false) == true
+            && post.get("state", "") == "issued";
+        }
+        /* ── 잔금 받음 (2026-11-28, PT 발급 대기 3단계) ─────────────────────
+           FC 가 플로우의 잔금 글을 보고 회원권의 잔금을 받은 만큼 줄인다. **잔금 칸만, 줄이기만** (0 아래로 못 간다, 늘리지 못한다).
+           같은 배치에서 그 잔금 글(flowPtQueue/{balanceFlowPostId})이 이 회원권과 받은 금액을 가리켜야 한다 -- 글 쪽 문이
+           대기 → 처리를 한 번만 열므로 같은 잔금 글로 두 번 줄일 수 없다. 발급 권한(canIssuePass) · FC 는 맡은 지점 회원권만.
+           잔금은 매출 집계에 쓰이지 않는다 (발급 내역은 결제 수단별 금액으로 따로 센다, issue-report-repository.js). */
+        allow update: if resource.data.organizationId == organizationId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["balance", "balanceFlowPostId", "balanceUpdatedAt", "balanceUpdatedBy"])
+          && request.resource.data.balance is int
+          && request.resource.data.balance >= 0
+          && request.resource.data.balance < resource.data.get("balance", 0)
+          && request.resource.data.balanceUpdatedAt == request.time
+          && request.resource.data.balanceUpdatedBy == request.auth.uid
+          && request.resource.data.balanceFlowPostId is string
+          && request.resource.data.balanceFlowPostId.size() > 0
+          && canIssuePass(organizationId)
+          && (membership(organizationId).data.role != "manager" || passInManagerScope(organizationId, resource.data))
+          && passBalanceReceiptLinked(
+            getAfter(/databases/$(database)/documents/organizations/$(organizationId)/flowPtQueue/$(request.resource.data.balanceFlowPostId)).data,
+            passId, resource.data.get("balance", 0) - request.resource.data.balance);
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
           /* ── 어느 갈래로 오든 지키는 것 ────────────────────────────────
@@ -1979,7 +2004,37 @@ service cloud.firestore {
               && getAfter(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(request.resource.data.passId)).data.get("flowPostId", "") == postId
             )
           );
+        /* 발급 뒤 바뀜 [확인함] (2026-11-28, 3단계). 서버가 changedAfterIssueAt 을 남긴 줄을 FC 가 봤다는 표시 -- 확인 칸 둘만,
+           내 이름 · 지금 시각으로. 회원권과 이어진 줄에도 된다 (위 처리 문은 이어진 줄을 막는다). */
+        allow update: if flowPtQueueStaff(organizationId, resource.data)
+          && "changedAfterIssueAt" in resource.data
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["changeAckedAt", "changeAckedBy"])
+          && request.resource.data.changeAckedBy == request.auth.uid
+          && request.resource.data.changeAckedAt == request.time;
+        /* 잔금 받음 (2026-11-28, 3단계 · 대표 결정: 계약금 때 발급, 잔금은 발급 화면 잔금 칸). 잔금 글 하나로 회원권 하나의 잔금을
+           받은 만큼 줄인다 -- 같은 배치에서 그 회원권이 balanceFlowPostId 로 이 글을 가리키고, 줄어든 금액이 balanceReceivedWon 과
+           같아야 한다 (회원권 쪽 문이 같은 선을 다시 긋는다). 대기에서만 -- 처리된 잔금 글로 두 번 줄이지 못한다. */
+        allow update: if flowPtQueueStaff(organizationId, resource.data)
+          && resource.data.get("isBalance", false) == true
+          && resource.data.state == "waiting"
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["state", "handledBy", "handledAt", "balancePassId", "balanceReceivedWon"])
+          && request.resource.data.state == "issued"
+          && request.resource.data.handledBy == request.auth.uid
+          && request.resource.data.handledAt == request.time
+          && request.resource.data.balanceReceivedWon is int
+          && request.resource.data.balanceReceivedWon > 0
+          && request.resource.data.balancePassId is string
+          && request.resource.data.balancePassId.size() > 0
+          && flowPtBalanceMatches(
+            get(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(request.resource.data.balancePassId)).data,
+            getAfter(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(request.resource.data.balancePassId)).data,
+            postId, request.resource.data.balanceReceivedWon);
         allow create, delete: if false;
+      }
+      /* 잔금 글과 회원권이 서로 맞는가: 회원권이 이 글을 가리키고, 줄어든 잔금이 받은 금액과 같다. */
+      function flowPtBalanceMatches(before, after, postId, received) {
+        return after.get("balanceFlowPostId", "") == postId
+          && before.get("balance", 0) - after.get("balance", 0) == received;
       }
 
       /* ── 강사 개인매출 인센 (2026-11-21 대표 결정, functions/shared/sales-incentive.mjs) ──────────

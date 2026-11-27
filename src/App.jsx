@@ -18784,20 +18784,14 @@ function PassIssue({
   );
   const client = clients.find((item) => item.id === form.clientId) || null;
   const partner = form.duet ? clients.find((item) => item.id === form.partnerClientId) || null : null;
-  /* 차수를 저절로 채운다. 2026-10-09 부터 차감이 차수 순으로 가므로, 손으로
-     넣는 값이 틀리면 엉뚱한 회원권에서 빠진다 -- 전에는 화면에 적히기만 하는
-     숫자라 틀려도 아무 일이 없었다.
-
-     대표가 고칠 수 있게 둔다. 이관분의 번호가 비어 있거나 건너뛴 경우가 있고,
-     그때 맞는 번호를 아는 것은 대표뿐이다. */
+  /* 차수는 저절로 정한다 -- **입력 칸은 없다** (2026-11-28 대표: "차수 칸 빼 줘").
+     차감은 만료일이 이른 회원권부터 쓰고(2026-10-22 확정, lesson-settlement.js nextByPurchaseRound), 차수는 만료일이
+     같을 때만 보는 두 번째 기준이다. 그래서 사람이 고칠 일이 없다. 값은 계속 저장한다 -- 규칙이 요구하고(passes create
+     purchaseRound int >= 1), 같은 날 한꺼번에 들어온 이관 회원권의 이력 순서를 이 번호가 정한다 (pass-journey.mjs). */
   const suggestedRound = useMemo(
     () => nextPurchaseRound(issuedPasses, form.clientId, passBelongsTo),
     [issuedPasses, form.clientId],
   );
-  useEffect(() => {
-    if (!form.clientId) return;
-    setForm((current) => ({ ...current, purchaseRound: String(suggestedRound) }));
-  }, [form.clientId, suggestedRound]);
   const product = products.find((item) => item.id === form.productId) || null;
   const instructor = instructors.find((item) => item.userId === form.instructorId) || null;
   const priceSource = unitPriceSourceFor(product?.payCategory);
@@ -19079,7 +19073,7 @@ function PassIssue({
            회원권이 무엇으로 팔렸는지는 변하지 않는다. */
         productName: String(product?.name || ""),
         contractPrice: manwonToWon(Number(form.contractPriceManwon)),
-        purchaseRound: Number(form.purchaseRound || 1),
+        purchaseRound: suggestedRound,
         paymentMethod: form.paymentMethod,
         /* 복합결제일 때만 보낸다. 단일 결제에 네 칸짜리 객체가 붙으면 매출
            집계가 그것을 "쪼갠 계약" 으로 읽고 수단별 합계가 0 쪽으로 샌다. */
@@ -19186,7 +19180,7 @@ function PassIssue({
             {manwonLabelOf(form.contractPriceManwon)}
             {" · "}{labelOf(PAYMENT_METHOD_LABELS, form.paymentMethod)}
             {form.paymentNote && asksPaymentNote ? ` (${form.paymentNote})` : ""}
-            {" · "}{form.purchaseRound}차
+            {" · "}{suggestedRound}차
           </p>
           {/* 쪼갠 숫자를 누르기 전에 그대로 보여준다. 공급가액이 카드분으로만
               정해지므로, 카드 칸 하나가 틀리면 그 강사의 회당 단가가 틀린다. */}
@@ -19577,8 +19571,8 @@ function PassIssue({
             </IssueField>
           ) : null}
 
-          {/* 서비스 · 차수는 늘 펼쳐 둔다 (2026-11-28 대표: "차수 + 서비스 넣는 칸이 작게 표시가 안 나 찾기 힘듦").
-              전에는 작은 [· 서비스 · 차수] 글자를 눌러야 열렸다. */}
+          {/* 서비스는 늘 펼쳐 둔다 (2026-11-28 대표: "차수 + 서비스 넣는 칸이 작게 표시가 안 나 찾기 힘듦").
+              전에는 작은 [· 서비스 · 차수] 글자를 눌러야 열렸다. 차수 칸은 같은 날 없앴다 (번호는 저절로). */}
           {(
             <div className="space-y-3" data-issue-service-round>
               <IssueField label="서비스 세션">
@@ -19586,17 +19580,12 @@ function PassIssue({
                   onChange={(e) => setForm({ ...form, serviceSessions: e.target.value.replace(/\D/g, "") })} />
                 {serviceGuide ? <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }} data-service-guide>{serviceGuide}</p> : null}
               </IssueField>
-              <IssueField label="차수">
-                <input inputMode="numeric" value={form.purchaseRound} className={inputCls} placeholder="1"
-                  onChange={(e) => setForm({ ...form, purchaseRound: e.target.value.replace(/\D/g, "") })} />
-                {/* 회원권을 쓰는 순서가 이 번호다. 저절로 채우지만 고칠 수
-                    있고, 고치면 그것이 차감 순서가 된다. */}
-                <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-                  {Number(form.purchaseRound || 0) === suggestedRound
-                    ? `이 회원의 ${suggestedRound}번째 회원권입니다. 차수가 빠른 것부터 차감됩니다.`
-                    : `자동으로 채운 번호는 ${suggestedRound}차입니다. 차수가 빠른 것부터 차감됩니다.`}
+              {/* 차수 입력 칸은 없앴다 (2026-11-28) -- 번호는 저절로, 차감은 만료일 순. 한 줄로만 알린다. */}
+              {client ? (
+                <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }} data-issue-round>
+                  이 회원의 {suggestedRound}번째 회원권으로 저장돼요. 회원권이 여럿이면 만료일이 이른 것부터 차감돼요.
                 </p>
-              </IssueField>
+              ) : null}
             </div>
           )}
 

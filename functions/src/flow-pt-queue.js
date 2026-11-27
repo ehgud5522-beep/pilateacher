@@ -172,6 +172,8 @@ function createFlowPtQueueService(deps) {
 
   async function upsert(organizationId, fields) {
     const { flowQueueSignature, FLOW_PT_COLLECTION, FLOW_PT_STATE, FLOW_PT_FLOW_STATUS, isBaselineTask } = await shared();
+    /* 발급과 맞물리는 칸 -- 이것이 바뀌면 회원권이 틀렸을 수 있다. */
+    const FLOW_PT_ISSUE_FIELDS = ["product", "sessions", "amountManwon"];
     const ref = firestore.doc(`organizations/${organizationId}/${FLOW_PT_COLLECTION}/${fields.postId}`);
     const snapshot = await ref.get();
     if (!snapshot.exists) {
@@ -218,20 +220,27 @@ function createFlowPtQueueService(deps) {
       if (back) return "resucceeded";
     }
     if (flowQueueSignature({ ...current }) === flowQueueSignature(fields)) return "same";
+    /* ── 발급 뒤 바뀜 (2026-11-28, 3단계) ──
+       발급한(또는 [이미 발급 완료] 한) 업무의 상품 · 횟수 · 금액이 플로우에서 바뀌면 회원권은 따라가지 않는다. 바뀐 칸과
+       시각을 남겨 FC 가 보고 [확인함] 을 누르게 한다 (changeAckedAt, 규칙). 전에 비어 있던 칸이 처음 채워진 것은 바뀜이 아니다. */
+    const changedAfterIssue = current.state === FLOW_PT_STATE.ISSUED
+      ? FLOW_PT_ISSUE_FIELDS.filter((key) => text(current[key]) !== "" && text(current[key]) !== text(fields[key]))
+      : [];
     await ref.update({
+      ...(changedAfterIssue.length ? { changedAfterIssueAt: now(), changedAfterIssueFields: changedAfterIssue } : {}),
       title: fields.title, excerpt: fields.excerpt, mentionsRefund: fields.mentionsRefund, taskStatus: fields.taskStatus,
       isBalance: fields.isBalance, isTrial: fields.isTrial,
       product: fields.product ?? "", sessions: fields.sessions ?? null, amountManwon: fields.amountManwon ?? "",
       locationId: fields.locationId, branchName: fields.branchName, syncedAt: serverTimestamp(),
     });
-    return "updated";
+    return changedAfterIssue.length ? "changed_after_issue" : "updated";
   }
 
   /** 한 번 돈다. 보드 하나가 실패해도 나머지는 계속한다. */
   async function sync() {
     const { FLOW_PT_BOARDS, taskAsPost, isPtQueuePost, matchLocationId, flowQueueFields, flowExcerpt, taskColumnValues, taskAmountOf } = await shared();
     const directory = await branchDirectory();
-    const counts = { projects: 0, failedProjects: 0, posts: 0, pt: 0, created: 0, updated: 0, unmatchedBranch: 0, unfiltered: 0, baseline: 0, restored: 0, resucceeded: 0, left: 0 };
+    const counts = { projects: 0, failedProjects: 0, posts: 0, pt: 0, created: 0, updated: 0, unmatchedBranch: 0, unfiltered: 0, baseline: 0, restored: 0, resucceeded: 0, left: 0, changedAfterIssue: 0 };
     /* 보드마다 이번에 본 성공 업무 번호 -- 끝까지 읽은 보드만 (아래 markLeft). PT 판정 전의 전부다: 등록상품 칸을 고쳐 PT 가
        아니게 된 업무는 "실패" 가 아니다. */
     const seenByProject = new Map();
@@ -285,6 +294,7 @@ function createFlowPtQueueService(deps) {
           if (written === "updated") counts.updated += 1;
           if (written === "restored") counts.restored += 1;
           if (written === "resucceeded") counts.resucceeded += 1;
+          if (written === "changed_after_issue") { counts.updated += 1; counts.changedAfterIssue += 1; }
         } catch (error) {
           log("error", "flow_pt_queue_write_failed", {
             feature: "flow_pt_queue", stage: "write_queue", flowProjectId: projectId, organizationId: owners[0].organizationId,

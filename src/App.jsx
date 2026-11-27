@@ -419,7 +419,7 @@ import { createRecordStore, migrationRecordsFor } from "./features/lesson-record
 import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/server-outbox.js";
 import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
 import { listLessonNotesBetween, listRecordActivity, writeRecordActivity } from "./data/repositories/record-activity-repository.js";
-import { listFlowPtQueue, markFlowPtQueue, readFlowPtQueueItem } from "./data/repositories/flow-pt-queue-repository.js";
+import { ackFlowPtChange, listFlowPtQueue, markFlowPtQueue, readFlowPtQueueItem, recordFlowPtBalanceReceipt } from "./data/repositories/flow-pt-queue-repository.js";
 import { describePassIssueFailure, flowPostFailure, passIssueRef, passLocationFailure } from "./features/membership/pass-issue-preflight.js";
 import { FLOW_BYPASS_REASON_MAX, FLOW_BYPASS_REASON_MIN, isFlowGatedCategory } from "../functions/shared/flow-pt-queue.mjs";
 import {
@@ -527,6 +527,7 @@ import { EXPIRY_REASON_LABELS } from "./data/schema/instructor-scope.js";
 import { holdBlocksLesson, isPassHeld } from "../functions/shared/pass-hold.mjs";
 import { BranchMemberOverview } from "./features/members/BranchMemberOverview.jsx";
 import { passBelongsTo, passClientIds } from "./data/schema/pass-clients.js";
+import { recentPtIssueMessage, recentPtIssues } from "./features/passes/recent-issue.js";
 import {
   checkLessonNotificationPermission, listenForLessonNotificationActions, requestLessonNotificationPermission, syncLessonNotifications,
 } from "./features/notifications/local-notifications.js";
@@ -18902,6 +18903,12 @@ function PassIssue({
     duet: form.duet, client, partner, product, passes: issuedPasses, now: now(),
   }), [form.duet, client, partner, product, issuedPasses, now]);
   const duetBlock = blockingNotice(duetNotices);
+  /* 같은 회원이 최근 60일 안에 PT 회원권을 받았는가 (2026-11-28) -- 새 플로우 업무로 같은 계약을 또 올린 경우는 업무 번호가
+     달라 규칙이 막지 못한다. 재등록은 정상이라 막지 않고 알린다 (features/passes/recent-issue.js). */
+  const recentIssueText = useMemo(() => recentPtIssueMessage(
+    recentPtIssues({ clientIds: [client?.id, partner?.id], passes: issuedPasses, now: now() }),
+    (id) => (id === client?.id ? client?.name : id === partner?.id ? partner?.name : ""),
+  ), [client, partner, issuedPasses, now]);
 
   /* 이미 고른 회원은 짝 후보에서 뺀다. 같은 사람을 고르면 판정이 막지만,
      고를 수 없게 해 두면 그 실수 자체가 일어나지 않는다. */
@@ -19220,6 +19227,11 @@ function PassIssue({
         </div>
         {/* 막지는 않는다. 다만 대표가 보고 넘어가야 한다 -- 발급한 뒤에는
             원장이 append-only 라 고칠 수 없다. */}
+        {recentIssueText ? (
+          <div className="mt-2" style={{ padding: 10, borderRadius: 10, backgroundColor: WARN_S, border: `1px solid ${WARN}` }} data-recent-issue>
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, fontWeight: 700, color: WARN }}>{recentIssueText}</p>
+          </div>
+        ) : null}
         {reviewNotices(duetNotices).map((notice) => (
           <div key={notice.code + notice.message} className="mt-2" style={{
             padding: 10, borderRadius: 10,
@@ -19573,6 +19585,9 @@ function PassIssue({
             </div>
           ) : null}
 
+          {recentIssueText ? (
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, fontWeight: 700, color: WARN }} data-recent-issue>{recentIssueText}</p>
+          ) : null}
           {flowPt ? (
             <div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS, border: `1px solid ${flowGateOn ? BRAND : LINE}` }} data-flow-pt-pick>
               <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
@@ -28157,6 +28172,16 @@ const flowPtTime = (value) => {
   const at = value && typeof value.toDate === "function" ? value.toDate() : value ? new Date(value) : null;
   return at && !Number.isNaN(at.getTime()) ? at.getTime() : 0;
 };
+/* 발급 뒤 플로우 내용이 바뀌었는데 아직 [확인함] 을 안 눌렀는가 (2026-11-28, 3단계). */
+const flowPtDate = (value) => (value?.toDate ? value.toDate() : value ? new Date(value) : null);
+const flowPtChangedUnacked = (row) => {
+  const changed = flowPtDate(row?.changedAfterIssueAt);
+  if (!changed || !Number.isFinite(changed.getTime())) return false;
+  const acked = flowPtDate(row?.changeAckedAt);
+  return !(acked && Number.isFinite(acked.getTime()) && acked.getTime() >= changed.getTime());
+};
+const FLOW_PT_FIELD_LABEL = { product: "상품", sessions: "횟수", amountManwon: "금액" };
+const flowPtChangedLabel = (row) => `${(row?.changedAfterIssueFields || []).map((key) => FLOW_PT_FIELD_LABEL[key] || key).join(" · ") || "내용"} 바뀜`;
 /* 플로우에서 지금 성공이 아닌가 (서버 flowStatus left) · 최근 2주 안에 다시 성공했는가 (2026-11-28). */
 const flowPtLeft = (row) => row?.flowStatus === "left";
 const flowPtResucceeded = (row) => {
@@ -28183,7 +28208,35 @@ const flowPtFailureText = (failure) => {
   return `${hint} (코드 ${codes || "unknown"})`;
 };
 
-function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = listFlowPtQueue, onMark = markFlowPtQueue, onRefresh = fbRefreshFlowPtQueue, initialState = null }) {
+/**
+ * 잔금이 남은 회원권 (2026-11-28, 발급 대기 3단계 잔금 받음). 맡은 지점만 (FC) -- 규칙의 passInManagerScope 와 같은 선.
+ * 취소 · 만료된 회원권도 잔금이 남았으면 보인다 (돈은 받을 수 있다).
+ */
+async function loadBalancePasses({ organization, clientStore, passStore }) {
+  const organizationId = organization?.organizationId || "";
+  const [clientResult, passResult] = await Promise.all([
+    listClients(organizationId, { store: clientStore }),
+    listPasses(organizationId, { store: passStore }),
+  ]);
+  const clientList = Array.isArray(clientResult) ? clientResult : clientResult?.items || [];
+  const passList = Array.isArray(passResult) ? passResult : passResult?.items || [];
+  const names = new Map(clientList.map((client) => [client.id, client.name || ""]));
+  return passList
+    .filter((pass) => Number(pass?.balance) > 0 && managerCanTouchPass(organization, pass))
+    .map((pass) => ({
+      passId: String(pass.id || pass.passId || ""), clientName: names.get(pass.clientId) || "", productName: String(pass.productName || ""),
+      balance: Number(pass.balance), createdAt: pass.createdAt || null,
+    }))
+    .filter((item) => item.passId);
+}
+
+function FlowPtQueueScreen({
+  organization, currentUserId, onIssue, onLoad = listFlowPtQueue, onMark = markFlowPtQueue, onRefresh = fbRefreshFlowPtQueue,
+  /* 3단계 (2026-11-28): 발급 뒤 바뀜 [확인함] · 잔금 받음(회원권 잔금 칸 줄이기). onLoadBalancePasses 는 잔금이 남은 회원권
+     (맡은 지점) -- [{ passId, clientName, productName, balance, createdAt }]. 없으면 잔금 받음 칸을 그리지 않는다. */
+  onAckChange = ackFlowPtChange, onLoadBalancePasses = null, onReceiveBalance = recordFlowPtBalanceReceipt,
+  initialState = null,
+}) {
   const organizationId = organization?.organizationId || "";
   const ownerLevel = isOwnerLevelRole(organization?.role);
   const scope = ownerLevel ? [] : [...new Set([...(organization?.locationIds || []), organization?.locationId || ""].filter(Boolean))];
@@ -28195,6 +28248,13 @@ function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = list
   const [showDone, setShowDone] = useState(Boolean(initialState?.showDone));
   const [showBalanceList, setShowBalanceList] = useState(Boolean(initialState?.showBalances));
   const [showLeft, setShowLeft] = useState(Boolean(initialState?.showLeft));
+  /* 잔금 받음: 어느 잔금 글을 열었는가 · 잔금 남은 회원권 · 고른 회원권 · 받은 금액(원). */
+  const [balanceOpen, setBalanceOpen] = useState(initialState?.balanceOpen || "");
+  const [balancePasses, setBalancePasses] = useState(initialState?.balancePasses || null);
+  const [balancePick, setBalancePick] = useState(initialState?.balancePick || "");
+  const [balanceWon, setBalanceWon] = useState(initialState?.balanceWon || "");
+  const [balanceQuery, setBalanceQuery] = useState("");
+  const [balanceError, setBalanceError] = useState("");
   /* [새로고침] = 서버가 지금 플로우를 읽고, 그다음 목록을 다시 읽는다 (2026-11-24 대표: "새로고침으로 해줘"). */
   const [refreshing, setRefreshing] = useState(false);
   const [refreshResult, setRefreshResult] = useState(initialState?.refreshResult || null);
@@ -28250,6 +28310,63 @@ function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = list
       setBusy("");
     }
   };
+  /* ── 발급 뒤 바뀜 (2026-11-28, 3단계) ── 발급한 업무의 상품 · 횟수 · 금액이 플로우에서 바뀐 것. 회원권은 따라가지 않으므로
+     FC 가 보고 회원권을 고칠지 정한다 -- [확인함] 은 "봤다" 만 남긴다. */
+  const ack = async (row) => {
+    setBusy(row.id);
+    setNotice("");
+    try {
+      await onAckChange(organizationId, row.id, currentUserId);
+      setState((current) => ({ ...current, rows: (current.rows || []).map((item) => (item.id === row.id ? { ...item, changeAckedAt: new Date(), changeAckedBy: currentUserId } : item)) }));
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setNotice(`확인 표시를 저장하지 못했어요 (코드 ${code}). 다시 눌러 주세요.`);
+      deviceLog("flow_pt_queue_ack_failed", { feature: "flow_pt_queue", stage: "ack_change", errorDomain: "firestore", errorCode: code, role: organization?.role || "" });
+    } finally {
+      setBusy("");
+    }
+  };
+  /* ── 잔금 받음 (2026-11-28, 3단계 · 대표 결정: 계약금 때 발급, 잔금은 회원권 잔금 칸) ── 잔금 글 하나로 회원권 하나의 잔금을
+     받은 만큼 줄인다. 저장은 한 트랜잭션 -- 규칙이 글과 회원권이 서로 가리키는지, 줄어든 금액이 받은 금액과 같은지 본다. */
+  const openBalance = async (row) => {
+    setBalanceOpen(row.id);
+    setBalancePick("");
+    setBalanceError("");
+    const amount = Math.round(Number(String(row.amountManwon || "").replace(/,/g, "")) * WON_PER_MANWON);
+    setBalanceWon(Number.isFinite(amount) && amount > 0 ? String(amount) : "");
+    setBalanceQuery("");
+    if (balancePasses || !onLoadBalancePasses) return;
+    try {
+      setBalancePasses(await onLoadBalancePasses());
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setBalanceError(`잔금이 남은 회원권을 읽지 못했어요 (코드 ${code})`);
+      setBalancePasses([]);
+      deviceLog("flow_pt_balance_read_failed", { feature: "flow_pt_queue", stage: "balance_passes", errorDomain: "firestore", errorCode: code, role: organization?.role || "" });
+    }
+  };
+  const receiveBalance = async (row) => {
+    const pass = (balancePasses || []).find((item) => item.passId === balancePick);
+    const won = Number(String(balanceWon).replace(/[^0-9]/g, ""));
+    if (!pass) { setBalanceError("잔금을 받은 회원권을 골라 주세요."); return; }
+    if (!(Number.isInteger(won) && won > 0)) { setBalanceError("받은 금액을 원 단위로 적어 주세요."); return; }
+    if (won > pass.balance) { setBalanceError(`받은 금액(${won.toLocaleString()}원)이 이 회원권의 남은 잔금(${Number(pass.balance).toLocaleString()}원)보다 많아요.`); return; }
+    setBusy(row.id);
+    setBalanceError("");
+    try {
+      const result = await onReceiveBalance(organizationId, { postId: row.id, passId: pass.passId, receivedWon: won, uid: currentUserId });
+      setBalancePasses((current) => (current || []).map((item) => (item.passId === pass.passId ? { ...item, balance: result?.after ?? item.balance - won } : item)).filter((item) => item.balance > 0));
+      setState((current) => ({ ...current, rows: (current.rows || []).map((item) => (item.id === row.id ? { ...item, state: "issued", handledBy: currentUserId, handledAt: new Date(), balancePassId: pass.passId, balanceReceivedWon: won } : item)) }));
+      setBalanceOpen("");
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setBalanceError(code === "balance_received_over" ? `받은 금액이 지금 남은 잔금보다 많아요 -- 다른 사람이 먼저 줄였을 수 있어요 (코드 ${code}).`
+        : `잔금을 저장하지 못했어요 (코드 ${code}).`);
+      deviceLog("flow_pt_balance_receive_failed", { feature: "flow_pt_queue", stage: "balance_receive", errorDomain: String(code).startsWith("balance_") ? "app" : "firestore", errorCode: code, role: organization?.role || "" });
+    } finally {
+      setBusy("");
+    }
+  };
   /* 지점별 (2026-11-21 대표: "취합하는 거 나올 땐 지점별로"). 지점은 서버가 플로우 보드 이름으로 맞춘 앱 지점. */
   const groups = [];
   for (const row of state.rows || []) {
@@ -28271,6 +28388,7 @@ function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = list
   const balances = waitingAll.filter((row) => row.isBalance && !flowPtLeft(row));
   const [showBalances, setShowBalances] = [showBalanceList, setShowBalanceList];
   const done = shown.filter((row) => (row.state || "waiting") !== "waiting").sort((left, right) => flowPtTime(right.handledAt) - flowPtTime(left.handledAt));
+  const changedRows = done.filter(flowPtChangedUnacked);
   const smallButton = { height: 40, borderRadius: 8, fontSize: TYPE.caption, fontWeight: 700, padding: "0 12px" };
   /* 카드 한 장 (2026-11-24 대표: "글을 쉽게 -- 발급하러 가기 · 이미 발급 완료, 날짜와 등록 시간 크게, 금액이랑 횟수"). */
   const flowPtCard = (row) => {
@@ -28301,9 +28419,13 @@ function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = list
           {onIssue && issuable ? (
             <button type="button" onClick={() => onIssue(row)} style={{ ...smallButton, backgroundColor: BRAND, color: "#fff" }} data-flow-pt-issue>발급하러 가기</button>
           ) : null}
+          {row.isBalance && !flowPtLeft(row) && onLoadBalancePasses ? (
+            <button type="button" disabled={busy === row.id} onClick={() => (balanceOpen === row.id ? setBalanceOpen("") : openBalance(row))} className="disabled:opacity-50"
+              style={{ ...smallButton, backgroundColor: BRAND, color: "#fff" }} data-flow-pt-balance-open>잔금 받음 처리</button>
+          ) : null}
           {flowPtLeft(row) ? null : (
             <button type="button" disabled={busy === row.id} onClick={() => mark(row, "issued")} className="disabled:opacity-50"
-              style={{ ...smallButton, backgroundColor: CARD, color: GOOD, border: `1px solid ${GOOD}` }}>{row.isBalance ? "잔금 확인함" : "이미 발급 완료"}</button>
+              style={{ ...smallButton, backgroundColor: CARD, color: GOOD, border: `1px solid ${GOOD}` }}>{row.isBalance ? "회원권 없이 확인함" : "이미 발급 완료"}</button>
           )}
           <button type="button" disabled={busy === row.id} onClick={() => mark(row, "not_applicable")} className="disabled:opacity-50"
             style={{ ...smallButton, backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>해당 없음</button>
@@ -28312,6 +28434,43 @@ function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = list
               style={{ ...smallButton, backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>플로우에서 보기</a>
           ) : null}
         </div>
+        {balanceOpen === row.id ? flowPtBalancePanel(row) : null}
+      </div>
+    );
+  };
+  /* 잔금 받음 칸: 이 글의 이름이 들어간 회원부터, 검색으로 다른 회원권도. */
+  const flowPtBalancePanel = (row) => {
+    const title = String(row.title || "");
+    const query = balanceQuery.trim();
+    const candidates = (balancePasses || [])
+      .filter((item) => item.balance > 0)
+      .filter((item) => (query ? String(item.clientName || "").includes(query) : Boolean(item.clientName) && title.includes(item.clientName)))
+      .slice(0, 8);
+    return (
+      <div className="mt-2 space-y-2" style={{ borderRadius: 10, border: `1px solid ${LINE}`, padding: 10, backgroundColor: CARD }} data-flow-pt-balance-panel>
+        <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>잔금을 받은 회원권을 고르고 받은 금액을 적어 주세요. 회원권의 잔금이 그만큼 줄고, 이 잔금 글은 처리됨으로 넘어가요.</p>
+        <input value={balanceQuery} onChange={(event) => setBalanceQuery(event.target.value)} placeholder="회원 이름으로 찾기"
+          className="h-10 w-full px-3" style={{ borderRadius: 8, border: `1px solid ${LINE}`, fontSize: TYPE.caption }} aria-label="잔금 회원권 찾기" />
+        {balancePasses === null ? <p style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
+        {balancePasses && !candidates.length ? (
+          <p style={{ fontSize: TYPE.caption, color: SUB }} data-flow-pt-balance-none>{query ? "그 이름으로 잔금이 남은 회원권이 없어요." : "이 글의 이름과 맞는 잔금 회원권이 없어요. 이름으로 찾아 주세요."}</p>
+        ) : null}
+        <div className="space-y-1" role="radiogroup" aria-label="잔금 받은 회원권">
+          {candidates.map((item) => (
+            <label key={item.passId} className="flex items-center gap-2 px-2 py-2" style={{ borderRadius: 8, backgroundColor: balancePick === item.passId ? TINT : CANVAS, fontSize: TYPE.caption, color: INK }} data-flow-pt-balance-pass={item.passId}>
+              <input type="radio" name={`balance-${row.id}`} checked={balancePick === item.passId} onChange={() => setBalancePick(item.passId)} />
+              <span className="min-w-0 flex-1 truncate">{item.clientName} · {item.productName || "회원권"}{item.createdAt ? ` · ${flowPtWhen(item.createdAt).split(" ")[0]} 발급` : ""}</span>
+              <span className="shrink-0 tabular-nums font-bold" style={{ color: WARN }}>잔금 {Number(item.balance).toLocaleString()}원</span>
+            </label>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <input value={balanceWon} onChange={(event) => setBalanceWon(event.target.value.replace(/[^0-9]/g, ""))} inputMode="numeric" placeholder="받은 금액 (원)"
+            className="h-10 min-w-0 flex-1 px-3 tabular-nums" style={{ borderRadius: 8, border: `1px solid ${LINE}`, fontSize: TYPE.caption }} aria-label="받은 금액 (원)" />
+          <button type="button" disabled={busy === row.id} onClick={() => receiveBalance(row)} className="h-10 shrink-0 px-3 font-bold disabled:opacity-50"
+            style={{ borderRadius: 8, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption }} data-flow-pt-balance-save>잔금 줄이기</button>
+        </div>
+        {balanceError ? <p role="alert" style={{ fontSize: TYPE.caption, color: WARN }}>{balanceError}</p> : null}
       </div>
     );
   };
@@ -28364,6 +28523,19 @@ function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = list
           확인할 PT 등록이 없어요. 처음이라면 대표 설정 → 앱 업데이트 · 운영 스위치 → "플로우 PT 발급 대기" 가 켜져 있는지 봐 주세요.
         </p>
       ) : null}
+      {changedRows.length ? (
+        <div className="mt-3 space-y-1.5" style={{ borderRadius: 10, border: `1px solid ${WARN}`, backgroundColor: WARN_S, padding: 10 }} data-flow-pt-changed>
+          <p className="font-bold" style={{ fontSize: TYPE.body, color: WARN }}>발급 뒤 플로우 내용이 바뀐 것 {changedRows.length}건</p>
+          <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>회원권은 따라 바뀌지 않아요. 플로우를 보고 회원권을 고쳐야 하면 대표에게 알려 주세요. 본 것은 [확인함].</p>
+          {changedRows.map((row) => (
+            <div key={row.id} className="flex items-center gap-2 px-2 py-1.5" style={{ borderRadius: 8, backgroundColor: CARD }} data-flow-pt-changed-row={row.id}>
+              <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK }}>{row.title || "제목 없음"} · {flowPtChangedLabel(row)}</span>
+              {row.flowUrl ? <a href={row.flowUrl} target="_blank" rel="noreferrer" className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>플로우</a> : null}
+              <button type="button" disabled={busy === row.id} onClick={() => ack(row)} className="h-8 shrink-0 px-2 font-bold disabled:opacity-50" style={{ fontSize: TYPE.caption, color: GOOD }}>확인함</button>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <div className="mt-3 space-y-2">
         {waiting.map((row) => flowPtCard(row))}
       </div>
@@ -28406,9 +28578,10 @@ function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = list
               {done.map((row) => (
                 <div key={row.id} className="flex items-center gap-2 px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }}>
                   <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{row.title || "제목 없음"}</span>
-                  <span className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: row.state === "issued" ? GOOD : SUB }}>{FLOW_PT_STATE_LABEL[row.state] || row.state}</span>
+                  <span className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: row.state === "issued" ? GOOD : SUB }}>{row.balancePassId ? `잔금 ${Number(row.balanceReceivedWon || 0).toLocaleString()}원 받음` : FLOW_PT_STATE_LABEL[row.state] || row.state}</span>
+                  {flowPtChangedUnacked(row) ? <span className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: WARN }}>{flowPtChangedLabel(row)}</span> : null}
                   {/* 회원권과 이어진 것은 되돌리지 않는다 -- 같은 등록으로 두 번 발급된다 (규칙도 같은 선). */}
-                  {row.passId ? null : (
+                  {row.passId || row.balancePassId ? null : (
                     <button type="button" disabled={busy === row.id} onClick={() => mark(row, "waiting")} className="h-8 shrink-0 px-2 font-bold disabled:opacity-50"
                       style={{ fontSize: TYPE.caption, color: BRAND_D }}>되돌리기</button>
                   )}
@@ -31856,7 +32029,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
         {view === "backup" && <div className="space-y-3"><CloudBackupCard status={backupStatus} onEnablePhotos={onEnablePhotoBackup} onRetry={onRetryBackup} onRestorePrevious={onRestorePrevious} onSnapshot={onSnapshotBackup} snapshotBusy={snapshotBusy} /><HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} /></div>}
         {view === "flow-pt" && showSalesBoard && (
           <FlowPtQueueScreen organization={organization} currentUserId={account?.id || ""}
-            onIssue={showClients ? (row) => { setFlowIssueSeed(row); setView("pass-issue"); } : undefined} />
+            onIssue={showClients ? (row) => { setFlowIssueSeed(row); setView("pass-issue"); } : undefined}
+            onLoadBalancePasses={showClients ? () => loadBalancePasses({ organization, clientStore, passStore }) : null} />
         )}
         {view === "pass-issue" && showClients && (
           <PassIssue organization={organization} currentUserId={account?.id || ""} flowSeed={flowIssueSeed}
@@ -33304,13 +33478,16 @@ export function createAppScreenSmokeCases() {
     /* 지점 칩 · 강사 카드 하나만 펼침 (2026-11-24 대표: "수업 별점도 지점별로"). */
     /* 플로우 PT 발급 대기 (2026-11-24). 지점 칩 · 대기 카드(플로우에서 확인 · 발급함 · 해당 없음) · 처리한 것. */
     { name: "플로우 PT 발급 대기", element: providerWith(smokeOwner, (
-      <FlowPtQueueScreen organization={readyOrganizationContext(smokeOwner)} currentUserId="u-owner" onIssue={() => {}}
+      <FlowPtQueueScreen organization={readyOrganizationContext(smokeOwner)} currentUserId="u-owner" onIssue={() => {}} onLoadBalancePasses={() => Promise.resolve([])}
         initialState={{ error: "", branch: "loc-b", showDone: true, showBalances: true, showLeft: true,
+          /* 2026-11-28 3단계: 잔금 받음 칸을 연 상태 · 발급 뒤 바뀐 줄. */
+          balanceOpen: "p2", balancePick: "bp1", balanceWon: "300000",
+          balancePasses: [{ passId: "bp1", clientName: "나회원", productName: "1:1 PT 20회", balance: 500000, createdAt: new Date(2026, 10, 20) }, { passId: "bp2", clientName: "다른회원", productName: "1:1 PT", balance: 100000 }],
           refreshResult: { ok: true, counts: { projects: 8, posts: 120, pt: 3, created: 2, failures: [{ flowProjectId: "2955389", errorCode: "UNAUTHORIZED_ERROR", httpStatus: 401 }] } },
           rows: [
           { id: "p1", locationId: "loc-a", branchName: "가지점", title: "가회원 잔금", excerpt: "1:1pt 10s", state: "waiting", registeredAt: new Date(2026, 10, 24, 11, 14) },
           { id: "p2", locationId: "loc-b", branchName: "나지점", title: "나회원 신규", excerpt: "PT 20회 카드완납 010-****-****", registerName: "나지점", state: "waiting", mentionsRefund: true, isBalance: true, isTrial: true, flowUrl: "https://flow.team/main.act?projectId=1&postId=p2", registeredAt: new Date(2026, 10, 24, 10, 2) },
-          { id: "p3", locationId: "loc-b", branchName: "나지점", title: "다회원 재등록", state: "issued", handledAt: new Date(2026, 10, 24, 12, 0) },
+          { id: "p3", locationId: "loc-b", branchName: "나지점", title: "다회원 재등록", state: "issued", handledAt: new Date(2026, 10, 24, 12, 0), changedAfterIssueAt: new Date(2026, 10, 27, 9, 0), changedAfterIssueFields: ["sessions", "amountManwon"] },
           { id: "p4", locationId: "loc-b", branchName: "나지점", title: "라회원", state: "waiting", product: "1:1pt 40s 공동구매e", sessions: 40, amountManwon: "30.25", registeredAtExact: true, excerpt: "재등록 · 1:1pt 40s 공동구매e · 30.25 · 카드완납", registeredAt: new Date(2026, 10, 24, 13, 5) },
           /* 2026-11-28: 플로우에서 실패로 바뀐 것 (발급 못 함) · 다시 성공한 것 (대기로 돌아옴). */
           { id: "p5", locationId: "loc-b", branchName: "나지점", title: "마회원 상담", state: "waiting", flowStatus: "left", registeredAt: new Date(2026, 10, 25, 9, 0) },

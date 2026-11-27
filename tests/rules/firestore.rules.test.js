@@ -7117,6 +7117,57 @@ describe("플로우 PT 발급 대기 -- 서버가 만들고, 대표 · 총괄 ·
   });
   const handle = (userId, state, extra = {}) => updateDoc(ref(userId), { state, handledBy: userId, handledAt: serverTimestamp(), ...extra });
 
+  /* 2026-11-28 3단계: 발급 뒤 플로우 내용이 바뀐 것을 봤다는 [확인함] -- 확인 칸 둘만, 회원권과 이어진 줄에도. */
+  test("발급 뒤 바뀜 [확인함]: 확인 칸 둘만 · 내 이름 · 지금 시각, 바뀜 표시가 있는 줄만", async () => {
+    await seedRow({ state: "issued", handledBy: users.owner, passId: "pass-linked", changedAfterIssueAt: new Date(2026, 10, 28), changedAfterIssueFields: ["sessions"] });
+    await scopeManager(["loc-samgye"]);
+    await assertSucceeds(updateDoc(ref(users.manager), { changeAckedAt: serverTimestamp(), changeAckedBy: users.manager }));
+    await assertFails(updateDoc(ref(users.manager), { changeAckedAt: serverTimestamp(), changeAckedBy: users.owner }), "남의 이름");
+    await assertFails(updateDoc(ref(users.manager), { changeAckedAt: serverTimestamp(), changeAckedBy: users.manager, changedAfterIssueAt: null }), "바뀜 표시를 지우지 못한다");
+    await seedRow({ state: "issued", handledBy: users.owner });
+    await assertFails(updateDoc(ref(users.manager), { changeAckedAt: serverTimestamp(), changeAckedBy: users.manager }), "바뀜 표시가 없는 줄");
+  });
+
+  /* 2026-11-28 3단계 · 대표 결정: 계약금 때 발급, 잔금은 회원권 잔금 칸. 잔금 글 하나로 회원권 하나의 잔금을 받은 만큼 줄인다. */
+  test("잔금 받음: 잔금 글 처리와 회원권 잔금 줄이기가 한 배치로 서로 맞을 때만", async () => {
+    const PASS = "pass-balance";
+    const passPath = ["organizations", ORG_A, "passes", PASS];
+    const seedPass = (balance, extra = {}) => testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), ...passPath), { ...passFixture(ORG_A, PASS, { locationId: "loc-samgye" }), balance, ...extra });
+    });
+    const receive = (userId, { received, newBalance, postId = POST, linkedPass = PASS, postState = "issued" }) => {
+      const db = dbFor(userId);
+      const batch = writeBatch(db);
+      batch.update(doc(db, ...passPath), { balance: newBalance, balanceFlowPostId: postId, balanceUpdatedAt: serverTimestamp(), balanceUpdatedBy: userId });
+      batch.update(doc(db, ...path), { state: postState, handledBy: userId, handledAt: serverTimestamp(), balancePassId: linkedPass, balanceReceivedWon: received });
+      return batch.commit();
+    };
+    await scopeManager(["loc-samgye"]);
+    await seedRow({ isBalance: true });
+    await seedPass(500000);
+    await assertFails(receive(users.manager, { received: 300000, newBalance: 250000 }), "줄어든 금액과 받은 금액이 다르면");
+    await assertFails(receive(users.manager, { received: 300000, newBalance: 800000 }), "늘리지 못한다");
+    await assertFails(receive(users.manager, { received: 600000, newBalance: -100000 }), "0 아래로 못 간다");
+    await assertSucceeds(receive(users.manager, { received: 300000, newBalance: 200000 }));
+    await assertFails(receive(users.manager, { received: 100000, newBalance: 100000 }), "처리된 잔금 글로 두 번 줄이지 못한다");
+
+    // 잔금 글이 아니면 못 쓴다 -- 계약금 글로 잔금을 줄이지 않는다.
+    await seedRow({ isBalance: false });
+    await seedPass(500000);
+    await assertFails(receive(users.manager, { received: 100000, newBalance: 400000 }), "잔금 글이 아닌 줄");
+    // 회원권만 따로 줄이지 못한다 (글 없이).
+    await assertFails(updateDoc(doc(dbFor(users.manager), ...passPath), { balance: 0, balanceFlowPostId: POST, balanceUpdatedAt: serverTimestamp(), balanceUpdatedBy: users.manager }));
+    // 다른 지점 FC 는 못 한다.
+    await seedRow({ isBalance: true });
+    await scopeManager(["loc-other"]);
+    await assertFails(receive(users.manager, { received: 100000, newBalance: 400000 }), "다른 지점 FC");
+    // 대표는 된다. 강사는 못 한다.
+    await assertSucceeds(receive(users.owner, { received: 500000, newBalance: 0 }));
+    await seedRow({ isBalance: true });
+    await seedPass(500000);
+    await assertFails(receive(users.instructor, { received: 100000, newBalance: 400000 }), "강사");
+  });
+
   test("읽기: 대표 · 총괄 · 맡은 지점 FC 는 읽고, 다른 지점 FC · 강사 · 직원 · 다른 센터는 못 읽는다", async () => {
     await seedRow();
     await assertSucceeds(getDoc(ref(users.owner)));

@@ -64,3 +64,42 @@ export async function markFlowPtQueue(organizationId, postId, state, uid) {
     state, handledBy: String(uid || ""), handledAt: serverTimestamp(),
   });
 }
+
+/**
+ * 발급 뒤 플로우 내용이 바뀐 것을 봤다 (2026-11-28, 3단계). 서버가 남긴 changedAfterIssueAt 옆에 확인 칸 둘만 쓴다 (규칙도 그것만).
+ * @param {string} organizationId @param {string} postId @param {string} uid
+ */
+export async function ackFlowPtChange(organizationId, postId, uid) {
+  const { doc, getFirestore, serverTimestamp, updateDoc } = await load();
+  await updateDoc(doc(getFirestore(), "organizations", String(organizationId), FLOW_PT_COLLECTION, String(postId)), {
+    changeAckedAt: serverTimestamp(), changeAckedBy: String(uid || ""),
+  });
+}
+
+/**
+ * 잔금 받음 (2026-11-28, 3단계 · 대표 결정: 계약금 때 발급, 잔금은 회원권 잔금 칸). 잔금 글 하나로 회원권 하나의 잔금을 받은
+ * 만큼 줄이고, 같은 트랜잭션에서 그 글을 처리됨으로 -- 규칙이 둘이 서로를 가리키는지, 줄어든 금액이 받은 금액과 같은지 본다.
+ * 회원권의 지금 잔금을 트랜잭션 안에서 읽는다 (화면이 연 뒤 다른 사람이 줄였으면 그 값에서 뺀다).
+ *
+ * @param {string} organizationId
+ * @param {{ postId: string, passId: string, receivedWon: number, uid: string }} input
+ * @returns {Promise<{ before: number, after: number }>}
+ */
+export async function recordFlowPtBalanceReceipt(organizationId, { postId, passId, receivedWon, uid }) {
+  const received = Number(receivedWon);
+  if (!Number.isInteger(received) || received <= 0) throw Object.assign(new Error("Invalid receivedWon"), { code: "balance_received_invalid" });
+  const { doc, getFirestore, runTransaction, serverTimestamp } = await load();
+  const firestore = getFirestore();
+  const passRef = doc(firestore, "organizations", String(organizationId), "passes", String(passId));
+  const postRef = doc(firestore, "organizations", String(organizationId), FLOW_PT_COLLECTION, String(postId));
+  return runTransaction(firestore, async (transaction) => {
+    const pass = await transaction.get(passRef);
+    if (!pass.exists()) throw Object.assign(new Error("Pass not found"), { code: "balance_pass_missing" });
+    const before = Number(pass.data()?.balance) || 0;
+    if (received > before) throw Object.assign(new Error("Received more than balance"), { code: "balance_received_over" });
+    const after = before - received;
+    transaction.update(passRef, { balance: after, balanceFlowPostId: String(postId), balanceUpdatedAt: serverTimestamp(), balanceUpdatedBy: String(uid || "") });
+    transaction.update(postRef, { state: FLOW_PT_STATE.ISSUED, handledBy: String(uid || ""), handledAt: serverTimestamp(), balancePassId: String(passId), balanceReceivedWon: received });
+    return { before, after };
+  });
+}

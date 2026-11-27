@@ -3613,7 +3613,12 @@ function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast,
   );
 }
 
+/* 일정 색상 (2026-11-28 대표: "색 고르는 칸이 눈에 아프고 거슬린다").
+   예전에는 유형 7개 x 견본 8개가 왼쪽 띠 + 옅은 바탕으로 한꺼번에 펼쳐져 있었다.
+   지금은 유형마다 한 줄 -- 약자 칩 · 이름 · 지금 색 이름 · 색 점 하나. 줄을 누르면 그 유형만
+   동그란 색 점 8개가 열린다(한 번에 하나). 약자는 그대로 함께 보인다(색만으로 구분하지 않는다). */
 function ScheduleColorSettings({ scheduleColors, onChange }) {
+  const [openType, setOpenType] = useState("");
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
   return (
   <div className="space-y-2">
@@ -3622,31 +3627,40 @@ function ScheduleColorSettings({ scheduleColors, onChange }) {
         <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>수업 유형 색</h2>
         <p style={{ marginTop: 3, fontSize: TYPE.caption, lineHeight: 1.45, color: SUB }}>일정표 카드의 옅은 배경과 왼쪽 띠에 쓰는 색입니다. 색만으로 구분하지 않도록 카드 안 약자(개 · 듀 · 그 · 상 · 휴)는 항상 함께 표시됩니다.</p>
       </div>
-      <div className="space-y-3">
+      <div data-schedule-color-list style={{ borderTop: `1px solid ${LINE}` }}>
         {LESSON_TYPES.map((type) => {
           const tone = resolveScheduleTypeTone(type.key, scheduleColors, THEME);
+          const open = openType === type.key;
+          const presetLabel = SCHEDULE_COLOR_PRESETS.find((preset) => preset.id === tone.presetId)?.label || "";
           return (
-            <div key={type.key}>
-              <div className="mb-1.5 flex items-center gap-2">
-                <span className="flex items-center justify-center" style={{ width: 36, height: 22, borderRadius: 6, backgroundColor: tone.surface, borderLeft: `3px solid ${tone.edge}` }}>
+            <div key={type.key} data-schedule-color-type={type.key} style={{ borderBottom: `1px solid ${LINE}` }}>
+              <button type="button" aria-expanded={open} onClick={() => setOpenType(open ? "" : type.key)}
+                className="flex min-h-12 w-full items-center gap-2.5 text-left">
+                <span className="flex shrink-0 items-center justify-center" style={{ width: 30, height: 24, borderRadius: 6, backgroundColor: tone.surface }}>
                   <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: tone.edge }}>{type.short}</span>
                 </span>
-                <p style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{type.label}</p>
-                <p className="ml-auto" style={{ fontSize: TYPE.caption, color: SUB }}>{SCHEDULE_COLOR_PRESETS.find((preset) => preset.id === tone.presetId)?.label || ""}</p>
-              </div>
-              <div className="grid grid-cols-8 gap-1.5">
-                {SCHEDULE_COLOR_PRESETS.map((preset) => {
-                  const value = THEME === "dark" ? preset.dark : preset.light;
-                  const on = scheduleColors[type.key] === preset.id;
-                  return (
-                    <button type="button" key={preset.id} aria-label={`${type.label} ${preset.label}`} aria-pressed={on}
-                      onClick={() => onChange(setScheduleTypeColor(scheduleColors, type.key, preset.id))}
-                      className="flex items-center justify-center" style={{ height: 34, borderRadius: 8, backgroundColor: value.surface, border: `1px solid ${on ? value.edge : LINE}`, borderLeftWidth: 3, borderLeftColor: value.edge }}>
-                      {on && <Check size={12} style={{ color: value.edge }} />}
-                    </button>
-                  );
-                })}
-              </div>
+                <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>{type.label}</span>
+                <span className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>{presetLabel}</span>
+                <span aria-hidden="true" className="shrink-0 rounded-full" style={{ width: 18, height: 18, backgroundColor: tone.edge }} />
+                <ChevronDown size={16} className="shrink-0" style={{ color: FAINT, transform: open ? "rotate(180deg)" : "none", transition: "transform 160ms ease" }} />
+              </button>
+              {open && (
+                <div role="radiogroup" aria-label={`${type.label} 색`} className="flex flex-wrap justify-between gap-y-1 pb-3">
+                  {SCHEDULE_COLOR_PRESETS.map((preset) => {
+                    const value = THEME === "dark" ? preset.dark : preset.light;
+                    const on = tone.presetId === preset.id;
+                    return (
+                      <button type="button" role="radio" key={preset.id} aria-label={`${type.label} ${preset.label}`} aria-checked={on}
+                        onClick={() => { onChange(setScheduleTypeColor(scheduleColors, type.key, preset.id)); setOpenType(""); }}
+                        className="grid h-11 w-11 place-items-center">
+                        <span className="grid place-items-center rounded-full" style={{ width: 30, height: 30, backgroundColor: value.edge, boxShadow: on ? `0 0 0 2px ${CARD}, 0 0 0 4px ${value.edge}` : "none" }}>
+                          {on && <Check size={14} strokeWidth={3} style={{ color: "#fff" }} />}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           );
         })}
@@ -4918,7 +4932,7 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
     <>{draft.id && onDelete && deletePolicy.mode === DELETE_MODE.BLOCKED ? (
           <p className="rounded-lg px-3 py-2.5 text-xs font-bold leading-relaxed" style={{ backgroundColor: CANVAS, color: SUB }}>{settledLockNotice({ canUnsettle, elsewhere: deletePolicy.reason === DELETE_BLOCK_REASON.SETTLED_ELSEWHERE })}</p>
         ) : draft.id && onDelete && deletePolicy.mode === DELETE_MODE.ONE_TAP ? (
-          <button onClick={() => { onDelete(draft.id); onClose(); }} className="flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}><Trash2 size={13} /> 일정 삭제</button>
+          <button onClick={() => { onDelete(draft.id); onClose(); }} data-lesson-delete className="flex min-h-11 w-full items-center justify-center gap-1.5 rounded-xl text-xs font-bold" style={{ backgroundColor: CARD, color: BAD, border: `1px solid ${LINE}` }}><Trash2 size={14} /> 일정 삭제</button>
         ) : draft.id && onDelete && (del ? (
           <div className="flex items-center gap-2 rounded-lg p-2.5" style={{ backgroundColor: BAD_S }}>
             <span className="min-w-0 flex-1 text-xs font-bold" style={{ color: BAD }}>삭제하면 뺀 회차가 회원에게 돌아갑니다. 삭제할까요?</span>
@@ -4926,7 +4940,7 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
             <button onClick={() => setDel(false)} className="rounded-lg px-3 py-2 text-xs font-bold" style={{ color: SUB }}>취소</button>
           </div>
         ) : draft.id ? (
-          <button onClick={() => setDel(true)} className="flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}><Trash2 size={13} /> 일정 삭제</button>
+          <button onClick={() => setDel(true)} data-lesson-delete className="flex min-h-11 w-full items-center justify-center gap-1.5 rounded-xl text-xs font-bold" style={{ backgroundColor: CARD, color: BAD, border: `1px solid ${LINE}` }}><Trash2 size={14} /> 일정 삭제</button>
         ) : null)}</>
   );
   /* ── 일정 등록 개편 (2026-11-17, register-view.js) ── */
@@ -5421,8 +5435,7 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
                       <CalendarDays size={14} style={{ color: BRAND_D }} /> 이번 주 이 회원 일정만 보기
                     </button>
                   )}
-                  {!manageDone ? renderRepeat(false) : null}
-                  {onDelete ? deleteControls : null}
+                  {manageDone && onDelete ? deleteControls : null}
                 </div></div>
               </div>
             </section>
@@ -5639,6 +5652,16 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
                   {moreSection}
                 </>
               )}
+
+              {/* 다음 주 같은 시간 등록 · 일정 삭제는 접지 않는다 (2026-11-28 대표: "삭제 버튼이 안 보인다",
+                  "다음 주 같은 시간 버튼이 사라졌다"). 11-17 개편 때 [수업 후] 탭의 접힌 [추가 관리] 안으로
+                  들어가 [수업 전] 에서는 아예 없고, [수업 후] 에서도 펼쳐야 보였다. 두 탭 모두 바로 보인다. */}
+              {!manageDone && (draft.id && (typeof onRepeatNextWeek === "function" || onDelete)) ? (
+                <section data-lesson-actions className="space-y-2 pt-3" style={{ borderTop: `1px solid ${LINE}` }}>
+                  {renderRepeat(false)}
+                  {onDelete ? deleteControls : null}
+                </section>
+              ) : null}
 
               {!manageDone && (
                 <div data-lesson-confirm-bar className="sticky bottom-0 z-10 -mx-4 px-4 pb-1 pt-3"
@@ -32924,7 +32947,7 @@ export function createAppScreenSmokeCases() {
   return [
     { name: "일정 탭", element: provider(<ScheduleManager db={db} photos={photos} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
     { name: "일정 탭 · 하루 11건 혼합", element: provider(<ScheduleManager db={busyDb} photos={{}} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
-    { name: "일정 탭 · 소속 · 확정 전", element: scheduleWithSettlement(settleLessonOf()) },
+    { name: "일정 탭 · 소속 · 확정 전", element: scheduleWithSettlement(settleLessonOf(), { onRepeatNextWeek: noop }) },
     /* 추가 관리. PT 와 디오사가 한 수업에서 함께 빠지는 자리라, 두 줄이 모두
        서는지와 고르는 칩이 있는지를 함께 본다. */
     { name: "일정 탭 · 소속 · 추가 관리", element: scheduleWithSettlement(settleLessonOf({
@@ -33271,6 +33294,7 @@ export function createAppScreenSmokeCases() {
     /* 만료일 순서 확인. 대표가 한 화면에서 어긋난 회원을 보고 만료일을 옮긴다 --
        차감이 차수 순이라 뒤 차수가 먼저 만료되면 그 회차를 잃는다. */
     { name: "더보기 탭 · 만료일 순서 확인", element: settingsTab(smokeOwner, { initialView: "expiry-order" }) },
+    { name: "더보기 탭 · 일정 색상", element: settingsTab(smokeOwner, { initialView: "schedule-colors" }) },
     /* 확정된 듀엣인데 한 명이 "예약" 으로 남은 수업 -- 대표 확인 목록. 읽지 않고 그린다. */
     { name: "듀엣 출석 확인", element: providerWith(smokeOwner, (
       <DuetUnmarkedReview organization={readyOrganizationContext(smokeOwner)} initialState={{

@@ -280,6 +280,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 소속 확인 실패",
     "더보기 탭 · 앱 업데이트 안내",
     "더보기 탭 · 만료일 순서 확인",
+    "더보기 탭 · 일정 색상",
     "듀엣 출석 확인",
     "더보기 탭 · 묶음 펼침",
     "더보기 탭 · PC",
@@ -4083,4 +4084,40 @@ test("정산 점검함: 시각 · 범위 먼저, 차단 · 확인 나눔, 확인
   assert.match(broken, /점검을 다 하지 못했어요/);
   assert.match(broken, /회원권 원장 \(코드 unavailable\)/);
   assert.doesNotMatch(broken, /걸린 것이 없어요/, "못 읽었으면 이상 없음이라고 말하지 않는다");
+});
+
+test("an unconfirmed lesson shows next-week and delete without opening a fold", async (t) => {
+  /* 2026-11-28 대표: "삭제 버튼이 안 보인다", "다음 주 같은 시간 등록 버튼이 사라졌다".
+     11-17 개편으로 둘 다 [수업 후] 탭의 접힌 [추가 관리] 안에 있었다 -- [수업 전] 에는 아예 없었다. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("일정 탭 · 소속 · 확정 전");
+  const actions = markup.match(/<section data-lesson-actions[\s\S]*?<\/section>/)?.[0] || "";
+  assert.ok(actions, "확정 전 수업에는 접지 않은 자리가 있다");
+  assert.match(actions, /다음 주 같은 시간 등록/);
+  assert.match(actions, /data-lesson-delete/);
+  assert.match(actions, /일정 삭제/);
+  const more = markup.match(/<section data-more-section[\s\S]*?<\/section>/)?.[0] || "";
+  assert.doesNotMatch(more, /일정 삭제|다음 주 같은 시간/, "접힌 칸에 같은 버튼을 두 번 두지 않는다");
+});
+
+test("a confirmed lesson keeps its delete closed to instructors", async (t) => {
+  // 확정된 수업은 지금 규칙 그대로 -- 지우는 버튼 없이 되돌리는 사람을 말한다.
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("일정 탭 · 소속 · 확정됨");
+  assert.doesNotMatch(markup, /data-lesson-actions/);
+  assert.doesNotMatch(markup, /data-lesson-delete/);
+});
+
+test("schedule colours show one dot per type, not a swatch wall", async (t) => {
+  /* 2026-11-28 대표: "색 고르는 칸이 눈에 아프고 거슬린다". 유형 7개 x 견본 8개가 한꺼번에
+     펼쳐져 있었다. 지금은 유형마다 한 줄, 누르면 그 유형만 색 점이 열린다. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("더보기 탭 · 일정 색상");
+  const rows = markup.match(/data-schedule-color-type="/g) || [];
+  assert.equal(rows.length, 7, "유형마다 한 줄");
+  assert.equal((markup.match(/role="radio"/g) || []).length, 0, "처음에는 색 점이 닫혀 있다");
+  assert.equal((markup.match(/aria-expanded="false"/g) || []).length >= 7, true);
+  // 약자는 그대로 함께 보인다 -- 색만으로 구분하지 않는다.
+  for (const short of ["개", "듀", "그", "상", "휴"]) assert.match(markup, new RegExp(`>${short}<`));
+  assert.match(markup, /기본값으로 되돌리기/);
 });

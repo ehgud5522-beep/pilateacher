@@ -8,6 +8,7 @@ import { readCollection } from "./repository-read.js";
    테스트가 두 값이 같은지 본다. */
 export const FLOW_PT_COLLECTION = "flowPtQueue";
 export const FLOW_PT_STATE = Object.freeze({ WAITING: "waiting", ISSUED: "issued", NOT_APPLICABLE: "not_applicable", BASELINE: "baseline" });
+export const FLOW_PT_FLOW_STATUS = Object.freeze({ SUCCESS: "success", LEFT: "left" });
 export const FLOW_PT_READ_DAYS = 45;
 
 const load = () => import("firebase/firestore");

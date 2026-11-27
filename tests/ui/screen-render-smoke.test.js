@@ -3823,6 +3823,15 @@ test("lesson ratings: the owner sees per-instructor counts and averages only, fa
   assert.match(flow, /data-flow-pt-refund/, "환불이라는 말이 있으면 경고");
   assert.match(flow, /data-flow-pt-balance/, "잔금 글 표시");
   assert.match(flow, /data-flow-pt-trial/, "PT 체험 표시");
+  /* 2026-11-28 대표: "계약금 받고 성공 → 발급, 실패는 상담 실패 -- 다시 성공으로 바꿀 수 있음". 잔금 글 · 실패로 바뀐 글은
+     발급으로 잇지 못한다 (규칙 flowPtPostOpen 과 같은 선) -- 발급 버튼은 대기 중인 보통 글(라회원 · 바회원)에만. */
+  assert.equal((flow.match(/data-flow-pt-issue/g) || []).length, 2, "발급하러 가기는 잔금 · 실패 글에 없다");
+  assert.match(flow, /잔금 확인함/, "잔금 글은 확인만");
+  assert.match(flow, /data-flow-pt-left-list/);
+  assert.match(flow, /플로우에서 실패로 바뀐 것 1건/);
+  assert.match(flow, /data-flow-pt-left="true"/, "실패 표시");
+  assert.match(flow, /data-flow-pt-resucceeded/, "다시 성공 표시");
+  assert.match(flow, /data-branch-tab="loc-b"[^>]*>[\s\S]*?2건/, "지점 칩 숫자는 발급할 수 있는 대기만");
   assert.match(flow, /처리한 것 1건/);
   assert.match(flow, /되돌리기/);
   /* [새로고침] = 지금 가져오기 (2026-11-24): 몇 건 읽었는지 · 보드마다 실패 이유와 원본 코드. */

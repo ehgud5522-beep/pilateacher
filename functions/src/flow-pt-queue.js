@@ -127,6 +127,9 @@ function createFlowPtQueueService(deps) {
     let filtered = true;
     const tasks = [];
     let cursor = 0;
+    /* 끝까지 읽었는가 (2026-11-28). 마지막 쪽까지 왔을 때만 참 -- 쪽 수 한도에서 끊겼으면 거짓이고, 그 보드에서는
+       "성공 목록에 없다" 를 판단하지 않는다 (못 읽은 것을 실패로 바꾸면 대기가 사라진다). */
+    let complete = false;
     for (let page = 0; page < MAX_PAGES; page += 1) {
       let data;
       try {
@@ -142,16 +145,17 @@ function createFlowPtQueueService(deps) {
       const batch = Array.isArray(data?.tasks) ? data.tasks : [];
       tasks.push(...batch);
       const next = Number(data?.lastCursor);
-      if (!data?.hasNext || !Number.isFinite(next) || next < 0) break;
+      if (!data?.hasNext || !Number.isFinite(next) || next < 0) { complete = true; break; }
       cursor = next;
     }
     /* 거르지 못했으면 칸 값의 상태로 고른다. 상태 칸이 안 오면 고를 수 없으니 그대로 두고 FC 가 원문을 본다. */
-    return filtered ? { tasks, filtered } : {
+    return filtered ? { tasks, filtered, complete } : {
       tasks: tasks.filter((task) => {
         const status = taskStatusOf(task);
         return !status || status === board.successStatusId || status === "성공";
       }),
       filtered,
+      complete,
     };
   }
 
@@ -167,7 +171,7 @@ function createFlowPtQueueService(deps) {
   }
 
   async function upsert(organizationId, fields) {
-    const { flowQueueSignature, FLOW_PT_COLLECTION, FLOW_PT_STATE, isBaselineTask } = await shared();
+    const { flowQueueSignature, FLOW_PT_COLLECTION, FLOW_PT_STATE, FLOW_PT_FLOW_STATUS, isBaselineTask } = await shared();
     const ref = firestore.doc(`organizations/${organizationId}/${FLOW_PT_COLLECTION}/${fields.postId}`);
     const snapshot = await ref.get();
     if (!snapshot.exists) {
@@ -199,6 +203,20 @@ function createFlowPtQueueService(deps) {
       await ref.update({ state: FLOW_PT_STATE.WAITING, excerpt: fields.excerpt, syncedAt: serverTimestamp() });
       return "restored";
     }
+    /* ── 다시 성공 (2026-11-28 대표: "실패는 상담 실패, 다시 연락해 성공으로 바꿀 수 있다") ──
+       성공 목록에서 빠졌던(left) 줄이 돌아오면 성공으로 되돌린다. 아직 회원권과 이어지지 않은 줄은 대기로 -- 실패 때
+       FC 가 [해당 없음] 을 눌렀어도 다시 계약했으니 발급할 일이 생겼다. 회원권과 이어진 줄 · [이미 발급 완료] 는 그대로
+       (같은 업무로 두 번 발급되지 않는다). 못 본 횟수만 쌓였던 줄은 그 횟수만 지운다. */
+    if (current.flowStatus === FLOW_PT_FLOW_STATUS.LEFT || Number(current.missCount) > 0) {
+      const back = current.flowStatus === FLOW_PT_FLOW_STATUS.LEFT;
+      const reopen = back && current.state === FLOW_PT_STATE.NOT_APPLICABLE && !text(current.passId);
+      await ref.update({
+        flowStatus: FLOW_PT_FLOW_STATUS.SUCCESS, missCount: 0, syncedAt: serverTimestamp(),
+        ...(back ? { resucceededAt: now() } : {}),
+        ...(reopen ? { state: FLOW_PT_STATE.WAITING, handledBy: "", handledAt: null } : {}),
+      });
+      if (back) return "resucceeded";
+    }
     if (flowQueueSignature({ ...current }) === flowQueueSignature(fields)) return "same";
     await ref.update({
       title: fields.title, excerpt: fields.excerpt, mentionsRefund: fields.mentionsRefund, taskStatus: fields.taskStatus,
@@ -213,7 +231,10 @@ function createFlowPtQueueService(deps) {
   async function sync() {
     const { FLOW_PT_BOARDS, taskAsPost, isPtQueuePost, matchLocationId, flowQueueFields, flowExcerpt, taskColumnValues, taskAmountOf } = await shared();
     const directory = await branchDirectory();
-    const counts = { projects: 0, failedProjects: 0, posts: 0, pt: 0, created: 0, updated: 0, unmatchedBranch: 0, unfiltered: 0, baseline: 0, restored: 0 };
+    const counts = { projects: 0, failedProjects: 0, posts: 0, pt: 0, created: 0, updated: 0, unmatchedBranch: 0, unfiltered: 0, baseline: 0, restored: 0, resucceeded: 0, left: 0 };
+    /* 보드마다 이번에 본 성공 업무 번호 -- 끝까지 읽은 보드만 (아래 markLeft). PT 판정 전의 전부다: 등록상품 칸을 고쳐 PT 가
+       아니게 된 업무는 "실패" 가 아니다. */
+    const seenByProject = new Map();
     /* 보드마다 실패 코드 -- [새로고침] 을 누른 사람에게 그대로 보여 준다 (원문 · 값은 로그에만). */
     const failures = [];
     for (const board of FLOW_PT_BOARDS) {
@@ -235,6 +256,7 @@ function createFlowPtQueueService(deps) {
       }
       counts.projects += 1;
       counts.posts += result.tasks.length;
+      if (result.complete) seenByProject.set(projectId, new Set(result.tasks.map((task) => text(taskAsPost(task, board, { filtered: result.filtered }).postId)).filter(Boolean)));
       if (!result.filtered) counts.unfiltered += 1;
       for (const task of result.tasks) {
         /* 업무를 게시글 모양으로 -- 이름은 제목, 칸 값은 줄마다 본문, 상태는 (걸러 받았으면) 그 보드의 성공. */
@@ -262,6 +284,7 @@ function createFlowPtQueueService(deps) {
           if (written === "baseline") counts.baseline += 1;
           if (written === "updated") counts.updated += 1;
           if (written === "restored") counts.restored += 1;
+          if (written === "resucceeded") counts.resucceeded += 1;
         } catch (error) {
           log("error", "flow_pt_queue_write_failed", {
             feature: "flow_pt_queue", stage: "write_queue", flowProjectId: projectId, organizationId: owners[0].organizationId,
@@ -270,7 +293,48 @@ function createFlowPtQueueService(deps) {
         }
       }
     }
+    counts.left = await markLeft(directory, seenByProject);
     return { ...counts, failures };
+  }
+
+  /**
+   * 성공 목록에서 빠진 줄 (2026-11-28). 플로우에서 성공 → 실패(상담 실패)로 옮기면 서버는 그 업무를 더 이상 받지 못한다 --
+   * 전에는 대기에 그대로 남아 실패한 상담으로 발급할 수 있었다. 끝까지 읽은 보드에서 **두 번 연속** 못 본 대기 · 해당 없음 줄을
+   * flowStatus "left" 로 표시한다 (한 번은 플로우가 잠깐 덜 준 것일 수 있다). 앱은 대기에서 빼 따로 보이고, 규칙은 이 줄을
+   * 회원권과 잇지 못하게 한다. 발급된 줄은 건드리지 않는다. 기준선 줄은 처음부터 안 본다.
+   * @returns {Promise<number>} 이번에 left 로 바꾼 줄 수
+   */
+  async function markLeft(directory, seenByProject) {
+    if (!seenByProject.size) return 0;
+    const { FLOW_PT_COLLECTION, FLOW_PT_STATE, FLOW_PT_FLOW_STATUS, FLOW_PT_LEFT_AFTER_MISSES } = await shared();
+    let left = 0;
+    for (const { organizationId } of directory) {
+      let snapshot;
+      try {
+        snapshot = await firestore.collection(`organizations/${organizationId}/${FLOW_PT_COLLECTION}`)
+          .where("state", "in", [FLOW_PT_STATE.WAITING, FLOW_PT_STATE.NOT_APPLICABLE]).get();
+      } catch (error) {
+        log("error", "flow_pt_queue_left_read_failed", { feature: "flow_pt_queue", stage: "mark_left", organizationId, errorDomain: "firestore", errorCode: text(error?.code || "unknown"), detail: text(error?.message).slice(0, 300) });
+        continue;
+      }
+      for (const item of snapshot.docs) {
+        const row = item.data() || {};
+        const seen = seenByProject.get(text(row.flowProjectId));
+        if (!seen || seen.has(text(row.postId || item.id)) || row.flowStatus === FLOW_PT_FLOW_STATUS.LEFT) continue;
+        const misses = (Number(row.missCount) || 0) + 1;
+        const leaving = misses >= FLOW_PT_LEFT_AFTER_MISSES;
+        try {
+          await firestore.doc(`organizations/${organizationId}/${FLOW_PT_COLLECTION}/${item.id}`).update({
+            missCount: misses, syncedAt: serverTimestamp(),
+            ...(leaving ? { flowStatus: FLOW_PT_FLOW_STATUS.LEFT, leftAt: now() } : {}),
+          });
+          if (leaving) left += 1;
+        } catch (error) {
+          log("error", "flow_pt_queue_write_failed", { feature: "flow_pt_queue", stage: "mark_left", organizationId, errorDomain: "firestore", errorCode: text(error?.code || "unknown"), detail: text(error?.message).slice(0, 300) });
+        }
+      }
+    }
+    return left;
   }
 
   return { sync, fetchTasks };

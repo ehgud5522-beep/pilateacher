@@ -36,7 +36,7 @@ import {
 } from "../../src/data/repositories/client-repository.js";
 import { mergeRoster } from "../../src/features/roster/roster-bridge.js";
 import { linkCandidates, linkDeviceMember } from "../../src/features/roster/unlinked-members.js";
-import { createFirestorePassStore, deductPass } from "../../src/data/repositories/pass-repository.js";
+import { createFirestorePassStore, deductPass, issuePass } from "../../src/data/repositories/pass-repository.js";
 import {
   createFirestoreLessonScheduleStore, publishScheduledLessons, reopenSettledLesson,
 } from "../../src/data/repositories/lesson-schedule-repository.js";
@@ -7167,12 +7167,12 @@ describe("PT 발급은 발급 대기에서만 (scheduleSync.flowPtGate) -- 2026-
       organizationId: ORG_A, postId, locationId: "location-a", branchName: "삼계점", title: "회원", state, handledBy: "", handledAt: null, registeredAt: new Date(),
     });
   });
-  const issue = (passId, extra = {}, { queue } = {}) => {
-    const db = dbFor(users.owner);
+  const issue = (passId, extra = {}, { queue, by = users.owner } = {}) => {
+    const db = dbFor(by);
     const batch = writeBatch(db);
-    batch.set(passRef(db, passId), passFixture(ORG_A, passId, { createdBy: users.owner, ...extra }));
-    batch.set(ledgerRef(db, passId), issueEntry(passId, extra.category));
-    if (queue) batch.update(queueRef(db, queue), { state: "issued", handledBy: users.owner, handledAt: serverTimestamp(), passId });
+    batch.set(passRef(db, passId), passFixture(ORG_A, passId, { createdBy: by, ...extra }));
+    batch.set(ledgerRef(db, passId), { ...issueEntry(passId, extra.category), createdBy: by });
+    if (queue) batch.update(queueRef(db, queue), { state: "issued", handledBy: by, handledAt: serverTimestamp(), passId });
     return batch.commit();
   };
 
@@ -7194,6 +7194,100 @@ describe("PT 발급은 발급 대기에서만 (scheduleSync.flowPtGate) -- 2026-
     await assertFails(issue("gate-unlinked", { flowPostId: "99000002" }), "등록을 이어 주지 않으면 거절");
     await seedQueue("99000003", "issued");
     await assertFails(issue("gate-used", { flowPostId: "99000003" }, { queue: "99000003" }), "이미 처리된 등록으로 두 번 발급 못 함");
+  });
+  test("FC매니저도 발급 대기에서 골라 발급한다 (2026-11-27 장유 · 양산 FC permission-denied)", async () => {
+    await gate("all");
+    await seedQueue("99000021");
+    await assertSucceeds(issue("gate-linked-manager", { flowPostId: "99000021" }, { queue: "99000021", by: users.manager }));
+  });
+  test("FC매니저가 앱 저장 경로(issuePass)로 듀엣 PT 를 발급 대기와 이어 발급한다", async () => {
+    await gate("all");
+    await seedQueue("99000031");
+    const input = (extra) => ({
+      clientId: "client-member", clientIds: ["client-member", "client-other"], locationId: "location-a", productId: "product-duet",
+      payCategory: "pt_2_1_new", productName: "듀엣", totalSessions: 20, serviceSessions: 0, contractPrice: 1200000, purchaseRound: 1,
+      paymentMethod: "card", balance: 0, balanceEdited: false, paymentNote: "", instructorId: users.instructor,
+      expiresAt: new Date(Date.now() + 180 * 86400000), issuerRole: "manager", createdBy: users.manager, ...extra,
+    });
+    await assertSucceeds(issuePass(ORG_A, input({ flowPostId: "99000031" }), { store: createFirestorePassStore({ firestore: dbFor(users.manager) }) }));
+    await assertSucceeds(issuePass(ORG_A, input({ flowBypassReason: "플로우 장애" }), { store: createFirestorePassStore({ firestore: dbFor(users.manager) }) }));
+  });
+  test("지점이 정해진 FC매니저(양산처럼 locationId 하나)도 발급 대기 · 사유 · 그룹으로 발급한다", async () => {
+    await gate("all");
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.manager}`), { locationId: "location-a" }, { merge: true });
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.instructor}`), { locationIds: ["location-a"] }, { merge: true });
+    });
+    await seedQueue("99000041");
+    await assertSucceeds(issue("gate-scoped-linked", { flowPostId: "99000041" }, { queue: "99000041", by: users.manager }));
+    await assertSucceeds(issue("gate-scoped-bypass", { flowBypassReason: "플로우 장애" }, { by: users.manager }));
+    await assertSucceeds(issue("gate-scoped-etc", { category: "etc" }, { by: users.manager }));
+  });
+  test("지점 하나(locationId 만)인 FC매니저가 앱 저장 경로로 1:1 PT 를 등록 연결 · 사유로 발급한다 (2026-11-28 양산)", async () => {
+    await gate("all");
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.manager}`), { locationId: "location-a" }, { merge: true });
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.instructor}`), { locationId: "location-a", locationIds: ["location-a"] }, { merge: true });
+    });
+    await seedQueue("99000051");
+    const store = createFirestorePassStore({ firestore: dbFor(users.manager) });
+    const input = (extra) => ({
+      clientId: "client-member", locationId: "location-a", productId: "product-1on1", payCategory: "pt_1_1_new", productName: "1:1 PT",
+      totalSessions: 50, serviceSessions: 0, contractPrice: 2000000, purchaseRound: 1, paymentMethod: "card", balance: 0, balanceEdited: false,
+      paymentNote: "", instructorId: users.instructor, expiresAt: new Date(Date.now() + 365 * 86400000),
+      fullRoomRate: 30000, issuerRole: "manager", createdBy: users.manager, ...extra,
+    });
+    await assertSucceeds(issuePass(ORG_A, input({ flowPostId: "99000051" }), { store }));
+    await assertSucceeds(issuePass(ORG_A, input({ flowBypassReason: "플로우 장애" }), { store }));
+  });
+  /* ── 규칙 계산량 (2026-11-28) ──────────────────────────────────────
+     Firestore 는 요청(배치 전체) 하나에 식 1000개까지만 계산하고, 넘으면 이유 없이 permission-denied 다.
+     게이트가 얹힌 뒤 FC 의 복합결제 PT 발급이 전부 이 한도를 넘었다 (양산 FC, 게이트 뒤 FC 복합결제 PT 0건).
+     가장 무거운 실제 조합을 여기 고정한다 -- 규칙이 다시 무거워지면 이 묶음이 먼저 실패한다.
+     2026-11-28 고친 뒤 여유: 이 조합에 "1 == 1" 40개를 더 얹어도 통과, 60개면 넘는다 (고치기 전 0개에서 넘음).
+     한도는 문서마다 센다 -- 회원권 발급 문(passes create)이 무겁다. 그 문에 칸을 늘릴 때 이 테스트를 본다. */
+  test("규칙 계산량: FC 의 가장 무거운 PT 발급 조합이 한도 안에서 통과한다", async () => {
+    await gate("all");
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      // 운영 모양: FC 는 지점 둘(양산 · 좌동처럼), 강사는 겸직.
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.manager}`), { locationId: "location-a", locationIds: ["location-a", "location-z"] }, { merge: true });
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.instructor}`), { locationId: "location-z", locationIds: ["location-z", "location-a"] }, { merge: true });
+    });
+    const store = createFirestorePassStore({ firestore: dbFor(users.manager) });
+    const base = {
+      clientId: "client-member", locationId: "location-a", productId: "product-1on1", payCategory: "pt_1_1_new", productName: "1:1 PT",
+      totalSessions: 50, serviceSessions: 0, contractPrice: 2750000, purchaseRound: 1, paymentMethod: "card", balance: 0, balanceEdited: false,
+      paymentNote: "", instructorId: users.instructor, expiresAt: new Date(Date.now() + 365 * 86400000),
+      fullRoomRate: 33000, issuerRole: "manager", createdBy: users.manager,
+    };
+    const mixed = { paymentMethod: "mixed", paymentBreakdown: { card: 1000000, transfer: 1750000, other: 0, cash: 0 } };
+    const everything = {
+      serviceSessions: 2, purchaseRound: 2, balance: 100000, balanceEdited: true, manualUnitPrice: 30000, unitPriceReason: "협의",
+      clientIds: ["client-member", "client-other"], payCategory: "pt_2_1_new",
+    };
+    await seedQueue("99000081");
+    await seedQueue("99000082");
+    await seedQueue("99000083");
+    const cases = {
+      "복합결제 · 사유": { ...base, ...mixed, flowBypassReason: "이전 등록" },
+      "복합결제 · 등록 연결": { ...base, ...mixed, flowPostId: "99000081" },
+      "복합결제 · 등록 연결 · 칸 전부(듀엣 · 서비스 · 차수 · 잔금 · 단가 직접)": { ...base, ...mixed, ...everything, flowPostId: "99000082" },
+      "기타결제 메모 · 등록 연결 · 칸 전부": { ...base, ...everything, paymentMethod: "other", paymentNote: "바우처", flowPostId: "99000083" },
+      "복합결제 · 사유 · 칸 전부": { ...base, ...mixed, ...everything, flowBypassReason: "플로우 장애" },
+    };
+    const outcomes = {};
+    for (const [label, input] of Object.entries(cases)) {
+      try { await issuePass(ORG_A, input, { store }); outcomes[label] = "ok"; }
+      catch (error) { outcomes[label] = `${error?.code || ""} ${String(error?.message || "").slice(0, 120)}`; }
+    }
+    assert.deepEqual(outcomes, Object.fromEntries(Object.keys(cases).map((label) => [label, "ok"])));
+  });
+  test("FC매니저도 사유를 쓰면 발급된다", async () => {
+    await gate("all");
+    await assertSucceeds(issue("gate-bypass-manager", { flowBypassReason: "플로우 장애" }, { by: users.manager }));
   });
   test("플로우가 멈췄을 때: 사유를 쓰면 발급된다 (2자 이상)", async () => {
     await gate("all");

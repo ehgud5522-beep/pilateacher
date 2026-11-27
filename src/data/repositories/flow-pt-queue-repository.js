@@ -26,13 +26,19 @@ export function listFlowPtQueue(organizationId, { locationIds = [], now = new Da
       const { collection, getDocs, getFirestore, query, where } = await load();
       const since = new Date(now.getTime() - FLOW_PT_READ_DAYS * 86400000);
       const base = collection(getFirestore(), "organizations", String(organizationId), FLOW_PT_COLLECTION);
-      const snapshot = await getDocs(scoped.length
-        ? query(base, where("locationId", "in", scoped), where("registeredAt", ">=", since))
-        : query(base, where("registeredAt", ">=", since)));
+      const scope = scoped.length ? [where("locationId", "in", scoped)] : [];
+      /* 두 번 읽어 합친다 (2026-11-28):
+           1. 최근 45일에 등록된 것 -- 처리한 것까지 (카드 아래 "처리한 것")
+           2. **아직 대기인 것은 날짜와 상관없이** -- registeredAt 은 플로우의 실제 등록 시각이라, 두 달 전에 상담으로
+              올렸다가 오늘 성공으로 옮긴 글은 1 에 걸리지 않는다. 대기는 몇십 건이라 읽는 양이 늘지 않는다. */
+      const [recent, waiting] = await Promise.all([
+        getDocs(query(base, ...scope, where("registeredAt", ">=", since))),
+        getDocs(query(base, ...scope, where("state", "==", FLOW_PT_STATE.WAITING))),
+      ]);
+      const rows = new Map();
+      for (const item of [...recent.docs, ...waiting.docs]) rows.set(item.id, /** @type {{ id: string, state?: string }} */ ({ id: item.id, ...item.data() }));
       /* 기준선(2026-11-24 "오늘부터" 전에 이미 성공이던 업무)은 보이지 않는다. */
-      return snapshot.docs
-        .map((item) => /** @type {{ id: string, state?: string }} */ ({ id: item.id, ...item.data() }))
-        .filter((row) => row.state !== FLOW_PT_STATE.BASELINE);
+      return [...rows.values()].filter((row) => row.state !== FLOW_PT_STATE.BASELINE);
     },
   });
 }

@@ -27,6 +27,12 @@ const MAX_PAGES = 10;
 const STATUS_COLUMN = "12";
 
 const text = (value) => String(value ?? "").trim();
+/** Firestore Timestamp · Date · 문자열 → Date. 못 읽으면 null. */
+const asDate = (value) => {
+  if (!value) return null;
+  const at = typeof value?.toDate === "function" ? value.toDate() : value instanceof Date ? value : new Date(value);
+  return Number.isFinite(at?.getTime?.()) ? at : null;
+};
 
 class FlowApiError extends Error {
   constructor(code, message, status, causeCode = "") {
@@ -176,10 +182,22 @@ function createFlowPtQueueService(deps) {
       return baseline ? "baseline" : "created";
     }
     const current = snapshot.data() || {};
+    /* ── 숨길지는 **처음 가져온 시각**으로 본다 (2026-11-28) ──
+       전에는 registeredAt 으로 봤다. 그런데 새로 만들 때 registeredAt 에 플로우의 **실제 등록 시각**(상세 조회)을 넣으므로,
+       11-24 전에 상담으로 올렸다가 지금 성공으로 옮긴 글은 만들 때는 대기였다가 10분 뒤 다음 동기화에서 기준선으로
+       숨겨졌다 (운영 3건: 11-25 · 11-26 · 11-27, 모두 정확히 10분 뒤). 처음 가져온 시각(createdAt)이 없는 옛 문서만
+       예전처럼 registeredAt 으로 본다 -- 11-24 첫 실행이 750건을 띄운 것을 숨기는 원래 목적. */
+    const firstSeen = asDate(current.createdAt) || asDate(current.registeredAt);
     /* 기준선 전에 발급 대기로 만들어 둔 것(아무도 손대지 않은 것)은 기준선으로 돌린다 -- 첫 실행이 750건을 띄웠다. */
-    if (current.state === FLOW_PT_STATE.WAITING && !current.handledBy && isBaselineTask(fields.postId, current.registeredAt?.toDate ? current.registeredAt.toDate() : current.registeredAt)) {
+    if (current.state === FLOW_PT_STATE.WAITING && !current.handledBy && isBaselineTask(fields.postId, firstSeen)) {
       await ref.update({ state: FLOW_PT_STATE.BASELINE, excerpt: fields.excerpt, syncedAt: serverTimestamp() });
       return "baseline";
+    }
+    /* 기준선 뒤에 처음 가져왔는데 위 버그로 숨겨진 것은 대기로 되살린다. 기준선 뒤에 새로 만든 문서는 처음부터 대기라
+       (위 isBaselineTask(…, now())) 기준선 상태일 이유가 이 버그뿐이다. 손댄 사람이 있으면 건드리지 않는다. */
+    if (current.state === FLOW_PT_STATE.BASELINE && !current.handledBy && asDate(current.createdAt) && !isBaselineTask(fields.postId, firstSeen)) {
+      await ref.update({ state: FLOW_PT_STATE.WAITING, excerpt: fields.excerpt, syncedAt: serverTimestamp() });
+      return "restored";
     }
     if (flowQueueSignature({ ...current }) === flowQueueSignature(fields)) return "same";
     await ref.update({
@@ -195,7 +213,7 @@ function createFlowPtQueueService(deps) {
   async function sync() {
     const { FLOW_PT_BOARDS, taskAsPost, isPtQueuePost, matchLocationId, flowQueueFields, flowExcerpt, taskColumnValues, taskAmountOf } = await shared();
     const directory = await branchDirectory();
-    const counts = { projects: 0, failedProjects: 0, posts: 0, pt: 0, created: 0, updated: 0, unmatchedBranch: 0, unfiltered: 0, baseline: 0 };
+    const counts = { projects: 0, failedProjects: 0, posts: 0, pt: 0, created: 0, updated: 0, unmatchedBranch: 0, unfiltered: 0, baseline: 0, restored: 0 };
     /* 보드마다 실패 코드 -- [새로고침] 을 누른 사람에게 그대로 보여 준다 (원문 · 값은 로그에만). */
     const failures = [];
     for (const board of FLOW_PT_BOARDS) {
@@ -243,6 +261,7 @@ function createFlowPtQueueService(deps) {
           if (written === "created") counts.created += 1;
           if (written === "baseline") counts.baseline += 1;
           if (written === "updated") counts.updated += 1;
+          if (written === "restored") counts.restored += 1;
         } catch (error) {
           log("error", "flow_pt_queue_write_failed", {
             feature: "flow_pt_queue", stage: "write_queue", flowProjectId: projectId, organizationId: owners[0].organizationId,

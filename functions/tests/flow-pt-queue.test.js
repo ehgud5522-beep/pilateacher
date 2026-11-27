@@ -258,3 +258,35 @@ test("카드 칸: 업무 이름(업무명 칸) · 금액(숫자 칸) · 횟수 �
   assert.equal(saved.registeredAtExact, true);
   assert.equal(urls.filter((url) => url.includes("/user/posts/9")).length, 1, "상세는 새로 띄우는 것만 한 번");
 });
+
+/* 2026-11-28 대표: "예전 상담 글을 성공으로만 바꾸면 안 가져와지나? 날짜를 오늘로 바꿔야 뜨나". 만들 때 registeredAt 에 플로우의
+   실제 등록 시각을 넣는데, 다음 동기화가 그 값으로 기준선을 판단해 10분 뒤 숨겼다 (운영 3건). 처음 가져온 시각으로 본다. */
+test("기준선: 옛 글을 지금 성공으로 옮기면 뜨고, 다음 동기화에서도 숨지 않는다 -- 숨겨졌던 것은 되살린다", async () => {
+  const firestore = fakeFirestore({ "organizations/org": {}, "organizations/org/locations/l1": { name: "삼계점" } });
+  const oldPost = "88473879"; // 11-19 에 상담으로 올린 글 (기준선 글 번호보다 작다)
+  const fetchImpl = async (url) => {
+    if (url.includes(`/user/posts/${oldPost}`)) return { ok: true, status: 200, json: async () => ({ success: true, data: { postId: oldPost, registeredDateTime: "20261119203400" } }) };
+    return url.includes("/2955393/") ? ok([task(oldPost, "1:1pt 10s")]) : ok([]);
+  };
+  let at = new Date("2026-11-25T07:39:00Z");
+  const service = createFlowPtQueueService({ firestore, fetchImpl, apiKey: () => "key", now: () => at });
+  const first = await service.sync();
+  const path = `organizations/org/flowPtQueue/${oldPost}`;
+  assert.equal(first.created, 1);
+  assert.equal(firestore.docs.get(path).state, "waiting");
+  assert.equal(firestore.docs.get(path).registeredAt.toISOString(), "2026-11-19T11:34:00.000Z", "카드에는 플로우의 실제 등록 시각");
+  at = new Date("2026-11-25T07:49:00Z");
+  await service.sync();
+  assert.equal(firestore.docs.get(path).state, "waiting", "10분 뒤에도 대기 (전에는 여기서 기준선으로 숨겨졌다)");
+
+  // 이미 숨겨진 것: 기준선 뒤에 처음 가져왔고 아무도 손대지 않았으면 되살린다. 기준선 전에 가져온 것 · 손댄 것은 그대로.
+  firestore.docs.set(path, { ...firestore.docs.get(path), state: "baseline" });
+  firestore.docs.set("organizations/org/flowPtQueue/87000001", { postId: "87000001", state: "baseline", handledBy: "", createdAt: new Date("2026-11-24T09:00:00Z"), registeredAt: new Date("2026-10-01T00:00:00Z") });
+  firestore.docs.set("organizations/org/flowPtQueue/87000002", { postId: "87000002", state: "baseline", handledBy: "fc", createdAt: new Date("2026-11-26T09:00:00Z"), registeredAt: new Date("2026-10-01T00:00:00Z") });
+  const restoreFetch = async (url) => (url.includes("/2955393/") ? ok([task(oldPost, "1:1pt 10s"), task("87000001", "1:1pt 10s"), task("87000002", "1:1pt 10s")]) : ok([]));
+  const counts = await createFlowPtQueueService({ firestore, fetchImpl: restoreFetch, apiKey: () => "key", now: () => new Date("2026-11-28T03:00:00Z") }).sync();
+  assert.equal(firestore.docs.get(path).state, "waiting", "버그로 숨겨진 것은 되살린다");
+  assert.equal(firestore.docs.get("organizations/org/flowPtQueue/87000001").state, "baseline", "11-24 첫 실행 전에 본 옛 성공 업무는 그대로 숨긴다");
+  assert.equal(firestore.docs.get("organizations/org/flowPtQueue/87000002").state, "baseline", "손댄 사람이 있으면 건드리지 않는다");
+  assert.equal(counts.restored, 1);
+});

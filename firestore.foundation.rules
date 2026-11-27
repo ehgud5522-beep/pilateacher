@@ -22,15 +22,34 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/memberships/$(membershipId(organizationId)));
     }
 
+    /* ── 규칙 계산량 (2026-11-28) ──────────────────────────────────────
+       Firestore 는 문서 하나의 규칙을 따질 때 식 1000개까지만 계산한다 (배치여도
+       문서마다 따로 센다 -- 원장 규칙에 식을 얹어도 회원권 쪽은 그대로였다). 넘으면
+       이유를 말하지 않고 permission-denied 다. 회원권 발급(passes create)이 이 한도
+       바로 밑에 있었고, 11-24 의 PT 발급 게이트가 얹히자 FC 의 복합결제 PT 발급이
+       전부 넘었다 -- 게이트 뒤 나흘 동안 FC 복합결제 PT 0건 (그 전 한 달 29건).
+
+       계산의 대부분은 **같은 것을 여러 번 만드는 일**이었다: 소속 문서 경로를
+       hasRole 한 번에 세 번, 지점 목록(scopedLocationsOf)을 부를 때마다 get 네 번.
+       그래서 경로와 값을 한 번만 만들어 넘긴다. 뜻은 그대로다 -- 로그인 안 한
+       요청은 경로를 만들기 전에 signedIn() 에서 끝난다 (인자는 부를 때만 계산된다).
+       한도에 다시 닿으면 tests/rules 의 "규칙 계산량" 묶음이 먼저 실패한다. */
+    function activeAt(path) {
+      return exists(path) && get(path).data.status == "active";
+    }
+
+    function activeWithRole(path, roles) {
+      return activeAt(path) && get(path).data.role in roles;
+    }
+
     function isActiveMember(organizationId) {
       return signedIn()
-        && exists(/databases/$(database)/documents/memberships/$(membershipId(organizationId)))
-        && membership(organizationId).data.status == "active";
+        && activeAt(/databases/$(database)/documents/memberships/$(organizationId + "_" + request.auth.uid));
     }
 
     function hasRole(organizationId, roles) {
-      return isActiveMember(organizationId)
-        && membership(organizationId).data.role in roles;
+      return signedIn()
+        && activeWithRole(/databases/$(database)/documents/memberships/$(organizationId + "_" + request.auth.uid), roles);
     }
 
     /* ── 대표와 같은 자리 ─────────────────────────────────────────────────
@@ -108,11 +127,16 @@ service cloud.firestore {
     /* 소속 문서가 가리키는 지점들. locationIds 가 먼저, 없으면 locationId 한 칸.
        앱의 scopedLocationIds (location-repository.js) 와 같은 읽기다. */
     function scopedLocationsOf(data) {
-      return data.get("locationIds", []) is list && data.get("locationIds", []).size() > 0
-        ? data.get("locationIds", [])
-        : (data.get("locationId", "") is string && data.get("locationId", "") != ""
-          ? [data.get("locationId", "")]
-          : []);
+      let many = data.get("locationIds", []);
+      let one = data.get("locationId", "");
+      return many is list && many.size() > 0
+        ? many
+        : (one is string && one != "" ? [one] : []);
+    }
+
+    /* 강사의 지점이 비었거나 FC 의 지점과 하나라도 겹치는가. 강사 지점을 한 번만 만든다. */
+    function overlapsOrUnscoped(theirs, mine) {
+      return theirs.size() == 0 || theirs.hasAny(mine);
     }
 
     /* ── FC매니저는 맡은 지점 안의 강사만 담당으로 지정한다 (2026-11-04 대표) ──
@@ -134,10 +158,7 @@ service cloud.firestore {
       return mine.size() == 0
         || (
           exists(targetPath)
-          && (
-            scopedLocationsOf(get(targetPath).data).size() == 0
-            || scopedLocationsOf(get(targetPath).data).hasAny(mine)
-          )
+          && overlapsOrUnscoped(scopedLocationsOf(get(targetPath).data), mine)
         );
     }
 
@@ -160,6 +181,35 @@ service cloud.firestore {
         || !(location is string)
         || location == ""
         || location in mine;
+    }
+
+    /* 회원권 발급의 FC 범위 -- 맡은 지점의 회원(passInManagerScope)과 맡은 지점 안의 강사
+       (instructorInManagerScope) 를 한 번에. 부르는 쪽(passes create)이 canIssuePass 로 활성
+       소속을 확인한 뒤에만 부른다. 소속 문서와 지점 목록을 한 번만 만든다 (위 "규칙 계산량").
+       뜻은 두 함수와 같다 -- 그 둘은 발급 밖(교체 · 원장 · 발급 대기)에서 그대로 쓴다. */
+    function issuerInManagerScope(organizationId, data, me) {
+      let mine = scopedLocationsOf(me);
+      let location = data.get("locationId", "");
+      let targetPath = /databases/$(database)/documents/memberships/$(organizationId + "_" + data.instructorId);
+      return me.role != "manager"
+        || mine.size() == 0
+        || (
+          (!(location is string) || location == "" || location in mine)
+          && exists(targetPath)
+          && overlapsOrUnscoped(scopedLocationsOf(get(targetPath).data), mine)
+        );
+    }
+
+    /* 복합결제의 수단별 금액. MIXED_PAYMENT_PARTS 와 같은 넷 -- 한 칸이라도 비면 합이 달라진다.
+       map 을 한 번 받아 칸마다 request.resource.data.paymentBreakdown 을 다시 걷지 않는다. */
+    function paymentBreakdownWellFormed(b) {
+      return b is map
+        && b.keys().hasOnly(["card", "transfer", "other", "cash"])
+        && b.keys().hasAll(["card", "transfer", "other", "cash"])
+        && b.card is int && b.card >= 0
+        && b.transfer is int && b.transfer >= 0
+        && b.other is int && b.other >= 0
+        && b.cash is int && b.cash >= 0;
     }
 
     function canRegisterClient(organizationId) {
@@ -1161,20 +1211,7 @@ service cloud.firestore {
           )
           && (
             !("paymentBreakdown" in request.resource.data)
-            || (
-              request.resource.data.paymentBreakdown is map
-              // MIXED_PAYMENT_PARTS 와 같은 넷. 한 칸이라도 비면 합이 달라진다.
-              && request.resource.data.paymentBreakdown.keys().hasOnly(["card", "transfer", "other", "cash"])
-              && request.resource.data.paymentBreakdown.keys().hasAll(["card", "transfer", "other", "cash"])
-              && request.resource.data.paymentBreakdown.card is int
-              && request.resource.data.paymentBreakdown.card >= 0
-              && request.resource.data.paymentBreakdown.transfer is int
-              && request.resource.data.paymentBreakdown.transfer >= 0
-              && request.resource.data.paymentBreakdown.other is int
-              && request.resource.data.paymentBreakdown.other >= 0
-              && request.resource.data.paymentBreakdown.cash is int
-              && request.resource.data.paymentBreakdown.cash >= 0
-            )
+            || paymentBreakdownWellFormed(request.resource.data.paymentBreakdown)
           )
           /* 잔금. 결제 합계와 어긋나도 막지 않는다 -- 얼마를 언제 받기로 했는지는
              FC 가 아는 일이라고 대표가 정했다 (2026-10-27). 음수만 막는다. */
@@ -1200,16 +1237,10 @@ service cloud.firestore {
           // 발급은 대표·FC매니저. canIssuePass 의 주석 참고 — 바꿀 때는 그 목록
           // 하나만 바꾼다.
           && canIssuePass(organizationId)
-          // FC매니저는 맡은 지점 안의 강사만 (instructorInManagerScope).
-          && (
-            !hasRole(organizationId, ["manager"])
-            || instructorInManagerScope(organizationId, request.resource.data.instructorId)
-          )
-          // FC매니저는 맡은 지점의 회원에게만 발급한다 (passInManagerScope).
-          && (
-            !hasRole(organizationId, ["manager"])
-            || passInManagerScope(organizationId, request.resource.data)
-          )
+          /* FC매니저는 맡은 지점 안의 강사만 (instructorInManagerScope), 맡은 지점의 회원에게만
+             (passInManagerScope). 역할은 canIssuePass 가 이미 활성 소속을 확인했으니 문서의 칸으로만
+             본다 -- hasRole 을 두 번 더 부르면 소속 경로를 여섯 번 더 만든다 (위 "규칙 계산량"). */
+          && issuerInManagerScope(organizationId, request.resource.data, membership(organizationId).data)
           /* PT 발급은 발급 대기에서만 (2026-11-24 대표, functions/shared/flow-pt-queue.mjs). 스위치
              scheduleSync.flowPtGate 가 켜지면 PT(pt_…) 는 발급 대기의 글을 골라(flowPostId, 같은 배치에서 그 글이
              waiting → issued 로 이 회원권과 이어진다) 또는 사유를 써서(flowBypassReason) 발급한다. 이관은 해당 없다. */
@@ -1886,23 +1917,30 @@ service cloud.firestore {
       /* 플로우 PT 발급 대기 (2026-11-24 대표). 서버(syncFlowPtQueue)가 지점 업무보드의 완료된 PT 업무를 만들고,
          대표 · 총괄 · FC(맡은 지점)가 읽고 처리 칸만 고친다 -- 플로우 원문을 확인하고 발급한 뒤 "발급함" / "해당 없음".
          앱이 발급하지 않으므로 이 문서는 돈 · 회차와 이어지지 않는다. 만들기 · 지우기는 서버만. */
+      /* 아래 셋은 회원권 발급(passes create) 안에서 돈다 -- 그 문은 식 1000개 한도 바로 밑이라
+         (맨 위 "규칙 계산량") 경로와 값을 let 으로 한 번만 만든다. */
       function flowPtGateOn() {
-        return exists(/databases/$(database)/documents/runtimeConfig/scheduleSync)
-          && get(/databases/$(database)/documents/runtimeConfig/scheduleSync).data.get("flowPtGate", {}).get("mode", "") == "all";
+        let path = /databases/$(database)/documents/runtimeConfig/scheduleSync;
+        return exists(path) && get(path).data.get("flowPtGate", {}).get("mode", "") == "all";
       }
       function flowPtLinked(organizationId, passId, data) {
-        return data.get("flowPostId", "") is string
-          && data.get("flowPostId", "").size() > 0
+        let postId = data.get("flowPostId", "");
+        return postId is string
+          && postId.size() > 0
           && !("flowBypassReason" in data)
-          && exists(/databases/$(database)/documents/organizations/$(organizationId)/flowPtQueue/$(data.flowPostId))
-          && get(/databases/$(database)/documents/organizations/$(organizationId)/flowPtQueue/$(data.flowPostId)).data.state == "waiting"
-          && getAfter(/databases/$(database)/documents/organizations/$(organizationId)/flowPtQueue/$(data.flowPostId)).data.get("passId", "") == passId;
+          && flowPtPostLinks(/databases/$(database)/documents/organizations/$(organizationId)/flowPtQueue/$(postId), passId);
+      }
+      function flowPtPostLinks(path, passId) {
+        return exists(path)
+          && get(path).data.state == "waiting"
+          && getAfter(path).data.get("passId", "") == passId;
       }
       /* 플로우가 멈췄을 때의 비상구: 대표 · 총괄 · FC매니저(발급할 수 있는 사람 전부 -- canIssuePass)가 사유를 쓰고 발급. */
       function flowPtBypassed(data) {
-        return data.get("flowBypassReason", "") is string
-          && data.get("flowBypassReason", "").size() >= 2
-          && data.get("flowBypassReason", "").size() <= 200
+        let reason = data.get("flowBypassReason", "");
+        return reason is string
+          && reason.size() >= 2
+          && reason.size() <= 200
           && !("flowPostId" in data);
       }
       function flowPtQueueStaff(organizationId, data) {

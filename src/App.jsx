@@ -419,7 +419,8 @@ import { createRecordStore, migrationRecordsFor } from "./features/lesson-record
 import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/server-outbox.js";
 import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
 import { listLessonNotesBetween, listRecordActivity, writeRecordActivity } from "./data/repositories/record-activity-repository.js";
-import { listFlowPtQueue, markFlowPtQueue } from "./data/repositories/flow-pt-queue-repository.js";
+import { listFlowPtQueue, markFlowPtQueue, readFlowPtQueueItem } from "./data/repositories/flow-pt-queue-repository.js";
+import { describePassIssueFailure, flowPostFailure, passIssueRef, passLocationFailure } from "./features/membership/pass-issue-preflight.js";
 import { FLOW_BYPASS_REASON_MAX, FLOW_BYPASS_REASON_MIN, isFlowGatedCategory } from "../functions/shared/flow-pt-queue.mjs";
 import {
   RECORD_RATE_GOOD, RECORD_RATE_LOW, RECORD_TONE, countDeviceRecordActivity, instructorRecordBoard, monthOf as monthOfRecord, previousRecordMonth,
@@ -942,6 +943,9 @@ const DEVICE_LOG_FIELDS = new Set([
   // 회원권 수정 실패. 조정이면 방향과 변화량이 원인을 가른다 -- FC매니저의 증가는
   // 규칙이 막고, 그것만으로는 권한 거부와 구별되지 않는다.
   "direction", "delta",
+  // 회원권 발급이 막힌 갈래 (pass-issue-preflight.js passIssueRef) -- 역할 · 게이트 · PT · 플로우 · 결제 · 듀엣.
+  // 값(이름 · 금액)은 없다.
+  "ref",
 ]);
 /** 소속 조회 진단이 쓰는 필드. 화이트리스트와 어긋나면 테스트가 잡는다. */
 export const ORGANIZATION_CONTEXT_LOG_FIELDS = Object.freeze([
@@ -18657,7 +18661,7 @@ function PassIssue({
   onOpenProducts,
   /* PT 발급 대기에서 고른 플로우 등록 (2026-11-24). 있으면 그 등록으로 발급한다. */
   flowSeed = null, onFlowSeedUsed,
-  onLoadFlowQueue = listFlowPtQueue, onLoadGate = fbLoadScheduleSyncConfig,
+  onLoadFlowQueue = listFlowPtQueue, onLoadGate = fbLoadScheduleSyncConfig, onReadFlowItem = readFlowPtQueueItem,
   onRetryOrganization, onToast, now = () => new Date(), initialState = null,
 }) {
   const [allClients, setClients] = useState(initialState?.clients || []);
@@ -18986,6 +18990,11 @@ function PassIssue({
     setMode("confirm");
   };
 
+  /* 어떤 발급이었는지 -- 막혔을 때 화면과 진단에 같이 붙인다 (pass-issue-preflight.js). */
+  const issueRef = passIssueRef({
+    role: issueScope.role, gateOn: flowGateOn, flowPt, flowPayload, paymentMethod: form.paymentMethod, duet: Boolean(form.duet && partner),
+  });
+
   const issue = async () => {
     /* 확인 화면에서 한 번 더. 저장 단계에서도 막는다 (2026-11-04 대표) -- 확인
        화면은 앞 단계의 판정을 다시 하지 않는다. */
@@ -18993,8 +19002,43 @@ function PassIssue({
       setFormError(INSTRUCTOR_OUT_OF_SCOPE_MESSAGE);
       return;
     }
+    /* ── 규칙이 이유 없이 거절하기 전에 이유를 말한다 (2026-11-28) ──
+       FC 의 PT 발급이 나흘 동안 permission-denied 한 줄로만 막혔다. 앱이 알 수 있는 거절은 여기서
+       먼저 -- 맡은 지점 밖의 회원, 화면을 연 뒤 이미 처리된 플로우 등록. */
+    const blocked = (failure) => {
+      deviceLog("pass_issue_blocked", {
+        feature: "pass_issue", stage: "preflight", errorDomain: "app", errorCode: failure.code,
+        kind: failure.kind, role: issueScope.role, ref: issueRef,
+      });
+      setMode("form");
+      setFormError(failure.message);
+    };
+    const outside = passLocationFailure(issueScope, client.locationId);
+    if (outside) { blocked(outside); return; }
     setSaving(true);
     setFormError("");
+    if (flowPayload.flowPostId) {
+      let item;
+      try {
+        item = await onReadFlowItem?.(organizationId, flowPayload.flowPostId);
+      } catch (thrown) {
+        /* 못 읽었으면 막지 않는다 -- 규칙이 다시 본다. 다만 남긴다. */
+        item = undefined;
+        deviceLog("flow_pt_queue_read_failed", {
+          feature: "flow_pt_queue", stage: "pass_issue_preflight", errorDomain: "firestore",
+          errorCode: String(thrown?.code || "unknown"), role: issueScope.role,
+        });
+      }
+      const stale = item === undefined ? null : flowPostFailure(item);
+      if (stale) {
+        setFlowItems((current) => current.filter((row) => row.id !== flowPayload.flowPostId));
+        setFlowPostId("");
+        onFlowSeedUsed?.();
+        setSaving(false);
+        blocked(stale);
+        return;
+      }
+    }
     try {
       await issuePass(organizationId, {
         clientId: client.id,
@@ -19052,14 +19096,16 @@ function PassIssue({
     } catch (error) {
       /* 단가 직접 입력이 생기면서 저장 경로가 거부하는 이유가 늘었다
          (Forbidden manualUnitPrice · Missing unitPriceReason). 원본 그대로 남긴다. */
+      const failure = describePassIssueFailure(error, issueRef);
       deviceLog("pass_issue_failed", {
         feature: "pass_issue", stage: "commit",
         errorDomain: error?.code ? "firestore" : "app",
         errorCode: error?.code || "", message: String(error?.message || ""),
+        kind: failure.kind, ref: issueRef,
         role: issueScope.role, unitPriceSource: unitPriceOverridden ? ISSUE_UNIT_PRICE_SOURCE.MANUAL : standardPrice.source,
       });
       setMode("form");
-      setFormError(`발급하지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
+      setFormError(failure.message);
     } finally {
       setSaving(false);
     }

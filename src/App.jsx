@@ -307,10 +307,10 @@ import {
 } from "./data/repositories/migration-repository.js";
 import {
   ISSUE_UNIT_PRICE_SOURCE, UNIT_PRICE_REASON_MAX, UNIT_PRICE_SOURCE, canSetUnitPrice,
-  standardIssueUnitPrice, unitPriceSourceFor,
+  defaultUnitPriceFor, standardIssueUnitPrice, unitPriceSourceFor,
 } from "./data/schema/pay-rates.js";
 import {
-  NEW_TO_INSTRUCTOR_THRESHOLD, NEW_TO_INSTRUCTOR_UNIT_PRICE, netContractPriceFor,
+  NEW_TO_INSTRUCTOR_THRESHOLD, NEW_TO_INSTRUCTOR_UNIT_PRICE, netContractPriceFor, paidServiceSessionsFor, SERVICE_EXTRA_UNIT_PRICE, DIOSA_A_SERVICE_UNIT_PRICE,
 } from "./data/schema/deduction-pricing.js";
 import {
   CLIENT_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE, isDiosaCategory,
@@ -18700,7 +18700,7 @@ function PassIssue({
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
   const [mode, setMode] = useState(initialState?.mode || "form");
   const [search, setSearch] = useState(initialState?.search || "");
-  const [moreOpen, setMoreOpen] = useState(initialState?.moreOpen || false);
+  /* 서비스 · 차수 접기는 없앴다 (2026-11-28) -- 두 칸은 늘 보인다. */
   const [issuedPasses, setIssuedPasses] = useState(initialState?.passes || []);
   /* 듀엣 상대를 고르는 칸. 기본은 꺼짐이다 -- 1:1 이 대부분이라, 켜져 있으면
      발급할 때마다 끄는 손이 하나 더 든다. */
@@ -18903,6 +18903,23 @@ function PassIssue({
     duet: form.duet, client, partner, product, passes: issuedPasses, now: now(),
   }), [form.duet, client, partner, product, issuedPasses, now]);
   const duetBlock = blockingNotice(duetNotices);
+  /* 등록 횟수별 서비스 (2026-11-28 대표 공지). 서비스 횟수는 채우지 않는다 -- 넣는 사람이 정하고, 이 줄은 그중 수업료가
+     나가는 회차 수와 금액, 넘는 회차는 수업료가 없다는 것을 알린다 (deduction-pricing.mjs paidServiceSessionsFor). */
+  const serviceGuide = useMemo(() => {
+    if (!product) return "";
+    const total = Number(form.totalSessions) || 0;
+    const entered = Number(form.serviceSessions) || 0;
+    const rule = paidServiceSessionsFor({ category: product.payCategory, totalSessions: total, productName: product.name });
+    const won = (value) => `${(value / WON_PER_MANWON).toLocaleString()}만원`;
+    const extra = product.payCategory === PAY_CATEGORY.DIOSA_A ? DIOSA_A_SERVICE_UNIT_PRICE : SERVICE_EXTRA_UNIT_PRICE;
+    const head = rule.excluded
+      ? "이 상품(깍두기 · 이벤트 · 세션업 · 전환 등)은 등록 횟수별 서비스 기준이 적용되지 않아요 -- 서비스는 첫 1회만 수업료 1만원."
+      : rule.table
+        ? `기준: ${total}회 등록 → 서비스 ${rule.paid}회 수업료 (첫 1회 ${won(product.payCategory === PAY_CATEGORY.DIOSA_A ? DIOSA_A_SERVICE_UNIT_PRICE : defaultUnitPriceFor(PAY_CATEGORY.SERVICE) || 0)} · 나머지 회당 ${won(extra)}).`
+        : `${total ? `${total}회는` : "이 횟수는"} 서비스 기준표(20 · 30 · 40 · 50회)에 없어요 -- 서비스는 첫 1회만 수업료 1만원.`;
+    const over = entered > rule.paid ? ` 넣은 서비스 ${entered}회 중 ${entered - rule.paid}회는 수업료가 나가지 않아요.` : "";
+    return head + over;
+  }, [product, form.totalSessions, form.serviceSessions]);
   /* 같은 회원이 최근 60일 안에 PT 회원권을 받았는가 (2026-11-28) -- 새 플로우 업무로 같은 계약을 또 올린 경우는 업무 번호가
      달라 규칙이 막지 못한다. 재등록은 정상이라 막지 않고 알린다 (features/passes/recent-issue.js). */
   const recentIssueText = useMemo(() => recentPtIssueMessage(
@@ -19100,7 +19117,6 @@ function PassIssue({
       setForm(emptyIssueForm());
       setSearch("");
       setPartnerSearch("");
-      setMoreOpen(false);
     } catch (error) {
       /* 단가 직접 입력이 생기면서 저장 경로가 거부하는 이유가 늘었다
          (Forbidden manualUnitPrice · Missing unitPriceReason). 원본 그대로 남긴다. */
@@ -19561,15 +19577,14 @@ function PassIssue({
             </IssueField>
           ) : null}
 
-          <button type="button" onClick={() => setMoreOpen((open) => !open)} className="w-full text-left"
-            style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>
-            {moreOpen ? "· 서비스 · 차수 접기" : "· 서비스 · 차수"}
-          </button>
-          {moreOpen ? (
-            <div className="space-y-3">
+          {/* 서비스 · 차수는 늘 펼쳐 둔다 (2026-11-28 대표: "차수 + 서비스 넣는 칸이 작게 표시가 안 나 찾기 힘듦").
+              전에는 작은 [· 서비스 · 차수] 글자를 눌러야 열렸다. */}
+          {(
+            <div className="space-y-3" data-issue-service-round>
               <IssueField label="서비스 세션">
                 <input inputMode="numeric" value={form.serviceSessions} className={inputCls} placeholder="0"
                   onChange={(e) => setForm({ ...form, serviceSessions: e.target.value.replace(/\D/g, "") })} />
+                {serviceGuide ? <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }} data-service-guide>{serviceGuide}</p> : null}
               </IssueField>
               <IssueField label="차수">
                 <input inputMode="numeric" value={form.purchaseRound} className={inputCls} placeholder="1"
@@ -19583,7 +19598,7 @@ function PassIssue({
                 </p>
               </IssueField>
             </div>
-          ) : null}
+          )}
 
           {recentIssueText ? (
             <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, fontWeight: 700, color: WARN }} data-recent-issue>{recentIssueText}</p>
@@ -33872,6 +33887,11 @@ export function createAppScreenSmokeCases() {
     { name: "회원권 발급 · 상품 단가 · 확인", element: passIssue(smokeOwner, {
       ...smokeIssueBase, mode: "confirm",
       form: { clientId: "smoke-client-a", productId: "smoke-product-etc-priced", totalSessions: "5", contractPriceManwon: "25", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceWon: "", expiresAt: "2027-03-31" },
+    }) },
+    /* 등록 횟수별 서비스 (2026-11-28): 20회 재등록에 서비스 3회 -- 수업료는 2회까지, 1회는 안 나간다고 말한다. */
+    { name: "회원권 발급 · 서비스 기준 넘음", element: passIssue(smokeOwner, {
+      ...smokeIssueBase,
+      form: { clientId: "smoke-client-a", productId: "smoke-product-normal", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "3", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceWon: "" },
     }) },
     { name: "회원권 발급 · 풀방금액 없음", element: passIssue(smokeOwner, {
       ...smokeIssueBase,

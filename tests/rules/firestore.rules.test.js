@@ -3818,7 +3818,8 @@ describe("checking attendance against a pass", () => {
        그래서 **목록을 베껴 적지 않고 PRICING_RULE 로 직접 돈다.** 여기 적은
        literal 은 규칙 파일과 함께 썩을 수 있지만, 앱 상수는 그럴 수 없다. */
     const values = Object.values(PRICING_RULE);
-    assert.equal(values.length, 9, "판정이 늘었으면 규칙 목록도 늘려야 한다");
+    /* 2026-11-28: service_paid (등록 횟수별 서비스) 가 늘어 10. */
+    assert.equal(values.length, 10, "판정이 늘었으면 규칙 목록도 늘려야 한다");
     for (const rule of values) {
       await assertSucceeds(setDoc(
         ledgerDocOf(users.instructor, ORG_A, PASS_A, `entry-rule-${rule}`),

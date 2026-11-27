@@ -1626,7 +1626,8 @@ service cloud.firestore {
             && (
               !("rule" in request.resource.data)
               || request.resource.data.rule in [
-                "service_first", "service_already_used",
+                // service_paid: 첫 서비스 뒤 수업료가 나가는 서비스 (2026-11-28 등록 횟수별 서비스 기준).
+                "service_first", "service_paid", "service_already_used",
                 "deputy_director",
                 "diosa_fixed", "duet_event_fixed", "senior_title_event",
                 "handed_over", "new_to_instructor", "base_category"

@@ -407,6 +407,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원권 발급 · 직접 단가",
     "회원권 발급 · 상품 단가",
     "회원권 발급 · 상품 단가 · 확인",
+    "회원권 발급 · 서비스 기준 넘음",
     "회원권 발급 · 풀방금액 없음",
     "회원권 발급 · 확인",
     "회원권 발급 · 확인 · 현금",
@@ -659,7 +660,7 @@ test("a deduction says why it was worth what it was worth", async () => {
      횟수는 계속 올라가 사라진다. */
   const pay = markupOf("이달 예상 급여");
   assert.match(pay, /누적 20회 미만 — 신규 단가/);
-  assert.match(pay, /서비스 2회차 — 센터 지원 소진/);
+  assert.match(pay, /서비스 — 지급 기준을 넘은 회차/);
   assert.match(pay, /부원장 5:5/);
   assert.match(pay, /기준 단가/);
 
@@ -1461,12 +1462,19 @@ test("the issue form offers the suggested unit price and lets the issuer change 
 test("payment method sits outside the fold and has no default", async (t) => {
   const markupOf = await issueScreens(t);
   /* 접힌 칸 안에 기본값 카드로 있을 때, 현금 계약이 카드로 박혀 부원장 단가가
-     틀렸다. 이제 늘 보이고, 접힌 칸은 서비스 · 차수뿐이다. */
+     틀렸다. 이제 늘 보인다. 서비스 · 차수도 2026-11-28 부터 접지 않는다 (대표: "작게 표시가 안 나 찾기 힘듦"). */
   const blank = markupOf("회원권 발급 · 결제 수단 미선택");
   assert.match(blank, /결제 수단/);
   assert.match(blank, /현금/);
-  assert.match(blank, /· 서비스 · 차수</);
-  assert.doesNotMatch(blank, /서비스 · 차수 · 결제 수단/);
+  assert.doesNotMatch(blank, /· 서비스 · 차수</, "접는 글자 버튼은 없다");
+  assert.match(blank, /data-issue-service-round/);
+  assert.match(blank, />서비스 세션</, "서비스 칸이 처음부터 보인다");
+  assert.match(blank, />차수</, "차수 칸이 처음부터 보인다");
+  /* 등록 횟수별 서비스 (2026-11-28): 상품을 고른 화면에는 서비스 수업료 안내가 붙는다. */
+  assert.match(blank, /data-service-guide[^>]*>이 상품\(깍두기 · 이벤트 · 세션업 · 전환 등\)은 등록 횟수별 서비스 기준이 적용되지 않아요/, "이벤트 상품");
+  const over = markupOf("회원권 발급 · 서비스 기준 넘음");
+  assert.match(over, /기준: 20회 등록 → 서비스 2회 수업료 \(첫 1회 1만원 · 나머지 회당 2만원\)\. 넣은 서비스 3회 중 1회는 수업료가 나가지 않아요\./);
+  assert.match(markupOf("회원권 발급 · 듀엣"), /기준: 30회 등록 → 서비스 3회 수업료/, "듀엣도 같은 기준");
 });
 
 test("chips do not repeat the group label the product name already carries", async (t) => {
@@ -1897,7 +1905,7 @@ test("a lesson says what it will be worth before it is settled", async () => {
   const service = markupOf("일정 탭 · 소속 · 예상 단가 · 서비스");
   assert.match(service, /10,000원/);
   // 0원도 금액이다. 빈칸으로 두면 "계산이 안 됐나" 로 읽힌다.
-  assert.match(service, /0원 · 서비스 2회차 — 센터 지원 소진/);
+  assert.match(service, /0원 · 서비스 — 지급 기준을 넘은 회차/);
 
   /* 확정 뒤에는 예상이 아니라 결과가 있다. 이미 박힌 금액 옆에 "예상" 을 또 쓰면
      둘 중 어느 것이 실제인지 알 수 없다. */

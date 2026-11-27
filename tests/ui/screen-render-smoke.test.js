@@ -1469,7 +1469,9 @@ test("payment method sits outside the fold and has no default", async (t) => {
   assert.doesNotMatch(blank, /· 서비스 · 차수</, "접는 글자 버튼은 없다");
   assert.match(blank, /data-issue-service-round/);
   assert.match(blank, />서비스 세션</, "서비스 칸이 처음부터 보인다");
-  assert.match(blank, />차수</, "차수 칸이 처음부터 보인다");
+  /* 차수 입력 칸은 없앴다 (2026-11-28 대표: "차수 칸 빼 줘") -- 번호는 저절로, 차감은 만료일 순. */
+  assert.doesNotMatch(blank, /<input[^>]*placeholder="1"/, "차수 입력 칸이 없다");
+  assert.match(blank, /data-issue-round[^>]*>이 회원의 \d+번째 회원권으로 저장돼요\. 회원권이 여럿이면 만료일이 이른 것부터 차감돼요\./);
   /* 등록 횟수별 서비스 (2026-11-28): 상품을 고른 화면에는 서비스 수업료 안내가 붙는다. */
   assert.match(blank, /data-service-guide[^>]*>이 상품\(깍두기 · 이벤트 · 세션업 · 전환 등\)은 등록 횟수별 서비스 기준이 적용되지 않아요/, "이벤트 상품");
   const over = markupOf("회원권 발급 · 서비스 기준 넘음");
@@ -1516,7 +1518,9 @@ test("the confirmation says exactly what will be written", async (t) => {
   assert.match(confirm, /1:1 · 1:1 20회 가을 이벤트 · 1:1 재등록\(이벤트\)/);
   // 서비스 회차도 차감되는 수업이라 총 회차에 들어간다.
   assert.match(confirm, /20회 \+ 서비스 2회 = 총 22회/);
-  assert.match(confirm, /130만원 · 카드 · 2차/);
+  /* 차수는 입력하지 않고 저절로 정한다 (2026-11-28) -- 견본 회원은 이 화면에서 읽은 회원권이 없어 1차다.
+     폼에 남은 purchaseRound 값("2")은 쓰이지 않는다. */
+  assert.match(confirm, /130만원 · 카드 · 1차/);
   assert.match(confirm, /담당 정예진/);
 });
 

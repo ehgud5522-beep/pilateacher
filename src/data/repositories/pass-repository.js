@@ -35,7 +35,7 @@ import {
   MIXED_PAYMENT_PARTS, PAYMENT_NOTE_MAX, PAY_CATEGORY, PAYMENT_METHOD, ROLES, isOwnerLevelRole,
 } from "../schema/constants.js";
 import {
-  netContractPriceFor, netContractPriceOf, resolveDeductionUnitPrice, spendsServiceSession,
+  netContractPriceFor, netContractPriceOf, paidServiceSessionsFor, resolveDeductionUnitPrice, spendsServiceSession,
 } from "../schema/deduction-pricing.js";
 import { holdBlocksLesson, isPassHeld } from "../../../functions/shared/pass-hold.mjs";
 import {
@@ -793,6 +793,9 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     handedOver: pass?.handedOver === true,
     priorSessions,
     serviceUsedCount: pass?.serviceUsed,
+    /* 등록 횟수별 서비스 (2026-11-28): 수업료가 나가는 서비스 회차 수와 디오사A 여부. 미리보기와 같은 값. */
+    passCategory: category,
+    paidServiceSessions: paidServiceSessionsFor(pass).paid,
   });
 
   const lessonId = String(input?.lessonId || newId());

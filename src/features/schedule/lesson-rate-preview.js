@@ -22,7 +22,7 @@
 import { PAY_CATEGORY } from "../../data/schema/constants.js";
 import { sessionUpWindowOf } from "../../../functions/shared/session-up.mjs";
 import {
-  netContractPriceOf, resolveDeductionUnitPrice, spendsServiceSession,
+  netContractPriceOf, paidServiceSessionsFor, resolveDeductionUnitPrice, spendsServiceSession,
 } from "../../data/schema/deduction-pricing.js";
 import { defaultUnitPriceFor } from "../../data/schema/pay-rates.js";
 import { remainingCountOf } from "../../data/repositories/pass-repository.js";
@@ -103,6 +103,9 @@ export function previewMemberRate(input = {}) {
       handedOver: pass.handedOver === true,
       priorSessions: instructorClientSessionsOf(input.totals, input.instructorId, clientId),
       serviceUsedCount: pass.serviceUsed,
+      /* 등록 횟수별 서비스 (2026-11-28) -- 확정(deductPass)과 같은 값을 넣는다. */
+      passCategory: category,
+      paidServiceSessions: paidServiceSessionsFor(pass).paid,
     });
     return {
       unitPrice, rule, passId: text(pass.id), remaining: remainingCountOf(pass),

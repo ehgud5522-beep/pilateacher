@@ -35,9 +35,12 @@ import {
   MIXED_PAYMENT_PARTS, PAYMENT_NOTE_MAX, PAY_CATEGORY, PAYMENT_METHOD, ROLES, isOwnerLevelRole,
 } from "../schema/constants.js";
 import {
-  netContractPriceFor, netContractPriceOf, resolveDeductionUnitPrice, spendsServiceSession,
+  netContractPriceFor, netContractPriceOf, paidServiceSessionsFor, resolveDeductionUnitPrice, spendsServiceSession,
 } from "../schema/deduction-pricing.js";
 import { holdBlocksLesson, isPassHeld } from "../../../functions/shared/pass-hold.mjs";
+import {
+  FLOW_BYPASS_REASON_MAX, FLOW_BYPASS_REASON_MIN, FLOW_PT_COLLECTION, FLOW_PT_STATE,
+} from "../../../functions/shared/flow-pt-queue.mjs";
 import { paths } from "../schema/paths.js";
 import {
   normalizePassClientIds, passBelongsTo, passClientIds, pricingPriorSessions,
@@ -277,6 +280,7 @@ export async function listPassesIssuedSince(organizationId, since, options = {})
  *   balanceEdited?: boolean, paymentNote?: string,
  *   unitPrice?: number, fullRoomRate?: number, expiresAt?: Date | string,
  *   manualUnitPrice?: number, unitPriceReason?: string, issuerRole?: string,
+ *   flowPostId?: string, flowBypassReason?: string,
  *   passId?: string, entryId?: string, clientIds?: Array<string>,
  * }} input
  * @param {{ store?: PassStore, newId?: () => string }} [options]
@@ -351,6 +355,14 @@ export async function issuePass(organizationId, input, options = {}) {
   const instructorId = requiredText(input?.instructorId, "instructorId");
   const createdBy = requiredText(input?.createdBy, "createdBy");
 
+  /* 플로우 발급 대기와 잇기 (2026-11-24). 켜져 있는지(scheduleSync.flowPtGate)는 화면과 규칙이 본다 -- 여기서는
+     받은 값을 그대로 박고, 글을 골랐으면 같은 배치에서 그 글을 issued 로 바꾼다 (functions/shared/flow-pt-queue.mjs). */
+  const flowPostId = String(input?.flowPostId ?? "").trim();
+  const flowBypassReason = String(input?.flowBypassReason ?? "").trim().slice(0, FLOW_BYPASS_REASON_MAX);
+  if (flowPostId && !/^[0-9A-Za-z_-]{1,40}$/.test(flowPostId)) throw Object.assign(new Error("Invalid flowPostId"), { code: "flow_post_invalid" });
+  if (flowBypassReason && flowBypassReason.length < FLOW_BYPASS_REASON_MIN) throw Object.assign(new Error("Invalid flowBypassReason"), { code: "flow_bypass_reason_short" });
+  if (flowPostId && flowBypassReason) throw Object.assign(new Error("Both flowPostId and flowBypassReason"), { code: "flow_pt_both" });
+
   const passId = String(input?.passId || newId());
   const entryId = String(input?.entryId || `${passId}_issue`);
   const stampedAt = await store.serverTimestamp();
@@ -413,6 +425,8 @@ export async function issuePass(organizationId, input, options = {}) {
     status: PASS_STATUS.ACTIVE,
     createdAt: stampedAt,
     createdBy,
+    ...(flowPostId ? { flowPostId } : {}),
+    ...(flowBypassReason ? { flowBypassReason } : {}),
   };
 
   const entry = {
@@ -433,6 +447,11 @@ export async function issuePass(organizationId, input, options = {}) {
   await store.commit([
     { path: paths.pass(organization, passId), data: pass },
     { path: paths.passLedgerEntry(organization, passId, entryId), data: entry },
+    ...(flowPostId ? [{
+      operation: /** @type {"update"} */ ("update"),
+      path: `organizations/${organization}/${FLOW_PT_COLLECTION}/${flowPostId}`,
+      data: { state: FLOW_PT_STATE.ISSUED, handledBy: createdBy, handledAt: stampedAt, passId },
+    }] : []),
   ]);
   return { passId, entryId, pass, entry };
 }
@@ -774,6 +793,9 @@ export async function deductPass(organizationId, pass, input, options = {}) {
     handedOver: pass?.handedOver === true,
     priorSessions,
     serviceUsedCount: pass?.serviceUsed,
+    /* 등록 횟수별 서비스 (2026-11-28): 수업료가 나가는 서비스 회차 수와 디오사A 여부. 미리보기와 같은 값. */
+    passCategory: category,
+    paidServiceSessions: paidServiceSessionsFor(pass).paid,
   });
 
   const lessonId = String(input?.lessonId || newId());
@@ -1452,6 +1474,9 @@ export async function transferPass(organizationId, pass, input, options = {}) {
   const newPass = {
     organizationId: organization,
     clientId: toClientId,
+    /* 어느 회원권에서 넘어왔는가. PT 발급을 발급 대기로만 여는 스위치(flowPtGate)가 켜져도 양도는 새로 판
+       것이 아니라 막지 않는다 -- 규칙이 이 값과 원본 원장의 handover 항목을 함께 본다. */
+    transferredFromPassId: sourcePassId,
     clientIds: [toClientId],
     locationId,
     productId,

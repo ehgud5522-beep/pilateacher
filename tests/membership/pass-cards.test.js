@@ -58,6 +58,10 @@ test("잔여 0 · 만료 · 취소는 끝난 것이고, 사유를 따로 말한�
   assert.equal(passCard(pass({ status: "cancelled" }), { now: NOW }).endedReason, "취소됨");
   // 재등록 상담이 다르다 -- 다 쓴 사람과 기간이 지난 사람은 할 말이 같지 않다.
   assert.equal(passCard(pass(), { now: NOW }).endedReason, "");
+  /* 홀딩은 멈춤이다 -- 연장이 아니다 (2026-11-24 대표). */
+  const held = passCard(pass({ holdFrom: new Date(NOW.getTime() - 86400000), holdUntil: new Date(2026, 11, 20) }), { now: NOW }).endedReason;
+  assert.match(held, /^홀딩 중 · 기간 멈춤 · 2026-12-20 이용 재개$/);
+  assert.doesNotMatch(held, /연장/);
 });
 
 test("만료일이 없는 회원권은 만료로 보지 않는다", () => {

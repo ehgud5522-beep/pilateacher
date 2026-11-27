@@ -55,7 +55,7 @@ import {
   fbResetMigratedData,
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone, fbDeleteArchivedClient,
-  fbBeforeAfterShareStats, fbConfirmSalesMonth, fbConfirmFcLessonMonth, fbClosePayMonth, fbRunPayCheck,
+  fbBeforeAfterShareStats, fbRenewalRadarBranch, fbRefreshFlowPtQueue, fbConfirmSalesMonth, fbConfirmFcLessonMonth, fbClosePayMonth, fbRunPayCheck,
   fbVerifyMemberViews, fbMemberAppStatus,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
@@ -307,10 +307,10 @@ import {
 } from "./data/repositories/migration-repository.js";
 import {
   ISSUE_UNIT_PRICE_SOURCE, UNIT_PRICE_REASON_MAX, UNIT_PRICE_SOURCE, canSetUnitPrice,
-  standardIssueUnitPrice, unitPriceSourceFor,
+  defaultUnitPriceFor, standardIssueUnitPrice, unitPriceSourceFor,
 } from "./data/schema/pay-rates.js";
 import {
-  NEW_TO_INSTRUCTOR_THRESHOLD, NEW_TO_INSTRUCTOR_UNIT_PRICE, netContractPriceFor,
+  NEW_TO_INSTRUCTOR_THRESHOLD, NEW_TO_INSTRUCTOR_UNIT_PRICE, netContractPriceFor, paidServiceSessionsFor, SERVICE_EXTRA_UNIT_PRICE, DIOSA_A_SERVICE_UNIT_PRICE,
 } from "./data/schema/deduction-pricing.js";
 import {
   CLIENT_STATUS, LEDGER_ENTRY_TYPE, LEDGER_REASON_MAX, MEMBERSHIP_STATUS, MEMBERSHIP_TITLE, isDiosaCategory,
@@ -419,6 +419,9 @@ import { createRecordStore, migrationRecordsFor } from "./features/lesson-record
 import { createServerOutbox, outboxKeyFor } from "./features/lesson-record/server-outbox.js";
 import { createFirestoreLessonRecordStore, listLessonRecordParity, writeLessonRecordParity } from "./data/repositories/lesson-record-repository.js";
 import { listLessonNotesBetween, listRecordActivity, writeRecordActivity } from "./data/repositories/record-activity-repository.js";
+import { ackFlowPtChange, listFlowPtQueue, markFlowPtQueue, readFlowPtQueueItem, recordFlowPtBalanceReceipt } from "./data/repositories/flow-pt-queue-repository.js";
+import { describePassIssueFailure, flowPostFailure, passIssueRef, passLocationFailure } from "./features/membership/pass-issue-preflight.js";
+import { FLOW_BYPASS_REASON_MAX, FLOW_BYPASS_REASON_MIN, isFlowGatedCategory } from "../functions/shared/flow-pt-queue.mjs";
 import {
   RECORD_RATE_GOOD, RECORD_RATE_LOW, RECORD_TONE, countDeviceRecordActivity, instructorRecordBoard, monthOf as monthOfRecord, previousRecordMonth,
   recordActivityDocument, recordActivitySignature, recordBoardSummary, recordRowView,
@@ -426,7 +429,8 @@ import {
 import { beforeAfterBoard, shareInstructorView, shareMemberLabel } from "./features/records/before-after-board.js";
 import { beforeAfterNudge, lastSentAtOf, recordNudge } from "./features/records/record-nudges.js";
 import {
-  RADAR_EXPIRY_DAYS, RADAR_REMAINING_MAX, RATE_WINDOW_DAYS, radarPassLabel, radarSignalLabel, radarSummary, renewalRadar, renewalRateLabel,
+  ABSENT_DAYS, MEMBER_NOTE_DAYS, RADAR_URGENT_DAYS, RADAR_URGENT_REMAINING, RATE_MIN_SAMPLE,
+  RADAR_EXPIRY_DAYS, RADAR_REMAINING_MAX, RATE_WINDOW_DAYS, interviewSections, isAttendanceSignal, radarPassLabel, radarSignalLabel, radarSummary, renewalRadar, renewalRateLabel,
 } from "./features/records/renewal-radar.js";
 import { groupRowsByBranch, pickBranch } from "./features/records/branch-groups.js";
 import {
@@ -523,6 +527,7 @@ import { EXPIRY_REASON_LABELS } from "./data/schema/instructor-scope.js";
 import { holdBlocksLesson, isPassHeld } from "../functions/shared/pass-hold.mjs";
 import { BranchMemberOverview } from "./features/members/BranchMemberOverview.jsx";
 import { passBelongsTo, passClientIds } from "./data/schema/pass-clients.js";
+import { recentPtIssueMessage, recentPtIssues } from "./features/passes/recent-issue.js";
 import {
   checkLessonNotificationPermission, listenForLessonNotificationActions, requestLessonNotificationPermission, syncLessonNotifications,
 } from "./features/notifications/local-notifications.js";
@@ -939,6 +944,9 @@ const DEVICE_LOG_FIELDS = new Set([
   // 회원권 수정 실패. 조정이면 방향과 변화량이 원인을 가른다 -- FC매니저의 증가는
   // 규칙이 막고, 그것만으로는 권한 거부와 구별되지 않는다.
   "direction", "delta",
+  // 회원권 발급이 막힌 갈래 (pass-issue-preflight.js passIssueRef) -- 역할 · 게이트 · PT · 플로우 · 결제 · 듀엣.
+  // 값(이름 · 금액)은 없다.
+  "ref",
 ]);
 /** 소속 조회 진단이 쓰는 필드. 화이트리스트와 어긋나면 테스트가 잡는다. */
 export const ORGANIZATION_CONTEXT_LOG_FIELDS = Object.freeze([
@@ -3605,7 +3613,12 @@ function SchedMemberNote({ lessonId, clientId, settled, onRead, onSave, onToast,
   );
 }
 
+/* 일정 색상 (2026-11-28 대표: "색 고르는 칸이 눈에 아프고 거슬린다").
+   예전에는 유형 7개 x 견본 8개가 왼쪽 띠 + 옅은 바탕으로 한꺼번에 펼쳐져 있었다.
+   지금은 유형마다 한 줄 -- 약자 칩 · 이름 · 지금 색 이름 · 색 점 하나. 줄을 누르면 그 유형만
+   동그란 색 점 8개가 열린다(한 번에 하나). 약자는 그대로 함께 보인다(색만으로 구분하지 않는다). */
 function ScheduleColorSettings({ scheduleColors, onChange }) {
+  const [openType, setOpenType] = useState("");
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
   return (
   <div className="space-y-2">
@@ -3614,31 +3627,40 @@ function ScheduleColorSettings({ scheduleColors, onChange }) {
         <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>수업 유형 색</h2>
         <p style={{ marginTop: 3, fontSize: TYPE.caption, lineHeight: 1.45, color: SUB }}>일정표 카드의 옅은 배경과 왼쪽 띠에 쓰는 색입니다. 색만으로 구분하지 않도록 카드 안 약자(개 · 듀 · 그 · 상 · 휴)는 항상 함께 표시됩니다.</p>
       </div>
-      <div className="space-y-3">
+      <div data-schedule-color-list style={{ borderTop: `1px solid ${LINE}` }}>
         {LESSON_TYPES.map((type) => {
           const tone = resolveScheduleTypeTone(type.key, scheduleColors, THEME);
+          const open = openType === type.key;
+          const presetLabel = SCHEDULE_COLOR_PRESETS.find((preset) => preset.id === tone.presetId)?.label || "";
           return (
-            <div key={type.key}>
-              <div className="mb-1.5 flex items-center gap-2">
-                <span className="flex items-center justify-center" style={{ width: 36, height: 22, borderRadius: 6, backgroundColor: tone.surface, borderLeft: `3px solid ${tone.edge}` }}>
+            <div key={type.key} data-schedule-color-type={type.key} style={{ borderBottom: `1px solid ${LINE}` }}>
+              <button type="button" aria-expanded={open} onClick={() => setOpenType(open ? "" : type.key)}
+                className="flex min-h-12 w-full items-center gap-2.5 text-left">
+                <span className="flex shrink-0 items-center justify-center" style={{ width: 30, height: 24, borderRadius: 6, backgroundColor: tone.surface }}>
                   <span style={{ fontSize: TYPE.caption, fontWeight: 700, color: tone.edge }}>{type.short}</span>
                 </span>
-                <p style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{type.label}</p>
-                <p className="ml-auto" style={{ fontSize: TYPE.caption, color: SUB }}>{SCHEDULE_COLOR_PRESETS.find((preset) => preset.id === tone.presetId)?.label || ""}</p>
-              </div>
-              <div className="grid grid-cols-8 gap-1.5">
-                {SCHEDULE_COLOR_PRESETS.map((preset) => {
-                  const value = THEME === "dark" ? preset.dark : preset.light;
-                  const on = scheduleColors[type.key] === preset.id;
-                  return (
-                    <button type="button" key={preset.id} aria-label={`${type.label} ${preset.label}`} aria-pressed={on}
-                      onClick={() => onChange(setScheduleTypeColor(scheduleColors, type.key, preset.id))}
-                      className="flex items-center justify-center" style={{ height: 34, borderRadius: 8, backgroundColor: value.surface, border: `1px solid ${on ? value.edge : LINE}`, borderLeftWidth: 3, borderLeftColor: value.edge }}>
-                      {on && <Check size={12} style={{ color: value.edge }} />}
-                    </button>
-                  );
-                })}
-              </div>
+                <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>{type.label}</span>
+                <span className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>{presetLabel}</span>
+                <span aria-hidden="true" className="shrink-0 rounded-full" style={{ width: 18, height: 18, backgroundColor: tone.edge }} />
+                <ChevronDown size={16} className="shrink-0" style={{ color: FAINT, transform: open ? "rotate(180deg)" : "none", transition: "transform 160ms ease" }} />
+              </button>
+              {open && (
+                <div role="radiogroup" aria-label={`${type.label} 색`} className="flex flex-wrap justify-between gap-y-1 pb-3">
+                  {SCHEDULE_COLOR_PRESETS.map((preset) => {
+                    const value = THEME === "dark" ? preset.dark : preset.light;
+                    const on = tone.presetId === preset.id;
+                    return (
+                      <button type="button" role="radio" key={preset.id} aria-label={`${type.label} ${preset.label}`} aria-checked={on}
+                        onClick={() => { onChange(setScheduleTypeColor(scheduleColors, type.key, preset.id)); setOpenType(""); }}
+                        className="grid h-11 w-11 place-items-center">
+                        <span className="grid place-items-center rounded-full" style={{ width: 30, height: 30, backgroundColor: value.edge, boxShadow: on ? `0 0 0 2px ${CARD}, 0 0 0 4px ${value.edge}` : "none" }}>
+                          {on && <Check size={14} strokeWidth={3} style={{ color: "#fff" }} />}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           );
         })}
@@ -4774,7 +4796,9 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
   const manageRef = useRef(null);
   const [stage, setStage] = useState(() => initialStage(attendeesOf(draft)));
   const [stageDir, setStageDir] = useState("");
-  const [statusOpen, setStatusOpen] = useState(() => attendeesOf(draft).some((attendee) => ["noshow", "cancel"].includes(attendee.status)));
+  /* 출석 · 노쇼 · 취소 버튼은 늘 펼쳐 둔다 (2026-11-28). 전에는 [상태 변경] 작은 글자를 눌러야 열렸고,
+     강사들이 노쇼 · 취소 버튼을 찾지 못했다 (반송 최형인 점장). 확정이 끝난 수업에서만 숨긴다. */
+  const statusOpen = !settledLesson;
   const [moreOpen, setMoreOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -4908,7 +4932,7 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
     <>{draft.id && onDelete && deletePolicy.mode === DELETE_MODE.BLOCKED ? (
           <p className="rounded-lg px-3 py-2.5 text-xs font-bold leading-relaxed" style={{ backgroundColor: CANVAS, color: SUB }}>{settledLockNotice({ canUnsettle, elsewhere: deletePolicy.reason === DELETE_BLOCK_REASON.SETTLED_ELSEWHERE })}</p>
         ) : draft.id && onDelete && deletePolicy.mode === DELETE_MODE.ONE_TAP ? (
-          <button onClick={() => { onDelete(draft.id); onClose(); }} className="flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}><Trash2 size={13} /> 일정 삭제</button>
+          <button onClick={() => { onDelete(draft.id); onClose(); }} data-lesson-delete className="flex min-h-11 w-full items-center justify-center gap-1.5 rounded-xl text-xs font-bold" style={{ backgroundColor: CARD, color: BAD, border: `1px solid ${LINE}` }}><Trash2 size={14} /> 일정 삭제</button>
         ) : draft.id && onDelete && (del ? (
           <div className="flex items-center gap-2 rounded-lg p-2.5" style={{ backgroundColor: BAD_S }}>
             <span className="min-w-0 flex-1 text-xs font-bold" style={{ color: BAD }}>삭제하면 뺀 회차가 회원에게 돌아갑니다. 삭제할까요?</span>
@@ -4916,7 +4940,7 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
             <button onClick={() => setDel(false)} className="rounded-lg px-3 py-2 text-xs font-bold" style={{ color: SUB }}>취소</button>
           </div>
         ) : draft.id ? (
-          <button onClick={() => setDel(true)} className="flex h-10 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-bold" style={{ backgroundColor: CANVAS, color: SUB }}><Trash2 size={13} /> 일정 삭제</button>
+          <button onClick={() => setDel(true)} data-lesson-delete className="flex min-h-11 w-full items-center justify-center gap-1.5 rounded-xl text-xs font-bold" style={{ backgroundColor: CARD, color: BAD, border: `1px solid ${LINE}` }}><Trash2 size={14} /> 일정 삭제</button>
         ) : null)}</>
   );
   /* ── 일정 등록 개편 (2026-11-17, register-view.js) ── */
@@ -5411,8 +5435,7 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
                       <CalendarDays size={14} style={{ color: BRAND_D }} /> 이번 주 이 회원 일정만 보기
                     </button>
                   )}
-                  {!manageDone ? renderRepeat(false) : null}
-                  {onDelete ? deleteControls : null}
+                  {manageDone && onDelete ? deleteControls : null}
                 </div></div>
               </div>
             </section>
@@ -5494,9 +5517,7 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
               {!manageDone && stage === LESSON_STAGE.POST && activeAttendee && (
                 <div key="post" className="lm-stage space-y-6" data-dir={stageDir || undefined} data-lesson-stage="post">
                   <section data-attendance-section>
-                    {sectionTitle("출석", !settledLesson ? (
-                      <button type="button" aria-expanded={statusOpen} onClick={() => setStatusOpen((value) => !value)} className="min-h-11 px-1" style={textLink}>{statusOpen ? "접기" : "상태 변경"}</button>
-                    ) : null)}
+                    {sectionTitle("출석")}
                     {manageAttendees.length > 1 ? (
                       <div data-duet-attendance className="space-y-1">
                         {manageAttendees.map((attendee) => (
@@ -5631,6 +5652,16 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
                   {moreSection}
                 </>
               )}
+
+              {/* 다음 주 같은 시간 등록 · 일정 삭제는 접지 않는다 (2026-11-28 대표: "삭제 버튼이 안 보인다",
+                  "다음 주 같은 시간 버튼이 사라졌다"). 11-17 개편 때 [수업 후] 탭의 접힌 [추가 관리] 안으로
+                  들어가 [수업 전] 에서는 아예 없고, [수업 후] 에서도 펼쳐야 보였다. 두 탭 모두 바로 보인다. */}
+              {!manageDone && (draft.id && (typeof onRepeatNextWeek === "function" || onDelete)) ? (
+                <section data-lesson-actions className="space-y-2 pt-3" style={{ borderTop: `1px solid ${LINE}` }}>
+                  {renderRepeat(false)}
+                  {onDelete ? deleteControls : null}
+                </section>
+              ) : null}
 
               {!manageDone && (
                 <div data-lesson-confirm-bar className="sticky bottom-0 z-10 -mx-4 px-4 pb-1 pt-3"
@@ -8404,7 +8435,7 @@ function ReferenceMemberDetail({ openConsultOnMount = false, onConsumeConsultInt
               회원 상세가 원장으로 보여 준다. 빈 칸만 세우지 않는다. 정보 수정은 아래 "기본정보" 에도 있다. */}
           {(!organizationMode || (member.payments || []).length > 0 || holdHistory.length > 0 || (member.instructorHistory || []).length > 0 || isInactive(member) || isHold(member)) && <Section title={organizationMode ? "이 기기의 변경 이력" : "이용권 변경 이력 및 상세 설정"} action={organizationMode ? null : <button type="button" onClick={openMembership} style={{ fontSize: TYPE.caption, fontWeight: 700, color: BRAND }}>관리</button>}>
             {(member.payments || []).length ? member.payments.slice(0, 4).map((p) => <div key={p.id || `${p.date}-${p.amount}`} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span className="min-w-0 flex-1"><span className="block truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(p.date)} · {p.name || p.passName || "이용권"}</span>{p.kind === "adjustment" && <span className="block truncate" style={{ fontSize: TYPE.caption, color: SUB }}>잔여 {p.before?.remaining}회 → {p.after?.remaining}회 · 총 {p.before?.total}회 → {p.after?.total}회</span>}</span><span className="tabular-nums" style={{ fontSize: TYPE.caption, fontWeight: 600, color: INK }}>{p.kind === "adjustment" ? "수정" : `${num(p.count || p.sessions)}회`}</span></div>) : <p style={{ fontSize: TYPE.caption, color: SUB }}>저장된 변경 이력이 없습니다</p>}
-            {holdHistory.slice(0, 4).map((h) => <div key={h.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, backgroundColor: CANVAS }}><span style={{ padding: "2px 6px", borderRadius: 5, color: INK2, fontSize: TYPE.caption, fontWeight: 600 }}>홀딩</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(h.startDate)} ~ {ymd(h.releasedAt || h.endDate)}{h.extendDays ? ` · 만료 +${h.extendDays}일` : ""}</span></div>)}
+            {holdHistory.slice(0, 4).map((h) => <div key={h.id} className="flex items-center gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}`, backgroundColor: CANVAS }}><span style={{ padding: "2px 6px", borderRadius: 5, color: INK2, fontSize: TYPE.caption, fontWeight: 600 }}>홀딩</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(h.startDate)} ~ {ymd(h.releasedAt || h.endDate)}{h.extendDays ? ` · ${h.extendDays}일 멈춤(만료일 뒤로)` : ""}</span></div>)}
             {(member.instructorHistory || []).slice(0, 3).map((entry) => <div key={entry.id || entry.date} className="flex gap-2" style={{ padding: "7px 0", borderTop: `1px solid ${LINE}` }}><span style={{ fontSize: TYPE.caption, color: SUB }}>담당 변경</span><span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{ymd(entry.date)} · {entry.before || "미지정"} → {entry.after || "미지정"}</span></div>)}
             {isHold(member) && <div className="mt-2 flex items-start gap-2" style={{ padding: "9px 10px", borderRadius: 8, backgroundColor: CANVAS }}><AlertCircle size={14} className="mt-0.5 shrink-0" style={{ color: SUB }} /><p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{ymd(member.holdFrom)} ~ {ymd(member.holdUntil)}{member.holdReason ? ` · ${member.holdReason}` : ""}</p></div>}
             {isInactive(member) && <button type="button" onClick={async () => { const saved = await onReactivate?.(member.id); if (saved !== false) onBack?.(); }} className="mt-2 h-11 w-full rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: BRAND }}>활성으로 되돌리기</button>}
@@ -8475,7 +8506,7 @@ function ReferenceMemberDetail({ openConsultOnMount = false, onConsumeConsultInt
       {sheet === "hold" && <Sheet title="홀딩 설정" sub={`${member.name} · 수업 기록과 비포애프터는 유지됩니다`} onClose={() => setSheet(null)}><div className="space-y-3">
         <div className="grid grid-cols-2 gap-2"><Field label="홀딩 시작일"><input type="date" value={hold.start} onChange={(e) => setHold({ ...hold, start: e.target.value })} className={inputCls} /></Field><Field label="종료 예정일"><input type="date" value={hold.end} onChange={(e) => setHold({ ...hold, end: e.target.value })} className={inputCls} /></Field></div>
         <Field label="홀딩 사유"><input value={hold.reason} onChange={(e) => setHold({ ...hold, reason: e.target.value })} placeholder="예: 개인 사정 · 부상 · 여행" className={inputCls} /></Field>
-        <button type="button" onClick={() => setHold({ ...hold, extend: !hold.extend })} className="flex w-full items-center justify-between" style={{ height: 42, padding: "0 12px", borderRadius: 8, border: `1px solid ${hold.extend ? BRAND : LINE}`, backgroundColor: hold.extend ? TINT : CARD, color: hold.extend ? BRAND_D : INK2, fontSize: TYPE.caption, fontWeight: 600 }}><span>이용권 만료일 연장</span><span>{hold.extend ? "연장" : "연장 안 함"}</span></button>
+        <button type="button" onClick={() => setHold({ ...hold, extend: !hold.extend })} className="flex w-full items-center justify-between" style={{ height: 42, padding: "0 12px", borderRadius: 8, border: `1px solid ${hold.extend ? BRAND : LINE}`, backgroundColor: hold.extend ? TINT : CARD, color: hold.extend ? BRAND_D : INK2, fontSize: TYPE.caption, fontWeight: 600 }}><span>홀딩 동안 이용권 기간 멈춤</span><span>{hold.extend ? "멈춤" : "안 멈춤"}</span></button>
         <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>홀딩은 예정된 수업을 자동 취소하지 않습니다. 일정 탭에서 직접 확인해 주세요.</p>
         <button type="button" disabled={!hold.start || !hold.end || hold.end < hold.start} onClick={() => { const days = Math.max(0, Math.round((new Date(`${hold.end}T00:00:00`).getTime() - new Date(`${hold.start}T00:00:00`).getTime()) / 86400000)); onPatch({ status: "hold", holdFrom: hold.start, holdUntil: hold.end, holdReason: hold.reason.trim(), holdExtendDays: hold.extend ? days : 0, contractEnd: hold.extend && member.contractEnd ? shift(member.contractEnd, days) : member.contractEnd }); setSheet(null); }} className="w-full text-sm font-semibold text-white disabled:opacity-40" style={{ height: 48, borderRadius: 8, backgroundColor: BRAND }}>홀딩 시작</button>
       </div></Sheet>}
@@ -18652,9 +18683,21 @@ function PassIssue({
      권한은 한 곳에서만 판단한다. 상품을 만드는 것과 발급하는 것은 다른 일이고
      규칙도 다른 목록으로 묻는다. */
   onOpenProducts,
+  /* PT 발급 대기에서 고른 플로우 등록 (2026-11-24). 있으면 그 등록으로 발급한다. */
+  flowSeed = null, onFlowSeedUsed,
+  onLoadFlowQueue = listFlowPtQueue, onLoadGate = fbLoadScheduleSyncConfig, onReadFlowItem = readFlowPtQueueItem,
   onRetryOrganization, onToast, now = () => new Date(), initialState = null,
 }) {
   const [allClients, setClients] = useState(initialState?.clients || []);
+  /* ── PT 발급은 발급 대기에서만 (2026-11-24 대표) ──
+     스위치 scheduleSync.flowPtGate 가 켜지면 PT(pt_…) 는 발급 대기의 등록을 고르거나, 플로우가 멈췄을 때 사유를 써야
+     발급된다. 규칙(passes create)이 같은 선을 다시 긋는다 -- 이 화면은 막히기 전에 말해 주는 자리다. */
+  const [flowGateOn, setFlowGateOn] = useState(Boolean(initialState?.flowGateOn));
+  const [flowItems, setFlowItems] = useState(initialState?.flowItems || []);
+  const [flowLoadError, setFlowLoadError] = useState("");
+  const [flowPostId, setFlowPostId] = useState(initialState?.flowPostId || flowSeed?.id || "");
+  const [flowBypass, setFlowBypass] = useState(Boolean(initialState?.flowBypass));
+  const [flowBypassReason, setFlowBypassReason] = useState(initialState?.flowBypassReason || "");
   const [products, setProducts] = useState(initialState?.products || []);
   const [allInstructors, setInstructors] = useState(initialState?.instructors || []);
   const [allLocations, setLocations] = useState(initialState?.locations || []);
@@ -18680,7 +18723,7 @@ function PassIssue({
   const [loadError, setLoadError] = useState(initialState?.loadError || "");
   const [mode, setMode] = useState(initialState?.mode || "form");
   const [search, setSearch] = useState(initialState?.search || "");
-  const [moreOpen, setMoreOpen] = useState(initialState?.moreOpen || false);
+  /* 서비스 · 차수 접기는 없앴다 (2026-11-28) -- 두 칸은 늘 보인다. */
   const [issuedPasses, setIssuedPasses] = useState(initialState?.passes || []);
   /* 듀엣 상대를 고르는 칸. 기본은 꺼짐이다 -- 1:1 이 대부분이라, 켜져 있으면
      발급할 때마다 끄는 손이 하나 더 든다. */
@@ -18764,20 +18807,14 @@ function PassIssue({
   );
   const client = clients.find((item) => item.id === form.clientId) || null;
   const partner = form.duet ? clients.find((item) => item.id === form.partnerClientId) || null : null;
-  /* 차수를 저절로 채운다. 2026-10-09 부터 차감이 차수 순으로 가므로, 손으로
-     넣는 값이 틀리면 엉뚱한 회원권에서 빠진다 -- 전에는 화면에 적히기만 하는
-     숫자라 틀려도 아무 일이 없었다.
-
-     대표가 고칠 수 있게 둔다. 이관분의 번호가 비어 있거나 건너뛴 경우가 있고,
-     그때 맞는 번호를 아는 것은 대표뿐이다. */
+  /* 차수는 저절로 정한다 -- **입력 칸은 없다** (2026-11-28 대표: "차수 칸 빼 줘").
+     차감은 만료일이 이른 회원권부터 쓰고(2026-10-22 확정, lesson-settlement.js nextByPurchaseRound), 차수는 만료일이
+     같을 때만 보는 두 번째 기준이다. 그래서 사람이 고칠 일이 없다. 값은 계속 저장한다 -- 규칙이 요구하고(passes create
+     purchaseRound int >= 1), 같은 날 한꺼번에 들어온 이관 회원권의 이력 순서를 이 번호가 정한다 (pass-journey.mjs). */
   const suggestedRound = useMemo(
     () => nextPurchaseRound(issuedPasses, form.clientId, passBelongsTo),
     [issuedPasses, form.clientId],
   );
-  useEffect(() => {
-    if (!form.clientId) return;
-    setForm((current) => ({ ...current, purchaseRound: String(suggestedRound) }));
-  }, [form.clientId, suggestedRound]);
   const product = products.find((item) => item.id === form.productId) || null;
   const instructor = instructors.find((item) => item.userId === form.instructorId) || null;
   const priceSource = unitPriceSourceFor(product?.payCategory);
@@ -18883,6 +18920,29 @@ function PassIssue({
     duet: form.duet, client, partner, product, passes: issuedPasses, now: now(),
   }), [form.duet, client, partner, product, issuedPasses, now]);
   const duetBlock = blockingNotice(duetNotices);
+  /* 등록 횟수별 서비스 (2026-11-28 대표 공지). 서비스 횟수는 채우지 않는다 -- 넣는 사람이 정하고, 이 줄은 그중 수업료가
+     나가는 회차 수와 금액, 넘는 회차는 수업료가 없다는 것을 알린다 (deduction-pricing.mjs paidServiceSessionsFor). */
+  const serviceGuide = useMemo(() => {
+    if (!product) return "";
+    const total = Number(form.totalSessions) || 0;
+    const entered = Number(form.serviceSessions) || 0;
+    const rule = paidServiceSessionsFor({ category: product.payCategory, totalSessions: total, productName: product.name });
+    const won = (value) => `${(value / WON_PER_MANWON).toLocaleString()}만원`;
+    const extra = product.payCategory === PAY_CATEGORY.DIOSA_A ? DIOSA_A_SERVICE_UNIT_PRICE : SERVICE_EXTRA_UNIT_PRICE;
+    const head = rule.excluded
+      ? "이 상품(깍두기 · 이벤트 · 세션업 · 전환 등)은 등록 횟수별 서비스 기준이 적용되지 않아요 -- 서비스는 첫 1회만 수업료 1만원."
+      : rule.table
+        ? `기준: ${total}회 등록 → 서비스 ${rule.paid}회 수업료 (첫 1회 ${won(product.payCategory === PAY_CATEGORY.DIOSA_A ? DIOSA_A_SERVICE_UNIT_PRICE : defaultUnitPriceFor(PAY_CATEGORY.SERVICE) || 0)} · 나머지 회당 ${won(extra)}).`
+        : `${total ? `${total}회는` : "이 횟수는"} 서비스 기준표(20 · 30 · 40 · 50회)에 없어요 -- 서비스는 첫 1회만 수업료 1만원.`;
+    const over = entered > rule.paid ? ` 넣은 서비스 ${entered}회 중 ${entered - rule.paid}회는 수업료가 나가지 않아요.` : "";
+    return head + over;
+  }, [product, form.totalSessions, form.serviceSessions]);
+  /* 같은 회원이 최근 60일 안에 PT 회원권을 받았는가 (2026-11-28) -- 새 플로우 업무로 같은 계약을 또 올린 경우는 업무 번호가
+     달라 규칙이 막지 못한다. 재등록은 정상이라 막지 않고 알린다 (features/passes/recent-issue.js). */
+  const recentIssueText = useMemo(() => recentPtIssueMessage(
+    recentPtIssues({ clientIds: [client?.id, partner?.id], passes: issuedPasses, now: now() }),
+    (id) => (id === client?.id ? client?.name : id === partner?.id ? partner?.name : ""),
+  ), [client, partner, issuedPasses, now]);
 
   /* 이미 고른 회원은 짝 후보에서 뺀다. 같은 사람을 고르면 판정이 막지만,
      고를 수 없게 해 두면 그 실수 자체가 일어나지 않는다. */
@@ -18896,6 +18956,37 @@ function PassIssue({
   const sessionsChanged = product && String(product.defaultSessions ?? "") !== form.totalSessions;
   const priceChanged = product
     && String((Number(product.defaultPrice) || 0) / WON_PER_MANWON) !== form.contractPriceManwon;
+
+  /* 스위치와 발급 대기 목록. 스위치를 못 읽으면 꺼진 것으로 본다 -- 규칙이 다시 막으므로 새는 길은 없고,
+     켜졌는데 화면이 몰랐다면 저장에서 permission-denied 로 멈추고 코드가 남는다. */
+  useEffect(() => {
+    if (initialState || !organizationId) return undefined;
+    let alive = true;
+    Promise.resolve(onLoadGate?.())
+      .then((config) => { if (alive) setFlowGateOn(String(config?.flowPtGate?.mode || "") === "all"); })
+      .catch(() => { if (alive) setFlowGateOn(false); });
+    Promise.resolve(onLoadFlowQueue?.(organizationId, {
+      locationIds: isOwnerLevelRole(issueScope.role) ? [] : [...new Set([...(issueScope.locationIds || []), issueScope.locationId].filter(Boolean))],
+    }))
+      /* 고를 수 있는 등록: 대기 · 잔금 아님 · 플로우에서 지금도 성공 (규칙 flowPtPostOpen 과 같은 선, 2026-11-28). */
+      .then((rows) => { if (alive) setFlowItems((Array.isArray(rows) ? rows : []).filter((row) => (row.state || "waiting") === "waiting" && !row.isBalance && !flowPtLeft(row))); })
+      .catch((thrown) => {
+        if (!alive) return;
+        const code = String(thrown?.code || "unknown");
+        setFlowLoadError(`PT 발급 대기를 읽지 못했어요 (코드 ${code})`);
+        deviceLog("flow_pt_queue_read_failed", { feature: "flow_pt_queue", stage: "pass_issue_list", errorDomain: "firestore", errorCode: code, role: issueScope.role });
+      });
+    return () => { alive = false; };
+  }, [organizationId, initialState, onLoadGate, onLoadFlowQueue, issueScope]);
+  useEffect(() => { if (flowSeed?.id) { setFlowPostId(flowSeed.id); setFlowBypass(false); } }, [flowSeed?.id]);
+  const flowPt = isFlowGatedCategory(product?.payCategory);
+  const flowChoices = flowSeed?.id && !flowItems.some((row) => row.id === flowSeed.id) ? [flowSeed, ...flowItems] : flowItems;
+  const flowPicked = flowChoices.find((row) => row.id === flowPostId) || null;
+  const flowReasonText = flowBypassReason.trim();
+  /* 무엇을 보낼지: PT 가 아니면 아무것도, 사유를 골랐으면 사유, 등록을 골랐으면 등록. */
+  const flowPayload = !flowPt ? {}
+    : flowBypass ? (flowReasonText ? { flowBypassReason: flowReasonText } : {})
+    : flowPicked ? { flowPostId: flowPicked.id } : {};
 
   const review = (event) => {
     event.preventDefault();
@@ -18930,8 +19021,21 @@ function PassIssue({
     if (asksUnitPriceReason && !form.unitPriceReason.trim()) {
       setFormError("제안 단가와 다르게 정한 사유를 적어 주세요."); return;
     }
+    if (flowPt && flowBypass && flowReasonText.length < FLOW_BYPASS_REASON_MIN) {
+      setFormError("플로우 없이 발급하는 사유를 적어 주세요."); return;
+    }
+    if (flowPt && flowGateOn && !flowBypass && !flowPicked) {
+      deviceLog("pass_issue_blocked", { feature: "pass_issue", stage: "review", errorDomain: "app", errorCode: "flow_pt_required", role: issueScope.role });
+      setFormError("PT 는 PT 발급 대기에서 플로우 등록을 골라야 발급할 수 있어요. 플로우가 멈췄다면 '플로우 없이 발급' 에 사유를 적어 주세요.");
+      return;
+    }
     setMode("confirm");
   };
+
+  /* 어떤 발급이었는지 -- 막혔을 때 화면과 진단에 같이 붙인다 (pass-issue-preflight.js). */
+  const issueRef = passIssueRef({
+    role: issueScope.role, gateOn: flowGateOn, flowPt, flowPayload, paymentMethod: form.paymentMethod, duet: Boolean(form.duet && partner),
+  });
 
   const issue = async () => {
     /* 확인 화면에서 한 번 더. 저장 단계에서도 막는다 (2026-11-04 대표) -- 확인
@@ -18940,8 +19044,43 @@ function PassIssue({
       setFormError(INSTRUCTOR_OUT_OF_SCOPE_MESSAGE);
       return;
     }
+    /* ── 규칙이 이유 없이 거절하기 전에 이유를 말한다 (2026-11-28) ──
+       FC 의 PT 발급이 나흘 동안 permission-denied 한 줄로만 막혔다. 앱이 알 수 있는 거절은 여기서
+       먼저 -- 맡은 지점 밖의 회원, 화면을 연 뒤 이미 처리된 플로우 등록. */
+    const blocked = (failure) => {
+      deviceLog("pass_issue_blocked", {
+        feature: "pass_issue", stage: "preflight", errorDomain: "app", errorCode: failure.code,
+        kind: failure.kind, role: issueScope.role, ref: issueRef,
+      });
+      setMode("form");
+      setFormError(failure.message);
+    };
+    const outside = passLocationFailure(issueScope, client.locationId);
+    if (outside) { blocked(outside); return; }
     setSaving(true);
     setFormError("");
+    if (flowPayload.flowPostId) {
+      let item;
+      try {
+        item = await onReadFlowItem?.(organizationId, flowPayload.flowPostId);
+      } catch (thrown) {
+        /* 못 읽었으면 막지 않는다 -- 규칙이 다시 본다. 다만 남긴다. */
+        item = undefined;
+        deviceLog("flow_pt_queue_read_failed", {
+          feature: "flow_pt_queue", stage: "pass_issue_preflight", errorDomain: "firestore",
+          errorCode: String(thrown?.code || "unknown"), role: issueScope.role,
+        });
+      }
+      const stale = item === undefined ? null : flowPostFailure(item);
+      if (stale) {
+        setFlowItems((current) => current.filter((row) => row.id !== flowPayload.flowPostId));
+        setFlowPostId("");
+        onFlowSeedUsed?.();
+        setSaving(false);
+        blocked(stale);
+        return;
+      }
+    }
     try {
       await issuePass(organizationId, {
         clientId: client.id,
@@ -18957,7 +19096,7 @@ function PassIssue({
            회원권이 무엇으로 팔렸는지는 변하지 않는다. */
         productName: String(product?.name || ""),
         contractPrice: manwonToWon(Number(form.contractPriceManwon)),
-        purchaseRound: Number(form.purchaseRound || 1),
+        purchaseRound: suggestedRound,
         paymentMethod: form.paymentMethod,
         /* 복합결제일 때만 보낸다. 단일 결제에 네 칸짜리 객체가 붙으면 매출
            집계가 그것을 "쪼갠 계약" 으로 읽고 수단별 합계가 0 쪽으로 샌다. */
@@ -18979,7 +19118,15 @@ function PassIssue({
         } : {}),
         issuerRole: issueScope.role,
         createdBy: currentUserId,
+        ...flowPayload,
       }, { store: passStore });
+      if (flowPayload.flowPostId) {
+        setFlowItems((current) => current.filter((row) => row.id !== flowPayload.flowPostId));
+        onFlowSeedUsed?.();
+      }
+      setFlowPostId("");
+      setFlowBypass(false);
+      setFlowBypassReason("");
       onToast?.({ ok: true, msg: form.duet && partner
         ? `${client.name}님과 ${partner.name}님에게 듀엣 회원권을 발급했습니다.`
         : `${client.name}님에게 회원권을 발급했습니다.` });
@@ -18987,18 +19134,19 @@ function PassIssue({
       setForm(emptyIssueForm());
       setSearch("");
       setPartnerSearch("");
-      setMoreOpen(false);
     } catch (error) {
       /* 단가 직접 입력이 생기면서 저장 경로가 거부하는 이유가 늘었다
          (Forbidden manualUnitPrice · Missing unitPriceReason). 원본 그대로 남긴다. */
+      const failure = describePassIssueFailure(error, issueRef);
       deviceLog("pass_issue_failed", {
         feature: "pass_issue", stage: "commit",
         errorDomain: error?.code ? "firestore" : "app",
         errorCode: error?.code || "", message: String(error?.message || ""),
+        kind: failure.kind, ref: issueRef,
         role: issueScope.role, unitPriceSource: unitPriceOverridden ? ISSUE_UNIT_PRICE_SOURCE.MANUAL : standardPrice.source,
       });
       setMode("form");
-      setFormError(`발급하지 못했어요 (코드 ${error?.code || error?.message || "unknown"})`);
+      setFormError(failure.message);
     } finally {
       setSaving(false);
     }
@@ -19055,7 +19203,7 @@ function PassIssue({
             {manwonLabelOf(form.contractPriceManwon)}
             {" · "}{labelOf(PAYMENT_METHOD_LABELS, form.paymentMethod)}
             {form.paymentNote && asksPaymentNote ? ` (${form.paymentNote})` : ""}
-            {" · "}{form.purchaseRound}차
+            {" · "}{suggestedRound}차
           </p>
           {/* 쪼갠 숫자를 누르기 전에 그대로 보여준다. 공급가액이 카드분으로만
               정해지므로, 카드 칸 하나가 틀리면 그 강사의 회당 단가가 틀린다. */}
@@ -19103,9 +19251,20 @@ function PassIssue({
             담당 {instructor?.displayName || form.instructorId}
           </p>
           <p className="tabular-nums" style={{ fontSize: TYPE.caption, color: INK2 }}>만료 {form.expiresAt}</p>
+          {flowPayload.flowPostId ? (
+            <p style={{ fontSize: TYPE.caption, color: INK2 }} data-flow-pt-confirm>플로우 {[flowPicked?.branchName, flowPicked?.title].filter(Boolean).join(" · ")}</p>
+          ) : null}
+          {flowPayload.flowBypassReason ? (
+            <p className="font-bold" style={{ fontSize: TYPE.caption, color: WARN }} data-flow-pt-confirm>플로우 없이 발급 · {flowPayload.flowBypassReason}</p>
+          ) : null}
         </div>
         {/* 막지는 않는다. 다만 대표가 보고 넘어가야 한다 -- 발급한 뒤에는
             원장이 append-only 라 고칠 수 없다. */}
+        {recentIssueText ? (
+          <div className="mt-2" style={{ padding: 10, borderRadius: 10, backgroundColor: WARN_S, border: `1px solid ${WARN}` }} data-recent-issue>
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, fontWeight: 700, color: WARN }}>{recentIssueText}</p>
+          </div>
+        ) : null}
         {reviewNotices(duetNotices).map((notice) => (
           <div key={notice.code + notice.message} className="mt-2" style={{
             padding: 10, borderRadius: 10,
@@ -19435,30 +19594,54 @@ function PassIssue({
             </IssueField>
           ) : null}
 
-          <button type="button" onClick={() => setMoreOpen((open) => !open)} className="w-full text-left"
-            style={{ fontSize: TYPE.caption, fontWeight: 700, color: SUB }}>
-            {moreOpen ? "· 서비스 · 차수 접기" : "· 서비스 · 차수"}
-          </button>
-          {moreOpen ? (
-            <div className="space-y-3">
+          {/* 서비스는 늘 펼쳐 둔다 (2026-11-28 대표: "차수 + 서비스 넣는 칸이 작게 표시가 안 나 찾기 힘듦").
+              전에는 작은 [· 서비스 · 차수] 글자를 눌러야 열렸다. 차수 칸은 같은 날 없앴다 (번호는 저절로). */}
+          {(
+            <div className="space-y-3" data-issue-service-round>
               <IssueField label="서비스 세션">
                 <input inputMode="numeric" value={form.serviceSessions} className={inputCls} placeholder="0"
                   onChange={(e) => setForm({ ...form, serviceSessions: e.target.value.replace(/\D/g, "") })} />
+                {serviceGuide ? <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }} data-service-guide>{serviceGuide}</p> : null}
               </IssueField>
-              <IssueField label="차수">
-                <input inputMode="numeric" value={form.purchaseRound} className={inputCls} placeholder="1"
-                  onChange={(e) => setForm({ ...form, purchaseRound: e.target.value.replace(/\D/g, "") })} />
-                {/* 회원권을 쓰는 순서가 이 번호다. 저절로 채우지만 고칠 수
-                    있고, 고치면 그것이 차감 순서가 된다. */}
-                <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-                  {Number(form.purchaseRound || 0) === suggestedRound
-                    ? `이 회원의 ${suggestedRound}번째 회원권입니다. 차수가 빠른 것부터 차감됩니다.`
-                    : `자동으로 채운 번호는 ${suggestedRound}차입니다. 차수가 빠른 것부터 차감됩니다.`}
+              {/* 차수 입력 칸은 없앴다 (2026-11-28) -- 번호는 저절로, 차감은 만료일 순. 한 줄로만 알린다. */}
+              {client ? (
+                <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }} data-issue-round>
+                  이 회원의 {suggestedRound}번째 회원권으로 저장돼요. 회원권이 여럿이면 만료일이 이른 것부터 차감돼요.
                 </p>
-              </IssueField>
+              ) : null}
+            </div>
+          )}
+
+          {recentIssueText ? (
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, fontWeight: 700, color: WARN }} data-recent-issue>{recentIssueText}</p>
+          ) : null}
+          {flowPt ? (
+            <div style={{ padding: 10, borderRadius: 10, backgroundColor: CANVAS, border: `1px solid ${flowGateOn ? BRAND : LINE}` }} data-flow-pt-pick>
+              <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
+                플로우 등록 {flowGateOn ? "(필수)" : "(골라 두면 발급 대기에서 저절로 빠져요)"}
+              </p>
+              {flowLoadError ? <p className="mt-1" style={{ fontSize: TYPE.caption, color: WARN }}>{flowLoadError}</p> : null}
+              {!flowBypass ? (
+                <select value={flowPostId} onChange={(e) => setFlowPostId(e.target.value)} className={`${inputCls} mt-1.5`} aria-label="플로우 등록">
+                  <option value="">{flowChoices.length ? "발급 대기에서 고르기" : "발급 대기가 비어 있어요"}</option>
+                  {flowChoices.map((row) => (
+                    <option key={row.id} value={row.id}>{[row.branchName, row.title, flowPtWhen(row.registeredAt)].filter(Boolean).join(" · ")}</option>
+                  ))}
+                </select>
+              ) : null}
+              {flowPicked && !flowBypass && flowPicked.excerpt ? (
+                <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{flowPicked.excerpt}</p>
+              ) : null}
+              <label className="mt-2 flex items-center gap-2" style={{ fontSize: TYPE.caption, color: INK2 }}>
+                <input type="checkbox" checked={flowBypass} onChange={(e) => { setFlowBypass(e.target.checked); if (e.target.checked) setFlowPostId(""); }} />
+                플로우 없이 발급 (플로우가 멈췄을 때 · 사유가 회원권에 남아요)
+              </label>
+              {flowBypass ? (
+                <input value={flowBypassReason} maxLength={FLOW_BYPASS_REASON_MAX} placeholder="사유 (예: 플로우 접속 장애)"
+                  onChange={(e) => setFlowBypassReason(e.target.value)} className={`${inputCls} mt-1.5`} aria-label="플로우 없이 발급하는 사유" />
+              ) : null}
             </div>
           ) : null}
-
           {formError ? <p style={{ fontSize: TYPE.caption, color: BAD }}>{formError}</p> : null}
           <button type="submit" className="h-11 w-full font-bold"
             style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption }}>
@@ -21273,7 +21456,7 @@ function PassEditSheet({
       <p className="mt-1.5" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
         {adjust
           ? "실제 잔여와 장부가 어긋났을 때 맞춥니다. 수업이 아니므로 급여에 잡히지 않고, 회원의 수업 이력에도 뜨지 않습니다."
-          : "홀딩 기간에는 예약·차감이 중지되고 잔여 횟수는 그대로 보관됩니다. 만료일은 연장되며 회원 앱에도 반영됩니다. 기존 예약은 자동 취소되지 않고, 듀엣 공유권은 두 분 모두 중지됩니다."}
+          : "홀딩은 회원권을 멈추는 것입니다. 홀딩 기간에는 예약·차감이 멈추고 잔여 횟수와 남은 기간이 그대로 보관됩니다 — 그래서 멈춘 날수만큼 만료일이 뒤로 갑니다(기간을 더 주는 연장이 아닙니다). 회원 앱에도 반영됩니다. 기존 예약은 자동 취소되지 않고, 듀엣 공유권은 두 분 모두 멈춥니다."}
       </p>
 
       {adjust ? (
@@ -21327,12 +21510,12 @@ function PassEditSheet({
                 }}>{label}</button>
             ))}
           </div>
-          {mode === "hold" && held ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>홀딩을 지금 해제합니다. 남은 홀딩 기간만큼 만료일 연장을 되돌리고 바로 이용할 수 있어요.</p> : mode === "hold" ? (
+          {mode === "hold" && held ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>홀딩을 지금 해제합니다. 아직 쓰지 않은 홀딩 날수만큼 만료일이 앞으로 돌아오고, 바로 이용할 수 있어요.</p> : mode === "hold" ? (
             <div className="mt-2 flex items-center gap-2">
               <input inputMode="numeric" value={days} placeholder="30"
                 onChange={(event) => setDays(event.target.value)} className={inputCls}
                 style={{ maxWidth: 110 }} />
-              <p style={{ fontSize: TYPE.caption, color: SUB }}>일 동안 이용을 중지합니다 (지금부터)</p>
+              <p style={{ fontSize: TYPE.caption, color: SUB }}>일 동안 회원권을 멈춥니다 (지금부터)</p>
             </div>
           ) : (
             <input type="date" value={date} onChange={(event) => setDate(event.target.value)}
@@ -21341,6 +21524,7 @@ function PassEditSheet({
           <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
             {currentExpiry ? dayLabel(currentExpiry) : "만료일 없음"}
             {nextExpiry ? ` → ${dayLabel(nextExpiry)}` : ""}
+            {mode === "hold" && !held && nextExpiry ? ` (멈춘 ${heldDays}일만큼 뒤로)` : ""}
           </p>
           {sameDay ? (
             <p role="alert" className="mt-1 font-bold" style={{ fontSize: TYPE.caption, color: WARN }}>
@@ -21753,7 +21937,7 @@ function ClientPassRow({
         </span>
       </div>
       <p className="mt-1 tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>
-        {held ? `홀딩 중 · ${dayTimeLabel(pass.holdUntil)} 이용 재개 · ` : ""}{dayLabel(pass.createdAt)} 발급
+        {held ? `홀딩 중 · 기간 멈춤 · ${dayTimeLabel(pass.holdUntil)} 이용 재개 · ` : ""}{dayLabel(pass.createdAt)} 발급
         {" · "}{pass.totalSessions}회{Number(pass.serviceSessions) > 0 ? ` + 서비스 ${pass.serviceSessions}회` : ""}
         {" · "}{wonToManwonLabel(pass.contractPrice)}
         {" · "}{pass.purchaseRound}차
@@ -27368,17 +27552,41 @@ const shiftRatingMonth = (month, delta) => {
 };
 const ratingMonthLabel = (month) => (month === "all" ? "지금까지 누적" : `${Number(String(month).slice(0, 4))}년 ${Number(String(month).slice(5, 7))}월`);
 
-function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, initialState = null, initialMonth = null }) {
+/* 강사 한 명의 대표 별점 -- 접힌 카드 한 줄. 항목 평균을 응답 수로 가중. "몸 컨디션" 은 참고 지표라 다른 항목이 있으면 뺀다. */
+const ratingHeadline = (row) => {
+  const answered = (row?.items || []).filter((item) => item && item.average !== null && item.average !== undefined && Number(item.count) > 0);
+  const scored = answered.some((item) => item.id !== "body") ? answered.filter((item) => item.id !== "body") : answered;
+  const weight = scored.reduce((sum, item) => sum + Number(item.count), 0);
+  return weight ? scored.reduce((sum, item) => sum + Number(item.average) * Number(item.count), 0) / weight : null;
+};
+
+function LessonRatingStatsAdmin({ organization, instructorStore, locationStore, onLoad = fbLessonRatingStats, onLoadBranches = null, initialState = null, initialMonth = null }) {
   /* 2026-11-16 대표: "별점 항목을 따로 빼고, 점장이 자기 지점 강사들 몇 점 받는지 · 한 달 단위로 누적 체크".
      달마다(수업 시각 기준) 또는 지금까지 누적. 누가 무엇을 보는지는 서버가 정한다(lesson-rating.mjs
      ratingViewerScope) -- 대표 · 총괄은 전부, 점장은 자기 지점 강사만 · 본인 제외. */
   const thisMonth = currentRatingMonth();
   const [month, setMonth] = useState(initialMonth || thisMonth);
   const [state, setState] = useState(() => initialState || { rows: null, items: [], scope: "", error: "" });
+  /* 지점 칩 (2026-11-24 대표: "수업 별점도 지점별로"). 지점은 소속 명부로 -- 별점 서버 함수는 강사 id 만 준다.
+     명부를 못 읽으면(점장 권한 등) 칩 없이 한 줄로 -- 별점은 그대로 보인다. */
+  const [branches, setBranches] = useState(() => ({ instructors: initialState?.instructors || [], locations: initialState?.locations || [], errorCode: "" }));
+  const [branch, setBranch] = useState(initialState?.branch || "");
+  const [open, setOpen] = useState(initialState?.open || "");
   const organizationId = organization?.organizationId || "";
+  const loadBranches = useCallback(async () => {
+    if (onLoadBranches) return onLoadBranches({ organizationId });
+    const [members, locations] = await Promise.all([
+      toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })),
+      toleratingReadFailure(listLocations(organizationId, { store: locationStore })),
+    ]);
+    return { instructors: members.items, locations: locations.items, errorCode: members.errorCode || locations.errorCode || "" };
+  }, [organizationId, instructorStore, locationStore, onLoadBranches]);
   const load = useCallback(async () => {
     if (!organizationId) return;
     setState((current) => ({ ...current, error: "", rows: null }));
+    loadBranches()
+      .then((value) => setBranches({ instructors: value?.instructors || [], locations: value?.locations || [], errorCode: String(value?.errorCode || "") }))
+      .catch((thrown) => setBranches({ instructors: [], locations: [], errorCode: String(thrown?.code || "unknown") }));
     try {
       const result = await onLoad({ organizationId, month });
       setState({ rows: Array.isArray(result?.rows) ? result.rows : [], items: Array.isArray(result?.items) ? result.items : [], scope: String(result?.scope || ""), error: "" });
@@ -27391,8 +27599,11 @@ function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, in
         role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
       });
     }
-  }, [organizationId, onLoad, organization?.role, month]);
+  }, [organizationId, onLoad, organization?.role, month, loadBranches]);
   useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const ratingGroups = groupRowsByBranch(state.rows || [], { instructors: branches.instructors, locations: branches.locations, canonicalInstructorId: canonicalInstructorIdFrom(branches.instructors) });
+  const ratingBranch = pickBranch(ratingGroups, branch);
+  const ratingShown = ratingGroups.length > 1 ? (ratingGroups.find((group) => group.id === ratingBranch)?.rows || []) : (state.rows || []);
   const questionOf = (id) => state.items.find((item) => item.id === id)?.question || id;
   const branchOnly = state.scope === "branch" || (!state.scope && organization?.title === "branch_manager" && !isOwnerLevelRole(organization?.role));
   const navButton = { height: 36, minWidth: 36, borderRadius: 8, backgroundColor: CANVAS, color: INK2 };
@@ -27414,17 +27625,26 @@ function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, in
           ? " 맡은 지점 강사만 보이고, 본인 점수는 보이지 않습니다. 회원 이름 · 개별 응답은 볼 수 없습니다."
           : " 담당 강사 본인에게는 공개되지 않고, 회원 이름 · 개별 응답은 대표님도 볼 수 없습니다."}
       </p>
+      <BranchTabs groups={ratingGroups} selected={ratingBranch} onSelect={(id) => { setBranch(id); setOpen(""); }} countLabel={(group) => `${group.rows.length}명`} />
+      {branches.errorCode && !branchOnly ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>강사 지점을 읽지 못해 지점별로 나누지 못했어요 (코드 {branches.errorCode})</p> : null}
       {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
       {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
       {state.rows && !state.rows.length && !state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>{month === "all" ? "아직 받은 평가가 없습니다." : "이 달에 받은 평가가 없습니다."}</p> : null}
       <div className="mt-3 space-y-2">
-        {(state.rows || []).map((row) => (
-          <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-rating-row>
-            <div className="flex items-center justify-between gap-2">
+        {ratingShown.map((row) => {
+          const expanded = open === row.instructorId;
+          const headline = ratingHeadline(row);
+          return (
+          <div key={row.instructorId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-rating-row data-rating-open={expanded ? "true" : "false"}>
+            {/* 강사 카드는 한 번에 하나만 펼친다 (2026-11-21 대표: "지점별로 강사 하나씩"). */}
+            <button type="button" aria-expanded={expanded} onClick={() => setOpen((current) => (current === row.instructorId ? "" : row.instructorId))}
+              className="flex min-h-9 w-full items-center justify-between gap-2 text-left">
               <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>{row.instructorName || "이름 모름"}</span>
+              <span className="tabular-nums font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{headline === null ? "—" : `★ ${headline.toFixed(1)}`}</span>
               <span className="tabular-nums" style={{ fontSize: TYPE.caption, color: SUB }}>{month === "all" ? "누적" : "이 달"} {row.count}건</span>
-            </div>
-            {(row.items || []).map((item) => (
+              <ChevronDown size={16} color={SUB} style={{ transform: expanded ? "rotate(180deg)" : "none" }} />
+            </button>
+            {expanded ? (row.items || []).map((item) => (
               <div key={item.id} className="mt-1 flex items-center justify-between gap-2">
                 <span className="min-w-0 flex-1" style={{ fontSize: TYPE.caption, color: SUB }}>{item.id === "body" ? "몸 컨디션 · 참고 지표" : questionOf(item.id)}</span>
                 <span className="tabular-nums font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
@@ -27432,9 +27652,10 @@ function LessonRatingStatsAdmin({ organization, onLoad = fbLessonRatingStats, in
                   <span className="font-normal" style={{ color: SUB }}>{` · ${item.count}건`}</span>
                 </span>
               </div>
-            ))}
+            )) : null}
           </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );
@@ -27510,7 +27731,7 @@ function InstructorRecordBoard({ organization, instructorStore, clientStore, ini
         <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
           {row.attended === null
             ? `수업기록 — ${view.detail || ""}`
-            : `수업기록 ${row.recorded}/${row.attended}건${row.draft ? ` · 확인 안 한 AI 기록 ${row.draft}건` : ""}${view.detail ? ` · ${view.detail}` : ""}`}
+            : `수업기록 ${row.recorded}/${row.attended}건${row.draft ? ` (그중 확인 안 한 AI 기록 ${row.draft}건)` : ""}${view.detail ? ` · ${view.detail}` : ""}`}
         </div>
         <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>
           {state.notesError
@@ -27536,7 +27757,7 @@ function InstructorRecordBoard({ organization, instructorStore, clientStore, ini
         <button type="button" aria-label="다음 달" disabled={month >= thisMonth} onClick={() => setMonth((current) => shiftRatingMonth(current, 1))} className="flex items-center justify-center disabled:opacity-30" style={navButton}><ChevronRight size={16} /></button>
       </div>
       <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        <b style={{ color: INK }}>수업기록</b>은 강사 폰이 알려 준 숫자예요 — 출석 처리한 수업 중 기록(직접 입력 · 음성 · 특이사항 없음)을 남긴 비율.
+        <b style={{ color: INK }}>수업기록</b>은 강사 폰이 알려 준 숫자예요 — 출석 처리한 수업 중 기록(직접 입력 · 음성 · 특이사항 없음)을 남긴 비율. 확인을 건너뛴 AI 기록도 기록으로 셉니다.
         {" "}<b style={{ color: INK }}>회원에게 보낸 말</b>은 확정한 수업 중 회원 앱으로 한마디를 보낸 수업이에요.
         {" "}기록 내용 · 회원 이름은 여기 오지 않아요. 기록이 적은 강사가 위에 있어요.
       </p>
@@ -27757,7 +27978,8 @@ function radarEntry(organizationId) {
   if (!radarCache.has(organizationId)) radarCache.set(organizationId, { data: {}, at: 0, loading: false, listeners: new Set() });
   return radarCache.get(organizationId);
 }
-function startRadarLoad({ organizationId, clientStore, passStore, instructorStore, onLoadShares = fbBeforeAfterShareStats, role = "" }, { force = false } = {}) {
+function startRadarLoad({ organizationId, clientStore, passStore, instructorStore, onLoadShares = fbBeforeAfterShareStats, role = "", staffMode = false, onLoadBranch = fbRenewalRadarBranch }, { force = false } = {}) {
+  if (staffMode) return startStaffRadarLoad({ organizationId, onLoadBranch, role }, { force });
   const entry = radarEntry(organizationId);
   if (!organizationId || entry.loading || (!force && entry.at && Date.now() - entry.at < RADAR_FRESH_MS)) return entry;
   entry.loading = true;
@@ -27801,8 +28023,53 @@ function startRadarLoad({ organizationId, clientStore, passStore, instructorStor
   notify();
   return entry;
 }
-/** 센터 운영 메뉴가 열릴 때 미리 읽는다. 5분 안에 읽었으면 아무것도 안 한다. */
+/* 점장 · 부원장 (2026-11-24 대표). 원장(강사 단가가 들어 있다)을 직접 읽지 않고 서버가 맡은 지점의 것만 골라 준다
+   (functions/src/renewal-radar-branch.js). 비포애프터 · 강사 기록 숫자는 이 화면에 없다 -- 그 신호 · 칸을 그리지 않는다. */
+function startStaffRadarLoad({ organizationId, onLoadBranch, role }, { force = false } = {}) {
+  const entry = radarEntry(`${organizationId}#staff`);
+  if (!organizationId || entry.loading || (!force && entry.at && Date.now() - entry.at < RADAR_FRESH_MS)) return entry;
+  entry.loading = true;
+  const notify = () => entry.listeners.forEach((listener) => listener(entry));
+  Promise.resolve().then(() => onLoadBranch({ organizationId }))
+    .then((result) => {
+      const now = Number(result?.now) || Date.now();
+      entry.data = {
+        staff: { scope: String(result?.scope || "branch") },
+        core: { clients: result?.clients || [], passes: result?.passes || [], ledger: result?.ledger || [], now, activityMonth: "" },
+        coreError: "",
+        notes: { items: result?.lessonNotes || [], failed: false, errorCode: "" },
+        shares: { rows: null, hidden: true },
+        activities: { items: null, failed: false, hidden: true },
+        candidates: { rows: result?.candidates || [], errorCode: "" },
+        members: { items: result?.members || [], failed: false, errorCode: "" },
+        locations: { items: result?.locations || [], failed: false, errorCode: "" },
+      };
+    })
+    .catch((thrown) => {
+      const code = serverCodeOf(thrown) || String(thrown?.code || "unknown");
+      entry.data = { ...entry.data, coreError: code };
+      deviceLog("renewal_radar_read_failed", {
+        feature: "renewal_radar", stage: "staff_read", errorDomain: "functions_callable", errorCode: code,
+        message: String(thrown?.message || "").slice(0, 200), role, appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+      });
+    })
+    .finally(() => { entry.loading = false; entry.at = Date.now(); notify(); });
+  notify();
+  return entry;
+}
+
+/**
+ * 센터 운영 메뉴가 열릴 때 미리 읽는다 -- **앱을 연 뒤 처음 한 번만** (2026-11-28).
+ *
+ * 전에는 더보기를 열 때마다, 지난번에서 5분이 지났으면 다시 읽었다. 읽는 것이 회원 · 회원권 전부와 8주 차감 ·
+ * 45일 일지 · 재등록 후보라 운영 숫자로 수천 건이다 (2026-11-28: 회원 1,097 · 회원권 1,387 · 후보 589). PC 에서
+ * 이관 · 발급 · 급여로 더보기를 몇 분마다 드나드는 대표에게는 그때마다 화면이 멈칫했다 (대표: "웹으로 더보기 들어갈 때
+ * 렉"). 레이더 화면을 열면 화면이 지난 결과를 바로 보여 주고 뒤에서 새로 읽으므로(startRadarLoad), 미리 읽기는
+ * 처음 한 번이면 "누르면 바로 뜨게" 가 지켜진다.
+ */
 function prefetchRenewalRadar(params) {
+  const entry = radarEntry(params?.organizationId || "");
+  if (entry.at || entry.loading) return;
   /* 브라우저가 한가할 때 (늦어도 3초 안). 더보기를 열자마자 읽기 시작하면 수천 건을 푸는 일이 첫 몇 번의 누름과 겹친다
      (2026-11-21 대표: "눌렀을 때 반응이 0.5초 느림"). 그 사이 화면을 열면 화면이 바로 읽는다. */
   const run = () => { try { startRadarLoad(params); } catch (_ignored) { /* 미리 읽기가 메뉴를 깨뜨리면 안 된다 -- 화면을 열면 다시 읽는다. */ } };
@@ -27917,13 +28184,559 @@ function BranchTabs({ groups, selected, onSelect, countLabel = (group) => `${gro
   );
 }
 
-function RenewalRadarScreen({ organization, instructorStore, clientStore, passStore, onOpenClient, onLoadShares = fbBeforeAfterShareStats, initialState = null }) {
+/**
+ * 플로우 PT 발급 대기 (2026-11-24 대표: "플로우에 등록상품이 PT 라고 적힌 것만 발급 대기 화면으로 -- FC 가 플로우에
+ * 내용을 확인한 후에 발급할 수 있게"). 서버가 지점 업무보드의 **완료된** 업무 중 PT 가 적힌 것을 가져온다
+ * (functions/shared/flow-pt-queue.mjs). 플로우 API 가 칸 값 · 성공/환불을 주지 않아 판정은 FC 가 원문에서 한다.
+ * 앱은 발급하지 않는다 -- [회원권 발급 열기] 로 평소 발급 화면을 열고, 끝나면 [발급함].
+ */
+const flowPtWhen = (value) => {
+  const at = value && typeof value.toDate === "function" ? value.toDate() : value ? new Date(value) : null;
+  if (!at || Number.isNaN(at.getTime())) return "";
+  return `${at.getMonth() + 1}/${at.getDate()} (${"일월화수목금토"[at.getDay()]}) ${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+};
+const flowPtTime = (value) => {
+  const at = value && typeof value.toDate === "function" ? value.toDate() : value ? new Date(value) : null;
+  return at && !Number.isNaN(at.getTime()) ? at.getTime() : 0;
+};
+/* 발급 뒤 플로우 내용이 바뀌었는데 아직 [확인함] 을 안 눌렀는가 (2026-11-28, 3단계). */
+const flowPtDate = (value) => (value?.toDate ? value.toDate() : value ? new Date(value) : null);
+const flowPtChangedUnacked = (row) => {
+  const changed = flowPtDate(row?.changedAfterIssueAt);
+  if (!changed || !Number.isFinite(changed.getTime())) return false;
+  const acked = flowPtDate(row?.changeAckedAt);
+  return !(acked && Number.isFinite(acked.getTime()) && acked.getTime() >= changed.getTime());
+};
+const FLOW_PT_FIELD_LABEL = { product: "상품", sessions: "횟수", amountManwon: "금액" };
+const flowPtChangedLabel = (row) => `${(row?.changedAfterIssueFields || []).map((key) => FLOW_PT_FIELD_LABEL[key] || key).join(" · ") || "내용"} 바뀜`;
+/* 플로우에서 지금 성공이 아닌가 (서버 flowStatus left) · 최근 2주 안에 다시 성공했는가 (2026-11-28). */
+const flowPtLeft = (row) => row?.flowStatus === "left";
+const flowPtResucceeded = (row) => {
+  const at = row?.resucceededAt?.toDate ? row.resucceededAt.toDate() : row?.resucceededAt ? new Date(row.resucceededAt) : null;
+  return Boolean(at && Number.isFinite(at.getTime()) && Date.now() - at.getTime() < 14 * 86400000);
+};
+const FLOW_PT_STATE_LABEL = { issued: "이미 발급 완료", not_applicable: "해당 없음" };
+/* [새로고침] 결과의 실패 코드 → 무엇을 하면 되는지. 코드는 늘 함께 보인다 (CLAUDE.md 4). */
+const FLOW_PT_FAILURE_HINT = {
+  api_key_missing: "플로우 API 키가 비어 있어요 — 키를 다시 등록해야 해요",
+  api_key_invalid_chars: "플로우 API 키에 넣을 수 없는 글자(빈칸 · 줄바꿈 · 한글)가 섞여 있어요 — 키를 다시 등록해야 해요",
+  user_id_missing: "플로우 계정 아이디가 비어 있어요 — 다시 등록해야 해요",
+  user_id_invalid_chars: "플로우 계정 아이디가 이메일 모양이 아니에요 — 다시 등록해야 해요",
+  secret_unreadable: "서버가 플로우 키를 읽지 못했어요",
+  UNAUTHORIZED_ERROR: "플로우가 API 키를 거절했어요 — 개인용 '내 API 키' 가 맞는지 확인해야 해요",
+  PRECONDITION_FAILED_ERROR: "키 주인이 이 업무보드의 참여자가 아니에요 — 플로우에서 보드 참여자로 넣어야 해요",
+  network: "플로우 서버에 닿지 못했어요",
+  switch_off: "운영 스위치 '플로우 PT 발급 대기' 가 꺼져 있어요",
+  not_allowed: "대표 · 총괄 · FC 만 지금 가져올 수 있어요",
+};
+const flowPtFailureText = (failure) => {
+  const hint = FLOW_PT_FAILURE_HINT[failure.errorCode] || (failure.httpStatus ? `플로우가 HTTP ${failure.httpStatus} 로 답했어요` : "가져오지 못했어요");
+  const codes = [failure.errorCode, failure.causeCode].filter(Boolean).join(" / ");
+  return `${hint} (코드 ${codes || "unknown"})`;
+};
+
+/**
+ * 잔금이 남은 회원권 (2026-11-28, 발급 대기 3단계 잔금 받음). 맡은 지점만 (FC) -- 규칙의 passInManagerScope 와 같은 선.
+ * 취소 · 만료된 회원권도 잔금이 남았으면 보인다 (돈은 받을 수 있다).
+ */
+async function loadBalancePasses({ organization, clientStore, passStore }) {
   const organizationId = organization?.organizationId || "";
-  const params = useMemo(() => ({ organizationId, clientStore, passStore, instructorStore, onLoadShares, role: organization?.role || "" }),
-    [organizationId, clientStore, passStore, instructorStore, onLoadShares, organization?.role]);
+  const [clientResult, passResult] = await Promise.all([
+    listClients(organizationId, { store: clientStore }),
+    listPasses(organizationId, { store: passStore }),
+  ]);
+  const clientList = Array.isArray(clientResult) ? clientResult : clientResult?.items || [];
+  const passList = Array.isArray(passResult) ? passResult : passResult?.items || [];
+  const names = new Map(clientList.map((client) => [client.id, client.name || ""]));
+  return passList
+    .filter((pass) => Number(pass?.balance) > 0 && managerCanTouchPass(organization, pass))
+    .map((pass) => ({
+      passId: String(pass.id || pass.passId || ""), clientName: names.get(pass.clientId) || "", productName: String(pass.productName || ""),
+      balance: Number(pass.balance), createdAt: pass.createdAt || null,
+    }))
+    .filter((item) => item.passId);
+}
+
+function FlowPtQueueScreen({
+  organization, currentUserId, onIssue, onLoad = listFlowPtQueue, onMark = markFlowPtQueue, onRefresh = fbRefreshFlowPtQueue,
+  /* 3단계 (2026-11-28): 발급 뒤 바뀜 [확인함] · 잔금 받음(회원권 잔금 칸 줄이기). onLoadBalancePasses 는 잔금이 남은 회원권
+     (맡은 지점) -- [{ passId, clientName, productName, balance, createdAt }]. 없으면 잔금 받음 칸을 그리지 않는다. */
+  onAckChange = ackFlowPtChange, onLoadBalancePasses = null, onReceiveBalance = recordFlowPtBalanceReceipt,
+  initialState = null,
+}) {
+  const organizationId = organization?.organizationId || "";
+  const ownerLevel = isOwnerLevelRole(organization?.role);
+  const scope = ownerLevel ? [] : [...new Set([...(organization?.locationIds || []), organization?.locationId || ""].filter(Boolean))];
+  const scopeKey = scope.join(",");
+  const [state, setState] = useState(() => initialState || { rows: null, error: "" });
+  const [branch, setBranch] = useState(initialState?.branch || "");
+  const [busy, setBusy] = useState("");
+  const [notice, setNotice] = useState("");
+  const [showDone, setShowDone] = useState(Boolean(initialState?.showDone));
+  const [showBalanceList, setShowBalanceList] = useState(Boolean(initialState?.showBalances));
+  const [showLeft, setShowLeft] = useState(Boolean(initialState?.showLeft));
+  /* 잔금 받음: 어느 잔금 글을 열었는가 · 잔금 남은 회원권 · 고른 회원권 · 받은 금액(원). */
+  const [balanceOpen, setBalanceOpen] = useState(initialState?.balanceOpen || "");
+  const [balancePasses, setBalancePasses] = useState(initialState?.balancePasses || null);
+  const [balancePick, setBalancePick] = useState(initialState?.balancePick || "");
+  const [balanceWon, setBalanceWon] = useState(initialState?.balanceWon || "");
+  const [balanceQuery, setBalanceQuery] = useState("");
+  const [balanceError, setBalanceError] = useState("");
+  /* [새로고침] = 서버가 지금 플로우를 읽고, 그다음 목록을 다시 읽는다 (2026-11-24 대표: "새로고침으로 해줘"). */
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshResult, setRefreshResult] = useState(initialState?.refreshResult || null);
+  const load = useCallback(async () => {
+    if (!organizationId) return;
+    setState((current) => ({ ...current, rows: null, error: "" }));
+    try {
+      const rows = await onLoad(organizationId, { locationIds: scopeKey ? scopeKey.split(",") : [] });
+      setState({ rows: Array.isArray(rows) ? rows : [], error: "" });
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setState({ rows: [], error: `PT 발급 대기를 읽지 못했어요 (코드 ${code})` });
+      deviceLog("flow_pt_queue_read_failed", {
+        feature: "flow_pt_queue", stage: "list", errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200),
+        role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+      });
+    }
+  }, [organizationId, onLoad, scopeKey, organization?.role]);
+  useEffect(() => { if (!initialState) load(); }, [load, initialState]);
+  const refreshFromFlow = async () => {
+    if (!organizationId || refreshing) return;
+    setRefreshing(true);
+    setRefreshResult(null);
+    try {
+      const counts = await onRefresh({ organizationId });
+      setRefreshResult({ ok: true, counts: counts || {} });
+    } catch (thrown) {
+      const code = serverCodeOf(thrown) || String(thrown?.code || "unknown").replace(/^functions\//, "");
+      setRefreshResult({ ok: false, failures: [{ errorCode: code }] });
+      deviceLog("flow_pt_queue_refresh_failed", {
+        feature: "flow_pt_queue", stage: "refresh", errorDomain: "functions_callable", errorCode: code, message: String(thrown?.message || "").slice(0, 200),
+        role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+      });
+    } finally {
+      setRefreshing(false);
+      load();
+    }
+  };
+  const mark = async (row, next) => {
+    setBusy(row.id);
+    setNotice("");
+    try {
+      await onMark(organizationId, row.id, next, currentUserId);
+      setState((current) => ({ ...current, rows: (current.rows || []).map((item) => (item.id === row.id ? { ...item, state: next, handledBy: currentUserId, handledAt: new Date() } : item)) }));
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setNotice(`처리 표시를 저장하지 못했어요 (코드 ${code}). 다시 눌러 주세요.`);
+      deviceLog("flow_pt_queue_mark_failed", {
+        feature: "flow_pt_queue", stage: `mark_${next}`, errorDomain: "firestore", errorCode: code, message: String(thrown?.message || "").slice(0, 200),
+        role: organization?.role || "", appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
+      });
+    } finally {
+      setBusy("");
+    }
+  };
+  /* ── 발급 뒤 바뀜 (2026-11-28, 3단계) ── 발급한 업무의 상품 · 횟수 · 금액이 플로우에서 바뀐 것. 회원권은 따라가지 않으므로
+     FC 가 보고 회원권을 고칠지 정한다 -- [확인함] 은 "봤다" 만 남긴다. */
+  const ack = async (row) => {
+    setBusy(row.id);
+    setNotice("");
+    try {
+      await onAckChange(organizationId, row.id, currentUserId);
+      setState((current) => ({ ...current, rows: (current.rows || []).map((item) => (item.id === row.id ? { ...item, changeAckedAt: new Date(), changeAckedBy: currentUserId } : item)) }));
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setNotice(`확인 표시를 저장하지 못했어요 (코드 ${code}). 다시 눌러 주세요.`);
+      deviceLog("flow_pt_queue_ack_failed", { feature: "flow_pt_queue", stage: "ack_change", errorDomain: "firestore", errorCode: code, role: organization?.role || "" });
+    } finally {
+      setBusy("");
+    }
+  };
+  /* ── 잔금 받음 (2026-11-28, 3단계 · 대표 결정: 계약금 때 발급, 잔금은 회원권 잔금 칸) ── 잔금 글 하나로 회원권 하나의 잔금을
+     받은 만큼 줄인다. 저장은 한 트랜잭션 -- 규칙이 글과 회원권이 서로 가리키는지, 줄어든 금액이 받은 금액과 같은지 본다. */
+  const openBalance = async (row) => {
+    setBalanceOpen(row.id);
+    setBalancePick("");
+    setBalanceError("");
+    const amount = Math.round(Number(String(row.amountManwon || "").replace(/,/g, "")) * WON_PER_MANWON);
+    setBalanceWon(Number.isFinite(amount) && amount > 0 ? String(amount) : "");
+    setBalanceQuery("");
+    if (balancePasses || !onLoadBalancePasses) return;
+    try {
+      setBalancePasses(await onLoadBalancePasses());
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setBalanceError(`잔금이 남은 회원권을 읽지 못했어요 (코드 ${code})`);
+      setBalancePasses([]);
+      deviceLog("flow_pt_balance_read_failed", { feature: "flow_pt_queue", stage: "balance_passes", errorDomain: "firestore", errorCode: code, role: organization?.role || "" });
+    }
+  };
+  const receiveBalance = async (row) => {
+    const pass = (balancePasses || []).find((item) => item.passId === balancePick);
+    const won = Number(String(balanceWon).replace(/[^0-9]/g, ""));
+    if (!pass) { setBalanceError("잔금을 받은 회원권을 골라 주세요."); return; }
+    if (!(Number.isInteger(won) && won > 0)) { setBalanceError("받은 금액을 원 단위로 적어 주세요."); return; }
+    if (won > pass.balance) { setBalanceError(`받은 금액(${won.toLocaleString()}원)이 이 회원권의 남은 잔금(${Number(pass.balance).toLocaleString()}원)보다 많아요.`); return; }
+    setBusy(row.id);
+    setBalanceError("");
+    try {
+      const result = await onReceiveBalance(organizationId, { postId: row.id, passId: pass.passId, receivedWon: won, uid: currentUserId });
+      setBalancePasses((current) => (current || []).map((item) => (item.passId === pass.passId ? { ...item, balance: result?.after ?? item.balance - won } : item)).filter((item) => item.balance > 0));
+      setState((current) => ({ ...current, rows: (current.rows || []).map((item) => (item.id === row.id ? { ...item, state: "issued", handledBy: currentUserId, handledAt: new Date(), balancePassId: pass.passId, balanceReceivedWon: won } : item)) }));
+      setBalanceOpen("");
+    } catch (thrown) {
+      const code = String(thrown?.code || "unknown");
+      setBalanceError(code === "balance_received_over" ? `받은 금액이 지금 남은 잔금보다 많아요 -- 다른 사람이 먼저 줄였을 수 있어요 (코드 ${code}).`
+        : `잔금을 저장하지 못했어요 (코드 ${code}).`);
+      deviceLog("flow_pt_balance_receive_failed", { feature: "flow_pt_queue", stage: "balance_receive", errorDomain: String(code).startsWith("balance_") ? "app" : "firestore", errorCode: code, role: organization?.role || "" });
+    } finally {
+      setBusy("");
+    }
+  };
+  /* 지점별 (2026-11-21 대표: "취합하는 거 나올 땐 지점별로"). 지점은 서버가 플로우 보드 이름으로 맞춘 앱 지점. */
+  const groups = [];
+  for (const row of state.rows || []) {
+    const id = String(row.locationId || row.branchName || "기타");
+    let group = groups.find((item) => item.id === id);
+    if (!group) { group = { id, name: String(row.branchName || "지점 모름"), rows: [] }; groups.push(group); }
+    group.rows.push(row);
+  }
+  groups.sort((left, right) => left.name.localeCompare(right.name, "ko"));
+  const picked = groups.some((group) => group.id === branch) ? branch : (groups[0]?.id || "");
+  const shown = groups.length > 1 ? (groups.find((group) => group.id === picked)?.rows || []) : (state.rows || []);
+  const waitingAll = shown.filter((row) => (row.state || "waiting") === "waiting").sort((left, right) => flowPtTime(right.registeredAt) - flowPtTime(left.registeredAt));
+  /* 잔금 분납 (2026-11-24 대표: "잔금 몇 번씩 나눠 내는 사람은?") -- 회원권은 첫 결제 때 한 번 발급한다. 잔금 업무는
+     새로 발급할 일이 아니라 따로 묶어 확인만 받는다. */
+  /* 플로우에서 실패로 바뀐 것 (2026-11-28, 서버의 flowStatus left) -- 상담 실패. 대기에서 빼 따로 묶고 발급하지 못한다
+     (규칙도 같은 선). 다시 성공으로 옮기면 서버가 대기로 돌려 놓는다. */
+  const leftRows = waitingAll.filter(flowPtLeft);
+  const waiting = waitingAll.filter((row) => !row.isBalance && !flowPtLeft(row));
+  const balances = waitingAll.filter((row) => row.isBalance && !flowPtLeft(row));
+  const [showBalances, setShowBalances] = [showBalanceList, setShowBalanceList];
+  const done = shown.filter((row) => (row.state || "waiting") !== "waiting").sort((left, right) => flowPtTime(right.handledAt) - flowPtTime(left.handledAt));
+  const changedRows = done.filter(flowPtChangedUnacked);
+  const smallButton = { height: 40, borderRadius: 8, fontSize: TYPE.caption, fontWeight: 700, padding: "0 12px" };
+  /* 카드 한 장 (2026-11-24 대표: "글을 쉽게 -- 발급하러 가기 · 이미 발급 완료, 날짜와 등록 시간 크게, 금액이랑 횟수"). */
+  const flowPtCard = (row) => {
+    /* 발급으로 이을 수 있는가: 잔금 글(계약금 때 이미 발급)과 실패로 바뀐 글은 아니다 -- 규칙의 flowPtPostOpen 과 같은 선. */
+    const issuable = !row.isBalance && !flowPtLeft(row);
+    const amount = String(row.amountManwon || "").trim();
+    const big = [row.sessions ? `${row.sessions}회` : "", amount ? `${amount}만원` : ""].filter(Boolean).join(" · ");
+    return (
+      <div key={row.id} className="px-3 py-3" style={{ borderRadius: 10, backgroundColor: CANVAS }} data-flow-pt-row={row.id}>
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="tabular-nums font-extrabold" style={{ fontSize: TYPE.title, color: INK }} data-flow-pt-when>{flowPtWhen(row.registeredAt)}</span>
+          <span className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>{row.registeredAtExact ? "등록" : "가져온 때"} · {row.branchName || "지점 모름"}</span>
+        </div>
+        <p className="mt-1 truncate font-bold" style={{ fontSize: TYPE.body, color: INK }}>{row.title || "이름 없음"}</p>
+        {big ? <p className="mt-0.5 tabular-nums font-extrabold" style={{ fontSize: TYPE.title, color: BRAND_D }} data-flow-pt-big>{big}</p> : null}
+        {row.product ? <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: INK2 }}>{row.product}</p> : null}
+        {row.isBalance || row.isTrial || row.mentionsRefund || flowPtLeft(row) || flowPtResucceeded(row) ? (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {flowPtLeft(row) ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: BAD, backgroundColor: BAD_S }} data-flow-pt-left>플로우에서 실패로 바뀜</span> : null}
+            {flowPtResucceeded(row) ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: GOOD, backgroundColor: TINT }} data-flow-pt-resucceeded>다시 성공</span> : null}
+            {row.isBalance ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: WARN, backgroundColor: WARN_S }} data-flow-pt-balance>잔금</span> : null}
+            {row.isTrial ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: BRAND_D, backgroundColor: TINT }} data-flow-pt-trial>PT 체험</span> : null}
+            {row.mentionsRefund ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: BAD, backgroundColor: BAD_S }} data-flow-pt-refund>"환불" 이라는 말이 있어요</span> : null}
+          </div>
+        ) : null}
+        {row.excerpt ? <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{row.excerpt}</p> : null}
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {onIssue && issuable ? (
+            <button type="button" onClick={() => onIssue(row)} style={{ ...smallButton, backgroundColor: BRAND, color: "#fff" }} data-flow-pt-issue>발급하러 가기</button>
+          ) : null}
+          {row.isBalance && !flowPtLeft(row) && onLoadBalancePasses ? (
+            <button type="button" disabled={busy === row.id} onClick={() => (balanceOpen === row.id ? setBalanceOpen("") : openBalance(row))} className="disabled:opacity-50"
+              style={{ ...smallButton, backgroundColor: BRAND, color: "#fff" }} data-flow-pt-balance-open>잔금 받음 처리</button>
+          ) : null}
+          {flowPtLeft(row) ? null : (
+            <button type="button" disabled={busy === row.id} onClick={() => mark(row, "issued")} className="disabled:opacity-50"
+              style={{ ...smallButton, backgroundColor: CARD, color: GOOD, border: `1px solid ${GOOD}` }}>{row.isBalance ? "회원권 없이 확인함" : "이미 발급 완료"}</button>
+          )}
+          <button type="button" disabled={busy === row.id} onClick={() => mark(row, "not_applicable")} className="disabled:opacity-50"
+            style={{ ...smallButton, backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>해당 없음</button>
+          {row.flowUrl ? (
+            <a href={row.flowUrl} target="_blank" rel="noreferrer" className="inline-flex items-center"
+              style={{ ...smallButton, backgroundColor: CARD, color: BRAND_D, border: `1px solid ${LINE}` }}>플로우에서 보기</a>
+          ) : null}
+        </div>
+        {balanceOpen === row.id ? flowPtBalancePanel(row) : null}
+      </div>
+    );
+  };
+  /* 잔금 받음 칸: 이 글의 이름이 들어간 회원부터, 검색으로 다른 회원권도. */
+  const flowPtBalancePanel = (row) => {
+    const title = String(row.title || "");
+    const query = balanceQuery.trim();
+    const candidates = (balancePasses || [])
+      .filter((item) => item.balance > 0)
+      .filter((item) => (query ? String(item.clientName || "").includes(query) : Boolean(item.clientName) && title.includes(item.clientName)))
+      .slice(0, 8);
+    return (
+      <div className="mt-2 space-y-2" style={{ borderRadius: 10, border: `1px solid ${LINE}`, padding: 10, backgroundColor: CARD }} data-flow-pt-balance-panel>
+        <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>잔금을 받은 회원권을 고르고 받은 금액을 적어 주세요. 회원권의 잔금이 그만큼 줄고, 이 잔금 글은 처리됨으로 넘어가요.</p>
+        <input value={balanceQuery} onChange={(event) => setBalanceQuery(event.target.value)} placeholder="회원 이름으로 찾기"
+          className="h-10 w-full px-3" style={{ borderRadius: 8, border: `1px solid ${LINE}`, fontSize: TYPE.caption }} aria-label="잔금 회원권 찾기" />
+        {balancePasses === null ? <p style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
+        {balancePasses && !candidates.length ? (
+          <p style={{ fontSize: TYPE.caption, color: SUB }} data-flow-pt-balance-none>{query ? "그 이름으로 잔금이 남은 회원권이 없어요." : "이 글의 이름과 맞는 잔금 회원권이 없어요. 이름으로 찾아 주세요."}</p>
+        ) : null}
+        <div className="space-y-1" role="radiogroup" aria-label="잔금 받은 회원권">
+          {candidates.map((item) => (
+            <label key={item.passId} className="flex items-center gap-2 px-2 py-2" style={{ borderRadius: 8, backgroundColor: balancePick === item.passId ? TINT : CANVAS, fontSize: TYPE.caption, color: INK }} data-flow-pt-balance-pass={item.passId}>
+              <input type="radio" name={`balance-${row.id}`} checked={balancePick === item.passId} onChange={() => setBalancePick(item.passId)} />
+              <span className="min-w-0 flex-1 truncate">{item.clientName} · {item.productName || "회원권"}{item.createdAt ? ` · ${flowPtWhen(item.createdAt).split(" ")[0]} 발급` : ""}</span>
+              <span className="shrink-0 tabular-nums font-bold" style={{ color: WARN }}>잔금 {Number(item.balance).toLocaleString()}원</span>
+            </label>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <input value={balanceWon} onChange={(event) => setBalanceWon(event.target.value.replace(/[^0-9]/g, ""))} inputMode="numeric" placeholder="받은 금액 (원)"
+            className="h-10 min-w-0 flex-1 px-3 tabular-nums" style={{ borderRadius: 8, border: `1px solid ${LINE}`, fontSize: TYPE.caption }} aria-label="받은 금액 (원)" />
+          <button type="button" disabled={busy === row.id} onClick={() => receiveBalance(row)} className="h-10 shrink-0 px-3 font-bold disabled:opacity-50"
+            style={{ borderRadius: 8, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption }} data-flow-pt-balance-save>잔금 줄이기</button>
+        </div>
+        {balanceError ? <p role="alert" style={{ fontSize: TYPE.caption, color: WARN }}>{balanceError}</p> : null}
+      </div>
+    );
+  };
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-flow-pt-queue>
+      <div className="flex items-center justify-between">
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>PT 발급 대기 (플로우)</h2>
+        <button type="button" onClick={refreshFromFlow} disabled={refreshing} className="h-9 px-2 font-bold disabled:opacity-40" style={{ fontSize: TYPE.caption, color: BRAND_D }}>
+          {refreshing ? "플로우 읽는 중…" : "새로고침"}
+        </button>
+      </div>
+      {refreshResult ? (
+        <div className="mt-2" data-flow-pt-refresh={refreshResult.ok && !(refreshResult.counts?.failures || []).length ? "ok" : "failed"}>
+          {refreshResult.ok ? (
+            <p style={{ fontSize: TYPE.caption, color: SUB }}>
+              방금 플로우에서 읽었어요 · 보드 {refreshResult.counts.projects || 0}곳 · 성공 업무 {refreshResult.counts.posts || 0}건 · PT {refreshResult.counts.pt || 0}건 (새로 {refreshResult.counts.created || 0}건{refreshResult.counts.baseline ? ` · 오늘 전 ${refreshResult.counts.baseline}건 숨김` : ""}{refreshResult.counts.resucceeded ? ` · 다시 성공 ${refreshResult.counts.resucceeded}건` : ""}{refreshResult.counts.left ? ` · 실패로 바뀜 ${refreshResult.counts.left}건` : ""}{refreshResult.counts.restored ? ` · 되살림 ${refreshResult.counts.restored}건` : ""})
+              {refreshResult.counts.unmatchedBranch ? ` · 지점을 못 맞춘 PT ${refreshResult.counts.unmatchedBranch}건` : ""}
+            </p>
+          ) : null}
+          {(refreshResult.ok ? refreshResult.counts?.failures || [] : refreshResult.failures || []).slice(0, 3).map((failure, index) => (
+            <p key={`${failure.flowProjectId || "all"}-${index}`} className="mt-0.5" style={{ fontSize: TYPE.caption, color: WARN }}>{flowPtFailureText(failure)}</p>
+          ))}
+          {refreshResult.ok && refreshResult.counts?.probe ? (
+            <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }} data-flow-pt-probe>
+              <p>글이 0건이라 조회 방식을 바꿔 시험했어요 (보드 {refreshResult.counts.probe.flowProjectId}):</p>
+              {(refreshResult.counts.probe.results || []).map((result) => (
+                <p key={result.key}>
+                  · {result.label}: {result.ok ? `${result.posts}건${typeof result.boardsFound === "number" ? ` (지점 보드 ${result.boardsFound}곳)` : ""}${result.templateTypes?.length ? ` · 종류 ${result.templateTypes.join(",")}` : ""}${result.taskStatuses?.filter(Boolean).length ? ` · 상태 ${result.taskStatuses.filter(Boolean).join(",")}` : ""}` : `실패 (코드 ${result.errorCode}${result.httpStatus ? ` / HTTP ${result.httpStatus}` : ""})`}
+                </p>
+              ))}
+            </div>
+          ) : null}
+          {refreshResult.ok && (refreshResult.counts?.failures || []).length > 3 ? (
+            <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: WARN }}>외 {(refreshResult.counts.failures.length - 3)}곳도 같은 이유로 읽지 못했어요</p>
+          ) : null}
+        </div>
+      ) : null}
+      <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+        플로우에서 <b style={{ color: INK }}>성공</b>으로 옮긴 PT 등록이에요. 10분마다 가져오고, [새로고침]을 누르면 바로 가져와요.
+        {" "}<b style={{ color: INK }}>[발급하러 가기]</b>를 누르면 이 등록과 이어진 발급 화면이 열리고, 발급하면 목록에서 저절로 빠져요.
+        {" "}이미 발급한 것이면 <b style={{ color: INK }}>[이미 발급 완료]</b>, 발급할 게 아니면 [해당 없음].
+      </p>
+      <BranchTabs groups={groups} selected={picked} onSelect={(id) => setBranch(id)}
+        countLabel={(group) => `${group.rows.filter((row) => (row.state || "waiting") === "waiting" && !row.isBalance && !flowPtLeft(row)).length}건`} />
+      {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
+      {notice ? <p role="alert" className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{notice}</p> : null}
+      {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
+      {state.rows && !waiting.length && !balances.length && !state.error ? (
+        <p className="mt-3" style={{ fontSize: TYPE.caption, color: SUB }} data-flow-pt-empty>
+          확인할 PT 등록이 없어요. 처음이라면 대표 설정 → 앱 업데이트 · 운영 스위치 → "플로우 PT 발급 대기" 가 켜져 있는지 봐 주세요.
+        </p>
+      ) : null}
+      {changedRows.length ? (
+        <div className="mt-3 space-y-1.5" style={{ borderRadius: 10, border: `1px solid ${WARN}`, backgroundColor: WARN_S, padding: 10 }} data-flow-pt-changed>
+          <p className="font-bold" style={{ fontSize: TYPE.body, color: WARN }}>발급 뒤 플로우 내용이 바뀐 것 {changedRows.length}건</p>
+          <p style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>회원권은 따라 바뀌지 않아요. 플로우를 보고 회원권을 고쳐야 하면 대표에게 알려 주세요. 본 것은 [확인함].</p>
+          {changedRows.map((row) => (
+            <div key={row.id} className="flex items-center gap-2 px-2 py-1.5" style={{ borderRadius: 8, backgroundColor: CARD }} data-flow-pt-changed-row={row.id}>
+              <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK }}>{row.title || "제목 없음"} · {flowPtChangedLabel(row)}</span>
+              {row.flowUrl ? <a href={row.flowUrl} target="_blank" rel="noreferrer" className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: BRAND_D }}>플로우</a> : null}
+              <button type="button" disabled={busy === row.id} onClick={() => ack(row)} className="h-8 shrink-0 px-2 font-bold disabled:opacity-50" style={{ fontSize: TYPE.caption, color: GOOD }}>확인함</button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div className="mt-3 space-y-2">
+        {waiting.map((row) => flowPtCard(row))}
+      </div>
+      {/* 잔금 분납: 따로 묶는다 -- 보통 새로 발급할 일이 아니다. */}
+      {balances.length ? (
+        <div className="mt-3" style={{ borderRadius: 10, border: `1px solid ${LINE}`, padding: 10 }} data-flow-pt-balances>
+          <button type="button" onClick={() => setShowBalances(!showBalances)} aria-expanded={showBalances} className="flex w-full items-center justify-between text-left font-bold" style={{ fontSize: TYPE.body, color: INK }}>
+            잔금 결제 {balances.length}건
+            <ChevronDown size={16} color={SUB} style={{ transform: showBalances ? "rotate(180deg)" : "none" }} />
+          </button>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            잔금을 나눠 내는 회원은 <b style={{ color: INK }}>첫 결제(계약금) 때 회원권을 전체 횟수 · 전체 금액으로 한 번 발급</b>하고, 남은 금액은 발급 화면의 '잔금' 칸에 적어요.
+            {" "}그 뒤의 잔금 업무는 새로 발급할 일이 아니라 <b style={{ color: INK }}>[잔금 확인함]</b>만 눌러 주세요 -- 잔금 업무로는 회원권을 새로 이을 수 없어요(같은 계약이 두 번 발급돼요).
+            {" "}계약금 때 발급을 못 했다면 PT 발급 화면에서 '플로우 없이 발급' 에 사유를 적어 발급해 주세요.
+          </p>
+          {showBalances ? <div className="mt-2 space-y-2">{balances.map((row) => flowPtCard(row))}</div> : null}
+        </div>
+      ) : null}
+      {/* 플로우에서 실패로 바뀐 것: 상담 실패. 발급하지 않는다 -- 다시 성공으로 옮기면 저절로 대기로 돌아온다. */}
+      {leftRows.length ? (
+        <div className="mt-3" style={{ borderRadius: 10, border: `1px solid ${LINE}`, padding: 10 }} data-flow-pt-left-list>
+          <button type="button" onClick={() => setShowLeft(!showLeft)} aria-expanded={showLeft} className="flex w-full items-center justify-between text-left font-bold" style={{ fontSize: TYPE.body, color: INK }}>
+            플로우에서 실패로 바뀐 것 {leftRows.length}건
+            <ChevronDown size={16} color={SUB} style={{ transform: showLeft ? "rotate(180deg)" : "none" }} />
+          </button>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            성공이었다가 플로우에서 성공이 아니게 된 등록이에요 (상담 실패). 여기서는 발급하지 않아요.
+            {" "}다시 연락해 플로우에서 <b style={{ color: INK }}>성공</b>으로 옮기면 10분 안에 대기로 돌아와요.
+          </p>
+          {showLeft ? <div className="mt-2 space-y-2">{leftRows.map((row) => flowPtCard(row))}</div> : null}
+        </div>
+      ) : null}
+      {done.length ? (
+        <div className="mt-3">
+          <button type="button" onClick={() => setShowDone((value) => !value)} className="h-9 font-bold" style={{ fontSize: TYPE.caption, color: SUB }} aria-expanded={showDone}>
+            처리한 것 {done.length}건 {showDone ? "접기" : "보기"}
+          </button>
+          {showDone ? (
+            <div className="mt-1 space-y-1" data-flow-pt-done>
+              {done.map((row) => (
+                <div key={row.id} className="flex items-center gap-2 px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }}>
+                  <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.caption, color: INK2 }}>{row.title || "제목 없음"}</span>
+                  <span className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: row.state === "issued" ? GOOD : SUB }}>{row.balancePassId ? `잔금 ${Number(row.balanceReceivedWon || 0).toLocaleString()}원 받음` : FLOW_PT_STATE_LABEL[row.state] || row.state}</span>
+                  {flowPtChangedUnacked(row) ? <span className="shrink-0 font-bold" style={{ fontSize: TYPE.caption, color: WARN }}>{flowPtChangedLabel(row)}</span> : null}
+                  {/* 회원권과 이어진 것은 되돌리지 않는다 -- 같은 등록으로 두 번 발급된다 (규칙도 같은 선). */}
+                  {row.passId || row.balancePassId ? null : (
+                    <button type="button" disabled={busy === row.id} onClick={() => mark(row, "waiting")} className="h-8 shrink-0 px-2 font-bold disabled:opacity-50"
+                      style={{ fontSize: TYPE.caption, color: BRAND_D }}>되돌리기</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * 재등록 레이더 읽는 법 (2026-11-24 대표: "점장이 처음 보면 무슨 말인지 모름 -- 뭐가 급함이고 횟수는 뭘 뜻하는지,
+ * 점장이 강사들 대상으로 면담할 때 생각해서 자세하게"). 기준 숫자는 renewal-radar.js 의 상수를 그대로 쓴다.
+ */
+/**
+ * 면담 화면 (2026-11-24 대표). 강사 한 명의 곧 끝나는 회원을 할 이야기별로 나누고, 묶음마다 물어볼 말을 함께 둔다.
+ * 묶음은 features/records/renewal-radar.js 의 interviewSections. 강사와 같이 보는 화면이라 글자를 크게, 숫자는 넷만.
+ */
+function RadarInterview({ row, onClose, onOpenClient }) {
+  const sections = interviewSections(row);
+  const renewal = row.renewal ? renewalRateLabel(row.renewal) : null;
+  const tiles = [
+    { label: "곧 끝나는 회원", value: `${row.members.length}명` },
+    { label: "이번 주 상담", value: `${sections[0].members.length}명`, color: sections[0].members.length ? BAD : INK },
+    { label: "요즘 덜 나옴", value: `${sections[1].members.length}명`, color: sections[1].members.length ? WARN : INK },
+    { label: "다시 등록", value: renewal ? renewal.label.replace(/^다시 등록 /, "") : "—" },
+  ];
+  return (
+    <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 16 }} data-radar-interview={row.instructorId || "none"}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p style={{ fontSize: TYPE.caption, color: SUB }}>면담</p>
+          <h2 className="truncate" style={{ fontSize: TYPE.title, fontWeight: 700, color: INK }}>{row.name || "담당 강사 없음"} 선생님</h2>
+        </div>
+        <button type="button" onClick={onClose} className="h-10 shrink-0 px-3 font-bold" style={{ borderRadius: 10, backgroundColor: CANVAS, color: INK2, fontSize: TYPE.caption }}>닫기</button>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
+        {tiles.map((tile) => (
+          <div key={tile.label} style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: "10px 12px" }}>
+            <p style={{ fontSize: TYPE.caption, color: SUB }}>{tile.label}</p>
+            <p className="tabular-nums" style={{ fontSize: TYPE.title, fontWeight: 700, color: tile.color || INK }}>{tile.value}</p>
+          </div>
+        ))}
+      </div>
+      <p className="mt-3" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: SUB }}>
+        위에서부터 차례로 이야기해요. 숫자는 대화를 시작하는 재료예요 — 강사를 평가하는 점수가 아니에요.
+      </p>
+      {sections.map((section, index) => (
+        <div key={section.key} className="mt-4" data-radar-interview-section={section.key}>
+          <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{index + 1}. {section.title} <span className="tabular-nums" style={{ color: SUB }}>{section.members.length}명</span></p>
+          <p className="mt-0.5" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: SUB }}>{section.why}</p>
+          <div className="mt-2" style={{ borderRadius: 10, backgroundColor: TINT, padding: "8px 12px" }}>
+            <p style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: BRAND_D }}><b>이렇게 물어보세요</b> — {section.ask}</p>
+          </div>
+          {section.members.length ? (
+            <div className="mt-2 space-y-1.5">
+              {section.members.map((member) => (
+                <div key={member.clientId} className="px-3 py-2" style={{ borderRadius: 10, backgroundColor: CANVAS }}>
+                  <button type="button" onClick={() => onOpenClient?.({ id: member.clientId, name: member.name })} className="text-left font-bold" style={{ fontSize: TYPE.body, color: INK }}>
+                    {member.name || "이름 모름"}{member.duet ? " · 듀엣" : ""}
+                  </button>
+                  <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{radarPassLabel(member.forecast)}</p>
+                  {section.key === "coming_less" ? (
+                    <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: WARN }}>{member.signals.filter(isAttendanceSignal).map(radarSignalLabel).join(" · ")}</p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : <p className="mt-2" style={{ fontSize: TYPE.caption, color: FAINT }}>해당하는 회원이 없어요.</p>}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function RadarGuide({ open, onToggle, staffMode }) {
+  const term = (title, body) => (
+    <div className="mt-2">
+      <p className="font-bold" style={{ fontSize: TYPE.caption, color: INK }}>{title}</p>
+      <p className="mt-0.5" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: INK2 }}>{body}</p>
+    </div>
+  );
+  return (
+    <div className="mt-2" style={{ borderRadius: 10, border: `1px solid ${LINE}`, backgroundColor: CANVAS }} data-radar-guide={open ? "open" : "closed"}>
+      <button type="button" onClick={onToggle} aria-expanded={open} className="flex min-h-10 w-full items-center justify-between px-3 text-left font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
+        이 화면 읽는 법 · 면담할 때
+        <ChevronDown size={16} color={SUB} style={{ transform: open ? "rotate(180deg)" : "none" }} />
+      </button>
+      {open ? (
+        <div className="px-3 pb-3">
+          {term("곧 끝나는 회원", `아래 셋 중 하나면 이 목록에 올라와요. ① 남은 수업이 ${RADAR_REMAINING_MAX}회 이하 ② 끝나는 날까지 ${RADAR_EXPIRY_DAYS}일 이하 ③ 지금처럼 다니면 끝나는 날까지 수업을 다 못 씀.`)}
+          {term("이번 주 상담 (빨간 표시)", `곧 끝나는 회원 중에서도 남은 수업이 ${RADAR_URGENT_REMAINING}회 이하이거나 끝나는 날까지 ${RADAR_URGENT_DAYS}일 이하인 회원이에요. 다음 수업이 사실상 마지막일 수 있어서, 이번 주 수업 안에 재등록 이야기를 꺼내야 해요.`)}
+          {term("남은 수업 N회", "회원권에 남은 수업 횟수예요 (서비스로 준 수업 포함). 듀엣은 두 분이 함께 쓰는 횟수라, 남은 수업 4회면 둘이 합쳐 4번 남은 거예요.")}
+          {term("끝나는 날까지 약 2주", "계약서에 적힌 끝나는 날(만료일)까지 남은 기간이에요. 홀딩 중이면 멈춘 기간만큼 뒤로 가 있어요.")}
+          {term("지금처럼 다니면 N회 못 쓰고 끝남", "최근 4주처럼 다니면 끝나는 날에 N회가 쓰이지 못하고 사라진다는 뜻이에요. 수업 횟수를 늘리거나 홀딩을 권할 회원이에요.")}
+          {term("챙길 점 (노란 칸)", `강사가 평소 하는 일에서 저절로 나와요. 요즘 덜 나옴(4주 6회 → 2회): 최근 4주 출석이 그 전 4주의 절반 이하. N일째 안 나옴: 마지막 수업 뒤 ${ABSENT_DAYS}일 넘게 안 옴. 두 달째 안 나옴. 한 달째 회원에게 한마디 안 보냄: 수업은 했는데 회원 앱으로 한마디도 안 보냄.${staffMode ? "" : " 변화 사진 카드 안 보냄: 회원 앱에 연결된 회원에게 비포애프터 카드를 보낸 적이 없음."} 앞의 셋(출석)이 그만둘 걱정이 큰 쪽이에요.`)}
+          {term("다시 등록 (끝난 회원 N명 중 M명)", `최근 ${RATE_WINDOW_DAYS}일 동안 회원권이 끝난 회원 중 다시 등록한 회원이에요. ${RATE_MIN_SAMPLE}명이 안 되면 퍼센트 대신 사람 수로 보여요 — 사람이 적으면 한 명에 크게 흔들려요.`)}
+          <p className="mt-3 font-bold" style={{ fontSize: TYPE.caption, color: INK }}>강사 면담할 때</p>
+          <ol className="mt-1 space-y-1" style={{ fontSize: TYPE.caption, lineHeight: 1.6, color: INK2, paddingLeft: 18, listStyle: "decimal" }}>
+            <li>강사 카드에서 <b>[면담 화면 띄우기]</b>를 누르면 이야기할 순서대로 정리된 화면이 떠요. 강사와 같이 보세요.</li>
+            <li><b>이번 주 상담</b> 회원부터 — "다음 수업 때 재등록 이야기를 했는지, 회원 반응은 어땠는지".</li>
+            <li><b>요즘 덜 나옴 · 안 나옴</b> 회원은 — "왜 덜 나오는지 아는지 (일정 · 몸 상태 · 수업 만족 중 무엇인지)".</li>
+            <li><b>못 쓰고 끝남</b> 회원은 — 끝나기 전에 다 쓰도록 수업을 늘리거나 홀딩을 권했는지.</li>
+            <li><b>한마디 안 보냄</b>이 많으면 — 수업 뒤 회원 앱으로 한마디 보내는 습관을 같이 이야기해요.</li>
+            <li>숫자는 대화를 시작하는 재료예요. 강사를 평가하는 점수로 쓰지 말아 주세요.</li>
+          </ol>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RenewalRadarScreen({ organization, instructorStore, clientStore, passStore, onOpenClient, onLoadShares = fbBeforeAfterShareStats, onLoadBranch = fbRenewalRadarBranch, staffMode = false, initialState = null }) {
+  const organizationId = organization?.organizationId || "";
+  const cacheKey = staffMode ? `${organizationId}#staff` : organizationId;
+  const params = useMemo(() => ({ organizationId, clientStore, passStore, instructorStore, onLoadShares, onLoadBranch, staffMode, role: organization?.role || "" }),
+    [organizationId, clientStore, passStore, instructorStore, onLoadShares, onLoadBranch, staffMode, organization?.role]);
+  /* 점장 · 부원장에게는 이 화면 읽는 법을 펼쳐 둔다 (처음 보면 "급함" · "횟수" 가 무슨 뜻인지 모른다 -- 대표). */
+  const [guideOpen, setGuideOpen] = useState(initialState?.guideOpen ?? staffMode);
+  /* 면담 화면 (2026-11-24 대표: "면담 때 도움될 수 있게 화면을 띄울 수 있게"). 강사 한 명 -- 이야기할 순서대로. */
+  const [interviewId, setInterviewId] = useState(initialState?.interview ?? null);
+  const setInterview = (row) => setInterviewId(row ? (row.instructorId || "") : null);
   const [snapshot, setSnapshot] = useState(() => {
     if (initialState) return { data: initialState.data || {}, loading: false };
-    const entry = organizationId ? radarEntry(organizationId) : null;
+    const entry = organizationId ? radarEntry(cacheKey) : null;
     return { data: entry?.data || {}, loading: Boolean(entry?.loading) };
   });
   const [open, setOpen] = useState(initialState?.open || "");
@@ -27931,13 +28744,13 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
   const wide = useWideViewport(initialState?.wide);
   useEffect(() => {
     if (initialState || !organizationId) return undefined;
-    const entry = radarEntry(organizationId);
+    const entry = radarEntry(cacheKey);
     const listener = (current) => setSnapshot({ data: current.data, loading: current.loading });
     entry.listeners.add(listener);
     startRadarLoad(params);
     listener(entry);
     return () => { entry.listeners.delete(listener); };
-  }, [initialState, organizationId, params]);
+  }, [initialState, organizationId, params, cacheKey]);
   const refresh = () => { if (!initialState) startRadarLoad(params, { force: true }); };
   const data = snapshot.data;
   const members = data.members && !data.members.failed ? data.members.items : null;
@@ -27977,7 +28790,7 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
   const warnings = [
     data.core && data.coreError ? `새로 읽지 못해 지난 결과를 보여 드려요 (코드 ${data.coreError})` : "",
     data.notes?.failed ? `회원에게 보낸 말을 읽지 못해 그 신호는 빠졌어요 (코드 ${data.notes.errorCode})` : "",
-    data.shares && data.shares.rows === null ? `비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 (코드 ${data.shares.errorCode})` : "",
+    data.shares && data.shares.rows === null && !data.shares.hidden ? `비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 (코드 ${data.shares.errorCode})` : "",
     data.activities?.failed ? `강사 기록 숫자를 읽지 못했어요 (코드 ${data.activities.errorCode})` : "",
     data.candidates && data.candidates.rows === null ? `재등록 결과를 읽지 못했어요 (코드 ${data.candidates.errorCode})` : "",
     data.members?.failed ? `강사 명부를 읽지 못해 지점으로 나누지 못했어요 (코드 ${data.members.errorCode})` : "",
@@ -27986,7 +28799,11 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
   const pending = [
     data.notes ? "" : "보낸 말", data.shares ? "" : "비포애프터", data.activities ? "" : "기록률", data.candidates ? "" : "재등록률",
   ].filter(Boolean);
-  const candidatesEmpty = Array.isArray(data.candidates?.rows) && !data.candidates.rows.length;
+  const candidatesEmpty = !staffMode && Array.isArray(data.candidates?.rows) && !data.candidates.rows.length;
+  /* 점장 · 부원장 화면에는 강사 기록률이 없다 -- 그 줄을 그리지 않는다. */
+  const recordText = (row) => (staffMode ? "" : row.record.label);
+  const recordCode = (row) => (staffMode ? "" : `코드 ${row.record.code}`);
+  const joinLine = (...parts) => parts.filter(Boolean).join(" · ");
   const monthLabel = data.core?.activityMonth ? `${Number(data.core.activityMonth.slice(5, 7))}월` : "";
   /* 회원 목록 -- 폰은 강사 카드 펼침, PC 는 오른쪽 칸에서 같은 것을 그린다. */
   const radarMemberList = (row) => (
@@ -27997,7 +28814,7 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
             <button type="button" onClick={() => onOpenClient?.({ id: member.clientId, name: member.name })} className="min-w-0 flex-1 truncate text-left font-bold" style={{ fontSize: TYPE.caption, color: INK }}>
               {member.name || "이름 모름"}{member.duet ? " · 듀엣" : ""}
             </button>
-            {member.urgent ? chip("urgent", "급함") : null}
+            {member.urgent ? chip("urgent", "이번 주 상담") : null}
           </div>
           <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{radarPassLabel(member.forecast)}</div>
           {member.signals.length ? (
@@ -28006,7 +28823,7 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
                 <span key={signal.code} className="px-1.5 py-0.5" style={{ fontSize: TYPE.caption, borderRadius: 6, color: WARN, backgroundColor: WARN_S }} data-radar-signal={signal.code}>{radarSignalLabel(signal)}</span>
               ))}
             </div>
-          ) : <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>신호 없음</div>}
+          ) : <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>챙길 점 없음</div>}
         </div>
       ))}
       {!row.members.length ? <p style={{ fontSize: TYPE.caption, color: SUB }}>지금 곧 끝나는 회원은 없어요.</p> : null}
@@ -28017,32 +28834,37 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
     return (
       <div data-radar-detail={row.instructorId || "none"}>
         <p className="font-bold" style={{ fontSize: TYPE.body, color: INK }}>{row.name || row.instructorId || "담당 강사 없음"}{row.active ? "" : " · 소속 아님"}</p>
-        <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{row.record.label}{renewal ? ` · ${renewal.label}` : ""}</p>
-        <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>코드 {row.record.code}{renewal ? ` · ${renewal.code}` : ""}</p>
+        <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB }}>{joinLine(recordText(row), renewal?.label)}</p>
+        <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>{joinLine(recordCode(row), renewal ? `코드 ${renewal.code}` : "")}</p>
+        <button type="button" onClick={() => setInterview(row)} className="mt-2 h-10 w-full font-bold" style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption }} data-radar-interview-open>면담 화면 띄우기</button>
         <div className="mt-2">{radarMemberList(row)}</div>
       </div>
     );
   };
+  const interviewRow = interviewId === null ? null : (view?.rows || []).find((row) => (row.instructorId || "") === interviewId) || null;
+  if (interviewRow) return <RadarInterview row={interviewRow} onClose={() => setInterview(null)} onOpenClient={onOpenClient} />;
   return (
     <section style={{ backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 }} data-renewal-radar>
       <div className="flex items-center justify-between">
-        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>재등록 레이더</h2>
+        <h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>{staffMode && data.staff?.scope !== "all" ? "우리 지점 재등록 레이더" : "재등록 레이더"}</h2>
         <span className="flex items-center gap-2">
           {snapshot.loading && view ? <span style={{ fontSize: TYPE.caption, color: FAINT }} data-radar-refreshing>새로 읽는 중…</span> : null}
           <button type="button" onClick={refresh} disabled={snapshot.loading} className="h-9 px-2 font-bold disabled:opacity-40" style={{ fontSize: TYPE.caption, color: BRAND_D }}>새로고침</button>
         </span>
       </div>
       <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
-        잔여 {RADAR_REMAINING_MAX}회 이하이거나 만료 {RADAR_EXPIRY_DAYS}일 안쪽, 또는 지금 속도로 다 못 쓸 회원이에요.
-        {" "}신호는 출석 · 회원에게 보낸 말 · 비포애프터에서 저절로 나와요 — <b style={{ color: INK }}>강사가 따로 할 일은 없어요.</b>
-        {" "}신호가 많은 회원이 위에 있어요. 회원별 수업기록 공백은 수업기록 서버 저장을 켜면 함께 보여요.
+        회원권이 곧 끝나는 회원을 담당 강사별로 모았어요. 챙길 점이 많은 회원이 위에 있어요.
+        {" "}신호는 출석 · 회원에게 보낸 말{staffMode ? "" : " · 비포애프터"}에서 저절로 나와요 — <b style={{ color: INK }}>강사가 따로 할 일은 없어요.</b>
+        {staffMode ? (data.staff?.scope === "all" ? " 부원장이라 모든 지점이 보여요." : " 맡은 지점 회원만 보여요.") : ""}
+        {staffMode ? " 회원 연락처 · 수업 단가는 이 화면에 없어요." : ""}
       </p>
+      <RadarGuide open={guideOpen} onToggle={() => setGuideOpen((value) => !value)} staffMode={staffMode} />
       {view && view.rows.length ? (
         <SummaryTiles items={[
           { label: "곧 끝나는 회원", value: `${summary.total}명`, code: "radar_total" },
-          { label: "급함", value: `${summary.urgent}명`, color: summary.urgent ? BAD : INK, code: "radar_urgent" },
-          { label: "신호 있음", value: `${summary.atRisk}명`, color: summary.atRisk ? WARN : INK, code: "radar_at_risk" },
-          { label: `재등록 · 최근 ${RATE_WINDOW_DAYS}일`, value: overallRenewal ? renewalRateLabel(overallRenewal).label.replace(/^재등록 /, "") : "—", code: "radar_renewal" },
+          { label: "이번 주 상담", value: `${summary.urgent}명`, color: summary.urgent ? BAD : INK, code: "radar_urgent" },
+          { label: "챙길 점 있음", value: `${summary.atRisk}명`, color: summary.atRisk ? WARN : INK, code: "radar_at_risk" },
+          { label: `다시 등록 · 최근 ${RATE_WINDOW_DAYS}일`, value: overallRenewal ? renewalRateLabel(overallRenewal).label.replace(/^다시 등록 /, "") : "—", code: "radar_renewal" },
         ]} />
       ) : null}
       {!view && data.coreError ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>재등록 레이더를 읽지 못했어요 (코드 {data.coreError})</p> : null}
@@ -28053,7 +28875,7 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
           재등록률이 아직 비어 있어요. 운영 스위치에서 <b style={{ color: INK }}>재등록 알림</b>을 켠 뒤 만료 회원 현황의 [지난 6달 채우기]를 누르면 채워져요 (코드 renewal_candidates_empty)
         </p>
       ) : null}
-      {view && view.rows.length ? (
+      {view && view.rows.length && !staffMode ? (
         <p className="mt-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: FAINT }}>
           강사 줄의 기록률({monthLabel})과 재등록률(최근 {RATE_WINDOW_DAYS}일)은 나란히 보는 참고 숫자예요. 대상이 적으면 크게 흔들리고, 같이 움직여도 그것이 원인이라고 단정할 수는 없어요.
         </p>
@@ -28065,12 +28887,12 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
         <AggregateSplit wide detail={selectedRow ? radarDetail(selectedRow) : null}>
           <InstructorTable rows={shown} selected={selectedRow?.instructorId} onSelect={setOpen} columns={[
             { key: "name", label: "강사", firstDir: "asc", sortValue: (row) => row.name || row.instructorId, render: (row) => <span className="font-bold">{row.name || row.instructorId || "담당 강사 없음"}{row.active ? "" : " · 소속 아님"}</span> },
-            { key: "members", label: "대상", align: "right", sortValue: (row) => row.members.length, render: (row) => `${row.members.length}명` },
-            { key: "urgent", label: "급함", align: "right", sortValue: (row) => row.urgent, render: (row) => (row.urgent ? <TonePill color={BAD} background={BAD_S}>{row.urgent}</TonePill> : "—") },
-            { key: "risk", label: "신호", align: "right", sortValue: (row) => row.atRisk, render: (row) => (row.atRisk ? row.atRisk : "—") },
-            { key: "record", label: "기록률", align: "right", sortValue: (row) => row.record.rate, render: (row) => (row.record.rate === null ? <span style={{ color: SUB }}>{row.record.label.replace(/^기록률 — /, "")}</span>
-              : <TonePill color={row.record.rate >= RECORD_RATE_GOOD ? GOOD : row.record.rate >= RECORD_RATE_LOW ? WARN : BAD} background={row.record.rate >= RECORD_RATE_GOOD ? GOOD_S : row.record.rate >= RECORD_RATE_LOW ? WARN_S : BAD_S}>{Math.round(row.record.rate * 100)}%</TonePill>) },
-            { key: "renewal", label: "재등록", align: "right", sortValue: (row) => (row.renewal?.decided ? row.renewal.rate : null), render: (row) => (row.renewal ? renewalRateLabel(row.renewal).label.replace(/^재등록 /, "") : "확인 중") },
+            { key: "members", label: "곧 끝나는 회원", align: "right", sortValue: (row) => row.members.length, render: (row) => `${row.members.length}명` },
+            { key: "urgent", label: "이번 주 상담", align: "right", sortValue: (row) => row.urgent, render: (row) => (row.urgent ? <TonePill color={BAD} background={BAD_S}>{row.urgent}</TonePill> : "—") },
+            { key: "risk", label: "챙길 점", align: "right", sortValue: (row) => row.atRisk, render: (row) => (row.atRisk ? row.atRisk : "—") },
+            ...(staffMode ? [] : [{ key: "record", label: "기록률", align: "right", sortValue: (row) => row.record.rate, render: (row) => (row.record.rate === null ? <span style={{ color: SUB }}>{row.record.label.replace(/^기록률 — /, "")}</span>
+              : <TonePill color={row.record.rate >= RECORD_RATE_GOOD ? GOOD : row.record.rate >= RECORD_RATE_LOW ? WARN : BAD} background={row.record.rate >= RECORD_RATE_GOOD ? GOOD_S : row.record.rate >= RECORD_RATE_LOW ? WARN_S : BAD_S}>{Math.round(row.record.rate * 100)}%</TonePill>) }]),
+            { key: "renewal", label: "다시 등록", align: "right", sortValue: (row) => (row.renewal?.decided ? row.renewal.rate : null), render: (row) => (row.renewal ? renewalRateLabel(row.renewal).label.replace(/^다시 등록 /, "") : "확인 중") },
           ]} />
         </AggregateSplit>
       ) : (
@@ -28085,15 +28907,20 @@ function RenewalRadarScreen({ organization, instructorStore, clientStore, passSt
                   <span className="min-w-0 flex-1 truncate text-sm font-bold" style={{ color: INK }}>
                     {row.name || (row.instructorId ? row.instructorId : "담당 강사 없음")}{row.active ? "" : " · 소속 아님"}
                   </span>
-                  {row.urgent ? chip("urgent", `급함 ${row.urgent}`) : null}
-                  {chip(row.atRisk ? "risk" : "calm", `대상 ${row.members.length}명`)}
+                  {row.urgent ? chip("urgent", `이번 주 상담 ${row.urgent}`) : null}
+                  {chip(row.atRisk ? "risk" : "calm", `곧 끝나는 회원 ${row.members.length}명`)}
                   <ChevronDown size={16} style={{ color: SUB, transform: expanded ? "rotate(180deg)" : "none" }} />
                 </button>
                 <div className="mt-1" style={{ fontSize: TYPE.caption, color: SUB }}>
-                  {row.record.label}{renewal ? ` · ${renewal.label}` : ""}
+                  {joinLine(recordText(row), renewal?.label)}
                 </div>
-                <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>코드 {row.record.code}{renewal ? ` · ${renewal.code}` : ""}</div>
-                {expanded ? <div className="mt-2">{radarMemberList(row)}</div> : null}
+                <div className="mt-0.5" style={{ fontSize: TYPE.caption, color: FAINT }}>{joinLine(recordCode(row), renewal ? `코드 ${renewal.code}` : "")}</div>
+                {expanded ? (
+                  <div className="mt-2">
+                    <button type="button" onClick={() => setInterview(row)} className="mb-2 h-10 w-full font-bold" style={{ borderRadius: 10, backgroundColor: BRAND, color: "#fff", fontSize: TYPE.caption }} data-radar-interview-open>면담 화면 띄우기</button>
+                    {radarMemberList(row)}
+                  </div>
+                ) : null}
               </div>
             );
           })}
@@ -30323,6 +31150,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   const showRatings = organization.ready
     && !organization.isLegacy
     && (isOwnerLevelRole(organization.role) || (organization.role === ROLES.INSTRUCTOR && organization.title === "branch_manager"));
+  /* 재등록 레이더: 점장(맡은 지점) · 부원장(모든 지점)도 본다 (2026-11-24 대표 -- 강사 면담용). 서버가 범위를 다시 정한다. */
+  const showRadarStaff = organization.ready && !organization.isLegacy && !isOwnerLevelRole(organization.role)
+    && ((organization.role === ROLES.INSTRUCTOR && organization.title === "branch_manager")
+      || ([ROLES.INSTRUCTOR, ROLES.MANAGER].includes(organization.role) && organization.isDeputyDirector === true));
+  const radarStaffItem = { key: "renewal-radar", title: "재등록 레이더", description: organization.isDeputyDirector === true ? "곧 끝나는 회원 · 강사 면담용 · 모든 지점" : "곧 끝나는 회원 · 강사 면담용 · 우리 지점", Icon: Activity };
   const ratingsItem = { key: "lesson-ratings", title: "수업 별점", description: isOwnerLevelRole(organization.role) ? "강사별 회원 별점 · 월별 · 누적" : "우리 지점 강사 별점 · 월별 · 누적", Icon: Star };
   /* ── 앱 업데이트 안내는 대표만 ──────────────────────────────────────────
      총괄매니저는 다른 자리에서 전부 대표와 같지만 여기만은 아니다
@@ -30344,6 +31176,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
      언제나 hub 에서 시작한다. */
   const [view, setView] = useState(initialView);
   const [busy, setBusy] = useState(false);
+  /* PT 발급 대기에서 [이걸로 발급] 으로 넘어온 등록 (2026-11-24). 발급하면 비운다. */
+  const [flowIssueSeed, setFlowIssueSeed] = useState(null);
   const [deleteStep, setDeleteStep] = useState("intro");
   const [deletePhrase, setDeletePhrase] = useState("");
   const [deletePassword, setDeletePassword] = useState("");
@@ -30582,6 +31416,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     audit: "감사 로그",
     "renewal-radar": "재등록 레이더",
     "record-board": "강사 기록 현황",
+    "flow-pt": "PT 발급 대기",
     "before-after-board": "비포애프터 공유 현황",
     "lesson-ratings": "수업 별점",
     "phone-check": "번호 점검",
@@ -30640,6 +31475,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     ] },
     /* 회원 · 회원권 · 강사 · 상품을 다루는 일. */
     { label: "관리", items: [
+      /* 플로우 업무보드에서 완료된 PT 등록 -- FC 가 원문을 확인하고 발급 (2026-11-24 대표). 매출 인센과 같은 사람. */
+      ...(showSalesBoard ? [{ key: "flow-pt", title: "PT 발급 대기", description: "플로우에서 완료된 PT 등록 · 확인 후 발급", Icon: Ticket }] : []),
       ...(showClients ? [{ key: "pass-issue", title: "회원권 발급", description: "회원에게 회원권 발급", Icon: Ticket }] : []),
       ...(showClients ? [{ key: "clients", title: "회원 관리", description: "회원 등록 · 검색", Icon: UserPlus }] : []),
       ...(showClients ? [{ key: "branch-overview", title: "지점 회원 현황", description: "강사별 이름 · 연락처 · 잔여 한눈에", Icon: Users }] : []),
@@ -30749,7 +31586,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       hint: "강사 계정에서 보이는 항목입니다. 대표 업무에는 필요 없어 접어 두었어요.",
       items: [scheduleItem, recordsItem, reportItem, assessmentItem, scheduleColorsItem, onboardingItem, lessonExamplesItem, knowledgeItem] },
   ].filter((group) => group.items.length > 0) : [
-    { label: "업무", items: [scheduleItem, recordsItem, reportItem, ...salesMineItems, ...(showRatings ? [ratingsItem] : []), ...expiryItems, ...noticeItems] },
+    { label: "업무", items: [scheduleItem, recordsItem, reportItem, ...salesMineItems, ...(showRatings ? [ratingsItem] : []), ...(showRadarStaff && !showAudit ? [radarStaffItem] : []), ...expiryItems, ...noticeItems] },
     ...centreGroups,
     { label: "내 설정", items: [assessmentItem, ...centerItems, scheduleColorsItem, themeItem, dataItem, backupItem] },
     { label: "기타", items: [onboardingItem, permissionsItem, lessonExamplesItem, knowledgeItem, accountItem, appItem] },
@@ -31217,8 +32054,14 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
           </div>
         )}
         {view === "backup" && <div className="space-y-3"><CloudBackupCard status={backupStatus} onEnablePhotos={onEnablePhotoBackup} onRetry={onRetryBackup} onRestorePrevious={onRestorePrevious} onSnapshot={onSnapshotBackup} snapshotBusy={snapshotBusy} /><HandoffCard db={db} photos={photos} account={account} onImport={onImport} onToast={onToast} /></div>}
+        {view === "flow-pt" && showSalesBoard && (
+          <FlowPtQueueScreen organization={organization} currentUserId={account?.id || ""}
+            onIssue={showClients ? (row) => { setFlowIssueSeed(row); setView("pass-issue"); } : undefined}
+            onLoadBalancePasses={showClients ? () => loadBalancePasses({ organization, clientStore, passStore }) : null} />
+        )}
         {view === "pass-issue" && showClients && (
-          <PassIssue organization={organization} currentUserId={account?.id || ""}
+          <PassIssue organization={organization} currentUserId={account?.id || ""} flowSeed={flowIssueSeed}
+            onFlowSeedUsed={() => setFlowIssueSeed(null)}
             clientStore={clientStore} productStore={productStore} instructorStore={instructorStore}
             locationStore={locationStore} passStore={passStore}
             onOpenProducts={showProductAdmin ? () => setView("products") : undefined}
@@ -31245,7 +32088,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
           <ExpiryOrderReview organization={organization} passStore={passStore} clientStore={clientStore}
             onOpenClient={onOpenClient} onRetryOrganization={onRetryOrganization} />
         )}
-        {view === "lesson-ratings" && showRatings && <LessonRatingStatsAdmin organization={organization} />}
+        {view === "lesson-ratings" && showRatings && <LessonRatingStatsAdmin organization={organization} instructorStore={instructorStore} locationStore={locationStore} />}
         {(view === "clients" || view === "branch-overview") && showClients && (
           <ClientDirectory key={view} overview={view === "branch-overview"} organization={organization} currentUserId={account?.id || ""}
             clientStore={clientStore} locationStore={locationStore} onOpenClient={onOpenClient}
@@ -31292,8 +32135,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
             auditStore={auditStore} ledgerStore={ledgerStore}
             onRetryOrganization={onRetryOrganization} />
         )}
-        {view === "renewal-radar" && showAudit && (
+        {view === "renewal-radar" && (showAudit || showRadarStaff) && (
           <RenewalRadarScreen organization={organization} instructorStore={instructorStore} clientStore={clientStore} passStore={passStore}
+            staffMode={!showAudit}
             onOpenClient={(client) => onOpenClient?.({ id: client.id, name: client.name })} />
         )}
         {view === "sales-mine" && salesMineItems.length > 0 && (
@@ -31381,6 +32225,16 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="renewalAlerts" title="재등록 알림"
               description="켜진 계정은 수업 관리 시트 브리핑 아래에 잔여 · 만료 · 소진 예상 한 줄이 섭니다 (최근 4주 출석 속도로 계산). 만료 회원 화면에 '다 못 쓸 회원' 묶음이 생깁니다." />
+            {/* 플로우 PT 발급 대기 (2026-11-24). 서버가 10분마다 지점 업무보드를 읽는다 -- 끔 · 전체만. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="flowPtQueue" title="플로우 PT 발급 대기" allowListed={false}
+              description="켜면 서버가 10분마다 지점 업무보드에서 완료로 옮긴 PT 업무를 가져와 더보기 → PT 발급 대기에 세웁니다. 앱이 발급하지는 않고, FC 가 플로우 원문을 확인한 뒤 발급합니다. 서버 비밀값 FLOW_API_KEY · FLOW_USER_ID 가 있어야 합니다." />
+            {/* PT 발급은 발급 대기에서만 (2026-11-24). 플로우 가져오기가 제대로 도는 것을 본 뒤에 켠다. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="flowPtGate" title="PT 발급은 발급 대기에서만" allowListed={false}
+              description="켜면 PT 회원권은 PT 발급 대기에서 플로우 등록을 골라야 발급됩니다. 플로우가 멈췄을 때는 대표 · 총괄 · FC매니저가 사유를 쓰고 발급할 수 있고, 그 사유는 회원권에 남습니다. 위 '플로우 PT 발급 대기' 가 켜져 있고 목록이 들어오는 것을 확인한 뒤에 켜세요." />
             <MemberSummaryAdmin organization={organization} />
             {/* 비포애프터 회원 공유 (2026-11-15). 켜면 모든 강사가 비교 카드를 보내고, 동의한 회원이 보니따 앱에서 본다. */}
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
@@ -32093,7 +32947,7 @@ export function createAppScreenSmokeCases() {
   return [
     { name: "일정 탭", element: provider(<ScheduleManager db={db} photos={photos} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
     { name: "일정 탭 · 하루 11건 혼합", element: provider(<ScheduleManager db={busyDb} photos={{}} onSave={noop} onDelete={noop} onStatus={noop} onStatusAll={noop} onNoshowFee={noop} onGroupDone={noop} onNoComment={noop} onSaveNote={noop} onToast={noop} onSettings={noop} onConsumeMemberPreset={noop} onConsumeQuickAdd={noop} onOpenMember={noop} />) },
-    { name: "일정 탭 · 소속 · 확정 전", element: scheduleWithSettlement(settleLessonOf()) },
+    { name: "일정 탭 · 소속 · 확정 전", element: scheduleWithSettlement(settleLessonOf(), { onRepeatNextWeek: noop }) },
     /* 추가 관리. PT 와 디오사가 한 수업에서 함께 빠지는 자리라, 두 줄이 모두
        서는지와 고르는 칩이 있는지를 함께 본다. */
     { name: "일정 탭 · 소속 · 추가 관리", element: scheduleWithSettlement(settleLessonOf({
@@ -32440,6 +33294,7 @@ export function createAppScreenSmokeCases() {
     /* 만료일 순서 확인. 대표가 한 화면에서 어긋난 회원을 보고 만료일을 옮긴다 --
        차감이 차수 순이라 뒤 차수가 먼저 만료되면 그 회차를 잃는다. */
     { name: "더보기 탭 · 만료일 순서 확인", element: settingsTab(smokeOwner, { initialView: "expiry-order" }) },
+    { name: "더보기 탭 · 일정 색상", element: settingsTab(smokeOwner, { initialView: "schedule-colors" }) },
     /* 확정된 듀엣인데 한 명이 "예약" 으로 남은 수업 -- 대표 확인 목록. 읽지 않고 그린다. */
     { name: "듀엣 출석 확인", element: providerWith(smokeOwner, (
       <DuetUnmarkedReview organization={readyOrganizationContext(smokeOwner)} initialState={{
@@ -32647,6 +33502,36 @@ export function createAppScreenSmokeCases() {
           { instructorId: "u1", instructorName: "정예진", count: 12, items: [{ id: "body", average: 4.6, count: 12 }] },
           { instructorId: "u2", instructorName: "", count: 1, items: [{ id: "body", average: null, count: 0 }] },
         ] }} />
+    )) },
+    /* 지점 칩 · 강사 카드 하나만 펼침 (2026-11-24 대표: "수업 별점도 지점별로"). */
+    /* 플로우 PT 발급 대기 (2026-11-24). 지점 칩 · 대기 카드(플로우에서 확인 · 발급함 · 해당 없음) · 처리한 것. */
+    { name: "플로우 PT 발급 대기", element: providerWith(smokeOwner, (
+      <FlowPtQueueScreen organization={readyOrganizationContext(smokeOwner)} currentUserId="u-owner" onIssue={() => {}} onLoadBalancePasses={() => Promise.resolve([])}
+        initialState={{ error: "", branch: "loc-b", showDone: true, showBalances: true, showLeft: true,
+          /* 2026-11-28 3단계: 잔금 받음 칸을 연 상태 · 발급 뒤 바뀐 줄. */
+          balanceOpen: "p2", balancePick: "bp1", balanceWon: "300000",
+          balancePasses: [{ passId: "bp1", clientName: "나회원", productName: "1:1 PT 20회", balance: 500000, createdAt: new Date(2026, 10, 20) }, { passId: "bp2", clientName: "다른회원", productName: "1:1 PT", balance: 100000 }],
+          refreshResult: { ok: true, counts: { projects: 8, posts: 120, pt: 3, created: 2, failures: [{ flowProjectId: "2955389", errorCode: "UNAUTHORIZED_ERROR", httpStatus: 401 }] } },
+          rows: [
+          { id: "p1", locationId: "loc-a", branchName: "가지점", title: "가회원 잔금", excerpt: "1:1pt 10s", state: "waiting", registeredAt: new Date(2026, 10, 24, 11, 14) },
+          { id: "p2", locationId: "loc-b", branchName: "나지점", title: "나회원 신규", excerpt: "PT 20회 카드완납 010-****-****", registerName: "나지점", state: "waiting", mentionsRefund: true, isBalance: true, isTrial: true, flowUrl: "https://flow.team/main.act?projectId=1&postId=p2", registeredAt: new Date(2026, 10, 24, 10, 2) },
+          { id: "p3", locationId: "loc-b", branchName: "나지점", title: "다회원 재등록", state: "issued", handledAt: new Date(2026, 10, 24, 12, 0), changedAfterIssueAt: new Date(2026, 10, 27, 9, 0), changedAfterIssueFields: ["sessions", "amountManwon"] },
+          { id: "p4", locationId: "loc-b", branchName: "나지점", title: "라회원", state: "waiting", product: "1:1pt 40s 공동구매e", sessions: 40, amountManwon: "30.25", registeredAtExact: true, excerpt: "재등록 · 1:1pt 40s 공동구매e · 30.25 · 카드완납", registeredAt: new Date(2026, 10, 24, 13, 5) },
+          /* 2026-11-28: 플로우에서 실패로 바뀐 것 (발급 못 함) · 다시 성공한 것 (대기로 돌아옴). */
+          { id: "p5", locationId: "loc-b", branchName: "나지점", title: "마회원 상담", state: "waiting", flowStatus: "left", registeredAt: new Date(2026, 10, 25, 9, 0) },
+          { id: "p6", locationId: "loc-b", branchName: "나지점", title: "바회원 재컨택", state: "waiting", flowStatus: "success", resucceededAt: new Date(), registeredAt: new Date(2026, 10, 20, 9, 0) },
+        ] }} />
+    )) },
+    { name: "운영 설정 · 수업 후 별점 집계 · 지점별", element: providerWith(smokeOwner, (
+      <LessonRatingStatsAdmin organization={readyOrganizationContext(smokeOwner)} onLoad={() => Promise.resolve(null)} initialMonth="2026-11"
+        initialState={{ error: "", items: [{ id: "care", question: "항목 2 (스모크 예시)" }], branch: "loc-b", open: "u5",
+          instructors: [{ userId: "u4", locationId: "loc-a" }, { userId: "u5", locationIds: ["loc-b"] }, { userId: "u6", locationId: "loc-b" }],
+          locations: [{ id: "loc-a", name: "가지점" }, { id: "loc-b", name: "나지점" }],
+          rows: [
+            { instructorId: "u4", instructorName: "가강사", count: 3, items: [{ id: "care", average: 4.2, count: 3 }] },
+            { instructorId: "u5", instructorName: "나강사", count: 5, items: [{ id: "care", average: 4.9, count: 5 }, { id: "body", average: 3.0, count: 5 }] },
+            { instructorId: "u6", instructorName: "다강사", count: 2, items: [{ id: "care", average: 4.0, count: 2 }] },
+          ] }} />
     )) },
     /* 점장(직함) 화면 -- 이 달, 자기 지점 강사만 (2026-11-16). 서버가 거른 결과라 줄은 그대로 그린다. */
     { name: "수업 별점 · 점장 · 이 달", element: providerWith({ ...smokeOwner, role: "instructor", title: "branch_manager" }, (
@@ -33015,6 +33900,11 @@ export function createAppScreenSmokeCases() {
     { name: "회원권 발급 · 상품 단가 · 확인", element: passIssue(smokeOwner, {
       ...smokeIssueBase, mode: "confirm",
       form: { clientId: "smoke-client-a", productId: "smoke-product-etc-priced", totalSessions: "5", contractPriceManwon: "25", serviceSessions: "0", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceWon: "", expiresAt: "2027-03-31" },
+    }) },
+    /* 등록 횟수별 서비스 (2026-11-28): 20회 재등록에 서비스 3회 -- 수업료는 2회까지, 1회는 안 나간다고 말한다. */
+    { name: "회원권 발급 · 서비스 기준 넘음", element: passIssue(smokeOwner, {
+      ...smokeIssueBase,
+      form: { clientId: "smoke-client-a", productId: "smoke-product-normal", totalSessions: "20", contractPriceManwon: "130", serviceSessions: "3", purchaseRound: "1", paymentMethod: "card", instructorId: "u1", unitPriceWon: "" },
     }) },
     { name: "회원권 발급 · 풀방금액 없음", element: passIssue(smokeOwner, {
       ...smokeIssueBase,
@@ -33427,6 +34317,52 @@ export function createAppScreenSmokeCases() {
               { instructorId: "u1", status: "lapsed", decidedAt: new Date(2026, 9, 20) },
               { instructorId: "u2", status: "pending" },
             ], errorCode: "" },
+            members: { items: smokeInstructors, failed: false, errorCode: "" },
+            locations: { items: [{ id: "bansong", name: "반송" }], failed: false, errorCode: "" },
+          },
+        }} />
+    )) },
+    /* 점장 화면 (2026-11-24): 서버가 고른 맡은 지점 재료 · 읽는 법 펼침 · 기록률 · 비포애프터 없음. */
+    { name: "재등록 레이더 · 점장", element: providerWith({ ...smokeOwner, role: "instructor", title: "branch_manager" }, (
+      <RenewalRadarScreen organization={readyOrganizationContext({ ...smokeOwner, role: "instructor", title: "branch_manager" })} onOpenClient={noop} staffMode
+        initialState={{
+          open: "u1", guideOpen: true,
+          data: {
+            staff: { scope: "branch" },
+            core: {
+              now: new Date(2026, 10, 21, 12).getTime(), activityMonth: "",
+              clients: [{ id: "r1", name: "김하나", userId: "linked", instructorIds: ["u1"] }],
+              passes: [{ id: "rp1", clientId: "r1", instructorId: "u1", status: "active", remainingCount: 1, totalSessions: 30, createdAt: new Date(2026, 3, 1).getTime(), expiresAt: new Date(2026, 11, 30).getTime() }],
+              ledger: [{ id: "d1", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 10, 1).getTime() }],
+            },
+            coreError: "",
+            notes: { items: [], failed: false, errorCode: "" },
+            shares: { rows: null, hidden: true },
+            activities: { items: null, failed: false, hidden: true },
+            candidates: { rows: [], errorCode: "" },
+            members: { items: smokeInstructors, failed: false, errorCode: "" },
+            locations: { items: [{ id: "bansong", name: "반송" }], failed: false, errorCode: "" },
+          },
+        }} />
+    )) },
+    /* 면담 화면 (2026-11-24): 강사 한 명 -- 이야기할 순서대로 네 묶음. */
+    { name: "재등록 레이더 · 면담 화면", element: providerWith({ ...smokeOwner, role: "instructor", title: "branch_manager" }, (
+      <RenewalRadarScreen organization={readyOrganizationContext({ ...smokeOwner, role: "instructor", title: "branch_manager" })} onOpenClient={noop} staffMode
+        initialState={{
+          open: "u1", guideOpen: true, interview: "u1",
+          data: {
+            staff: { scope: "branch" },
+            core: {
+              now: new Date(2026, 10, 21, 12).getTime(), activityMonth: "",
+              clients: [{ id: "r1", name: "김하나", userId: "linked", instructorIds: ["u1"] }],
+              passes: [{ id: "rp1", clientId: "r1", instructorId: "u1", status: "active", remainingCount: 1, totalSessions: 30, createdAt: new Date(2026, 3, 1).getTime(), expiresAt: new Date(2026, 11, 30).getTime() }],
+              ledger: [{ id: "d1", type: "deduct", passId: "rp1", clientId: "r1", occurredAt: new Date(2026, 10, 1).getTime() }],
+            },
+            coreError: "",
+            notes: { items: [], failed: false, errorCode: "" },
+            shares: { rows: null, hidden: true },
+            activities: { items: null, failed: false, hidden: true },
+            candidates: { rows: [], errorCode: "" },
             members: { items: smokeInstructors, failed: false, errorCode: "" },
             locations: { items: [{ id: "bansong", name: "반송" }], failed: false, errorCode: "" },
           },

@@ -133,3 +133,22 @@ test("확인함 기준값은 기록이 많아도 고정 길이 -- 원장 110건(
   assert.notEqual(changed.items[0].signature, signature);
   assert.equal(signatureOf("a").length, signatureOf("a".repeat(5000)).length - 2, "길이 표시만 다르고 나머지는 고정");
 });
+
+/* 2026-11-22 대표: "차감이 회원 수보다 적음" 119건이 대부분 회원권 하나를 같이 쓰는 듀엣이었다 -- 정상으로 알아본다. */
+test("듀엣: 회원권 하나를 둘이 같이 쓰면 차감 1건이 정상 · 각자 회원권인데 한쪽만 빠지면 남는다 · 회원권을 못 읽으면 예전처럼 확인", () => {
+  const duet = (id) => lesson(id, { status: "completed", clientIds: ["c1", "c2"] });
+  const passes = [{ id: "shared", clientId: "c1", clientIds: ["c1", "c2"], remainingCount: 9 }, { id: "own1", clientId: "c1", remainingCount: 9 }, { id: "own2", clientId: "c2", remainingCount: 9 }];
+  const check = run({
+    lessons: [duet("shared-ok"), duet("own-missing"), duet("own-ok")],
+    monthLedger: [
+      deduct("shared-ok", { passId: "shared", occurredAt: at("2026-11-11T01:00:00Z") }),
+      deduct("own-missing", { passId: "own1", occurredAt: at("2026-11-12T01:00:00Z") }),
+      deduct("own-ok", { id: "e-own-ok-1", passId: "own1", occurredAt: at("2026-11-13T01:00:00Z") }),
+      deduct("own-ok", { id: "e-own-ok-2", passId: "own2", clientId: "c2", occurredAt: at("2026-11-13T01:00:00Z") }),
+    ],
+    passes,
+  });
+  assert.deepEqual(check.items.filter((item) => item.kind === CHECK_KIND.DEDUCT_SHORT).map((item) => item.lessonId), ["own-missing"]);
+  const unknownPasses = run({ lessons: [duet("shared-ok")], monthLedger: [deduct("shared-ok", { passId: "shared" })], failures: [{ source: "passes", code: "unavailable" }] });
+  assert.deepEqual(unknownPasses.items.map((item) => item.kind), [CHECK_KIND.DEDUCT_SHORT], "회원권을 못 읽으면 덮는지 모른다");
+});

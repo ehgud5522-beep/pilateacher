@@ -1199,6 +1199,36 @@ exports.lessonRatingStats = onCall({
   }
 });
 
+/* ── 점장용 재등록 레이더 (2026-11-24 대표: "점장한테 보이게, 자기 지점만") ──────────────
+   점장(직함)에게 원장을 여는 대신 서버가 자기 지점의 회원 · 회원권 · 출석 시각만 골라 준다 (renewal-radar-branch.js). */
+const { renewalRadarBranch } = require("./renewal-radar-branch");
+exports.renewalRadarBranch = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 60,
+  memory: "512MiB",
+  invoker: "public",
+}, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  try {
+    const result = await renewalRadarBranch(firestore, { callerUid: request?.auth?.uid, organizationId });
+    logger.info("renewal_radar_branch_read", {
+      feature: "renewal_radar", stage: "branch", organizationId, locations: result.locationIds.length,
+      clients: result.clients.length, passes: result.passes.length, ledger: result.ledger.length,
+    });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      logger.warn("renewal_radar_branch_refused", { feature: "renewal_radar", stage: "branch", organizationId, errorDomain: "renewal_radar", errorCode: error.reason });
+      throw new HttpsError(error.httpsCode, error.reason, { reason: error.reason });
+    }
+    logger.error("renewal_radar_branch_failed", {
+      feature: "renewal_radar", stage: "branch", organizationId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), detail: String(error?.message || "").slice(0, 300),
+    });
+    throw new HttpsError("unavailable", "renewal_radar_branch_failed", { reason: "renewal_radar_branch_failed" });
+  }
+});
+
 /* ── 세션업과 회원 간 양도 ───────────────────────────────────────────────
    대표와 FC매니저가 쓴다. 근거는 pass-admin.js 머리말에 있다.
 
@@ -1780,6 +1810,75 @@ exports.sweepRenewalCandidatesNightly = onSchedule({
       });
     }
   }
+});
+
+/* ── 플로우 PT 발급 대기 (2026-11-24 대표) ─────────────────────────────────
+   지점 업무보드의 완료된 PT 업무를 flowPtQueue 에 둔다. FC 가 플로우 원문을 확인하고 발급한 뒤 처리 표시를 누른다
+   -- 앱이 발급하지 않는다 (flow-pt-queue.js). 스위치 scheduleSync.flowPtQueue (off · all), 꺼져 있으면 플로우를 부르지 않는다.
+   비밀값: FLOW_API_KEY(이용 기관 관리자 키), FLOW_USER_ID(9개 보드를 다 보는 플로우 계정 아이디). */
+const FLOW_API_KEY = defineSecret("FLOW_API_KEY");
+const FLOW_USER_ID = defineSecret("FLOW_USER_ID");
+const { createFlowPtQueueService } = require("./flow-pt-queue");
+const flowPtQueueOn = async () => {
+  const snapshot = await firestore.collection("runtimeConfig").doc("scheduleSync").get();
+  return String(snapshot.exists ? snapshot.data()?.flowPtQueue?.mode || "" : "") === "all";
+};
+
+const flowPtQueueService = () => createFlowPtQueueService({
+  firestore,
+  apiKey: () => FLOW_API_KEY.value(),
+  userId: () => FLOW_USER_ID.value(),
+  serverTimestamp: () => FieldValue.serverTimestamp(),
+  log: (level, event, fields) => logger[level](event, fields),
+});
+
+/* [새로고침] = 지금 가져오기 (2026-11-24 대표: "새로고침으로 해줘"). 예약 실행을 기다리지 않고 그 자리에서 읽고,
+   몇 건 읽었는지 · 보드마다 실패 코드를 돌려준다. 대표 · 총괄 · FC. 스위치가 꺼져 있으면 부르지 않는다. */
+exports.refreshFlowPtQueue = onCall({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  timeoutSeconds: 300,
+  memory: "256MiB",
+  invoker: "public",
+  secrets: [FLOW_API_KEY, FLOW_USER_ID],
+}, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const uid = request?.auth?.uid;
+  if (!uid) throw new HttpsError("unauthenticated", "unauthenticated", { reason: "unauthenticated" });
+  if (!organizationId || organizationId.includes("/")) throw new HttpsError("invalid-argument", "missing_fields", { reason: "missing_fields" });
+  const membership = await firestore.collection("memberships").doc(membershipId(organizationId, uid)).get();
+  const data = membership.exists ? membership.data() || {} : {};
+  if (String(data.status || "") !== "active" || !["owner", "area_manager", "manager"].includes(String(data.role || ""))) {
+    logger.warn("flow_pt_queue_refresh_refused", { feature: "flow_pt_queue", stage: "refresh", organizationId, errorDomain: "flow_pt_queue", errorCode: "not_allowed", role: String(data.role || "none") });
+    throw new HttpsError("permission-denied", "not_allowed", { reason: "not_allowed" });
+  }
+  if (!(await flowPtQueueOn())) throw new HttpsError("failed-precondition", "switch_off", { reason: "switch_off" });
+  try {
+    const counts = await flowPtQueueService().sync();
+    logger.info("flow_pt_queue_synced", { feature: "flow_pt_queue", stage: "refresh", organizationId, counts });
+    return counts;
+  } catch (error) {
+    logger.error("flow_pt_queue_refresh_failed", {
+      feature: "flow_pt_queue", stage: "refresh", organizationId, errorDomain: "firestore",
+      errorCode: String(error?.code || "unknown"), detail: String(error?.message || "").slice(0, 300),
+    });
+    throw new HttpsError("unavailable", "flow_pt_queue_refresh_failed", { reason: "flow_pt_queue_refresh_failed" });
+  }
+});
+
+exports.syncFlowPtQueue = onSchedule({
+  region: process.env.FUNCTIONS_REGION || "asia-northeast3",
+  schedule: "every 10 minutes",
+  timeZone: "Asia/Seoul",
+  memory: "256MiB",
+  timeoutSeconds: 300,
+  secrets: [FLOW_API_KEY, FLOW_USER_ID],
+}, async () => {
+  /* 돌았다는 흔적을 늘 남긴다 -- 스위치가 꺼져 조용히 끝난 것과 아예 돌지 않은 것이 로그에서 구별돼야 한다. */
+  const on = await flowPtQueueOn();
+  logger.info("flow_pt_queue_tick", { feature: "flow_pt_queue", stage: "schedule", switchOn: on });
+  if (!on) return;
+  const counts = await flowPtQueueService().sync();
+  logger.info("flow_pt_queue_synced", { feature: "flow_pt_queue", stage: "schedule", counts });
 });
 
 exports.markRenewalOnPassCreated = onDocumentCreated({

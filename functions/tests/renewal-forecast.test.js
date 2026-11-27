@@ -52,7 +52,7 @@ test("회원권 여러 장: 발급 순서대로 쓰고, 앞 장 만료 전에 �
   assert.equal(forecast.remaining, 20);
   assert.equal(forecast.alert, RENEWAL_ALERT.CANNOT_USE_UP);
   assert.equal(forecast.unusable, 7, "3주에 3회만 씀 -> 7회 남음");
-  assert.match(renewalLine(forecast, NOW), /^잔여 20회 · 만료 200일 전 · 이 속도면 약 7회 남음$/);
+  assert.match(renewalLine(forecast, NOW), /^잔여 20회 · 만료까지 약 6달 반 · 이 속도면 약 7회 남음$/);
 });
 
 test("서비스 회차도 잔여에 포함, 30% 이하면 재등록 상담 시기", async () => {
@@ -69,7 +69,7 @@ test("만료 30 · 14 · 7일 전 알림, 만료일 없으면 만료 알림 없�
   const forecast = renewalForecast({ clientId: "c1", passes: [soon], entries: deducts("p1", [1, 4, 8, 11, 15, 18, 22, 25]), now: NOW });
   assert.equal(forecast.alert, RENEWAL_ALERT.EXPIRY_SOON);
   assert.equal(forecast.expiryThreshold, 14);
-  assert.equal(renewalLine(forecast, NOW), "잔여 4회 · 만료 14일 전");
+  assert.equal(renewalLine(forecast, NOW), "잔여 4회 · 만료까지 2주");
   const open = renewalForecast({ clientId: "c1", passes: [pass("p1", { expiresAt: null })], entries: deducts("p1", [1, 8, 15, 22]), now: NOW });
   assert.equal(open.daysToExpiry, null);
   assert.equal(open.alert, RENEWAL_ALERT.NORMAL);

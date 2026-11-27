@@ -14,7 +14,7 @@ import {
   LEGACY_PAYMENT_METHOD, PAYMENT_METHOD, PRODUCT_STATUS, SESSION_TYPE,
 } from "./constants.js";
 import {
-  NEW_TO_INSTRUCTOR_THRESHOLD, PAID_SERVICE_SESSIONS_PER_PASS, PRICING_RULE,
+  NEW_TO_INSTRUCTOR_THRESHOLD, PRICING_RULE,
 } from "./deduction-pricing.js";
 
 export const SESSION_TYPE_LABELS = Object.freeze({
@@ -61,8 +61,10 @@ export const DIOSA_PAYROLL_NOTICE = "엑셀 정산지: 디오사 A → 서비스
  * Keep in sync with PRICING_RULE in deduction-pricing.js.
  */
 export const PRICING_RULE_LABELS = Object.freeze({
-  [PRICING_RULE.SERVICE_FIRST]: "서비스 — 센터 지원",
-  [PRICING_RULE.SERVICE_ALREADY_USED]: `서비스 ${PAID_SERVICE_SESSIONS_PER_PASS + 1}회차 — 센터 지원 소진`,
+  [PRICING_RULE.SERVICE_FIRST]: "서비스 — 첫 회",
+  /* 등록 횟수별 서비스 (2026-11-28): 첫 서비스 뒤, 기준표(20회→2 · 30→3 · 40→4 · 50→5) 안의 서비스. */
+  [PRICING_RULE.SERVICE_PAID]: "서비스 — 등록 횟수별 지급",
+  [PRICING_RULE.SERVICE_ALREADY_USED]: "서비스 — 지급 기준을 넘은 회차",
   [PRICING_RULE.DEPUTY_DIRECTOR]: "부원장 5:5",
   [PRICING_RULE.HANDED_OVER]: "인수인계 — 신규 단가",
   [PRICING_RULE.NEW_TO_INSTRUCTOR]: `누적 ${NEW_TO_INSTRUCTOR_THRESHOLD}회 미만 — 신규 단가`,

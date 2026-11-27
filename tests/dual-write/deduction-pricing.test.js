@@ -665,3 +665,49 @@ test("every duet category sits in one list, so no screen can miss one", () => {
     assert.equal(isDuetPayCategory(category), false, String(category));
   }
 });
+
+/* ── 등록 횟수별 서비스 (2026-11-28 대표 공지, 이날 차감부터) ──
+   20회 → 서비스 2회 · 30 → 3 · 40 → 4 · 50 → 5 수업료. 첫 1회 1만원, 나머지 회당 2만원, 디오사A 는 회당 1만원.
+   깍두기 · 이벤트 · 세션업 · 전환 · 기준표에 없는 횟수는 예전처럼 첫 1회만. */
+test("서비스 수업료: 기준표 횟수만큼 -- 첫 1회 1만원, 나머지 2만원, 넘으면 0원", async () => {
+  const { resolveDeductionUnitPrice, paidServiceSessionsFor, PRICING_RULE } = await import("../../functions/shared/deduction-pricing.mjs");
+  const pass = { category: "pt_1_1_repurchase_normal", totalSessions: 20, productName: "1:1 PT 재등록 20회" };
+  const paid = paidServiceSessionsFor(pass);
+  assert.deepEqual(paid, { paid: 2, table: true, excluded: false });
+  const at = (used, extra = {}) => resolveDeductionUnitPrice({ category: "service", baseUnitPrice: 10000, serviceUsedCount: used, passCategory: pass.category, paidServiceSessions: paid.paid, ...extra });
+  assert.deepEqual(at(0), { unitPrice: 10000, rule: PRICING_RULE.SERVICE_FIRST });
+  assert.deepEqual(at(1), { unitPrice: 20000, rule: PRICING_RULE.SERVICE_PAID });
+  assert.deepEqual(at(2), { unitPrice: 0, rule: PRICING_RULE.SERVICE_ALREADY_USED }, "기준(2회)을 넘은 서비스");
+  // 부원장 · 인수인계 · 누적 20회 미만에도 서비스는 서비스 금액이다.
+  assert.equal(at(1, { isDeputyDirector: true, netContractPrice: 1000000, totalSessions: 20 }).unitPrice, 20000);
+  assert.equal(at(1, { handedOver: true }).unitPrice, 20000);
+  assert.equal(at(1, { priorSessions: 0 }).unitPrice, 20000);
+  for (const [total, count] of [[30, 3], [40, 4], [50, 5]]) assert.equal(paidServiceSessionsFor({ category: "pt_1_1_new", totalSessions: total }).paid, count);
+  assert.equal(paidServiceSessionsFor({ category: "pt_2_1_new", totalSessions: 30 }).paid, 3, "듀엣도 같다");
+});
+
+test("서비스 수업료: 디오사A 는 회당 1만원 · 디오사B 는 일반과 같다", async () => {
+  const { resolveDeductionUnitPrice, paidServiceSessionsFor } = await import("../../functions/shared/deduction-pricing.mjs");
+  const a = { category: "diosa_a", totalSessions: 20, productName: "디오사A 20회" };
+  const paidA = paidServiceSessionsFor(a).paid;
+  assert.equal(paidA, 2);
+  const priceA = (used) => resolveDeductionUnitPrice({ category: "service", baseUnitPrice: 10000, serviceUsedCount: used, passCategory: "diosa_a", paidServiceSessions: paidA }).unitPrice;
+  assert.deepEqual([priceA(0), priceA(1), priceA(2)], [10000, 10000, 0]);
+  const priceB = (used) => resolveDeductionUnitPrice({ category: "service", baseUnitPrice: 10000, serviceUsedCount: used, passCategory: "diosa_b", paidServiceSessions: 2 }).unitPrice;
+  assert.deepEqual([priceB(0), priceB(1)], [10000, 20000]);
+});
+
+test("서비스 수업료: 깍두기 · 이벤트 · 세션업 · 전환 · 기준표에 없는 횟수 · 옛 호출은 예전처럼 첫 1회만", async () => {
+  const { resolveDeductionUnitPrice, paidServiceSessionsFor } = await import("../../functions/shared/deduction-pricing.mjs");
+  assert.deepEqual(paidServiceSessionsFor({ category: "pt_1_1_new", totalSessions: 20, productName: "1:1 PT 깍두기 20회" }), { paid: 1, table: false, excluded: true });
+  assert.equal(paidServiceSessionsFor({ category: "pt_1_1_repurchase_event", totalSessions: 20 }).excluded, true, "재등록 이벤트");
+  assert.equal(paidServiceSessionsFor({ category: "pt_2_1_repurchase_event", totalSessions: 30 }).excluded, true);
+  assert.equal(paidServiceSessionsFor({ category: "pt_1_1_new", totalSessions: 20, productName: "세션업 20회" }).excluded, true);
+  assert.equal(paidServiceSessionsFor({ category: "pt_1_1_new", totalSessions: 20, productName: "그룹 → PT 전환" }).excluded, true);
+  assert.equal(paidServiceSessionsFor({ category: "pt_1_1_repurchase_event", totalSessions: 100, productName: "1:1PT 공동구매 100회" }).excluded, true);
+  assert.deepEqual(paidServiceSessionsFor({ category: "pt_1_1_new", totalSessions: 25 }), { paid: 1, table: false, excluded: false }, "기준표에 없는 횟수");
+  assert.equal(paidServiceSessionsFor({ category: "pt_1_1_new", totalSessions: 10 }).paid, 1);
+  // paidServiceSessions 를 넘기지 않는 옛 호출: 첫 1회 1만원, 둘째부터 0원 그대로.
+  const old = (used) => resolveDeductionUnitPrice({ category: "service", baseUnitPrice: 10000, serviceUsedCount: used }).unitPrice;
+  assert.deepEqual([old(0), old(1)], [10000, 0]);
+});

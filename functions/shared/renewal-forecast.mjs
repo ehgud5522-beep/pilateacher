@@ -1,3 +1,4 @@
+import { daySpanLabel } from "./day-span.mjs";
 /**
  * 재등록 알림 -- 규칙 계산, AI 아님 (설계 문서 4단계, 2026-11-16 대표 승인).
  *
@@ -161,7 +162,8 @@ export function renewalLine(forecast, now) {
   if (!forecast) return "";
   const at = timeOf(now);
   const head = `잔여 ${forecast.remaining}회`;
-  const expiry = forecast.daysToExpiry !== null ? `만료 ${forecast.daysToExpiry}일 전` : "";
+  /* 날 수 대신 "약 4달 반" · "2주" (2026-11-24 대표, day-span.mjs). */
+  const expiry = forecast.daysToExpiry !== null ? (forecast.daysToExpiry <= 0 ? "오늘 만료" : `만료까지 ${daySpanLabel(forecast.daysToExpiry)}`) : "";
   switch (forecast.alert) {
     case RENEWAL_ALERT.CANNOT_USE_UP:
       return [head, expiry, forecast.pace ? `이 속도면 약 ${forecast.unusable}회 남음` : ""].filter(Boolean).join(" · ");

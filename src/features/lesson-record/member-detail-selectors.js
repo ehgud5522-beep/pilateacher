@@ -408,10 +408,17 @@ export function selectPendingLessonSessions({ members = [], schedule = [], pendi
   };
   const sessionsByMember = new Map(operationalMembers.map((member) => [String(member?.id || ""), selectMemberLessonSessions({ member, schedule: operationalSchedule })]));
 
-  operationalMembers.forEach((member) => {
-    (sessionsByMember.get(String(member?.id || "")) || []).filter((session) => session.confirmationState !== "confirmed")
-      .forEach((session) => add(`${member.id}|${session.key}`, { memberId: member.id, lessonId: session.lesson?.id || "", session }, "confirmation"));
-  });
+  /* ── AI 기록 확인은 할 일이 아니다 (2026-11-24 대표 결정) ──────────────────
+     전에는 AI 가 정리한 기록을 [확인] 하지 않은 수업을 "기록 확인" 으로 여기에
+     넣었다. 그런데 확인 창은 "확인은 선택입니다. 정리된 기록은 이미 저장되어
+     있어요." 라고 말한다 -- 선택인 일을 할 일 목록이 계속 졸랐다. 강사들은
+     [수업확정] 을 누르고 기록도 남긴 수업이 왜 아직 "확인할 수업" 에 있는지
+     몰랐다.
+
+     이제 여기는 진짜 할 일만 센다: 출석 미처리 · 기록 없음 · 기기에만 있는
+     초안(local_draft -- 서버에 없어서 놓치면 사라지는 기록). 확인하지 않은 AI
+     기록은 회원 상세의 수업 기록 줄에서 [수업 기록 확인] 으로 여전히 확인할 수
+     있다 (session.confirmationState 는 그대로 계산된다). */
 
   operationalSchedule.filter((lesson) => lessonEnded(lesson, now) && !lesson?.personal).forEach((lesson) => {
     (lesson.attendees || []).forEach((attendee) => {
@@ -423,12 +430,10 @@ export function selectPendingLessonSessions({ members = [], schedule = [], pendi
       const session = (sessionsByMember.get(memberId) || []).find((item) => item.key === String(lesson.id)) || null;
       if (isPastUnresolvedAttendance({ lesson, memberId, now })) {
         add(key, { memberId, lessonId: lesson.id, lesson, session }, "attendance");
-        if (session && session.confirmationState !== "confirmed") add(key, { memberId, lessonId: lesson.id, lesson, session }, "confirmation");
         return;
       }
       if (attendee?.status !== "done") return;
-      if (attendee?.status === "done" && !session) add(key, { memberId, lessonId: lesson.id, lesson, session }, "record");
-      if (session && session.confirmationState !== "confirmed") add(key, { memberId, lessonId: lesson.id, lesson, session }, "confirmation");
+      if (!session) add(key, { memberId, lessonId: lesson.id, lesson, session }, "record");
     });
   });
 

@@ -22,15 +22,34 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/memberships/$(membershipId(organizationId)));
     }
 
+    /* ── 규칙 계산량 (2026-11-28) ──────────────────────────────────────
+       Firestore 는 문서 하나의 규칙을 따질 때 식 1000개까지만 계산한다 (배치여도
+       문서마다 따로 센다 -- 원장 규칙에 식을 얹어도 회원권 쪽은 그대로였다). 넘으면
+       이유를 말하지 않고 permission-denied 다. 회원권 발급(passes create)이 이 한도
+       바로 밑에 있었고, 11-24 의 PT 발급 게이트가 얹히자 FC 의 복합결제 PT 발급이
+       전부 넘었다 -- 게이트 뒤 나흘 동안 FC 복합결제 PT 0건 (그 전 한 달 29건).
+
+       계산의 대부분은 **같은 것을 여러 번 만드는 일**이었다: 소속 문서 경로를
+       hasRole 한 번에 세 번, 지점 목록(scopedLocationsOf)을 부를 때마다 get 네 번.
+       그래서 경로와 값을 한 번만 만들어 넘긴다. 뜻은 그대로다 -- 로그인 안 한
+       요청은 경로를 만들기 전에 signedIn() 에서 끝난다 (인자는 부를 때만 계산된다).
+       한도에 다시 닿으면 tests/rules 의 "규칙 계산량" 묶음이 먼저 실패한다. */
+    function activeAt(path) {
+      return exists(path) && get(path).data.status == "active";
+    }
+
+    function activeWithRole(path, roles) {
+      return activeAt(path) && get(path).data.role in roles;
+    }
+
     function isActiveMember(organizationId) {
       return signedIn()
-        && exists(/databases/$(database)/documents/memberships/$(membershipId(organizationId)))
-        && membership(organizationId).data.status == "active";
+        && activeAt(/databases/$(database)/documents/memberships/$(organizationId + "_" + request.auth.uid));
     }
 
     function hasRole(organizationId, roles) {
-      return isActiveMember(organizationId)
-        && membership(organizationId).data.role in roles;
+      return signedIn()
+        && activeWithRole(/databases/$(database)/documents/memberships/$(organizationId + "_" + request.auth.uid), roles);
     }
 
     /* ── 대표와 같은 자리 ─────────────────────────────────────────────────
@@ -108,11 +127,16 @@ service cloud.firestore {
     /* 소속 문서가 가리키는 지점들. locationIds 가 먼저, 없으면 locationId 한 칸.
        앱의 scopedLocationIds (location-repository.js) 와 같은 읽기다. */
     function scopedLocationsOf(data) {
-      return data.get("locationIds", []) is list && data.get("locationIds", []).size() > 0
-        ? data.get("locationIds", [])
-        : (data.get("locationId", "") is string && data.get("locationId", "") != ""
-          ? [data.get("locationId", "")]
-          : []);
+      let many = data.get("locationIds", []);
+      let one = data.get("locationId", "");
+      return many is list && many.size() > 0
+        ? many
+        : (one is string && one != "" ? [one] : []);
+    }
+
+    /* 강사의 지점이 비었거나 FC 의 지점과 하나라도 겹치는가. 강사 지점을 한 번만 만든다. */
+    function overlapsOrUnscoped(theirs, mine) {
+      return theirs.size() == 0 || theirs.hasAny(mine);
     }
 
     /* ── FC매니저는 맡은 지점 안의 강사만 담당으로 지정한다 (2026-11-04 대표) ──
@@ -134,10 +158,7 @@ service cloud.firestore {
       return mine.size() == 0
         || (
           exists(targetPath)
-          && (
-            scopedLocationsOf(get(targetPath).data).size() == 0
-            || scopedLocationsOf(get(targetPath).data).hasAny(mine)
-          )
+          && overlapsOrUnscoped(scopedLocationsOf(get(targetPath).data), mine)
         );
     }
 
@@ -160,6 +181,35 @@ service cloud.firestore {
         || !(location is string)
         || location == ""
         || location in mine;
+    }
+
+    /* 회원권 발급의 FC 범위 -- 맡은 지점의 회원(passInManagerScope)과 맡은 지점 안의 강사
+       (instructorInManagerScope) 를 한 번에. 부르는 쪽(passes create)이 canIssuePass 로 활성
+       소속을 확인한 뒤에만 부른다. 소속 문서와 지점 목록을 한 번만 만든다 (위 "규칙 계산량").
+       뜻은 두 함수와 같다 -- 그 둘은 발급 밖(교체 · 원장 · 발급 대기)에서 그대로 쓴다. */
+    function issuerInManagerScope(organizationId, data, me) {
+      let mine = scopedLocationsOf(me);
+      let location = data.get("locationId", "");
+      let targetPath = /databases/$(database)/documents/memberships/$(organizationId + "_" + data.instructorId);
+      return me.role != "manager"
+        || mine.size() == 0
+        || (
+          (!(location is string) || location == "" || location in mine)
+          && exists(targetPath)
+          && overlapsOrUnscoped(scopedLocationsOf(get(targetPath).data), mine)
+        );
+    }
+
+    /* 복합결제의 수단별 금액. MIXED_PAYMENT_PARTS 와 같은 넷 -- 한 칸이라도 비면 합이 달라진다.
+       map 을 한 번 받아 칸마다 request.resource.data.paymentBreakdown 을 다시 걷지 않는다. */
+    function paymentBreakdownWellFormed(b) {
+      return b is map
+        && b.keys().hasOnly(["card", "transfer", "other", "cash"])
+        && b.keys().hasAll(["card", "transfer", "other", "cash"])
+        && b.card is int && b.card >= 0
+        && b.transfer is int && b.transfer >= 0
+        && b.other is int && b.other >= 0
+        && b.cash is int && b.cash >= 0;
     }
 
     function canRegisterClient(organizationId) {
@@ -1161,20 +1211,7 @@ service cloud.firestore {
           )
           && (
             !("paymentBreakdown" in request.resource.data)
-            || (
-              request.resource.data.paymentBreakdown is map
-              // MIXED_PAYMENT_PARTS 와 같은 넷. 한 칸이라도 비면 합이 달라진다.
-              && request.resource.data.paymentBreakdown.keys().hasOnly(["card", "transfer", "other", "cash"])
-              && request.resource.data.paymentBreakdown.keys().hasAll(["card", "transfer", "other", "cash"])
-              && request.resource.data.paymentBreakdown.card is int
-              && request.resource.data.paymentBreakdown.card >= 0
-              && request.resource.data.paymentBreakdown.transfer is int
-              && request.resource.data.paymentBreakdown.transfer >= 0
-              && request.resource.data.paymentBreakdown.other is int
-              && request.resource.data.paymentBreakdown.other >= 0
-              && request.resource.data.paymentBreakdown.cash is int
-              && request.resource.data.paymentBreakdown.cash >= 0
-            )
+            || paymentBreakdownWellFormed(request.resource.data.paymentBreakdown)
           )
           /* 잔금. 결제 합계와 어긋나도 막지 않는다 -- 얼마를 언제 받기로 했는지는
              FC 가 아는 일이라고 대표가 정했다 (2026-10-27). 음수만 막는다. */
@@ -1200,15 +1237,26 @@ service cloud.firestore {
           // 발급은 대표·FC매니저. canIssuePass 의 주석 참고 — 바꿀 때는 그 목록
           // 하나만 바꾼다.
           && canIssuePass(organizationId)
-          // FC매니저는 맡은 지점 안의 강사만 (instructorInManagerScope).
+          /* FC매니저는 맡은 지점 안의 강사만 (instructorInManagerScope), 맡은 지점의 회원에게만
+             (passInManagerScope). 역할은 canIssuePass 가 이미 활성 소속을 확인했으니 문서의 칸으로만
+             본다 -- hasRole 을 두 번 더 부르면 소속 경로를 여섯 번 더 만든다 (위 "규칙 계산량"). */
+          && issuerInManagerScope(organizationId, request.resource.data, membership(organizationId).data)
+          /* PT 발급은 발급 대기에서만 (2026-11-24 대표, functions/shared/flow-pt-queue.mjs). 스위치
+             scheduleSync.flowPtGate 가 켜지면 PT(pt_…) 는 발급 대기의 글을 골라(flowPostId, 같은 배치에서 그 글이
+             waiting → issued 로 이 회원권과 이어진다) 또는 사유를 써서(flowBypassReason) 발급한다. 이관은 해당 없다. */
           && (
-            !hasRole(organizationId, ["manager"])
-            || instructorInManagerScope(organizationId, request.resource.data.instructorId)
-          )
-          // FC매니저는 맡은 지점의 회원에게만 발급한다 (passInManagerScope).
-          && (
-            !hasRole(organizationId, ["manager"])
-            || passInManagerScope(organizationId, request.resource.data)
+            !flowPtGateOn()
+            || !request.resource.data.get("category", "").matches("^(pt_|diosa_).*")
+            || "contractedAt" in request.resource.data
+            || passId.matches("^csv_.*")
+            // 양도로 생긴 회원권: 원본 원장에 같은 배치의 handover 항목({새 id}_handover)이 있어야 한다.
+            || (
+              request.resource.data.get("transferredFromPassId", "") is string
+              && request.resource.data.get("transferredFromPassId", "").size() > 0
+              && existsAfter(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(request.resource.data.transferredFromPassId)/ledger/$(passId + "_handover"))
+            )
+            || flowPtLinked(organizationId, passId, request.resource.data)
+            || flowPtBypassed(request.resource.data)
           );
         /* ── 세션업 기간은 왜 여기 없는가 (2026-10-27) ───────────────────
            세션업은 **이 문을 아예 지나지 않는다.** totalSessions 는 아래 어느
@@ -1231,6 +1279,31 @@ service cloud.firestore {
         // nothing else: handovers happen while the owner is not at the centre,
         // and the transfer is safe because it rewrites no past entry — every
         // deducted session already carries the instructor it was taught by.
+        function passBalanceReceiptLinked(post, passId, received) {
+          return post.get("balancePassId", "") == passId
+            && post.get("balanceReceivedWon", -1) == received
+            && post.get("isBalance", false) == true
+            && post.get("state", "") == "issued";
+        }
+        /* ── 잔금 받음 (2026-11-28, PT 발급 대기 3단계) ─────────────────────
+           FC 가 플로우의 잔금 글을 보고 회원권의 잔금을 받은 만큼 줄인다. **잔금 칸만, 줄이기만** (0 아래로 못 간다, 늘리지 못한다).
+           같은 배치에서 그 잔금 글(flowPtQueue/{balanceFlowPostId})이 이 회원권과 받은 금액을 가리켜야 한다 -- 글 쪽 문이
+           대기 → 처리를 한 번만 열므로 같은 잔금 글로 두 번 줄일 수 없다. 발급 권한(canIssuePass) · FC 는 맡은 지점 회원권만.
+           잔금은 매출 집계에 쓰이지 않는다 (발급 내역은 결제 수단별 금액으로 따로 센다, issue-report-repository.js). */
+        allow update: if resource.data.organizationId == organizationId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["balance", "balanceFlowPostId", "balanceUpdatedAt", "balanceUpdatedBy"])
+          && request.resource.data.balance is int
+          && request.resource.data.balance >= 0
+          && request.resource.data.balance < resource.data.get("balance", 0)
+          && request.resource.data.balanceUpdatedAt == request.time
+          && request.resource.data.balanceUpdatedBy == request.auth.uid
+          && request.resource.data.balanceFlowPostId is string
+          && request.resource.data.balanceFlowPostId.size() > 0
+          && canIssuePass(organizationId)
+          && (membership(organizationId).data.role != "manager" || passInManagerScope(organizationId, resource.data))
+          && passBalanceReceiptLinked(
+            getAfter(/databases/$(database)/documents/organizations/$(organizationId)/flowPtQueue/$(request.resource.data.balanceFlowPostId)).data,
+            passId, resource.data.get("balance", 0) - request.resource.data.balance);
         allow update: if resource.data.organizationId == organizationId
           && request.resource.data.organizationId == organizationId
           /* ── 어느 갈래로 오든 지키는 것 ────────────────────────────────
@@ -1553,7 +1626,8 @@ service cloud.firestore {
             && (
               !("rule" in request.resource.data)
               || request.resource.data.rule in [
-                "service_first", "service_already_used",
+                // service_paid: 첫 서비스 뒤 수업료가 나가는 서비스 (2026-11-28 등록 횟수별 서비스 기준).
+                "service_first", "service_paid", "service_already_used",
                 "deputy_director",
                 "diosa_fixed", "duet_event_fixed", "senior_title_event",
                 "handed_over", "new_to_instructor", "base_category"
@@ -1864,6 +1938,104 @@ service cloud.firestore {
           && request.resource.data.checkedAt == request.time
           && request.resource.data.appBuild is string && request.resource.data.appBuild.size() <= 40;
         allow delete: if false;
+      }
+
+      /* 플로우 PT 발급 대기 (2026-11-24 대표). 서버(syncFlowPtQueue)가 지점 업무보드의 완료된 PT 업무를 만들고,
+         대표 · 총괄 · FC(맡은 지점)가 읽고 처리 칸만 고친다 -- 플로우 원문을 확인하고 발급한 뒤 "발급함" / "해당 없음".
+         앱이 발급하지 않으므로 이 문서는 돈 · 회차와 이어지지 않는다. 만들기 · 지우기는 서버만. */
+      /* 아래 셋은 회원권 발급(passes create) 안에서 돈다 -- 그 문은 식 1000개 한도 바로 밑이라
+         (맨 위 "규칙 계산량") 경로와 값을 let 으로 한 번만 만든다. */
+      function flowPtGateOn() {
+        let path = /databases/$(database)/documents/runtimeConfig/scheduleSync;
+        return exists(path) && get(path).data.get("flowPtGate", {}).get("mode", "") == "all";
+      }
+      function flowPtLinked(organizationId, passId, data) {
+        let postId = data.get("flowPostId", "");
+        return postId is string
+          && postId.size() > 0
+          && !("flowBypassReason" in data)
+          && flowPtPostLinks(/databases/$(database)/documents/organizations/$(organizationId)/flowPtQueue/$(postId), passId);
+      }
+      /* 이을 수 있는 등록 (2026-11-28 대표: 계약금 받고 성공 → 발급, 실패는 상담 실패):
+           - 아직 대기
+           - 잔금 글이 아니다 -- 회원권은 계약금 때 이미 나갔다. 잔금 글로 또 이으면 같은 계약이 두 번 발급된다
+           - 플로우에서 지금도 성공 (flowStatus left 가 아니다) -- 상담 실패로 옮긴 글로 발급하지 않는다. 다시 성공으로
+             옮기면 서버가 success 로 되돌린다 (functions/src/flow-pt-queue.js)
+         get 한 번을 let 으로 받는다 -- 회원권 발급 문은 식 1000개 한도 밑이다 (맨 위 "규칙 계산량"). */
+      function flowPtPostLinks(path, passId) {
+        return exists(path)
+          && flowPtPostOpen(get(path).data)
+          && getAfter(path).data.get("passId", "") == passId;
+      }
+      function flowPtPostOpen(post) {
+        return post.state == "waiting"
+          && post.get("isBalance", false) != true
+          && post.get("flowStatus", "success") != "left";
+      }
+      /* 플로우가 멈췄을 때의 비상구: 대표 · 총괄 · FC매니저(발급할 수 있는 사람 전부 -- canIssuePass)가 사유를 쓰고 발급. */
+      function flowPtBypassed(data) {
+        let reason = data.get("flowBypassReason", "");
+        return reason is string
+          && reason.size() >= 2
+          && reason.size() <= 200
+          && !("flowPostId" in data);
+      }
+      function flowPtQueueStaff(organizationId, data) {
+        return hasRole(organizationId, ownerLevel())
+          || (hasRole(organizationId, ["manager"]) && passInManagerScope(organizationId, data));
+      }
+      /* 발급 대기와 회원권을 잇는다: 회원권 쪽은 flowPostId, 글 쪽은 passId. 한 배치에서 서로를 가리킨다.
+         "issued" 는 이 길로만 -- 손으로 발급함을 누를 수 없다(발급 없이 목록에서 빠지면 누락이 숨는다).
+         이미 회원권과 이어진 글은 다시 바꾸지 못한다 (되돌리면 같은 등록으로 두 번 발급된다). */
+      match /flowPtQueue/{postId} {
+        allow get, list: if flowPtQueueStaff(organizationId, resource.data);
+        allow update: if flowPtQueueStaff(organizationId, resource.data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["state", "handledBy", "handledAt", "passId"])
+          && resource.data.get("passId", "") == ""
+          && request.resource.data.handledBy == request.auth.uid
+          && request.resource.data.handledAt == request.time
+          && (
+            /* 이미 발급 완료 · 해당 없음 · 되돌리기: 회원권 연결 없이 처리 칸만 (잔금 분납 · 앱 밖에서 이미 발급한 것). */
+            (request.resource.data.state in ["waiting", "not_applicable", "issued"] && !("passId" in request.resource.data))
+            || (
+              request.resource.data.state == "issued"
+              && resource.data.state == "waiting"
+              && request.resource.data.passId is string
+              && request.resource.data.passId.size() > 0
+              && getAfter(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(request.resource.data.passId)).data.get("flowPostId", "") == postId
+            )
+          );
+        /* 발급 뒤 바뀜 [확인함] (2026-11-28, 3단계). 서버가 changedAfterIssueAt 을 남긴 줄을 FC 가 봤다는 표시 -- 확인 칸 둘만,
+           내 이름 · 지금 시각으로. 회원권과 이어진 줄에도 된다 (위 처리 문은 이어진 줄을 막는다). */
+        allow update: if flowPtQueueStaff(organizationId, resource.data)
+          && "changedAfterIssueAt" in resource.data
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["changeAckedAt", "changeAckedBy"])
+          && request.resource.data.changeAckedBy == request.auth.uid
+          && request.resource.data.changeAckedAt == request.time;
+        /* 잔금 받음 (2026-11-28, 3단계 · 대표 결정: 계약금 때 발급, 잔금은 발급 화면 잔금 칸). 잔금 글 하나로 회원권 하나의 잔금을
+           받은 만큼 줄인다 -- 같은 배치에서 그 회원권이 balanceFlowPostId 로 이 글을 가리키고, 줄어든 금액이 balanceReceivedWon 과
+           같아야 한다 (회원권 쪽 문이 같은 선을 다시 긋는다). 대기에서만 -- 처리된 잔금 글로 두 번 줄이지 못한다. */
+        allow update: if flowPtQueueStaff(organizationId, resource.data)
+          && resource.data.get("isBalance", false) == true
+          && resource.data.state == "waiting"
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["state", "handledBy", "handledAt", "balancePassId", "balanceReceivedWon"])
+          && request.resource.data.state == "issued"
+          && request.resource.data.handledBy == request.auth.uid
+          && request.resource.data.handledAt == request.time
+          && request.resource.data.balanceReceivedWon is int
+          && request.resource.data.balanceReceivedWon > 0
+          && request.resource.data.balancePassId is string
+          && request.resource.data.balancePassId.size() > 0
+          && flowPtBalanceMatches(
+            get(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(request.resource.data.balancePassId)).data,
+            getAfter(/databases/$(database)/documents/organizations/$(organizationId)/passes/$(request.resource.data.balancePassId)).data,
+            postId, request.resource.data.balanceReceivedWon);
+        allow create, delete: if false;
+      }
+      /* 잔금 글과 회원권이 서로 맞는가: 회원권이 이 글을 가리키고, 줄어든 잔금이 받은 금액과 같다. */
+      function flowPtBalanceMatches(before, after, postId, received) {
+        return after.get("balanceFlowPostId", "") == postId
+          && before.get("balance", 0) - after.get("balance", 0) == received;
       }
 
       /* ── 강사 개인매출 인센 (2026-11-21 대표 결정, functions/shared/sales-incentive.mjs) ──────────

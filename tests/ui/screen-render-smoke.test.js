@@ -194,7 +194,7 @@ test("duet attendance: '전체 출석' is one bulk action, a per-member choice s
       onStatusAll: (...args) => calls.push(["all", ...args]),
     })))));
     const buttons = () => [...container.querySelectorAll("button")];
-    /* 2026-11-17 개편: 상태 바꾸기는 [상태 변경] 아래에. 회원 한 명의 출석 · 노쇼 · 취소와 전원 버튼이 함께 있다. */
+    /* 2026-11-17 개편 · 11-28: 회원 한 명의 출석 · 노쇼 · 취소와 전원 버튼이 늘 펼쳐 있다 ([상태 변경] 을 누르지 않는다). */
     const all = buttons().find((button) => button.textContent.trim() === "전체 출석");
     assert.ok(all, "전체 출석");
     await act(async () => all.click());
@@ -280,6 +280,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 소속 확인 실패",
     "더보기 탭 · 앱 업데이트 안내",
     "더보기 탭 · 만료일 순서 확인",
+    "더보기 탭 · 일정 색상",
     "듀엣 출석 확인",
     "더보기 탭 · 묶음 펼침",
     "더보기 탭 · PC",
@@ -328,6 +329,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "강사 알림함 시트 · 열지 못함",
     "운영 설정 · 회원 앱 수업 취소",
     "운영 설정 · 수업 후 별점 집계",
+    "플로우 PT 발급 대기",
+    "운영 설정 · 수업 후 별점 집계 · 지점별",
     "수업 별점 · 점장 · 이 달",
     "더보기 탭 · 점장",
     "운영 설정 · 수업 후 별점 집계 · 읽지 못함",
@@ -405,6 +408,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "회원권 발급 · 직접 단가",
     "회원권 발급 · 상품 단가",
     "회원권 발급 · 상품 단가 · 확인",
+    "회원권 발급 · 서비스 기준 넘음",
     "회원권 발급 · 풀방금액 없음",
     "회원권 발급 · 확인",
     "회원권 발급 · 확인 · 현금",
@@ -472,6 +476,8 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "만료 회원 · 강사",
     "만료 회원 · 조회 실패",
     "재등록 레이더",
+    "재등록 레이더 · 점장",
+    "재등록 레이더 · 면담 화면",
     "재등록 레이더 · PC",
     "매출 인센 · 강사",
     "매출 인센 · 강사 · 그룹 입력",
@@ -655,7 +661,7 @@ test("a deduction says why it was worth what it was worth", async () => {
      횟수는 계속 올라가 사라진다. */
   const pay = markupOf("이달 예상 급여");
   assert.match(pay, /누적 20회 미만 — 신규 단가/);
-  assert.match(pay, /서비스 2회차 — 센터 지원 소진/);
+  assert.match(pay, /서비스 — 지급 기준을 넘은 회차/);
   assert.match(pay, /부원장 5:5/);
   assert.match(pay, /기준 단가/);
 
@@ -1457,12 +1463,21 @@ test("the issue form offers the suggested unit price and lets the issuer change 
 test("payment method sits outside the fold and has no default", async (t) => {
   const markupOf = await issueScreens(t);
   /* 접힌 칸 안에 기본값 카드로 있을 때, 현금 계약이 카드로 박혀 부원장 단가가
-     틀렸다. 이제 늘 보이고, 접힌 칸은 서비스 · 차수뿐이다. */
+     틀렸다. 이제 늘 보인다. 서비스 · 차수도 2026-11-28 부터 접지 않는다 (대표: "작게 표시가 안 나 찾기 힘듦"). */
   const blank = markupOf("회원권 발급 · 결제 수단 미선택");
   assert.match(blank, /결제 수단/);
   assert.match(blank, /현금/);
-  assert.match(blank, /· 서비스 · 차수</);
-  assert.doesNotMatch(blank, /서비스 · 차수 · 결제 수단/);
+  assert.doesNotMatch(blank, /· 서비스 · 차수</, "접는 글자 버튼은 없다");
+  assert.match(blank, /data-issue-service-round/);
+  assert.match(blank, />서비스 세션</, "서비스 칸이 처음부터 보인다");
+  /* 차수 입력 칸은 없앴다 (2026-11-28 대표: "차수 칸 빼 줘") -- 번호는 저절로, 차감은 만료일 순. */
+  assert.doesNotMatch(blank, /<input[^>]*placeholder="1"/, "차수 입력 칸이 없다");
+  assert.match(blank, /data-issue-round[^>]*>이 회원의 \d+번째 회원권으로 저장돼요\. 회원권이 여럿이면 만료일이 이른 것부터 차감돼요\./);
+  /* 등록 횟수별 서비스 (2026-11-28): 상품을 고른 화면에는 서비스 수업료 안내가 붙는다. */
+  assert.match(blank, /data-service-guide[^>]*>이 상품\(깍두기 · 이벤트 · 세션업 · 전환 등\)은 등록 횟수별 서비스 기준이 적용되지 않아요/, "이벤트 상품");
+  const over = markupOf("회원권 발급 · 서비스 기준 넘음");
+  assert.match(over, /기준: 20회 등록 → 서비스 2회 수업료 \(첫 1회 1만원 · 나머지 회당 2만원\)\. 넣은 서비스 3회 중 1회는 수업료가 나가지 않아요\./);
+  assert.match(markupOf("회원권 발급 · 듀엣"), /기준: 30회 등록 → 서비스 3회 수업료/, "듀엣도 같은 기준");
 });
 
 test("chips do not repeat the group label the product name already carries", async (t) => {
@@ -1504,7 +1519,9 @@ test("the confirmation says exactly what will be written", async (t) => {
   assert.match(confirm, /1:1 · 1:1 20회 가을 이벤트 · 1:1 재등록\(이벤트\)/);
   // 서비스 회차도 차감되는 수업이라 총 회차에 들어간다.
   assert.match(confirm, /20회 \+ 서비스 2회 = 총 22회/);
-  assert.match(confirm, /130만원 · 카드 · 2차/);
+  /* 차수는 입력하지 않고 저절로 정한다 (2026-11-28) -- 견본 회원은 이 화면에서 읽은 회원권이 없어 1차다.
+     폼에 남은 purchaseRound 값("2")은 쓰이지 않는다. */
+  assert.match(confirm, /130만원 · 카드 · 1차/);
   assert.match(confirm, /담당 정예진/);
 });
 
@@ -1893,7 +1910,7 @@ test("a lesson says what it will be worth before it is settled", async () => {
   const service = markupOf("일정 탭 · 소속 · 예상 단가 · 서비스");
   assert.match(service, /10,000원/);
   // 0원도 금액이다. 빈칸으로 두면 "계산이 안 됐나" 로 읽힌다.
-  assert.match(service, /0원 · 서비스 2회차 — 센터 지원 소진/);
+  assert.match(service, /0원 · 서비스 — 지급 기준을 넘은 회차/);
 
   /* 확정 뒤에는 예상이 아니라 결과가 있다. 이미 박힌 금액 옆에 "예상" 을 또 쓰면
      둘 중 어느 것이 실제인지 알 수 없다. */
@@ -3308,16 +3325,47 @@ test("the expiry report says how many are still inside the 30-day window", async
   assert.doesNotMatch(failed, /만료된 회원이 없습니다/, "못 읽은 것을 없는 것으로 보이면 안 된다");
 });
 
+test("재등록 레이더 · 점장: 우리 지점 · 읽는 법 · 면담 · 기록률 · 비포애프터 없음 (2026-11-24)", async () => {
+  const markup = await screenMarkup();
+  const radar = markup("재등록 레이더 · 점장");
+  assert.match(radar, /우리 지점 재등록 레이더/);
+  assert.match(radar, /맡은 지점 회원만 보여요/);
+  assert.match(radar, /data-radar-guide="open"/);
+  /* 쉬운 말 (2026-11-24 대표: "이해하기 쉬운 단어로") */
+  assert.match(radar, /이번 주 상담 \(빨간 표시\)/);
+  assert.match(radar, /이번 주 수업 안에 재등록 이야기를/);
+  assert.match(radar, /남은 수업 N회/);
+  assert.match(radar, /지금처럼 다니면 N회 못 쓰고 끝남/);
+  assert.match(radar, /강사 면담할 때/);
+  assert.match(radar, /곧 끝나는 회원 1명/);
+  assert.match(radar, /면담 화면 띄우기/, "펼친 강사 카드에서 면담 화면을 띄운다");
+  assert.doesNotMatch(radar, />급함</, "급함 · 잔여 · 만료 같은 말 대신 쉬운 말");
+  /* 면담 화면: 이야기할 순서대로 네 묶음 · 묶음마다 물어볼 말 */
+  const interview = markup("재등록 레이더 · 면담 화면");
+  assert.match(interview, /data-radar-interview=/);
+  assert.match(interview, /선생님/);
+  assert.match(interview, /data-radar-interview-section="this_week"/);
+  assert.match(interview, /data-radar-interview-section="coming_less"/);
+  assert.match(interview, /data-radar-interview-section="left_over"/);
+  assert.match(interview, /data-radar-interview-section="no_note"/);
+  assert.match(interview, /이렇게 물어보세요/);
+  assert.match(interview, /강사를 평가하는 점수가 아니에요/);
+  assert.match(interview, /닫기/);
+  assert.doesNotMatch(radar, /기록률/, "점장 화면에는 강사 기록률이 없다");
+  assert.doesNotMatch(radar, /비포애프터 공유 현황을 읽지 못해/, "숨긴 신호를 실패로 말하지 않는다");
+  assert.doesNotMatch(radar, /확인 중… 오는 대로/);
+});
+
 test("재등록 레이더: 급한 회원 · 신호 · 못 읽은 신호는 빼고 코드로 말한다 (2026-11-21)", async (t) => {
   const markupOf = await issueScreens(t);
   const radar = markupOf("재등록 레이더");
   assert.match(radar, /강사가 따로 할 일은 없어요/, "강사 일을 늘리지 않는다는 것을 화면이 말한다");
-  assert.match(radar, /data-summary-tile="radar_urgent"><p[^>]*>급함<\/p><p[^>]*>1명</, "요약 줄의 급함 칸");
+  assert.match(radar, /data-summary-tile="radar_urgent"><p[^>]*>이번 주 상담<\/p><p[^>]*>1명</, "요약 줄의 이번 주 상담 칸");
   assert.match(radar, /data-radar-signal="pace_drop"/);
   assert.match(radar, /data-radar-signal="no_attendance_8w"/);
   assert.match(radar, /비포애프터 공유 현황을 읽지 못해 그 신호는 빠졌어요 \(코드 permission-denied\)/);
   assert.doesNotMatch(radar, /data-radar-signal="before_after_/, "못 읽은 비포애프터를 \"안 보냄\" 으로 칠하지 않는다");
-  assert.match(radar, /재등록 2명 중 1명/, "표본이 적으면 퍼센트를 내지 않는다");
+  assert.match(radar, /끝난 회원 2명 중 1명 다시 등록/, "표본이 적으면 퍼센트를 내지 않는다");
   /* 지점별로 (2026-11-21 대표): 반송 칩이 먼저 고르고, 지점 없는 박서연은 "지점 없음" 칩 뒤에 있다 */
   assert.match(radar, /data-branch-tab="bansong"/);
   assert.match(radar, /지점 없음/);
@@ -3593,7 +3641,8 @@ test("회원권 수정 화면은 바뀔 값을 미리 보여주고 강사에게�
   const expiry = markupOf("센터 회원 상세 · 만료일 변경");
   assert.match(expiry, /만료일 변경/);
   assert.match(expiry, /홀딩/);
-  assert.match(expiry, /잔여 횟수는 그대로 보관됩니다/);
+  assert.match(expiry, /잔여 횟수와 남은 기간이 그대로 보관됩니다/);
+  assert.match(expiry, /연장이 아닙니다/, "홀딩은 멈춤이다 (2026-11-24 대표)");
   /* 회원 앱에 반영된다는 사실을 말한다. 모르면 따로 연락해야 하는 줄 안다. */
   assert.match(expiry, /회원 앱에도 반영됩니다/);
 
@@ -3755,6 +3804,63 @@ test("lesson ratings: the owner sees per-instructor counts and averages only, fa
   assert.match(stats, /★ 4\.6/);
   assert.match(stats, /이름 모름/, "이름을 모르는 강사");
   assert.match(stats, /—/, "응답 없는 항목은 평균 대신 줄표");
+  /* 지점별 (2026-11-24): 지점 칩 → 고른 지점 강사만, 카드는 하나만 펼친다. 접힌 카드에도 대표 별점 한 줄. */
+  const byBranch = markup("운영 설정 · 수업 후 별점 집계 · 지점별");
+  assert.match(byBranch, /data-branch-tabs/);
+  assert.match(byBranch, /가지점/);
+  assert.match(byBranch, /나지점/);
+  assert.doesNotMatch(byBranch, /가강사/, "다른 지점 강사는 칩을 바꿔야 보인다");
+  assert.match(byBranch, /나강사/);
+  assert.match(byBranch, /다강사/);
+  assert.match(byBranch, /★ 4.9/, "몸 컨디션은 대표 별점에서 뺀다");
+  assert.match(byBranch, /★ 4.0/);
+  assert.equal((byBranch.match(/data-rating-open="true"/g) || []).length, 1, "펼친 카드는 하나");
+  assert.match(byBranch, /몸 컨디션 · 참고 지표/, "펼친 카드에는 항목별");
+  /* 플로우 PT 발급 대기 (2026-11-24 대표): 지점 칩 → 고른 지점의 대기, FC 가 플로우 원문을 확인하고 처리 표시. 앱은 발급하지 않는다. */
+  const flow = markup("플로우 PT 발급 대기");
+  assert.match(flow, /data-flow-pt-queue/);
+  assert.match(flow, /data-branch-tabs/);
+  assert.doesNotMatch(flow, /가회원 잔금/, "다른 지점은 칩을 바꿔야 보인다");
+  assert.match(flow, /나회원 신규/);
+  /* 쉬운 말 · 크게 (2026-11-24 대표): 발급하러 가기 · 이미 발급 완료 · 날짜와 등록 시간 · 횟수와 금액 */
+  assert.match(flow, /발급하러 가기/);
+  assert.match(flow, /이미 발급 완료/);
+  assert.match(flow, /해당 없음/);
+  assert.match(flow, /플로우에서 보기/);
+  assert.match(flow, /data-flow-pt-when[^>]*>11\/24 \(화\) 13:05</, "날짜 · 요일 · 시각 크게");
+  assert.match(flow, /data-flow-pt-big[^>]*>40회 · 30\.25만원</, "횟수 · 금액 크게");
+  /* 잔금 분납은 따로 묶는다 -- 새로 발급할 일이 아니라 확인만 */
+  assert.match(flow, /data-flow-pt-balances/);
+  assert.match(flow, /잔금 결제 1건/);
+  assert.match(flow, /첫 결제\(계약금\) 때 회원권을 전체 횟수 · 전체 금액으로 한 번 발급/);
+  assert.match(flow, /data-flow-pt-refund/, "환불이라는 말이 있으면 경고");
+  assert.match(flow, /data-flow-pt-balance/, "잔금 글 표시");
+  assert.match(flow, /data-flow-pt-trial/, "PT 체험 표시");
+  /* 2026-11-28 대표: "계약금 받고 성공 → 발급, 실패는 상담 실패 -- 다시 성공으로 바꿀 수 있음". 잔금 글 · 실패로 바뀐 글은
+     발급으로 잇지 못한다 (규칙 flowPtPostOpen 과 같은 선) -- 발급 버튼은 대기 중인 보통 글(라회원 · 바회원)에만. */
+  assert.equal((flow.match(/data-flow-pt-issue/g) || []).length, 2, "발급하러 가기는 잔금 · 실패 글에 없다");
+  assert.match(flow, /잔금 확인함/, "잔금 글은 확인만");
+  assert.match(flow, /data-flow-pt-left-list/);
+  assert.match(flow, /플로우에서 실패로 바뀐 것 1건/);
+  assert.match(flow, /data-flow-pt-left="true"/, "실패 표시");
+  assert.match(flow, /data-flow-pt-resucceeded/, "다시 성공 표시");
+  assert.match(flow, /data-branch-tab="loc-b"[^>]*>[\s\S]*?2건/, "지점 칩 숫자는 발급할 수 있는 대기만");
+  /* 3단계 (2026-11-28): 발급 뒤 플로우 내용이 바뀐 것 · 잔금 받음 (회원권 잔금 칸 줄이기). */
+  assert.match(flow, /data-flow-pt-changed/);
+  assert.match(flow, /발급 뒤 플로우 내용이 바뀐 것 1건/);
+  assert.match(flow, /다회원 재등록 · 횟수 · 금액 바뀜/);
+  assert.match(flow, /잔금 받음 처리/);
+  assert.match(flow, /회원권 없이 확인함/);
+  assert.match(flow, /data-flow-pt-balance-panel/);
+  assert.match(flow, /data-flow-pt-balance-pass="bp1"/, "글 이름(나회원)이 들어간 회원권이 먼저 뜬다");
+  assert.doesNotMatch(flow, /data-flow-pt-balance-pass="bp2"/, "이름이 안 맞는 회원권은 찾기 전에는 안 뜬다");
+  assert.match(flow, /잔금 500,000원/);
+  assert.match(flow, /잔금 줄이기/);
+  assert.match(flow, /처리한 것 1건/);
+  assert.match(flow, /되돌리기/);
+  /* [새로고침] = 지금 가져오기 (2026-11-24): 몇 건 읽었는지 · 보드마다 실패 이유와 원본 코드. */
+  assert.match(flow, /방금 플로우에서 읽었어요 · 보드 8곳 · 성공 업무 120건 · PT 3건 \(새로 2건\)/);
+  assert.match(flow, /플로우가 API 키를 거절했어요[^<]*\(코드 UNAUTHORIZED_ERROR\)/);
   const failed = markup("운영 설정 · 수업 후 별점 집계 · 읽지 못함");
   assert.match(failed, /평가 집계를 읽지 못했어요 \(코드 not_owner\)/);
 });
@@ -3978,4 +4084,40 @@ test("정산 점검함: 시각 · 범위 먼저, 차단 · 확인 나눔, 확인
   assert.match(broken, /점검을 다 하지 못했어요/);
   assert.match(broken, /회원권 원장 \(코드 unavailable\)/);
   assert.doesNotMatch(broken, /걸린 것이 없어요/, "못 읽었으면 이상 없음이라고 말하지 않는다");
+});
+
+test("an unconfirmed lesson shows next-week and delete without opening a fold", async (t) => {
+  /* 2026-11-28 대표: "삭제 버튼이 안 보인다", "다음 주 같은 시간 등록 버튼이 사라졌다".
+     11-17 개편으로 둘 다 [수업 후] 탭의 접힌 [추가 관리] 안에 있었다 -- [수업 전] 에는 아예 없었다. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("일정 탭 · 소속 · 확정 전");
+  const actions = markup.match(/<section data-lesson-actions[\s\S]*?<\/section>/)?.[0] || "";
+  assert.ok(actions, "확정 전 수업에는 접지 않은 자리가 있다");
+  assert.match(actions, /다음 주 같은 시간 등록/);
+  assert.match(actions, /data-lesson-delete/);
+  assert.match(actions, /일정 삭제/);
+  const more = markup.match(/<section data-more-section[\s\S]*?<\/section>/)?.[0] || "";
+  assert.doesNotMatch(more, /일정 삭제|다음 주 같은 시간/, "접힌 칸에 같은 버튼을 두 번 두지 않는다");
+});
+
+test("a confirmed lesson keeps its delete closed to instructors", async (t) => {
+  // 확정된 수업은 지금 규칙 그대로 -- 지우는 버튼 없이 되돌리는 사람을 말한다.
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("일정 탭 · 소속 · 확정됨");
+  assert.doesNotMatch(markup, /data-lesson-actions/);
+  assert.doesNotMatch(markup, /data-lesson-delete/);
+});
+
+test("schedule colours show one dot per type, not a swatch wall", async (t) => {
+  /* 2026-11-28 대표: "색 고르는 칸이 눈에 아프고 거슬린다". 유형 7개 x 견본 8개가 한꺼번에
+     펼쳐져 있었다. 지금은 유형마다 한 줄, 누르면 그 유형만 색 점이 열린다. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("더보기 탭 · 일정 색상");
+  const rows = markup.match(/data-schedule-color-type="/g) || [];
+  assert.equal(rows.length, 7, "유형마다 한 줄");
+  assert.equal((markup.match(/role="radio"/g) || []).length, 0, "처음에는 색 점이 닫혀 있다");
+  assert.equal((markup.match(/aria-expanded="false"/g) || []).length >= 7, true);
+  // 약자는 그대로 함께 보인다 -- 색만으로 구분하지 않는다.
+  for (const short of ["개", "듀", "그", "상", "휴"]) assert.match(markup, new RegExp(`>${short}<`));
+  assert.match(markup, /기본값으로 되돌리기/);
 });

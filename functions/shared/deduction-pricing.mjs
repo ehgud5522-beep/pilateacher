@@ -32,6 +32,8 @@ import { PAY_RATES } from "./pay-rates.mjs";
 export const PRICING_RULE = Object.freeze({
   /** 이 회원권의 첫 서비스 회차. 센터가 지원하는 그 한 번이다. */
   SERVICE_FIRST: "service_first",
+  /** 첫 서비스 뒤의, 수업료가 나가는 서비스 (2026-11-28 대표: 등록 횟수별 서비스 기준). */
+  SERVICE_PAID: "service_paid",
   SERVICE_ALREADY_USED: "service_already_used",
   DEPUTY_DIRECTOR: "deputy_director",
   /** 디오사 관리 수업. 표값 고정이고 직급·인수인계·누적에 걸리지 않는다. */
@@ -135,12 +137,48 @@ export function newToInstructorUnitPrice(category) {
 }
 
 /**
- * 한 회원권이 급여를 주는 서비스 회차 수.
+ * 기준표에 없는 회원권이 급여를 주는 서비스 회차 수.
  *
  * 서비스를 몇 회 붙였든 센터가 내는 것은 1회분이다. 두 번째부터는 강사 봉사이고
  * 단가가 0 이 된다 -- 잔여 횟수는 그대로 줄어든다. 급여만 0 이다.
+ * 등록 횟수가 기준표(SERVICE_PAY_SESSIONS)에 있으면 그 수만큼 준다 (paidServiceSessionsFor).
  */
 export const PAID_SERVICE_SESSIONS_PER_PASS = 1;
+
+/* ── 등록 횟수별 서비스 (2026-11-28 대표 공지 "서비스 횟수 지급 기준 재안내 -- 11월부터", 적용은 이날 차감부터) ──
+     20회 등록 → 서비스 2회 · 30 → 3 · 40 → 4 · 50 → 5
+     수업료: 첫 서비스 1회 1만원(표 PAY_RATES.SERVICE), 나머지 회당 2만원. 디오사A 는 회당 1만원. 신규 · 재등록 같다
+     전환 · 세션업 · 깍두기 · 다른 이벤트는 적용 안 됨 -- 예전처럼 첫 1회만
+   기준표에 없는 횟수(10 · 25 · 100 …)도 예전처럼 첫 1회만이다 (대표: "자동으로 채우지 말고 수업료 나가는 개수만 알려 주라").
+   서비스 횟수 자체는 발급하는 사람이 넣는다 -- 이 표는 그중 **수업료가 나가는 회차 수**다. */
+export const SERVICE_PAY_SESSIONS = Object.freeze({ 20: 2, 30: 3, 40: 4, 50: 5 });
+export const SERVICE_EXTRA_UNIT_PRICE = 20000;
+export const DIOSA_A_SERVICE_UNIT_PRICE = 10000;
+/** @type {ReadonlyArray<string>} */
+const SERVICE_TABLE_EXCLUDED_CATEGORIES = Object.freeze([
+  PAY_CATEGORY.PT_1_1_REPURCHASE_EVENT, PAY_CATEGORY.PT_2_1_REPURCHASE_EVENT,
+  PAY_CATEGORY.SERVICE, PAY_CATEGORY.LETMEIN, PAY_CATEGORY.ETC,
+]);
+/* 깍두기 · 세션업 · 전환은 카테고리가 따로 없어 상품 이름으로 가린다 (예: "1:1 PT 깍두기 20회" 는 pt_1_1_new). */
+const SERVICE_TABLE_EXCLUDED_NAME = /깍두기|세션\s*업|전환|이벤트|공동구매/i;
+
+/**
+ * 이 회원권에서 수업료가 나가는 서비스 회차 수.
+ * @param {{ category?: string, totalSessions?: number, productName?: string }} pass
+ * @returns {{ paid: number, table: boolean, excluded: boolean }}
+ *   table: 기준표가 정한 수인가 · excluded: 이벤트 · 깍두기 등이라 기준표가 적용되지 않는가
+ */
+export function paidServiceSessionsFor(pass = {}) {
+  const category = String(pass?.category ?? "");
+  const name = String(pass?.productName ?? "");
+  if (SERVICE_TABLE_EXCLUDED_CATEGORIES.includes(category) || SERVICE_TABLE_EXCLUDED_NAME.test(name)) {
+    return { paid: PAID_SERVICE_SESSIONS_PER_PASS, table: false, excluded: true };
+  }
+  const fromTable = SERVICE_PAY_SESSIONS[Number(pass?.totalSessions)];
+  return typeof fromTable === "number"
+    ? { paid: fromTable, table: true, excluded: false }
+    : { paid: PAID_SERVICE_SESSIONS_PER_PASS, table: false, excluded: false };
+}
 
 /**
  * 이 차감이 서비스 회차를 쓰는가.
@@ -411,6 +449,8 @@ export function deputyDirectorUnitPrice({ netContractPrice, totalSessions }) {
  *   handedOver?: boolean,
  *   priorSessions?: number,
  *   serviceUsedCount?: number,
+ *   passCategory?: string,
+ *   paidServiceSessions?: number,
  * }} input
  *   category          회원권의 기준 카테고리
  *   title             차감 시점의 강사 직급 (판정 1.5가 쓰는 값)
@@ -422,6 +462,8 @@ export function deputyDirectorUnitPrice({ netContractPrice, totalSessions }) {
  *                     신규 단가다 (판정 2) -- 누적과 무관하다
  *   priorSessions     이 강사가 이 회원에게 이미 진행한 횟수
  *   serviceUsedCount  이 회원권에서 이미 나간 service 차감 수
+ *   passCategory      회원권의 카테고리 (서비스 회차일 때 디오사A 인지 본다)
+ *   paidServiceSessions 이 회원권에서 수업료가 나가는 서비스 회차 수 (paidServiceSessionsFor). 없으면 1 -- 예전 그대로
  * @returns {{ unitPrice: number, rule: string }}
  */
 export function resolveDeductionUnitPrice(input = {}) {
@@ -444,15 +486,23 @@ export function resolveDeductionUnitPrice(input = {}) {
      회분이고, 그다음부터는 0원이다. 회차는 그대로 빠진다 -- 회원은 받은
      것이고, 0원인 것은 강사에게 주는 돈이다. */
   if (category === PAY_CATEGORY.SERVICE) {
-    if (serviceUsedCount >= PAID_SERVICE_SESSIONS_PER_PASS) {
+    const paidServiceSessions = Number.isInteger(input?.paidServiceSessions) && input.paidServiceSessions >= 1
+      ? input.paidServiceSessions : PAID_SERVICE_SESSIONS_PER_PASS;
+    if (serviceUsedCount >= paidServiceSessions) {
       return { unitPrice: 0, rule: PRICING_RULE.SERVICE_ALREADY_USED };
     }
-    /* 표에 적힌 서비스 금액. baseUnitPrice 로 들어온다 -- 부르는 쪽이
-       defaultUnitPriceFor(SERVICE) 를 넣는다 (pass-repository). */
-    return {
-      unitPrice: requiredInt(input?.baseUnitPrice, "baseUnitPrice", { min: 0 }),
-      rule: PRICING_RULE.SERVICE_FIRST,
-    };
+    /* 디오사A 의 서비스는 첫 회든 아니든 1만원 (2026-11-28 대표 공지). */
+    const diosaA = String(input?.passCategory ?? "") === PAY_CATEGORY.DIOSA_A;
+    if (serviceUsedCount === 0) {
+      /* 표에 적힌 서비스 금액. baseUnitPrice 로 들어온다 -- 부르는 쪽이
+         defaultUnitPriceFor(SERVICE) 를 넣는다 (pass-repository). */
+      return {
+        unitPrice: diosaA ? DIOSA_A_SERVICE_UNIT_PRICE : requiredInt(input?.baseUnitPrice, "baseUnitPrice", { min: 0 }),
+        rule: PRICING_RULE.SERVICE_FIRST,
+      };
+    }
+    /* 둘째부터 기준표 수까지: 회당 2만원, 디오사A 는 1만원. */
+    return { unitPrice: diosaA ? DIOSA_A_SERVICE_UNIT_PRICE : SERVICE_EXTRA_UNIT_PRICE, rule: PRICING_RULE.SERVICE_PAID };
   }
 
   // 판정 1. 누적에도, 인수인계에도, 카테고리에도 걸리지 않는다. 언제나 5:5.

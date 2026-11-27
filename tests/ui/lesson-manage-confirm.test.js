@@ -112,7 +112,20 @@ test("[노쇼 처리]: 차감을 고르지 않았으면 1회 차감으로 적은
   } finally { await view.cleanup(); }
 });
 
-test("[상태 변경] → 노쇼 → 차감 안 함: 하단 버튼이 그대로 따라 말한다", async () => {
+test("출석 · 노쇼 · 취소 버튼은 누르지 않아도 보인다 -- [상태 변경] 을 찾지 못했다 (2026-11-28 반송 최형인 점장)", async () => {
+  const view = await mount("일정 탭 · 소속 · 1:1 노쇼", (lesson) => lesson);
+  try {
+    for (const key of ["done", "noshow", "cancel"]) {
+      const button = view.container.querySelector(`[data-attendance-choice="${key}"]`);
+      assert.ok(button, key);
+      assert.equal(button.closest("[inert]"), null, `${key} 버튼이 접힌 칸(inert) 안에 있으면 보이지 않는다`);
+    }
+    const toggle = [...view.container.querySelectorAll("button")].find((b) => ["상태 변경", "접기"].includes(b.textContent.trim()));
+    assert.equal(toggle, undefined, "펼치는 작은 글자 버튼은 없다");
+  } finally { await view.cleanup(); }
+});
+
+test("노쇼 → 차감 안 함: 하단 버튼이 그대로 따라 말한다 (출석 · 노쇼 · 취소는 늘 펼쳐 있다)", async () => {
   const view = await mount("일정 탭 · 소속 · 1:1 노쇼", (lesson) => ({ ...lesson, attendees: lesson.attendees.map((a) => { const { noshowFee, ...rest } = a; return rest; }) }));
   try {
     const waive = [...view.container.querySelectorAll("button")].find((b) => b.textContent.trim() === "차감 안 함");

@@ -36,7 +36,7 @@ import {
 } from "../../src/data/repositories/client-repository.js";
 import { mergeRoster } from "../../src/features/roster/roster-bridge.js";
 import { linkCandidates, linkDeviceMember } from "../../src/features/roster/unlinked-members.js";
-import { createFirestorePassStore, deductPass } from "../../src/data/repositories/pass-repository.js";
+import { createFirestorePassStore, deductPass, issuePass } from "../../src/data/repositories/pass-repository.js";
 import {
   createFirestoreLessonScheduleStore, publishScheduledLessons, reopenSettledLesson,
 } from "../../src/data/repositories/lesson-schedule-repository.js";
@@ -3818,7 +3818,8 @@ describe("checking attendance against a pass", () => {
        그래서 **목록을 베껴 적지 않고 PRICING_RULE 로 직접 돈다.** 여기 적은
        literal 은 규칙 파일과 함께 썩을 수 있지만, 앱 상수는 그럴 수 없다. */
     const values = Object.values(PRICING_RULE);
-    assert.equal(values.length, 9, "판정이 늘었으면 규칙 목록도 늘려야 한다");
+    /* 2026-11-28: service_paid (등록 횟수별 서비스) 가 늘어 10. */
+    assert.equal(values.length, 10, "판정이 늘었으면 규칙 목록도 늘려야 한다");
     for (const rule of values) {
       await assertSucceeds(setDoc(
         ledgerDocOf(users.instructor, ORG_A, PASS_A, `entry-rule-${rule}`),
@@ -7094,5 +7095,286 @@ describe("정산 점검 -- 결과는 서버만 · 대표급만 읽음 · 확인�
     await assertFails(deleteDoc(logRef(users.owner, "l1")), "이력은 못 지운다");
     await assertSucceeds(getDoc(logRef(users.owner, "l1")));
     await assertFails(getDoc(logRef(users.instructor, "l1")));
+  });
+});
+
+describe("플로우 PT 발급 대기 -- 서버가 만들고, 대표 · 총괄 · FC(맡은 지점)가 처리 칸만 고친다", () => {
+  const POST = "88635315";
+  const path = ["organizations", ORG_A, "flowPtQueue", POST];
+  const ref = (userId) => doc(dbFor(userId), ...path);
+  const row = (extra = {}) => ({
+    organizationId: ORG_A, postId: POST, flowProjectId: "2955393", branchName: "삼계점", locationId: "loc-samgye",
+    title: "회원 잔금", excerpt: "1:1pt 10s", mentionsRefund: false, registerName: "삼계점", registeredAt: new Date(2026, 10, 24),
+    taskStatus: "COMPLETE", flowUrl: "https://flow.team/main.act?projectId=2955393&postId=88635315",
+    state: "waiting", handledBy: "", handledAt: null, ...extra,
+  });
+  const seedRow = (extra) => testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), ...path), row(extra));
+  });
+  const scopeManager = (locationIds) => testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "memberships", `${ORG_A}_${users.manager}`), {
+      organizationId: ORG_A, userId: users.manager, role: "manager", status: "active", locationIds,
+    });
+  });
+  const handle = (userId, state, extra = {}) => updateDoc(ref(userId), { state, handledBy: userId, handledAt: serverTimestamp(), ...extra });
+
+  /* 2026-11-28 3단계: 발급 뒤 플로우 내용이 바뀐 것을 봤다는 [확인함] -- 확인 칸 둘만, 회원권과 이어진 줄에도. */
+  test("발급 뒤 바뀜 [확인함]: 확인 칸 둘만 · 내 이름 · 지금 시각, 바뀜 표시가 있는 줄만", async () => {
+    await seedRow({ state: "issued", handledBy: users.owner, passId: "pass-linked", changedAfterIssueAt: new Date(2026, 10, 28), changedAfterIssueFields: ["sessions"] });
+    await scopeManager(["loc-samgye"]);
+    await assertSucceeds(updateDoc(ref(users.manager), { changeAckedAt: serverTimestamp(), changeAckedBy: users.manager }));
+    await assertFails(updateDoc(ref(users.manager), { changeAckedAt: serverTimestamp(), changeAckedBy: users.owner }), "남의 이름");
+    await assertFails(updateDoc(ref(users.manager), { changeAckedAt: serverTimestamp(), changeAckedBy: users.manager, changedAfterIssueAt: null }), "바뀜 표시를 지우지 못한다");
+    await seedRow({ state: "issued", handledBy: users.owner });
+    await assertFails(updateDoc(ref(users.manager), { changeAckedAt: serverTimestamp(), changeAckedBy: users.manager }), "바뀜 표시가 없는 줄");
+  });
+
+  /* 2026-11-28 3단계 · 대표 결정: 계약금 때 발급, 잔금은 회원권 잔금 칸. 잔금 글 하나로 회원권 하나의 잔금을 받은 만큼 줄인다. */
+  test("잔금 받음: 잔금 글 처리와 회원권 잔금 줄이기가 한 배치로 서로 맞을 때만", async () => {
+    const PASS = "pass-balance";
+    const passPath = ["organizations", ORG_A, "passes", PASS];
+    const seedPass = (balance, extra = {}) => testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), ...passPath), { ...passFixture(ORG_A, PASS, { locationId: "loc-samgye" }), balance, ...extra });
+    });
+    const receive = (userId, { received, newBalance, postId = POST, linkedPass = PASS, postState = "issued" }) => {
+      const db = dbFor(userId);
+      const batch = writeBatch(db);
+      batch.update(doc(db, ...passPath), { balance: newBalance, balanceFlowPostId: postId, balanceUpdatedAt: serverTimestamp(), balanceUpdatedBy: userId });
+      batch.update(doc(db, ...path), { state: postState, handledBy: userId, handledAt: serverTimestamp(), balancePassId: linkedPass, balanceReceivedWon: received });
+      return batch.commit();
+    };
+    await scopeManager(["loc-samgye"]);
+    await seedRow({ isBalance: true });
+    await seedPass(500000);
+    await assertFails(receive(users.manager, { received: 300000, newBalance: 250000 }), "줄어든 금액과 받은 금액이 다르면");
+    await assertFails(receive(users.manager, { received: 300000, newBalance: 800000 }), "늘리지 못한다");
+    await assertFails(receive(users.manager, { received: 600000, newBalance: -100000 }), "0 아래로 못 간다");
+    await assertSucceeds(receive(users.manager, { received: 300000, newBalance: 200000 }));
+    await assertFails(receive(users.manager, { received: 100000, newBalance: 100000 }), "처리된 잔금 글로 두 번 줄이지 못한다");
+
+    // 잔금 글이 아니면 못 쓴다 -- 계약금 글로 잔금을 줄이지 않는다.
+    await seedRow({ isBalance: false });
+    await seedPass(500000);
+    await assertFails(receive(users.manager, { received: 100000, newBalance: 400000 }), "잔금 글이 아닌 줄");
+    // 회원권만 따로 줄이지 못한다 (글 없이).
+    await assertFails(updateDoc(doc(dbFor(users.manager), ...passPath), { balance: 0, balanceFlowPostId: POST, balanceUpdatedAt: serverTimestamp(), balanceUpdatedBy: users.manager }));
+    // 다른 지점 FC 는 못 한다.
+    await seedRow({ isBalance: true });
+    await scopeManager(["loc-other"]);
+    await assertFails(receive(users.manager, { received: 100000, newBalance: 400000 }), "다른 지점 FC");
+    // 대표는 된다. 강사는 못 한다.
+    await assertSucceeds(receive(users.owner, { received: 500000, newBalance: 0 }));
+    await seedRow({ isBalance: true });
+    await seedPass(500000);
+    await assertFails(receive(users.instructor, { received: 100000, newBalance: 400000 }), "강사");
+  });
+
+  test("읽기: 대표 · 총괄 · 맡은 지점 FC 는 읽고, 다른 지점 FC · 강사 · 직원 · 다른 센터는 못 읽는다", async () => {
+    await seedRow();
+    await assertSucceeds(getDoc(ref(users.owner)));
+    await assertSucceeds(getDoc(ref(users.area_manager)));
+    await scopeManager(["loc-samgye"]);
+    await assertSucceeds(getDoc(ref(users.manager)));
+    await assertSucceeds(getDocs(query(collection(dbFor(users.manager), "organizations", ORG_A, "flowPtQueue"), where("locationId", "in", ["loc-samgye"]))));
+    /* 앱이 읽는 두 가지 (2026-11-28): 최근 45일 · 날짜와 상관없는 대기. 지점으로 좁혀야 열린다. */
+    const queue = collection(dbFor(users.manager), "organizations", ORG_A, "flowPtQueue");
+    await assertSucceeds(getDocs(query(queue, where("locationId", "in", ["loc-samgye"]), where("registeredAt", ">=", new Date(2026, 9, 1)))));
+    await assertSucceeds(getDocs(query(queue, where("locationId", "in", ["loc-samgye"]), where("state", "==", "waiting"))));
+    await assertSucceeds(getDocs(query(collection(dbFor(users.owner), "organizations", ORG_A, "flowPtQueue"), where("state", "==", "waiting"))));
+    await scopeManager(["loc-other"]);
+    await assertFails(getDoc(ref(users.manager)));
+    await assertFails(getDoc(ref(users.instructor)));
+    await assertFails(getDoc(ref(users.staff)));
+    await assertFails(getDoc(ref(users.outsider)));
+  });
+  test("처리: 발급함 · 해당 없음 · 되돌리기는 처리 칸만, 내 이름 · 지금 시각으로", async () => {
+    await seedRow();
+    await assertSucceeds(handle(users.owner, "issued"));
+    await assertSucceeds(handle(users.owner, "waiting"));
+    await scopeManager(["loc-samgye"]);
+    await assertSucceeds(handle(users.manager, "not_applicable"));
+  });
+  test("거부: 플로우 칸 고치기 · 모르는 상태 · 남의 이름 · 만들기 · 지우기 · 강사 · 다른 지점 FC", async () => {
+    await seedRow();
+    await assertFails(handle(users.owner, "issued", { title: "바꿈" }));
+    await assertFails(handle(users.owner, "done"));
+    await assertFails(updateDoc(ref(users.owner), { state: "issued", handledBy: users.manager, handledAt: serverTimestamp() }));
+    await assertFails(updateDoc(ref(users.owner), { state: "issued", handledBy: users.owner, handledAt: new Date(2020, 0, 1) }));
+    await assertFails(setDoc(doc(dbFor(users.owner), "organizations", ORG_A, "flowPtQueue", "new-post"), row({ postId: "new-post" })));
+    await assertFails(deleteDoc(ref(users.owner)));
+    await assertFails(handle(users.instructor, "issued"));
+    await scopeManager(["loc-other"]);
+    await assertFails(handle(users.manager, "issued"));
+  });
+});
+
+describe("PT 발급은 발급 대기에서만 (scheduleSync.flowPtGate) -- 2026-11-24 대표 \"오늘부터 바로 막기\"", () => {
+  const passRef = (db, passId) => doc(db, "organizations", ORG_A, "passes", passId);
+  const ledgerRef = (db, passId) => doc(db, "organizations", ORG_A, "passes", passId, "ledger", `${passId}_issue`);
+  const queueRef = (db, postId) => doc(db, "organizations", ORG_A, "flowPtQueue", postId);
+  const issueEntry = (passId, category = "pt_1_1_new") => ({
+    organizationId: ORG_A, passId, clientId: "client-member", locationId: "location-a", type: "issue", delta: 20,
+    category, unitPrice: 60000, instructorId: users.instructor, occurredAt: serverTimestamp(), createdAt: serverTimestamp(), createdBy: users.owner,
+  });
+  const gate = (mode) => testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "runtimeConfig", "scheduleSync"), { flowPtGate: { mode } }, { merge: true });
+  });
+  const seedQueue = (postId, state = "waiting") => testEnv.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), "organizations", ORG_A, "flowPtQueue", postId), {
+      organizationId: ORG_A, postId, locationId: "location-a", branchName: "삼계점", title: "회원", state, handledBy: "", handledAt: null, registeredAt: new Date(),
+    });
+  });
+  const issue = (passId, extra = {}, { queue, by = users.owner } = {}) => {
+    const db = dbFor(by);
+    const batch = writeBatch(db);
+    batch.set(passRef(db, passId), passFixture(ORG_A, passId, { createdBy: by, ...extra }));
+    batch.set(ledgerRef(db, passId), { ...issueEntry(passId, extra.category), createdBy: by });
+    if (queue) batch.update(queueRef(db, queue), { state: "issued", handledBy: by, handledAt: serverTimestamp(), passId });
+    return batch.commit();
+  };
+
+  test("꺼져 있으면 지금처럼 발급된다", async () => {
+    await gate("off");
+    await assertSucceeds(issue("gate-off"));
+  });
+  test("켜지면 PT · 디오사는 발급 대기 없이 막히고, 그룹 같은 다른 종류는 그대로", async () => {
+    await gate("all");
+    await assertFails(issue("gate-plain"));
+    await assertFails(issue("gate-diosa", { category: "diosa_a" }));
+    await assertSucceeds(issue("gate-etc", { category: "etc" }));
+  });
+  test("발급 대기에서 고르면 된다 -- 같은 배치에서 그 등록이 이 회원권과 이어진다", async () => {
+    await gate("all");
+    await seedQueue("99000001");
+    await assertSucceeds(issue("gate-linked", { flowPostId: "99000001" }, { queue: "99000001" }));
+    await seedQueue("99000002");
+    await assertFails(issue("gate-unlinked", { flowPostId: "99000002" }), "등록을 이어 주지 않으면 거절");
+    await seedQueue("99000003", "issued");
+    await assertFails(issue("gate-used", { flowPostId: "99000003" }, { queue: "99000003" }), "이미 처리된 등록으로 두 번 발급 못 함");
+  });
+  test("FC매니저도 발급 대기에서 골라 발급한다 (2026-11-27 장유 · 양산 FC permission-denied)", async () => {
+    await gate("all");
+    await seedQueue("99000021");
+    await assertSucceeds(issue("gate-linked-manager", { flowPostId: "99000021" }, { queue: "99000021", by: users.manager }));
+  });
+  test("FC매니저가 앱 저장 경로(issuePass)로 듀엣 PT 를 발급 대기와 이어 발급한다", async () => {
+    await gate("all");
+    await seedQueue("99000031");
+    const input = (extra) => ({
+      clientId: "client-member", clientIds: ["client-member", "client-other"], locationId: "location-a", productId: "product-duet",
+      payCategory: "pt_2_1_new", productName: "듀엣", totalSessions: 20, serviceSessions: 0, contractPrice: 1200000, purchaseRound: 1,
+      paymentMethod: "card", balance: 0, balanceEdited: false, paymentNote: "", instructorId: users.instructor,
+      expiresAt: new Date(Date.now() + 180 * 86400000), issuerRole: "manager", createdBy: users.manager, ...extra,
+    });
+    await assertSucceeds(issuePass(ORG_A, input({ flowPostId: "99000031" }), { store: createFirestorePassStore({ firestore: dbFor(users.manager) }) }));
+    await assertSucceeds(issuePass(ORG_A, input({ flowBypassReason: "플로우 장애" }), { store: createFirestorePassStore({ firestore: dbFor(users.manager) }) }));
+  });
+  test("지점이 정해진 FC매니저(양산처럼 locationId 하나)도 발급 대기 · 사유 · 그룹으로 발급한다", async () => {
+    await gate("all");
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.manager}`), { locationId: "location-a" }, { merge: true });
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.instructor}`), { locationIds: ["location-a"] }, { merge: true });
+    });
+    await seedQueue("99000041");
+    await assertSucceeds(issue("gate-scoped-linked", { flowPostId: "99000041" }, { queue: "99000041", by: users.manager }));
+    await assertSucceeds(issue("gate-scoped-bypass", { flowBypassReason: "플로우 장애" }, { by: users.manager }));
+    await assertSucceeds(issue("gate-scoped-etc", { category: "etc" }, { by: users.manager }));
+  });
+  test("지점 하나(locationId 만)인 FC매니저가 앱 저장 경로로 1:1 PT 를 등록 연결 · 사유로 발급한다 (2026-11-28 양산)", async () => {
+    await gate("all");
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.manager}`), { locationId: "location-a" }, { merge: true });
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.instructor}`), { locationId: "location-a", locationIds: ["location-a"] }, { merge: true });
+    });
+    await seedQueue("99000051");
+    const store = createFirestorePassStore({ firestore: dbFor(users.manager) });
+    const input = (extra) => ({
+      clientId: "client-member", locationId: "location-a", productId: "product-1on1", payCategory: "pt_1_1_new", productName: "1:1 PT",
+      totalSessions: 50, serviceSessions: 0, contractPrice: 2000000, purchaseRound: 1, paymentMethod: "card", balance: 0, balanceEdited: false,
+      paymentNote: "", instructorId: users.instructor, expiresAt: new Date(Date.now() + 365 * 86400000),
+      fullRoomRate: 30000, issuerRole: "manager", createdBy: users.manager, ...extra,
+    });
+    await assertSucceeds(issuePass(ORG_A, input({ flowPostId: "99000051" }), { store }));
+    await assertSucceeds(issuePass(ORG_A, input({ flowBypassReason: "플로우 장애" }), { store }));
+  });
+  /* ── 규칙 계산량 (2026-11-28) ──────────────────────────────────────
+     Firestore 는 요청(배치 전체) 하나에 식 1000개까지만 계산하고, 넘으면 이유 없이 permission-denied 다.
+     게이트가 얹힌 뒤 FC 의 복합결제 PT 발급이 전부 이 한도를 넘었다 (양산 FC, 게이트 뒤 FC 복합결제 PT 0건).
+     가장 무거운 실제 조합을 여기 고정한다 -- 규칙이 다시 무거워지면 이 묶음이 먼저 실패한다.
+     2026-11-28 고친 뒤 여유: 이 조합에 "1 == 1" 40개를 더 얹어도 통과, 60개면 넘는다 (고치기 전 0개에서 넘음).
+     같은 날 잔금 · 실패 글 연결 금지(flowPtPostOpen)를 더한 뒤: 30개 통과 · 40개 넘음.
+     한도는 문서마다 센다 -- 회원권 발급 문(passes create)이 무겁다. 그 문에 칸을 늘릴 때 이 테스트를 본다. */
+  test("규칙 계산량: FC 의 가장 무거운 PT 발급 조합이 한도 안에서 통과한다", async () => {
+    await gate("all");
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      // 운영 모양: FC 는 지점 둘(양산 · 좌동처럼), 강사는 겸직.
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.manager}`), { locationId: "location-a", locationIds: ["location-a", "location-z"] }, { merge: true });
+      await setDoc(doc(db, "memberships", `${ORG_A}_${users.instructor}`), { locationId: "location-z", locationIds: ["location-z", "location-a"] }, { merge: true });
+    });
+    const store = createFirestorePassStore({ firestore: dbFor(users.manager) });
+    const base = {
+      clientId: "client-member", locationId: "location-a", productId: "product-1on1", payCategory: "pt_1_1_new", productName: "1:1 PT",
+      totalSessions: 50, serviceSessions: 0, contractPrice: 2750000, purchaseRound: 1, paymentMethod: "card", balance: 0, balanceEdited: false,
+      paymentNote: "", instructorId: users.instructor, expiresAt: new Date(Date.now() + 365 * 86400000),
+      fullRoomRate: 33000, issuerRole: "manager", createdBy: users.manager,
+    };
+    const mixed = { paymentMethod: "mixed", paymentBreakdown: { card: 1000000, transfer: 1750000, other: 0, cash: 0 } };
+    const everything = {
+      serviceSessions: 2, purchaseRound: 2, balance: 100000, balanceEdited: true, manualUnitPrice: 30000, unitPriceReason: "협의",
+      clientIds: ["client-member", "client-other"], payCategory: "pt_2_1_new",
+    };
+    await seedQueue("99000081");
+    await seedQueue("99000082");
+    await seedQueue("99000083");
+    const cases = {
+      "복합결제 · 사유": { ...base, ...mixed, flowBypassReason: "이전 등록" },
+      "복합결제 · 등록 연결": { ...base, ...mixed, flowPostId: "99000081" },
+      "복합결제 · 등록 연결 · 칸 전부(듀엣 · 서비스 · 차수 · 잔금 · 단가 직접)": { ...base, ...mixed, ...everything, flowPostId: "99000082" },
+      "기타결제 메모 · 등록 연결 · 칸 전부": { ...base, ...everything, paymentMethod: "other", paymentNote: "바우처", flowPostId: "99000083" },
+      "복합결제 · 사유 · 칸 전부": { ...base, ...mixed, ...everything, flowBypassReason: "플로우 장애" },
+    };
+    const outcomes = {};
+    for (const [label, input] of Object.entries(cases)) {
+      try { await issuePass(ORG_A, input, { store }); outcomes[label] = "ok"; }
+      catch (error) { outcomes[label] = `${error?.code || ""} ${String(error?.message || "").slice(0, 120)}`; }
+    }
+    assert.deepEqual(outcomes, Object.fromEntries(Object.keys(cases).map((label) => [label, "ok"])));
+  });
+  test("FC매니저도 사유를 쓰면 발급된다", async () => {
+    await gate("all");
+    await assertSucceeds(issue("gate-bypass-manager", { flowBypassReason: "플로우 장애" }, { by: users.manager }));
+  });
+  test("잔금 글 · 플로우에서 실패로 바뀐 글로는 발급하지 못한다 -- 사유 발급은 된다 (2026-11-28)", async () => {
+    await gate("all");
+    const seedWith = (postId, extra) => testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "flowPtQueue", postId), {
+        organizationId: ORG_A, postId, locationId: "location-a", branchName: "삼계점", title: "회원", state: "waiting", handledBy: "", handledAt: null, registeredAt: new Date(), ...extra,
+      });
+    });
+    await seedWith("99000091", { isBalance: true });
+    await assertFails(issue("gate-balance", { flowPostId: "99000091" }, { queue: "99000091" }), "잔금 글은 회원권과 잇지 못한다");
+    await seedWith("99000092", { flowStatus: "left" });
+    await assertFails(issue("gate-left", { flowPostId: "99000092" }, { queue: "99000092" }), "실패로 바뀐 글은 회원권과 잇지 못한다");
+    await seedWith("99000093", { flowStatus: "success", isBalance: false });
+    await assertSucceeds(issue("gate-resucceeded", { flowPostId: "99000093" }, { queue: "99000093" }), "다시 성공한 글은 된다");
+    await assertSucceeds(issue("gate-balance-bypass", { flowBypassReason: "잔금 분납 확인" }));
+  });
+  test("플로우가 멈췄을 때: 사유를 쓰면 발급된다 (2자 이상)", async () => {
+    await gate("all");
+    await assertSucceeds(issue("gate-bypass", { flowBypassReason: "플로우 장애" }));
+    await assertFails(issue("gate-bypass-short", { flowBypassReason: "x" }));
+  });
+  test("이관(contractedAt) · 양도(원본 원장의 handover 항목과 한 배치)는 막지 않는다", async () => {
+    await gate("all");
+    await assertSucceeds(issue("gate-migrated", { contractedAt: Timestamp.fromDate(new Date(2026, 0, 1)) }));
+  });
+  test("이미 발급 완료 · 해당 없음은 회원권 없이도 누를 수 있다 (잔금 분납)", async () => {
+    await seedQueue("99000010");
+    await assertSucceeds(updateDoc(queueRef(dbFor(users.owner), "99000010"), { state: "issued", handledBy: users.owner, handledAt: serverTimestamp() }));
+    await seedQueue("99000011");
+    await assertFails(updateDoc(queueRef(dbFor(users.owner), "99000011"), { state: "issued", handledBy: users.owner, handledAt: serverTimestamp(), passId: "no-such-pass" }), "없는 회원권과 잇지 못한다");
   });
 });

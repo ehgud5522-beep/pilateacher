@@ -4781,7 +4781,9 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
   const manageRef = useRef(null);
   const [stage, setStage] = useState(() => initialStage(attendeesOf(draft)));
   const [stageDir, setStageDir] = useState("");
-  const [statusOpen, setStatusOpen] = useState(() => attendeesOf(draft).some((attendee) => ["noshow", "cancel"].includes(attendee.status)));
+  /* 출석 · 노쇼 · 취소 버튼은 늘 펼쳐 둔다 (2026-11-28). 전에는 [상태 변경] 작은 글자를 눌러야 열렸고,
+     강사들이 노쇼 · 취소 버튼을 찾지 못했다 (반송 최형인 점장). 확정이 끝난 수업에서만 숨긴다. */
+  const statusOpen = !settledLesson;
   const [moreOpen, setMoreOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -5501,9 +5503,7 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
               {!manageDone && stage === LESSON_STAGE.POST && activeAttendee && (
                 <div key="post" className="lm-stage space-y-6" data-dir={stageDir || undefined} data-lesson-stage="post">
                   <section data-attendance-section>
-                    {sectionTitle("출석", !settledLesson ? (
-                      <button type="button" aria-expanded={statusOpen} onClick={() => setStatusOpen((value) => !value)} className="min-h-11 px-1" style={textLink}>{statusOpen ? "접기" : "상태 변경"}</button>
-                    ) : null)}
+                    {sectionTitle("출석")}
                     {manageAttendees.length > 1 ? (
                       <div data-duet-attendance className="space-y-1">
                         {manageAttendees.map((attendee) => (

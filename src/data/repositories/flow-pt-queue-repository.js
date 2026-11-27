@@ -37,6 +37,18 @@ export function listFlowPtQueue(organizationId, { locationIds = [], now = new Da
   });
 }
 
+/**
+ * 발급 대기 하나를 지금 값으로 다시 읽는다 (2026-11-28). 발급 직전에 그 등록이 아직 대기인지 본다 --
+ * 화면을 연 뒤 누가 처리했으면 규칙이 이유 없이 거절한다 (src/features/membership/pass-issue-preflight.js).
+ * 없으면 null.
+ * @param {string} organizationId @param {string} postId
+ */
+export async function readFlowPtQueueItem(organizationId, postId) {
+  const { doc, getDoc, getFirestore } = await load();
+  const snapshot = await getDoc(doc(getFirestore(), "organizations", String(organizationId), FLOW_PT_COLLECTION, String(postId)));
+  return snapshot.exists() ? /** @type {{ id: string, state?: string }} */ ({ id: snapshot.id, ...snapshot.data() }) : null;
+}
+
 /** 처리 표시: 발급함 · 해당 없음 · 되돌리기(waiting). 처리 칸 셋만 쓴다 (규칙도 그것만 연다). */
 export async function markFlowPtQueue(organizationId, postId, state, uid) {
   if (![FLOW_PT_STATE.WAITING, FLOW_PT_STATE.ISSUED, FLOW_PT_STATE.NOT_APPLICABLE].includes(state)) throw Object.assign(new Error("flow_pt_state_invalid"), { code: "flow_pt_state_invalid" });

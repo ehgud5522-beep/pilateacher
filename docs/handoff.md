@@ -1,3 +1,17 @@
+## 2026-11-28 — 회원권 발급이 막히면 이유를 말한다 (PR, 병합 · 웹 배포 전)
+
+- 계기: FC PT 발급이 나흘 동안 `permission-denied` 한 줄로만 막혔고(원인은 규칙 식 1000개 한도, #292), 운영 데이터를 하나씩 지워
+  가며 찾아야 했다. 대표: "남은 것 PR 작업해 줘"
+- `src/features/membership/pass-issue-preflight.js`:
+  - 저장 전 점검 -- 맡은 지점 밖의 회원(`pass_location_out_of_scope`, 규칙 passInManagerScope 와 같은 선), 고른 플로우 등록을
+    다시 읽어 대기가 아니면(`flow_post_not_waiting:<state>` / 없으면 `flow_post_missing`) 목록에서 빼고 이유를 말함
+    (`readFlowPtQueueItem`, 못 읽으면 막지 않고 규칙에 맡김 + 진단)
+  - 저장 거절 문구를 종류별로 (권한 · 로그인 · 연결 · 서버 · 입력 · 분류 실패), 원본 코드 그대로
+  - 참조 코드 `passIssueRef` -- 역할/게이트/PT/플로우(linked · bypass · none)/결제 수단/듀엣. 권한 거절 · 분류 실패 문구 끝에 붙고
+    진단(`ref`)에도 남는다. FC 화면 캡처 한 장으로 어느 갈래가 막혔는지 읽힌다. 이름 · 금액 · 사유 글자는 없음
+- 확인: test:node 4032 통과(새 4) · typecheck · eslint. 화면 확인은 못 함(조직 데이터 · FC 계정이 있는 기기 필요)
+- 웹 배포만으로 반영, 폰 앱은 다음 스토어 빌드부터. #292 와 같은 handoff 맨 위를 고쳐 병합 순서에 따라 충돌 하나 날 수 있음
+
 ## 2026-11-28 — FC PT 발급 permission-denied: 규칙 식 1000개 한도 (PR, 규칙 배포 전 · 게이트 스위치 꺼 둠)
 
 - 대표: "FC 들이 수강권 발급이 막혔다" (11-24 밤 "PT 발급은 발급 대기에서만" 게이트 #291 을 켠 뒤). 양산 안나리 FC 가 PC 웹에서

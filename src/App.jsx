@@ -28015,8 +28015,18 @@ function startStaffRadarLoad({ organizationId, onLoadBranch, role }, { force = f
   return entry;
 }
 
-/** 센터 운영 메뉴가 열릴 때 미리 읽는다. 5분 안에 읽었으면 아무것도 안 한다. */
+/**
+ * 센터 운영 메뉴가 열릴 때 미리 읽는다 -- **앱을 연 뒤 처음 한 번만** (2026-11-28).
+ *
+ * 전에는 더보기를 열 때마다, 지난번에서 5분이 지났으면 다시 읽었다. 읽는 것이 회원 · 회원권 전부와 8주 차감 ·
+ * 45일 일지 · 재등록 후보라 운영 숫자로 수천 건이다 (2026-11-28: 회원 1,097 · 회원권 1,387 · 후보 589). PC 에서
+ * 이관 · 발급 · 급여로 더보기를 몇 분마다 드나드는 대표에게는 그때마다 화면이 멈칫했다 (대표: "웹으로 더보기 들어갈 때
+ * 렉"). 레이더 화면을 열면 화면이 지난 결과를 바로 보여 주고 뒤에서 새로 읽으므로(startRadarLoad), 미리 읽기는
+ * 처음 한 번이면 "누르면 바로 뜨게" 가 지켜진다.
+ */
 function prefetchRenewalRadar(params) {
+  const entry = radarEntry(params?.organizationId || "");
+  if (entry.at || entry.loading) return;
   /* 브라우저가 한가할 때 (늦어도 3초 안). 더보기를 열자마자 읽기 시작하면 수천 건을 푸는 일이 첫 몇 번의 누름과 겹친다
      (2026-11-21 대표: "눌렀을 때 반응이 0.5초 느림"). 그 사이 화면을 열면 화면이 바로 읽는다. */
   const run = () => { try { startRadarLoad(params); } catch (_ignored) { /* 미리 읽기가 메뉴를 깨뜨리면 안 된다 -- 화면을 열면 다시 읽는다. */ } };

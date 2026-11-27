@@ -7124,6 +7124,11 @@ describe("플로우 PT 발급 대기 -- 서버가 만들고, 대표 · 총괄 ·
     await scopeManager(["loc-samgye"]);
     await assertSucceeds(getDoc(ref(users.manager)));
     await assertSucceeds(getDocs(query(collection(dbFor(users.manager), "organizations", ORG_A, "flowPtQueue"), where("locationId", "in", ["loc-samgye"]))));
+    /* 앱이 읽는 두 가지 (2026-11-28): 최근 45일 · 날짜와 상관없는 대기. 지점으로 좁혀야 열린다. */
+    const queue = collection(dbFor(users.manager), "organizations", ORG_A, "flowPtQueue");
+    await assertSucceeds(getDocs(query(queue, where("locationId", "in", ["loc-samgye"]), where("registeredAt", ">=", new Date(2026, 9, 1)))));
+    await assertSucceeds(getDocs(query(queue, where("locationId", "in", ["loc-samgye"]), where("state", "==", "waiting"))));
+    await assertSucceeds(getDocs(query(collection(dbFor(users.owner), "organizations", ORG_A, "flowPtQueue"), where("state", "==", "waiting"))));
     await scopeManager(["loc-other"]);
     await assertFails(getDoc(ref(users.manager)));
     await assertFails(getDoc(ref(users.instructor)));

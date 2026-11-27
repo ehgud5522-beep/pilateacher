@@ -194,7 +194,7 @@ test("duet attendance: '전체 출석' is one bulk action, a per-member choice s
       onStatusAll: (...args) => calls.push(["all", ...args]),
     })))));
     const buttons = () => [...container.querySelectorAll("button")];
-    /* 2026-11-17 개편: 상태 바꾸기는 [상태 변경] 아래에. 회원 한 명의 출석 · 노쇼 · 취소와 전원 버튼이 함께 있다. */
+    /* 2026-11-17 개편 · 11-28: 회원 한 명의 출석 · 노쇼 · 취소와 전원 버튼이 늘 펼쳐 있다 ([상태 변경] 을 누르지 않는다). */
     const all = buttons().find((button) => button.textContent.trim() === "전체 출석");
     assert.ok(all, "전체 출석");
     await act(async () => all.click());

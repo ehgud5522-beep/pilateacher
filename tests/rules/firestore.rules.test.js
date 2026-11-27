@@ -7252,6 +7252,7 @@ describe("PT 발급은 발급 대기에서만 (scheduleSync.flowPtGate) -- 2026-
      게이트가 얹힌 뒤 FC 의 복합결제 PT 발급이 전부 이 한도를 넘었다 (양산 FC, 게이트 뒤 FC 복합결제 PT 0건).
      가장 무거운 실제 조합을 여기 고정한다 -- 규칙이 다시 무거워지면 이 묶음이 먼저 실패한다.
      2026-11-28 고친 뒤 여유: 이 조합에 "1 == 1" 40개를 더 얹어도 통과, 60개면 넘는다 (고치기 전 0개에서 넘음).
+     같은 날 잔금 · 실패 글 연결 금지(flowPtPostOpen)를 더한 뒤: 30개 통과 · 40개 넘음.
      한도는 문서마다 센다 -- 회원권 발급 문(passes create)이 무겁다. 그 문에 칸을 늘릴 때 이 테스트를 본다. */
   test("규칙 계산량: FC 의 가장 무거운 PT 발급 조합이 한도 안에서 통과한다", async () => {
     await gate("all");
@@ -7293,6 +7294,21 @@ describe("PT 발급은 발급 대기에서만 (scheduleSync.flowPtGate) -- 2026-
   test("FC매니저도 사유를 쓰면 발급된다", async () => {
     await gate("all");
     await assertSucceeds(issue("gate-bypass-manager", { flowBypassReason: "플로우 장애" }, { by: users.manager }));
+  });
+  test("잔금 글 · 플로우에서 실패로 바뀐 글로는 발급하지 못한다 -- 사유 발급은 된다 (2026-11-28)", async () => {
+    await gate("all");
+    const seedWith = (postId, extra) => testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "organizations", ORG_A, "flowPtQueue", postId), {
+        organizationId: ORG_A, postId, locationId: "location-a", branchName: "삼계점", title: "회원", state: "waiting", handledBy: "", handledAt: null, registeredAt: new Date(), ...extra,
+      });
+    });
+    await seedWith("99000091", { isBalance: true });
+    await assertFails(issue("gate-balance", { flowPostId: "99000091" }, { queue: "99000091" }), "잔금 글은 회원권과 잇지 못한다");
+    await seedWith("99000092", { flowStatus: "left" });
+    await assertFails(issue("gate-left", { flowPostId: "99000092" }, { queue: "99000092" }), "실패로 바뀐 글은 회원권과 잇지 못한다");
+    await seedWith("99000093", { flowStatus: "success", isBalance: false });
+    await assertSucceeds(issue("gate-resucceeded", { flowPostId: "99000093" }, { queue: "99000093" }), "다시 성공한 글은 된다");
+    await assertSucceeds(issue("gate-balance-bypass", { flowBypassReason: "잔금 분납 확인" }));
   });
   test("플로우가 멈췄을 때: 사유를 쓰면 발급된다 (2자 이상)", async () => {
     await gate("all");

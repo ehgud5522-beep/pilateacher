@@ -18927,7 +18927,8 @@ function PassIssue({
     Promise.resolve(onLoadFlowQueue?.(organizationId, {
       locationIds: isOwnerLevelRole(issueScope.role) ? [] : [...new Set([...(issueScope.locationIds || []), issueScope.locationId].filter(Boolean))],
     }))
-      .then((rows) => { if (alive) setFlowItems((Array.isArray(rows) ? rows : []).filter((row) => (row.state || "waiting") === "waiting")); })
+      /* 고를 수 있는 등록: 대기 · 잔금 아님 · 플로우에서 지금도 성공 (규칙 flowPtPostOpen 과 같은 선, 2026-11-28). */
+      .then((rows) => { if (alive) setFlowItems((Array.isArray(rows) ? rows : []).filter((row) => (row.state || "waiting") === "waiting" && !row.isBalance && !flowPtLeft(row))); })
       .catch((thrown) => {
         if (!alive) return;
         const code = String(thrown?.code || "unknown");
@@ -28156,6 +28157,12 @@ const flowPtTime = (value) => {
   const at = value && typeof value.toDate === "function" ? value.toDate() : value ? new Date(value) : null;
   return at && !Number.isNaN(at.getTime()) ? at.getTime() : 0;
 };
+/* 플로우에서 지금 성공이 아닌가 (서버 flowStatus left) · 최근 2주 안에 다시 성공했는가 (2026-11-28). */
+const flowPtLeft = (row) => row?.flowStatus === "left";
+const flowPtResucceeded = (row) => {
+  const at = row?.resucceededAt?.toDate ? row.resucceededAt.toDate() : row?.resucceededAt ? new Date(row.resucceededAt) : null;
+  return Boolean(at && Number.isFinite(at.getTime()) && Date.now() - at.getTime() < 14 * 86400000);
+};
 const FLOW_PT_STATE_LABEL = { issued: "이미 발급 완료", not_applicable: "해당 없음" };
 /* [새로고침] 결과의 실패 코드 → 무엇을 하면 되는지. 코드는 늘 함께 보인다 (CLAUDE.md 4). */
 const FLOW_PT_FAILURE_HINT = {
@@ -28187,6 +28194,7 @@ function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = list
   const [notice, setNotice] = useState("");
   const [showDone, setShowDone] = useState(Boolean(initialState?.showDone));
   const [showBalanceList, setShowBalanceList] = useState(Boolean(initialState?.showBalances));
+  const [showLeft, setShowLeft] = useState(Boolean(initialState?.showLeft));
   /* [새로고침] = 서버가 지금 플로우를 읽고, 그다음 목록을 다시 읽는다 (2026-11-24 대표: "새로고침으로 해줘"). */
   const [refreshing, setRefreshing] = useState(false);
   const [refreshResult, setRefreshResult] = useState(initialState?.refreshResult || null);
@@ -28256,13 +28264,18 @@ function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = list
   const waitingAll = shown.filter((row) => (row.state || "waiting") === "waiting").sort((left, right) => flowPtTime(right.registeredAt) - flowPtTime(left.registeredAt));
   /* 잔금 분납 (2026-11-24 대표: "잔금 몇 번씩 나눠 내는 사람은?") -- 회원권은 첫 결제 때 한 번 발급한다. 잔금 업무는
      새로 발급할 일이 아니라 따로 묶어 확인만 받는다. */
-  const waiting = waitingAll.filter((row) => !row.isBalance);
-  const balances = waitingAll.filter((row) => row.isBalance);
+  /* 플로우에서 실패로 바뀐 것 (2026-11-28, 서버의 flowStatus left) -- 상담 실패. 대기에서 빼 따로 묶고 발급하지 못한다
+     (규칙도 같은 선). 다시 성공으로 옮기면 서버가 대기로 돌려 놓는다. */
+  const leftRows = waitingAll.filter(flowPtLeft);
+  const waiting = waitingAll.filter((row) => !row.isBalance && !flowPtLeft(row));
+  const balances = waitingAll.filter((row) => row.isBalance && !flowPtLeft(row));
   const [showBalances, setShowBalances] = [showBalanceList, setShowBalanceList];
   const done = shown.filter((row) => (row.state || "waiting") !== "waiting").sort((left, right) => flowPtTime(right.handledAt) - flowPtTime(left.handledAt));
   const smallButton = { height: 40, borderRadius: 8, fontSize: TYPE.caption, fontWeight: 700, padding: "0 12px" };
   /* 카드 한 장 (2026-11-24 대표: "글을 쉽게 -- 발급하러 가기 · 이미 발급 완료, 날짜와 등록 시간 크게, 금액이랑 횟수"). */
   const flowPtCard = (row) => {
+    /* 발급으로 이을 수 있는가: 잔금 글(계약금 때 이미 발급)과 실패로 바뀐 글은 아니다 -- 규칙의 flowPtPostOpen 과 같은 선. */
+    const issuable = !row.isBalance && !flowPtLeft(row);
     const amount = String(row.amountManwon || "").trim();
     const big = [row.sessions ? `${row.sessions}회` : "", amount ? `${amount}만원` : ""].filter(Boolean).join(" · ");
     return (
@@ -28274,8 +28287,10 @@ function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = list
         <p className="mt-1 truncate font-bold" style={{ fontSize: TYPE.body, color: INK }}>{row.title || "이름 없음"}</p>
         {big ? <p className="mt-0.5 tabular-nums font-extrabold" style={{ fontSize: TYPE.title, color: BRAND_D }} data-flow-pt-big>{big}</p> : null}
         {row.product ? <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: INK2 }}>{row.product}</p> : null}
-        {row.isBalance || row.isTrial || row.mentionsRefund ? (
+        {row.isBalance || row.isTrial || row.mentionsRefund || flowPtLeft(row) || flowPtResucceeded(row) ? (
           <div className="mt-1 flex flex-wrap gap-1">
+            {flowPtLeft(row) ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: BAD, backgroundColor: BAD_S }} data-flow-pt-left>플로우에서 실패로 바뀜</span> : null}
+            {flowPtResucceeded(row) ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: GOOD, backgroundColor: TINT }} data-flow-pt-resucceeded>다시 성공</span> : null}
             {row.isBalance ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: WARN, backgroundColor: WARN_S }} data-flow-pt-balance>잔금</span> : null}
             {row.isTrial ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: BRAND_D, backgroundColor: TINT }} data-flow-pt-trial>PT 체험</span> : null}
             {row.mentionsRefund ? <span className="px-1.5 py-0.5 font-bold" style={{ fontSize: TYPE.caption, borderRadius: 6, color: BAD, backgroundColor: BAD_S }} data-flow-pt-refund>"환불" 이라는 말이 있어요</span> : null}
@@ -28283,11 +28298,13 @@ function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = list
         ) : null}
         {row.excerpt ? <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>{row.excerpt}</p> : null}
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {onIssue ? (
-            <button type="button" onClick={() => onIssue(row)} style={{ ...smallButton, backgroundColor: BRAND, color: "#fff" }}>발급하러 가기</button>
+          {onIssue && issuable ? (
+            <button type="button" onClick={() => onIssue(row)} style={{ ...smallButton, backgroundColor: BRAND, color: "#fff" }} data-flow-pt-issue>발급하러 가기</button>
           ) : null}
-          <button type="button" disabled={busy === row.id} onClick={() => mark(row, "issued")} className="disabled:opacity-50"
-            style={{ ...smallButton, backgroundColor: CARD, color: GOOD, border: `1px solid ${GOOD}` }}>이미 발급 완료</button>
+          {flowPtLeft(row) ? null : (
+            <button type="button" disabled={busy === row.id} onClick={() => mark(row, "issued")} className="disabled:opacity-50"
+              style={{ ...smallButton, backgroundColor: CARD, color: GOOD, border: `1px solid ${GOOD}` }}>{row.isBalance ? "잔금 확인함" : "이미 발급 완료"}</button>
+          )}
           <button type="button" disabled={busy === row.id} onClick={() => mark(row, "not_applicable")} className="disabled:opacity-50"
             style={{ ...smallButton, backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>해당 없음</button>
           {row.flowUrl ? (
@@ -28310,7 +28327,7 @@ function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = list
         <div className="mt-2" data-flow-pt-refresh={refreshResult.ok && !(refreshResult.counts?.failures || []).length ? "ok" : "failed"}>
           {refreshResult.ok ? (
             <p style={{ fontSize: TYPE.caption, color: SUB }}>
-              방금 플로우에서 읽었어요 · 보드 {refreshResult.counts.projects || 0}곳 · 성공 업무 {refreshResult.counts.posts || 0}건 · PT {refreshResult.counts.pt || 0}건 (새로 {refreshResult.counts.created || 0}건{refreshResult.counts.baseline ? ` · 오늘 전 ${refreshResult.counts.baseline}건 숨김` : ""})
+              방금 플로우에서 읽었어요 · 보드 {refreshResult.counts.projects || 0}곳 · 성공 업무 {refreshResult.counts.posts || 0}건 · PT {refreshResult.counts.pt || 0}건 (새로 {refreshResult.counts.created || 0}건{refreshResult.counts.baseline ? ` · 오늘 전 ${refreshResult.counts.baseline}건 숨김` : ""}{refreshResult.counts.resucceeded ? ` · 다시 성공 ${refreshResult.counts.resucceeded}건` : ""}{refreshResult.counts.left ? ` · 실패로 바뀜 ${refreshResult.counts.left}건` : ""}{refreshResult.counts.restored ? ` · 되살림 ${refreshResult.counts.restored}건` : ""})
               {refreshResult.counts.unmatchedBranch ? ` · 지점을 못 맞춘 PT ${refreshResult.counts.unmatchedBranch}건` : ""}
             </p>
           ) : null}
@@ -28338,7 +28355,7 @@ function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = list
         {" "}이미 발급한 것이면 <b style={{ color: INK }}>[이미 발급 완료]</b>, 발급할 게 아니면 [해당 없음].
       </p>
       <BranchTabs groups={groups} selected={picked} onSelect={(id) => setBranch(id)}
-        countLabel={(group) => `${group.rows.filter((row) => (row.state || "waiting") === "waiting" && !row.isBalance).length}건`} />
+        countLabel={(group) => `${group.rows.filter((row) => (row.state || "waiting") === "waiting" && !row.isBalance && !flowPtLeft(row)).length}건`} />
       {state.error ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{state.error}</p> : null}
       {notice ? <p role="alert" className="mt-2" style={{ fontSize: TYPE.caption, color: WARN }}>{notice}</p> : null}
       {state.rows === null ? <p className="mt-2" style={{ fontSize: TYPE.caption, color: SUB }}>읽는 중…</p> : null}
@@ -28359,9 +28376,24 @@ function FlowPtQueueScreen({ organization, currentUserId, onIssue, onLoad = list
           </button>
           <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
             잔금을 나눠 내는 회원은 <b style={{ color: INK }}>첫 결제(계약금) 때 회원권을 전체 횟수 · 전체 금액으로 한 번 발급</b>하고, 남은 금액은 발급 화면의 '잔금' 칸에 적어요.
-            {" "}그 뒤의 잔금 업무는 새로 발급할 일이 아니라 <b style={{ color: INK }}>[이미 발급 완료]</b>만 눌러 주세요. 계약금 때 발급을 못 했다면 [발급하러 가기].
+            {" "}그 뒤의 잔금 업무는 새로 발급할 일이 아니라 <b style={{ color: INK }}>[잔금 확인함]</b>만 눌러 주세요 -- 잔금 업무로는 회원권을 새로 이을 수 없어요(같은 계약이 두 번 발급돼요).
+            {" "}계약금 때 발급을 못 했다면 PT 발급 화면에서 '플로우 없이 발급' 에 사유를 적어 발급해 주세요.
           </p>
           {showBalances ? <div className="mt-2 space-y-2">{balances.map((row) => flowPtCard(row))}</div> : null}
+        </div>
+      ) : null}
+      {/* 플로우에서 실패로 바뀐 것: 상담 실패. 발급하지 않는다 -- 다시 성공으로 옮기면 저절로 대기로 돌아온다. */}
+      {leftRows.length ? (
+        <div className="mt-3" style={{ borderRadius: 10, border: `1px solid ${LINE}`, padding: 10 }} data-flow-pt-left-list>
+          <button type="button" onClick={() => setShowLeft(!showLeft)} aria-expanded={showLeft} className="flex w-full items-center justify-between text-left font-bold" style={{ fontSize: TYPE.body, color: INK }}>
+            플로우에서 실패로 바뀐 것 {leftRows.length}건
+            <ChevronDown size={16} color={SUB} style={{ transform: showLeft ? "rotate(180deg)" : "none" }} />
+          </button>
+          <p className="mt-1" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: SUB }}>
+            성공이었다가 플로우에서 성공이 아니게 된 등록이에요 (상담 실패). 여기서는 발급하지 않아요.
+            {" "}다시 연락해 플로우에서 <b style={{ color: INK }}>성공</b>으로 옮기면 10분 안에 대기로 돌아와요.
+          </p>
+          {showLeft ? <div className="mt-2 space-y-2">{leftRows.map((row) => flowPtCard(row))}</div> : null}
         </div>
       ) : null}
       {done.length ? (
@@ -33273,13 +33305,16 @@ export function createAppScreenSmokeCases() {
     /* 플로우 PT 발급 대기 (2026-11-24). 지점 칩 · 대기 카드(플로우에서 확인 · 발급함 · 해당 없음) · 처리한 것. */
     { name: "플로우 PT 발급 대기", element: providerWith(smokeOwner, (
       <FlowPtQueueScreen organization={readyOrganizationContext(smokeOwner)} currentUserId="u-owner" onIssue={() => {}}
-        initialState={{ error: "", branch: "loc-b", showDone: true, showBalances: true,
+        initialState={{ error: "", branch: "loc-b", showDone: true, showBalances: true, showLeft: true,
           refreshResult: { ok: true, counts: { projects: 8, posts: 120, pt: 3, created: 2, failures: [{ flowProjectId: "2955389", errorCode: "UNAUTHORIZED_ERROR", httpStatus: 401 }] } },
           rows: [
           { id: "p1", locationId: "loc-a", branchName: "가지점", title: "가회원 잔금", excerpt: "1:1pt 10s", state: "waiting", registeredAt: new Date(2026, 10, 24, 11, 14) },
           { id: "p2", locationId: "loc-b", branchName: "나지점", title: "나회원 신규", excerpt: "PT 20회 카드완납 010-****-****", registerName: "나지점", state: "waiting", mentionsRefund: true, isBalance: true, isTrial: true, flowUrl: "https://flow.team/main.act?projectId=1&postId=p2", registeredAt: new Date(2026, 10, 24, 10, 2) },
           { id: "p3", locationId: "loc-b", branchName: "나지점", title: "다회원 재등록", state: "issued", handledAt: new Date(2026, 10, 24, 12, 0) },
           { id: "p4", locationId: "loc-b", branchName: "나지점", title: "라회원", state: "waiting", product: "1:1pt 40s 공동구매e", sessions: 40, amountManwon: "30.25", registeredAtExact: true, excerpt: "재등록 · 1:1pt 40s 공동구매e · 30.25 · 카드완납", registeredAt: new Date(2026, 10, 24, 13, 5) },
+          /* 2026-11-28: 플로우에서 실패로 바뀐 것 (발급 못 함) · 다시 성공한 것 (대기로 돌아옴). */
+          { id: "p5", locationId: "loc-b", branchName: "나지점", title: "마회원 상담", state: "waiting", flowStatus: "left", registeredAt: new Date(2026, 10, 25, 9, 0) },
+          { id: "p6", locationId: "loc-b", branchName: "나지점", title: "바회원 재컨택", state: "waiting", flowStatus: "success", resucceededAt: new Date(), registeredAt: new Date(2026, 10, 20, 9, 0) },
         ] }} />
     )) },
     { name: "운영 설정 · 수업 후 별점 집계 · 지점별", element: providerWith(smokeOwner, (

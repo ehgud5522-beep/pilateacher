@@ -38,6 +38,11 @@ export const FLOW_PT_COLLECTION = "flowPtQueue";
 export const FLOW_PT_LOOKBACK_DAYS = 45;
 /** 처리 상태. waiting 만 목록 위에 선다. */
 export const FLOW_PT_STATE = Object.freeze({ WAITING: "waiting", ISSUED: "issued", NOT_APPLICABLE: "not_applicable", BASELINE: "baseline" });
+/* 플로우에서 지금도 성공인가 (2026-11-28). 처리 칸(state)과 따로다 -- 서버만 쓴다.
+   success: 성공 목록에 있다 (없으면 success 로 읽는다) · left: 끝까지 읽은 보드에서 두 번 연속 성공 목록에 없었다
+   (상담 실패로 옮겼거나 지웠다). left 인 줄은 회원권과 잇지 못한다 (firestore 규칙 flowPtPostLinks). */
+export const FLOW_PT_FLOW_STATUS = Object.freeze({ SUCCESS: "success", LEFT: "left" });
+export const FLOW_PT_LEFT_AFTER_MISSES = 2;
 
 /* ── 기준선 (2026-11-24 대표: "오늘부터") ──
    업무 조회에는 등록 날짜가 없어, 처음 읽었을 때 보드를 만든 8월부터의 성공 업무 750건이 전부 발급 대기로 올라왔다.

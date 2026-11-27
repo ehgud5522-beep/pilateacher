@@ -1930,10 +1930,21 @@ service cloud.firestore {
           && !("flowBypassReason" in data)
           && flowPtPostLinks(/databases/$(database)/documents/organizations/$(organizationId)/flowPtQueue/$(postId), passId);
       }
+      /* 이을 수 있는 등록 (2026-11-28 대표: 계약금 받고 성공 → 발급, 실패는 상담 실패):
+           - 아직 대기
+           - 잔금 글이 아니다 -- 회원권은 계약금 때 이미 나갔다. 잔금 글로 또 이으면 같은 계약이 두 번 발급된다
+           - 플로우에서 지금도 성공 (flowStatus left 가 아니다) -- 상담 실패로 옮긴 글로 발급하지 않는다. 다시 성공으로
+             옮기면 서버가 success 로 되돌린다 (functions/src/flow-pt-queue.js)
+         get 한 번을 let 으로 받는다 -- 회원권 발급 문은 식 1000개 한도 밑이다 (맨 위 "규칙 계산량"). */
       function flowPtPostLinks(path, passId) {
         return exists(path)
-          && get(path).data.state == "waiting"
+          && flowPtPostOpen(get(path).data)
           && getAfter(path).data.get("passId", "") == passId;
+      }
+      function flowPtPostOpen(post) {
+        return post.state == "waiting"
+          && post.get("isBalance", false) != true
+          && post.get("flowStatus", "success") != "left";
       }
       /* 플로우가 멈췄을 때의 비상구: 대표 · 총괄 · FC매니저(발급할 수 있는 사람 전부 -- canIssuePass)가 사유를 쓰고 발급. */
       function flowPtBypassed(data) {

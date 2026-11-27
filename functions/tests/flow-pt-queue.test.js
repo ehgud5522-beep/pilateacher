@@ -47,13 +47,15 @@ function fakeFirestore(seed) {
     set: async (value) => { docs.set(path, value); },
     update: async (value) => { docs.set(path, { ...docs.get(path), ...value }); },
   });
-  const collection = (path) => ({
-    get: async () => ({
-      docs: [...docs.entries()]
-        .filter(([key]) => key.startsWith(`${path}/`) && key.split("/").length === path.split("/").length + 1)
-        .map(([key, value]) => ({ id: key.slice(path.length + 1), data: () => value })),
-    }),
+  const list = (path, filters = []) => [...docs.entries()]
+    .filter(([key]) => key.startsWith(`${path}/`) && key.split("/").length === path.split("/").length + 1)
+    .filter(([, value]) => filters.every(([field, op, want]) => (op === "in" ? want.includes(value?.[field]) : value?.[field] === want)))
+    .map(([key, value]) => ({ id: key.slice(path.length + 1), data: () => value }));
+  const query = (path, filters) => ({
+    get: async () => ({ docs: list(path, filters) }),
+    where: (field, op, want) => query(path, [...filters, [field, op, want]]),
   });
+  const collection = (path) => query(path, []);
   return { doc: ref, collection, docs };
 }
 
@@ -68,6 +70,9 @@ test("앱 저장소와 서버가 같은 이름 · 상태를 쓴다", async () =>
   const repo = fs.readFileSync(require.resolve("../../src/data/repositories/flow-pt-queue-repository.js"), "utf8");
   assert.ok(repo.includes(`FLOW_PT_COLLECTION = "${FLOW_PT_COLLECTION}"`));
   for (const value of Object.values(FLOW_PT_STATE)) assert.ok(repo.includes(`"${value}"`));
+  const { FLOW_PT_FLOW_STATUS } = await shared();
+  assert.ok(repo.includes("FLOW_PT_FLOW_STATUS"), "앱도 flowStatus 값을 둔다");
+  for (const value of Object.values(FLOW_PT_FLOW_STATUS)) assert.ok(repo.includes(`"${value}"`), `flowStatus ${value}`);
 });
 
 /* 2026-11-24 첫 실행: 9개 보드 모두 network · HTTP 0, 원문은 로거가 message 칸을 덮어 사라졌다. */
@@ -289,4 +294,63 @@ test("기준선: 옛 글을 지금 성공으로 옮기면 뜨고, 다음 동기�
   assert.equal(firestore.docs.get("organizations/org/flowPtQueue/87000001").state, "baseline", "11-24 첫 실행 전에 본 옛 성공 업무는 그대로 숨긴다");
   assert.equal(firestore.docs.get("organizations/org/flowPtQueue/87000002").state, "baseline", "손댄 사람이 있으면 건드리지 않는다");
   assert.equal(counts.restored, 1);
+});
+
+/* 2026-11-28 대표: "계약금 받고 성공 → 회원권 발급. 실패는 상담 실패인데 다시 연락해 성공으로 바꿀 수 있다". */
+test("성공 → 실패: 끝까지 읽은 보드에서 두 번 연속 없으면 left -- 발급된 줄 · 덜 읽은 보드는 건드리지 않는다", async () => {
+  const seedRow = (postId, extra = {}) => ({ postId, flowProjectId: "2955393", state: "waiting", handledBy: "", createdAt: new Date("2026-11-26T00:00:00Z"), registeredAt: new Date("2026-11-26T00:00:00Z"), ...extra });
+  const firestore = fakeFirestore({
+    "organizations/org": {}, "organizations/org/locations/l1": { name: "삼계점" },
+    "organizations/org/flowPtQueue/90000010": seedRow("90000010"),
+    "organizations/org/flowPtQueue/90000011": seedRow("90000011", { state: "issued", handledBy: "fc", passId: "pass-1" }),
+    "organizations/org/flowPtQueue/90000012": seedRow("90000012", { state: "not_applicable", handledBy: "fc" }),
+    "organizations/org/flowPtQueue/90000013": seedRow("90000013"),
+  });
+  let board = [task("90000013", "1:1pt 10s")]; // 10 · 11 · 12 는 실패로 옮겨져 성공 목록에 없다
+  let partial = false;
+  const fetchImpl = async (url) => (url.includes("/2955393/") ? ok(board, partial ? { hasNext: true, lastCursor: 100 } : {}) : ok([]));
+  const service = createFlowPtQueueService({ firestore, fetchImpl, apiKey: () => "key", now: () => new Date("2026-11-28T03:00:00Z") });
+  const row = (id) => firestore.docs.get(`organizations/org/flowPtQueue/${id}`);
+
+  const first = await service.sync();
+  assert.equal(first.left, 0, "한 번 못 본 것으로는 바꾸지 않는다");
+  assert.equal(row("90000010").missCount, 1);
+  const second = await service.sync();
+  assert.equal(second.left, 2);
+  assert.equal(row("90000010").flowStatus, "left");
+  assert.equal(row("90000010").state, "waiting", "처리 칸은 그대로 -- 앱이 대기에서 따로 보인다");
+  assert.equal(row("90000012").flowStatus, "left");
+  assert.equal(row("90000011").flowStatus, undefined, "발급된 줄은 건드리지 않는다");
+  assert.equal(row("90000013").flowStatus, undefined, "성공 목록에 있는 줄은 그대로");
+
+  // 쪽 수 한도에서 끊긴 보드는 "없다" 를 판단하지 않는다.
+  firestore.docs.set("organizations/org/flowPtQueue/90000014", seedRow("90000014"));
+  partial = true;
+  await service.sync();
+  await service.sync();
+  assert.equal(row("90000014").missCount, undefined, "끝까지 못 읽은 보드");
+});
+
+test("실패 → 다시 성공: 대기로 돌아온다 -- 해당 없음이었어도, 회원권과 이어진 줄은 그대로", async () => {
+  const seedRow = (postId, extra = {}) => ({ postId, flowProjectId: "2955393", state: "waiting", handledBy: "", flowStatus: "left", missCount: 2, createdAt: new Date("2026-11-26T00:00:00Z"), registeredAt: new Date("2026-11-26T00:00:00Z"), title: "회원", ...extra });
+  const firestore = fakeFirestore({
+    "organizations/org": {}, "organizations/org/locations/l1": { name: "삼계점" },
+    "organizations/org/flowPtQueue/90000020": seedRow("90000020"),
+    "organizations/org/flowPtQueue/90000021": seedRow("90000021", { state: "not_applicable", handledBy: "fc", handledAt: new Date() }),
+    "organizations/org/flowPtQueue/90000022": seedRow("90000022", { state: "issued", handledBy: "fc", passId: "pass-9" }),
+    "organizations/org/flowPtQueue/90000023": seedRow("90000023", { flowStatus: "success", missCount: 1 }),
+  });
+  const fetchImpl = async (url) => (url.includes("/2955393/") ? ok(["90000020", "90000021", "90000022", "90000023"].map((id) => task(id, "1:1pt 10s"))) : ok([]));
+  const counts = await createFlowPtQueueService({ firestore, fetchImpl, apiKey: () => "key", now: () => new Date("2026-11-29T03:00:00Z") }).sync();
+  const row = (id) => firestore.docs.get(`organizations/org/flowPtQueue/${id}`);
+  assert.equal(row("90000020").flowStatus, "success");
+  assert.equal(row("90000020").state, "waiting");
+  assert.equal(row("90000020").resucceededAt.toISOString(), "2026-11-29T03:00:00.000Z");
+  assert.equal(row("90000021").state, "waiting", "실패 때 누른 해당 없음은 다시 계약했으니 대기로");
+  assert.equal(row("90000021").handledBy, "");
+  assert.equal(row("90000022").state, "issued", "회원권과 이어진 줄은 그대로 -- 같은 업무로 두 번 발급되지 않는다");
+  assert.equal(row("90000022").flowStatus, "success");
+  assert.equal(row("90000023").missCount, 0, "한 번 못 본 것은 횟수만 지운다");
+  assert.equal(row("90000023").resucceededAt, undefined);
+  assert.equal(counts.resucceeded, 3);
 });

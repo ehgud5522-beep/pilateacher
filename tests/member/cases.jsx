@@ -14,6 +14,8 @@ import {
   NotMigrated, Preparing, Records, SlowConnection,
 } from "../../member/src/screens.jsx";
 import { linkResultScreen } from "../../member/src/link-result.js";
+import { MemberNoticePopup } from "../../member/src/member-extras.jsx";
+import { ConditionBox } from "../../member/src/lesson-condition.jsx";
 
 /** 2026-09-24 (목) 정오. */
 export const NOW = new Date(2026, 8, 24, 12, 0);
@@ -102,14 +104,63 @@ export function memberScreenCases() {
     /* 예정 수업을 아는 문서인데 오늘은 없다 -- 그때만 "예정된 수업이 없어요". */
     { name: "홈 · 예정 없음", element: <Home view={view({ schedule: [] })} now={NOW} onOpenRecords={noop} /> },
 
-    { name: "수업기록", element: <Records view={view({ history: STEADY, journey: JOURNEY })} /> },
+    { name: "수업기록", element: <Records view={view({ history: STEADY, journey: JOURNEY })} now={NOW} /> },
     {
       name: "수업기록 · 되돌린 차감",
       element: <Records view={view({
         history: [{ occurredAt: new Date(2026, 8, 19), type: "correction", instructorName: "정예진" }],
-      })} />,
+      })} now={NOW} />,
     },
-    { name: "수업기록 · 없음", element: <Records view={view({ history: [] })} /> },
+    { name: "수업기록 · 없음", element: <Records view={view({ history: [] })} now={NOW} /> },
+    /* 2026-11-28: 한 달씩. 8월 · 9월 기록이 있어도 9월만 그린다. */
+    {
+      name: "수업기록 · 두 달",
+      element: <Records view={view({ history: [
+        { occurredAt: new Date(2026, 7, 20, 10, 0), type: "deduct", lessonType: "1:1", instructorName: "팔월강사" },
+        { occurredAt: new Date(2026, 8, 18, 19, 0), type: "deduct", lessonType: "1:1", instructorName: "구월강사" },
+      ] })} now={NOW} />,
+    },
+    /* 2026-11-28: 디오사 A · B 가 따로 불린다. 지난 예정 수업은 "예정" 이 아니다. */
+    {
+      name: "홈 · 디오사 A · B",
+      element: <Home view={view({
+        passes: [
+          { passId: "da", lessonType: "diosa", diosaGrade: "a", totalSessions: 4, remainingCount: 3, expiresAt: new Date(2027, 0, 31), status: "active" },
+          { passId: "db", lessonType: "diosa", diosaGrade: "b", totalSessions: 4, remainingCount: 4, expiresAt: new Date(2027, 0, 31), status: "active" },
+        ],
+        schedule: [
+          { lessonId: "past", startsAt: new Date(2026, 8, 24, 9, 0), lessonType: "1:1", instructorName: "정예진" },
+          { lessonId: "later", startsAt: new Date(2026, 8, 24, 19, 0), lessonType: "1:1", instructorName: "정예진" },
+        ],
+      })} now={NOW} onOpenRecords={noop} />,
+    },
+    {
+      name: "홈 · 선생님께 요청",
+      element: <Home view={view()} now={NOW} onOpenRecords={noop}
+        beforeAfter={{ count: 1, unread: 0 }} onOpenBeforeAfter={noop}
+        requestPlace={{ organizationId: "center-a", clientId: "client-a" }} requestApi={noop} />,
+    },
+    { name: "홈 · 요청 없음(오프라인)", element: <Home view={view()} now={NOW} onOpenRecords={noop} requestPlace={{ organizationId: "center-a", clientId: "client-a" }} /> },
+    /* 2026-11-28: 수업 전 몸 상태. 처음이면 동의 문구, 남긴 것이 있으면 그대로, 시작한 수업은 못 고친다. */
+    {
+      name: "몸 상태 · 처음",
+      element: <ConditionBox lessonId="L1" place={{ organizationId: "org", clientId: "c1" }} api={noop}
+        initial={{ editable: true, consented: false, condition: null }} />,
+    },
+    {
+      name: "몸 상태 · 불편한 곳 남김",
+      element: <ConditionBox lessonId="L1" place={{ organizationId: "org", clientId: "c1" }} api={noop}
+        initial={{ editable: true, consented: true, condition: { mood: "discomfort", areas: ["back"], memo: "계단에서 삐끗" } }} />,
+    },
+    {
+      name: "몸 상태 · 수업 시작함",
+      element: <ConditionBox lessonId="L1" place={{ organizationId: "org", clientId: "c1" }} api={noop}
+        initial={{ editable: false, consented: true, condition: { mood: "good", areas: [], memo: "" } }} />,
+    },
+    {
+      name: "공지 팝업",
+      element: <MemberNoticePopup notice={{ title: "12월 휴무 안내", body: "25일은 쉽니다", image: "data:image/jpeg;base64,AAAA" }} onClose={noop} onSnooze={noop} />,
+    },
 
     { name: "마이페이지", element: <MyPage view={view()} now={NOW} onSignOut={noop} /> },
     {

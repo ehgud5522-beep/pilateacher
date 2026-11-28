@@ -281,6 +281,7 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 앱 업데이트 안내",
     "더보기 탭 · 만료일 순서 확인",
     "더보기 탭 · 일정 색상",
+    "더보기 탭 · 보니따 공지 팝업",
     "듀엣 출석 확인",
     "더보기 탭 · 묶음 펼침",
     "더보기 탭 · PC",
@@ -4120,4 +4121,18 @@ test("schedule colours show one dot per type, not a swatch wall", async (t) => {
   // 약자는 그대로 함께 보인다 -- 색만으로 구분하지 않는다.
   for (const short of ["개", "듀", "그", "상", "휴"]) assert.match(markup, new RegExp(`>${short}<`));
   assert.match(markup, /기본값으로 되돌리기/);
+});
+
+test("owner edits the Bonita notice popup: image, title, end date, publish and take down", async (t) => {
+  /* 2026-11-28 대표: 보니따 앱에 공지 팝업 -- 이미지 · 일주일 동안 안 보기 · 닫기. 쓰는 자리는 대표 · 총괄 더보기. */
+  const markupOf = await issueScreens(t);
+  const markup = markupOf("더보기 탭 · 보니따 공지 팝업");
+  assert.match(markup, /data-member-notice-admin/);
+  assert.match(markup, /src="data:image\/jpeg;base64,AAAA"/);
+  assert.match(markup, /이미지 바꾸기/);
+  assert.match(markup, /value="12월 휴무 안내"/);
+  assert.match(markup, /value="2026-12-31"/);
+  assert.match(markup, /고쳐서 다시 띄우기/);
+  assert.match(markup, /data-member-notice-off/);
+  assert.match(markup, /지금 보니따 앱에 떠 있어요/);
 });

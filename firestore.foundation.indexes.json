@@ -153,6 +153,12 @@
           "queryScope": "COLLECTION_GROUP"
         }
       ]
+    },
+    {
+      "collectionGroup": "lessonConditions",
+      "fieldPath": "expireAt",
+      "ttl": true,
+      "indexes": []
     }
   ]
 }

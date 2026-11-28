@@ -17,6 +17,10 @@
 - **release/1-1-63** (4e77a1b): release/1-1-62(보니따 1.1.6 포함) + 이 브랜치(병합 전) · 강사 1.1.63 · versionCode 86. `android.includePlugins` 로 안드로이드에만
   messaging(12개), iOS 11개 그대로. 로컬에서 build · cap sync android · `gradlew assembleDebug` 통과(Java 는 Android Studio jbr, sdk.dir 은 local.properties).
   Codemagic 시작 · 스토어 업로드는 대표. **1.1.62 는 건너뛰어도 된다** -- 1.1.63 이 1.1.62 를 전부 담는다
+- **같은 날 iOS 도 넣음**: 대표가 애플 App ID(com.pilateacher.app) Push 켬 + Firebase 강사 iOS 앱에 APNs 키 Q57DQF8W85(개발 · 프로덕션, 팀 7ADRYNV3B4).
+  App.entitlements aps-environment(development -- 배포 서명에서 production 으로 바뀜, 보니따와 같음) · AppDelegate APNs 토큰 전달 ·
+  `TEACHER_PUSH_PLATFORMS` 에 ios. release/1-1-63(4c25ca1)은 최상위 includePlugins 에 messaging(iOS · 안드로이드 12개), validate_release_source.py 통과.
+  **iOS 서명이 Codemagic 에서 깨지면**: Push 를 켜기 전에 만든 프로필이 무효가 된 것 -- Codemagic 팀 설정 → 코드 서명 → iOS 프로필을 새로 가져오기
 
 ## 2026-11-28 — 강사 알림함을 모든 강사에게 · 요청 문구 · 새 알림 띄우기 (PR, 병합 · 배포 전)
 

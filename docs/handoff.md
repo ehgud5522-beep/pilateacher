@@ -19,6 +19,10 @@
   계정마다(폰마다 아님). 폰 OS 권한은 바꾸지 않고 안내만
 - 확인: test:node 4077 · Functions 485 · typecheck · eslint · 화면 테스트 3. 실기기 못 봄
 - 배포(대표 지시 뒤): Functions teacherPushSettings · memberRequestToTeacher · memberLessonCondition · memberCancelLesson → 강사 웹 → 앱 1.1.64
+- **release/1-1-64** (c03a47b): release/1-1-63 + main 54fc10e(#310) + 이 브랜치(병합 전). 강사 1.1.64 · versionCode 87 · 보니따 1.1.7. 플러그인 12개 그대로.
+  test:android-release · build · build:member 통과. Codemagic · 스토어는 대표. 서버(이 PR)가 배포돼야 끄기가 실제로 먹힌다
+- 대표 "더보기 들어가면 렉 · 버벅임이 심해짐": 더보기 첫 화면 그리기는 5~20ms 로 오늘 아침(b2d6325)과 같음(SSR 측정) -- 오늘 코드가 그리기를
+  무겁게 한 것은 아님. 의심: 대표 계정의 재등록 레이더 미리 읽기(prefetchRenewalRadar, #294 이후 앱 연 뒤 한 번) 같은 들어갈 때의 읽기. 기기 · 계정 · 처음만/매번 확인 대기
 
 ## 2026-11-28 — 보니따: 기다리는 곳은 모두 로딩 동그라미 · 몸 상태 보낸 뒤 창 저절로 닫힘 (PR, 병합 · 배포 전)
 
@@ -676,12 +680,6 @@
 - Apple 로그 90186/90062에서 1.1.2가 이미 승인돼 같은 버전의 새 제출이 거부됨을 확인했다. 보니따 package.json·Android versionName·iOS MARKETING_VERSION을 1.1.3으로 맞췄다. Codemagic의 빌드 번호 부여는 유지한다. 필라티쳐 버전은 변경하지 않는다.
 - 기준은 main의 자동 복구·인증 대기 초 표시가 포함된 42fa126. 이 변경 자체로 스토어 업로드는 실행하지 않는다.
 
-## 2026-11-11 — 듀엣 출석 버튼 중복 정리
-
-- 듀엣 수업 관리의 분홍색 전체 출석·전체 노쇼·전체 취소 행과 회원별 출석 아래 중복 버튼을 제거했다. 위쪽 둘 다 출석 하나로 두 회원을 함께 처리한다. 회원별 상태 표시와 개별 노쇼·취소, 확정·차감 로직은 유지한다. 일반 그룹의 전체 처리 버튼은 그대로다.
-- 요청된 반영 대상은 release/1-1-50. 화면·동작 검사 446개, 타입·런타임 린트, Vite 빌드 통과. 웹 main 반영용 변경은 별도 PR로 남긴다.
-- 앞선 보니따 #177은 main 42fa126에 병합, 관련 함수 8개 운영 배포 및 회원 웹 f9aab6e2e207cc26 배포 확인 완료. 누락된 두 조회 문서만 생성했고 각각 잔여 9/29회 및 원본 변경 없음 확인. 설치형 자동 복구·인증 대기 표시는 보니따 main 새 빌드 필요.
-
 ## 2026-11-11 — 보니따 누락 조회 자동 복구 · 인증 재시도 초 표시
 
 - 원인: 이관 회원권 productId가 상품명인 경우 `/`를 포함하면 products.doc()가 예외를 내고 memberViews 생성 전체가 실패했다. 잘못된 경로형 상품 참조는 조회하지 않고 기존 수업 유형 판정으로 넘어간다. 원본 회원권·잔여·원장은 수정하지 않는다.
@@ -715,12 +713,6 @@
 - 확인: 새 `tests/member/member-motion.test.js` 5. 앱 3735 통과 / 0 실패, 타입 · 린트 · 두 앱 빌드 통과. 브라우저에서 탭 방향 · 시트 · 크게 보기 · 평가 카드 접힘 뒤 알림(185ms) ·
   별점이 새 별에만 걸리는 것을 값으로 확인. **움직임이 눈에 어떻게 보이는지는 못 봤다** -- 이 PC 의 미리보기 창이 숨겨져 있어 애니메이션 시계가 멈춰 있었다. 속도 · 세기는 폰에서 보고 조절
 - 서버 · 규칙 변경 없음. 회원 웹은 main 병합 시 자동 배포, 앱은 `release/1-1-52` 빌드
-## 2026-11-15 — #202 병합 · 빌드 브랜치 `release/1-1-52` 에 최신 main (대표 지시: "배포 끝나면 병합해주고 최신 브랜치에 넣어줘")
-
-- #201 강사 웹 배포 완료: main `2807aa7`, 배포 전 테스트 3726 통과, 운영 `version.json` = `mwhcxm1o-2807aa7`
-- #202(아이폰 잔여 줄이기) 병합 → main `835c0c5`. **강사 웹에는 아직 안 나갔다**(배포 지시 대기). 서버 변경 없음
-- `release/1-1-52` 에 main 835c0c5 를 합쳤다(충돌 없음): #201 평가 끄기 · 보니따 앱 설치 현황 · 켠 흔적 남기기 + #202. 버전 그대로(강사 1.1.52 (75) · 보니따 1.1.4).
-  앱 3730 · 서버 375 통과 / 0 실패, 강사 · 회원 빌드, `release-guard --stage preflight` 통과
 ## 2026-11-15 — 아이폰에서 잔여 줄이기를 못 하던 것 (`fix/pass-adjust-ios-minus`, 병합 · 배포 전)
 
 - 대표: "아이폰에 횟수 잔여 조정하는 게 마이너스 입력칸이 없다고 함". 원인: 잔여 조정 칸이 `inputMode="numeric"` 인데 "+3 또는 -2" 처럼
@@ -763,31 +755,6 @@
 - 규칙 변경 없음(memberPush 는 원래 서버만). 확인: 새 테스트 서버 4 · 회원/강사 6, 앱 3728 · 회원 292 · 서버 375 통과 / 0 실패, 타입 · 린트 · 두 앱 빌드 통과. 알림 설정 테스트 두 건은 새 동작(평가 줄 문구 · 웹의 평가 스위치)에 맞게 고침. 가짜 데이터로 설치 현황 화면(폰 폭) 확인. 실기기 미확인
 - **배포 순서(지시 뒤)**: Functions `memberAppStatus`(새로) · `memberPushSettings` → 강사 웹 · 보니따 웹(병합 자동). 켠 흔적은 보니따 새 빌드부터 쌓인다(웹은 배포 즉시)
 
-## 2026-11-15 — 빌드 브랜치 `release/1-1-52` · 배포는 병합 대기 (대표 지시: "모두 배포해주고 브랜치 새로 해줘")
-
-- **배포 안 함 -- 병합 대기.** PR #194 ~ #200 이 모두 열려 있다(main 에 없음). `deploy:web` 은 main 에서만 돌고, 병합은 대표가 한다(CLAUDE.md).
-  Functions 를 병합 안 된 브랜치에서 내보내면 운영이 main 보다 앞서게 되어(11-13 코덱스 때 생긴 일) 같이 보류했다
-- 병합되면 배포 순서: Functions(`beforeAfterSharing` -- 강사 `teacherConsent` 추가) → 강사 웹(`npm run deploy:web`). 회원 웹은 병합 시 자동.
-  PR 은 #194 → #200 차례로 쌓여 있다 -- 아래부터 병합하면 위 PR 의 기준이 main 으로 옮겨진다
-- `release/1-1-52` = `release/1-1-51`(d908789, #194~#200 전부) + 버전만. 1.1.51(86)은 대표가 이미 빌드했다(서버 로그의 appBuild)
-  - 강사: versionName 1.1.52 · versionCode 75(Codemagic 이 덮어씀) · iOS MARKETING_VERSION 1.1.52 · 허용 브랜치 `^release/1-1-52$`
-  - 보니따: 1.1.3 → **1.1.4** (package.json · Android versionName · iOS MARKETING_VERSION). 1.1.3 이 스토어에 나갔는지 확인 못 해,
-    11-11 처럼 "이미 승인된 버전의 새 제출 거부(90186/90062)" 를 피하려고 올렸다
-- 빌드 · 스토어 업로드는 대표가 Codemagic 에서
-- 확인: 앱 3722 통과 / 0 실패, `test:android-release` 11, 강사 · 회원 빌드, `release-guard --stage preflight` 통과(1.1.52 (75), 27e07c8)
-
-## 2026-11-15 — 원격 브랜치 정리 136개 (대표 지시: "138개 지워 줘")
-
-- 지운 것: **main 에 이미 들어간** 브랜치 136개 (일반 작업 127 + 옛 릴리스 9 가운데 7 -- 정확한 목록은 아래 백업). 지우기 직전에 다시 받아
-  하나하나 main 에 들어 있는지 확인했다. 원격 198 → 63
-- 남긴 것: 열린 PR 19 · main 에 없는 릴리스(1-1-43 ~ 1-1-52 등) · 작업 폴더가 잡고 있는 브랜치 · PR 없는 미병합 5개
-  (`bolt/latest-ui-v1` · `ci/cancel-previous-builds` · `codex/android-private-test-v14` · `codex/ios-review-v49` · `docs/handoff-1-1-33`, 대표 결정 대기)
-- 138 이 아니라 136 인 까닭: `release/android-p0-fixes-v1`(코덱스 `voice-result-ui-fix`) · `release/member-1-1-2`(`member-lesson-rating`)는
-  작업 폴더가 잡고 있어 뺐다
-- **되살리기**: 이름과 커밋 번호를 `C:\Users\ehgud\Desktop\pilateacher\.git\branch-backup-2026-11-15.txt` 에 남겼다 (저장소 밖으로 안 나감).
-  `git push origin <커밋번호>:refs/heads/<브랜치이름>`. PR 로 병합된 것은 GitHub PR 화면의 Restore branch 로도 된다
-- 이 PC 의 로컬 브랜치(245개)는 손대지 않았다
-
 ## 2026-11-15 — 보니따 비포애프터 안정화 · 카드 크게 보기 · 카드 꾸미기 · 탭 순서 (`feat/member-before-after-polish`, #199 위 · `release/1-1-51` 에도 합침)
 
 - 대표 폰 화면(보니따 1.1.3 · 1f80d2b) 지적 여섯
@@ -829,17 +796,6 @@
 - 함께: 잘 끝났다는 알림(사진 저장 · 삭제 등)은 4초 뒤 스스로 걷힘, 실패 문구는 남는다. "사진 저장 완료 · AI 분석은 선택 사항입니다" → "사진을 저장했습니다"
 - 확인: 새 `tests/posture/before-after-layout.test.js` 5. 앱 3712 통과 / 0 실패, 타입 · 빌드 통과. 폰 폭(375) + 실제 앱처럼 아래 탭 막대를 둔 화면에서
   선택 띠 위치 · 상세 버튼이 탭 막대 위에 보이는 것 · 선택 뒤 이동과 반짝임 · 편집 창 · 변화 카드 화면(가로 넘침 없음)을 확인. 실기기 미확인
-## 2026-11-15 — 1.1.51 빌드 브랜치 `release/1-1-51` (대표 지시: "새로운 브랜치로 앱 빌드 할 수 있게")
-
-- `release/1-1-50`(6988439) 위에 `feat/before-after-part-names`(#194 · #195 · #196 · #197 · #198, main dd5daeb 포함)를 합쳤다. 충돌 없음
-- 버전: versionName 1.1.51 · versionCode 74(Codemagic 이 `ANDROID_VERSION_CODE` 로 덮어쓴다) · iOS MARKETING_VERSION 1.1.51 ·
-  `release/android-release-policy.json` 허용 브랜치에 `^release/1-1-51$`
-- 확인: 앱 3707 통과 / 0 실패, 타입 · 강사 빌드 통과, `test:android-release` 11 통과, `release-guard --stage preflight` 통과(1.1.51 (74))
-- **다섯 PR 은 아직 main 에 병합되지 않았다.** 이 브랜치에만 들어 있다 -- 빌드는 되지만 main 과 운영 웹에는 없다
-- **웹 · Functions 배포는 하지 않았다**: `npm run deploy:web` 은 main 에서만 돌고, 병합은 대표가 한다. 병합되면 Functions(`beforeAfterSharing`) → 강사 웹 순서.
-  앱이 먼저 나가도 깨지지 않는다(동의 상태를 못 읽으면 예전 흐름)
-- `codemagic.yaml` 에 `VITE_IOS_NATIVE_CAPTURE_ENABLED` 는 없다 -- Codemagic 화면의 환경값에 false 로 넣어 두지 않았다면 iOS 도 겹쳐 찍기가 된다
-- 빌드는 대표가 Codemagic 에서 이 브랜치를 골라 직접 돌린다. 스토어 업로드도 대표
 
 ## 2026-11-15 — 비포애프터: 부위 이름 (`feat/before-after-part-names`, #197 위에 쌓음, 병합 · 배포 전)
 

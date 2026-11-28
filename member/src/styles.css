@@ -691,3 +691,23 @@ body {
 .condition-consent .consent-line { display: block; }
 .condition-consent b { display: block; color: var(--ink); margin-top: 2px; }
 .condition-done { margin-top: 10px; font-size: var(--t-caption); color: var(--rose); }
+
+/* ── 로딩 동그라미 (2026-11-28) ─────────────────────────────────────────
+   기다리는 자리는 모두 이것. 글자는 화면 읽기 프로그램에만(.sr-only). */
+.spinner { color: var(--rose); }
+.spinner.block { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 18px 0; }
+.spinner.inline { display: inline-flex; align-items: center; justify-content: center; vertical-align: middle; line-height: 0; }
+.btn.primary .spinner, .share-confirm .spinner, .btn.danger .spinner { color: currentColor; }
+.spinner-ring { display: block; animation: member-spin 800ms linear infinite; }
+.spinner-caption { font-size: var(--t-caption); color: var(--sub); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+@keyframes member-spin { to { transform: rotate(360deg); } }
+/* 동작 줄이기: 도는 대신 천천히 숨 쉬듯 -- 기다린다는 것은 여전히 보여야 한다. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner-ring { animation: member-spin-breathe 1.6s ease-in-out infinite; }
+}
+@keyframes member-spin-breathe { 50% { opacity: .35; } }
+
+/* 몸 상태 보냄 -- 체크가 그려진다 */
+.condition-sent { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 22px 14px; }
+.condition-check { color: #16a34a; margin-bottom: 8px; }

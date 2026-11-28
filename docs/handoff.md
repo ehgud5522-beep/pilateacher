@@ -1,3 +1,60 @@
+## 2026-11-28 — #311 · #312 병합 · 배포 · release/1-1-64 (대표 지시)
+
+- **#311** 강사 더보기 → 알림 설정(기본 켜짐) 병합 `f3b27ab`, **#312** 더보기 첫 진입 렉(레이더 미리 읽기 하나씩 · 쉬며) 병합 `7a0faa1`
+- Functions: teacherPushSettings(set · enabled) · memberRequestToTeacher · memberLessonCondition · memberCancelLesson(끈 강사 존중) → 강사 웹 1221.
+  회원 웹은 바뀐 것 없음
+- **release/1-1-64** `9b1e566` = main 7a0faa1 + 버전(강사 1.1.64 · versionCode 87 · 보니따 1.1.7). src · functions · member 가 main 과 같음.
+  Codemagic 4개 · 스토어는 대표. 1.1.63 은 건너뛰어도 됨(1.1.64 가 다 담음)
+- 더보기 렉: PC 는 지금 바로, 폰은 1.1.64 부터. 다시 말하면 더보기 → 진단 `renewal_radar_loaded` ms 로 확인
+
+## 2026-11-28 — #310 병합 · 회원 웹 배포 · 강사 안드로이드 푸시가 안 옴 (조사 중)
+
+- #310(보니따 로딩 동그라미 · 몸 상태 보낸 뒤 창 닫힘) 병합 `54fc10e` → 회원 웹 배포. 강사 웹은 바뀐 것 없음. 보니따 앱은 다음 빌드부터
+- 대표: "안드로이드 푸시 알림이 안 오는데 스위치는 켰음". 서버 로그:
+  - memberLessonCondition 15:59 KST 불편한 곳 2건 -- `push: off` (그 시각 스위치 꺼짐이거나 listed 에 그 강사가 없음)
+  - **teacherPushSettings 가 11-07 이후 한 번도 불리지 않음** -- 강사 기기 등록이 없다 → 스위치를 켜도 no_device
+  - 요청 두 종류는 오늘 04:02 · 04:05 에 이미 한 번씩 -- 같은 날 다시 누르면 duplicate(푸시 없음)
+- 대표에게 확인 요청: 강사 폰 앱 버전 1.1.63 인지(Play 반영 전이면 등록 코드 없음), 알림 허용, 더보기 → 진단의 `teacher_push_register` 줄
+
+## 2026-11-28 — #308 · #309 병합 · 배포, release/1-1-63 (대표 지시)
+
+- **#308** (강사 알림함을 모든 강사에게 · 새 알림 토스트 · 요청 문구) 병합 `d1bfcc4` → Functions `memberRequestToTeacher` → 강사 웹 1207 → 회원 웹.
+  release/1-1-62 에도 합침(865f138)
+- **#309** (강사 폰 푸시) 병합 `23a1eeb` → Functions `memberRequestToTeacher` · `memberLessonCondition` → 강사 웹 1213(대표 설정 "강사 푸시 알림" 스위치) → 회원 웹
+- 대표가 애플 App ID Push 켬 + Firebase 강사 iOS 앱에 APNs 키(개발 · 프로덕션) 올림 → iOS 도 1.1.63 에 넣음
+- **앱 빌드 `release/1-1-63`**(061c31f, main 23a1eeb 포함): 강사 1.1.63 · versionCode 86 · 보니따 1.1.6. iOS · 안드로이드 includePlugins 에 messaging(12개).
+  로컬: build · cap sync android · gradlew assembleDebug · validate_release_source.py 통과. **1.1.62 는 건너뛰어도 된다**
+- **남은 것(대표)**: Codemagic `release/1-1-63` 4개(강사 iOS · 안드로이드, 보니따 iOS · 안드로이드) · 스토어 업로드 · 깔린 뒤 "강사 푸시 알림" 스위치 켜기
+  (고른 계정만으로 먼저 시험 가능). 강사 iOS 서명이 깨지면 Codemagic iOS 프로필 새로 가져오기
+- 실기기 푸시 수신은 아직 아무도 못 봄 -- 1.1.63 깔린 강사 폰으로 보니따에서 [오늘 수업 내용 요청하기] 눌러 확인할 것
+  (서버 로그 `member_request_done` 의 push 값: sent · off · no_device · failed)
+
+## 2026-11-28 — #307 병합 · 배포 · release/1-1-62 에 합침 (대표 "순서대로 배포 병합해 주고 앱 빌드까지")
+
+- **병합** #307 → main `a158423`. main 에서 규칙 505 · Functions 478 다시 통과
+- **배포 순서대로**: 색인(lessonConditions.expireAt TTL, `--only firestore:indexes --config firebase.foundation.json`) →
+  규칙(`--only firestore:rules`, memberNotices · lessonConditions · memberConsents) →
+  Functions 9개(`--config firebase.ai-gateway.json`): memberRequestToTeacher · memberLessonCondition(새로), sendMemberLessonReminders(30분 전 문구),
+  rebuildMemberViews · verifyMemberViews · rebuildMemberViewOn{Pass,Client,LessonNote,Lesson}Write → 강사 웹(빌드 1205) → 회원 웹(pilateacher-member.web.app)
+- 강사 웹 첫 시도는 빌드가 끝난 뒤 Windows libuv 종료 오류(`UV_HANDLE_CLOSING`, 3221226505)로 멈춤 -- 코드 문제 아님, 다시 돌려 배포됨
+- **못 한 것: 투영 일괄 다시 만들기(`rebuildMemberViews`)** -- 대표 계정 callable 이고 화면 버튼이 없다(`fbRebuildMemberViews` 는 어디에도 안 이어짐).
+  그래서 디오사 30/50분 칸(diosaGrade)은 그 회원의 회원권 · 회원 · 수업이 바뀔 때(차감 · 발급 등) 트리거가 다시 만들면서 채워진다. 그 전까지는 "디오사 프로그램"
+- **앱 빌드 브랜치 `release/1-1-62`** 에 main a158423 합침(d580112) + **보니따 VIP 1.1.6**(c2c415c). 강사 1.1.62 · versionCode 85 그대로.
+  test:android-release 11 · build · build:member 통과. 네이티브 설정 · 의존성 변화 없음
+- **Codemagic 시작 · 스토어 업로드는 대표**: 강사(iOS TestFlight · Android) · 보니따(member-ios-testflight · member-android) 모두 `release/1-1-62`.
+  로컬 AAB 는 만들지 않음 -- 스토어 번호는 Codemagic 이 Play 최대값 위로 잡아 왔고, 정책 파일의 lastPublishedVersionCode(55)는 오래돼 겹침을 못 막음.
+  1.1.62 를 이미 Codemagic 으로 시작했다면 다시 시작해야 #307 강사 화면(공지 쓰는 화면 · 수업 전 몸 상태)이 들어감
+- 깔린 보니따 1.1.5 는 1.1.6 이 깔리기 전까지 새 화면이 안 보임(30분 전 알림 문구는 서버라 바로 바뀜 -- 옛 앱은 눌러도 홈으로)
+
+## 2026-11-28 — release/1-1-62 (빌드 시작 · 스토어 업로드는 대표) -- 뒤에 #307 합침, 아래 배포 기록 참고
+
+- 대표: "1.1.62 빌드 만들기". release/1-1-61 + main b2d6325(#272 ~ #305) + 버전: 강사 1.1.62 · versionCode 85 · iOS MARKETING_VERSION 1.1.62 ·
+  허용 브랜치 추가 (7c17d67). 병합 충돌 0. 네이티브 설정 · 의존성 변화 없음 -- 웹 코드만 (capacitor.config 의 includePlugins 는 릴리스 쪽 그대로)
+- 들어간 것: 11-22 이후 앱 화면 변경 전부 -- PT 발급 플로우 칸(#291, 게이트 켜기 전 필요) · 발급 막힘 이유(#293) · 출석 버튼 늘 펼침(#296) ·
+  발급 대기 1~3단계 화면(#297 · #298 · #300) · **서비스 수업료 새 금액(#302, 폰 확정도 이 빌드부터)** · 차수 칸 없앰(#304) · 일정 삭제 · 다음 주 등록 · 일정 색상(#305)
+- test:android-release 11 · npm run build(typecheck · 테스트 포함) 0 fail
+- Codemagic 시작 · 스토어 업로드 · 게시 뒤 `lastPublishedVersionCode` 갱신은 대표. 깔린 뒤 settlement 최소 빌드를 올릴지도 대표 결정(#302 금액 섞임)
+
 ## 2026-11-28 — 더보기 처음 들어갈 때 렉: 레이더 미리 읽기를 하나씩 · 쉬며 (PR, 병합 · 배포 전)
 
 - 대표: "더보기 들어가면 렉 · 버벅임이 심해짐" → 폰 · PC 둘 다, **앱을 켜고 처음 들어갈 때**

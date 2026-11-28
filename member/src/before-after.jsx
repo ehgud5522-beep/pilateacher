@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Spinner } from "./spinner.jsx";
 import { SharedBeforeAfter, sharingMessage } from '../../src/features/photos/SharedBeforeAfter.jsx';
 import { isTransientSharingError } from '../../src/features/photos/sharing-errors.js';
 import { memberPhotoSharing } from './firebase.js';
@@ -144,7 +145,7 @@ export default function MemberBeforeAfter({ scope, requestedShare, api = memberP
     <div className="ba-member-head"><div><h1>비포애프터</h1><p className="muted">선생님이 남긴 회원님의 변화를 확인해요.</p></div>
       <button type="button" className="ba-refresh" onClick={() => { retry.current.attempt = 0; refresh(); }}>새로고침</button></div>
     {status}
-    {consent === 'loading' ? (error ? null : <p className="ba-status" role="status">확인하고 있어요…</p>)
+    {consent === 'loading' ? (error ? null : <Spinner size={30} label="확인하고 있어요" />)
       : consent !== 'granted' ? <div className="card stack tight ba-consent"><h2>사진 공유 동의</h2>
         <p>담당 선생님이 선택한 비포애프터 비교 사진과 코멘트를 이 계정에서 비공개로 확인합니다. 외부 공개 링크를 만들지 않으며, AI 분석 결과는 포함하지 않습니다.</p>
         <p className="muted">동의하지 않아도 기존 수업 서비스를 이용할 수 있습니다. 언제든 동의를 철회할 수 있으며, 철회하면 공유 자료를 볼 수 없게 됩니다. 이미 저장되거나 촬영된 사본은 회수할 수 없습니다.</p>
@@ -154,7 +155,7 @@ export default function MemberBeforeAfter({ scope, requestedShare, api = memberP
       : <>
         {shares.length ? <div className="card ba-share-list">{shares.map((s) => <ShareRow key={s.id} share={s} onOpen={() => open(s)} />)}</div>
           : loaded && !error ? <div className="card quietcard ba-empty-share"><p>아직 받은 비포애프터 기록이 없어요.</p><p className="muted">수업 후 담당 선생님이 변화를 기록해 보내면 여기에서 볼 수 있어요.</p></div>
-          : !loaded ? <p className="ba-status" role="status">확인하고 있어요…</p> : null}
+          : !loaded ? <Spinner size={30} label="확인하고 있어요" /> : null}
         <button type="button" className="ba-withdraw" disabled={busy} onClick={() => { if (window.confirm('사진 공유 동의를 철회할까요? 받은 기록도 볼 수 없게 됩니다.')) saveConsent(false); }}>공유 동의 철회</button>
       </>}
     <p className="ba-privacy">{BEFORE_AFTER_PRIVACY}</p>

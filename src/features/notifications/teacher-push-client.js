@@ -10,7 +10,8 @@
  */
 import { platformOf, pushPlugin, registerDevice } from "../../../member/src/push.js";
 
-export const TEACHER_PUSH_PLATFORMS = Object.freeze(["android"]);
+/* iOS (2026-11-28): 애플 App ID Push 켬 · Firebase 에 APNs 키(개발 · 프로덕션) 올림 -- 대표가 같은 날 마침. */
+export const TEACHER_PUSH_PLATFORMS = Object.freeze(["android", "ios"]);
 
 /** 서버 teacher-push.js 의 ANDROID_CHANNEL 과 같은 id. */
 export const TEACHER_PUSH_CHANNEL = Object.freeze({

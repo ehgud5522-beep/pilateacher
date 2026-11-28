@@ -1674,6 +1674,7 @@ exports.teacherPushSettings = onCall(MEMBER_LINK_OPTIONS, async (request) => {
       action,
       token: request?.data?.token,
       platform: request?.data?.platform,
+      enabled: request?.data?.enabled,
     }, { membershipId });
   } catch (error) {
     logger.warn("teacher_push_settings_failed", {

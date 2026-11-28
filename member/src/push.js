@@ -137,7 +137,8 @@ export function ratingTarget(notification) {
  * @returns {Promise<{ permission: string, registered: boolean, errorCode?: string }>}
  */
 export async function registerDevice(input) {
-  const { plugin, platform, register, ask = true, record = () => {} } = input;
+  /* channel (2026-11-28): 강사 앱이 같은 코드로 자기 채널(teacher_alerts)을 만든다. 보니따는 기본값 그대로. */
+  const { plugin, platform, register, ask = true, record = () => {}, channel = ANDROID_CHANNEL } = input;
   if (!plugin) return { permission: PUSH_PERMISSION.UNKNOWN, registered: false };
   let permission;
   try {
@@ -153,7 +154,7 @@ export async function registerDevice(input) {
     return { permission, registered: false };
   }
   try {
-    if (platform === "android") await plugin.createChannel?.(ANDROID_CHANNEL);
+    if (platform === "android") await plugin.createChannel?.(channel);
     const { token } = await plugin.getToken();
     if (!text(token)) {
       record({ stage: "token", errorDomain: "capacitor_plugin", errorCode: "token_empty" });

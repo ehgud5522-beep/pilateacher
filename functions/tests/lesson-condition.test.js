@@ -37,7 +37,11 @@ test("처음에는 동의가 있어야 하고, 동의하면 동의 기록 · 몸
   const condition = { mood: "discomfort", areas: ["knee", "back"], memo: "어제 계단에서 삐끗" };
   await assert.rejects(saveLessonCondition(db, input({ condition }), deps), (error) => error.reason === CONDITION_REASON.CONSENT);
   const result = await saveLessonCondition(db, input({ condition, consent: true }), deps);
-  assert.deepEqual(result, { saved: true, notified: true, mood: "discomfort" });
+  const { pushTarget, ...shown } = result;
+  assert.deepEqual(shown, { saved: true, notified: true, mood: "discomfort" });
+  assert.equal(pushTarget.instructorUid, "t1");
+  assert.equal(pushTarget.inboxId, "cond_L1_c1");
+  assert.doesNotMatch(JSON.stringify(pushTarget), /무릎|허리|knee|back|삐끗|김하나/, "푸시 문구에 부위 · 메모 · 이름 없음");
   const saved = db.docs.get("organizations/org/lessonConditions/L1_c1");
   assert.deepEqual(saved.areas, ["back", "knee"], "부위는 정해진 순서로");
   assert.equal(saved.instructorId, "t1");

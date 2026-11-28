@@ -56,7 +56,7 @@ import {
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone, fbDeleteArchivedClient,
   fbBeforeAfterShareStats, fbRenewalRadarBranch, fbRefreshFlowPtQueue, fbConfirmSalesMonth, fbConfirmFcLessonMonth, fbClosePayMonth, fbRunPayCheck,
-  fbVerifyMemberViews, fbMemberAppStatus,
+  fbVerifyMemberViews, fbMemberAppStatus, fbTeacherPushSettings,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
 import { readPendingClientWrites, runAppDualWrite } from "./data/dual-write/app-runtime";
@@ -202,6 +202,7 @@ import {
   MEMBER_NOTICE_BODY_MAX, MEMBER_NOTICE_ERROR_TEXT, MEMBER_NOTICE_TITLE_MAX, memberNoticeError, readMemberNotice, saveMemberNotice,
 } from "./data/repositories/member-notice-repository.js";
 import { shrinkNoticeImage } from "./features/member-notice/shrink-image.js";
+import { registerTeacherDevice } from "./features/notifications/teacher-push-client.js";
 import { conditionHeadline, readLessonCondition } from "./data/repositories/lesson-condition-repository.js";
 import { INBOX_COPY, inboxFailure, inboxRow, inboxStripLabel, lessonForInboxItem } from "./features/notifications/teacher-inbox.js";
 import {
@@ -32386,6 +32387,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="beforeAfterSharing" title="비포애프터 회원 공유" allowListed={false}
               description="켜면 모든 강사가 변화 카드를 회원에게 보낼 수 있고, 보니따 앱에 비포애프터 탭이 생깁니다. 회원이 앱에서 '사진 공유 동의' 를 한 경우에만 받습니다. 끄면 이미 보낸 카드도 회원 앱에서 보이지 않습니다." />
+            {/* 강사 푸시 알림 (2026-11-28 대표). 서버(teacher-push.js · teacher-cancel-push.js)만 읽는다. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="teacherPush" title="강사 푸시 알림"
+              description="켜면 강사 폰으로 회원 요청(오늘 수업 내용 · 최근 비포애프터), 수업 전 몸 상태(불편한 곳), 회원 수업 취소가 푸시로 갑니다. 강사가 새 앱(1.1.62)을 깔고 알림을 허용해야 받습니다. 회원 이름 · 몸 상태 내용은 알림에 들어가지 않고, 앱의 알림함에서 봅니다. '고른 계정만' 으로 몇 명만 먼저 켤 수 있습니다." />
             {/* 회원 수업 알림 (2026-11-07, 지시서 2차). 서버(sendMemberLessonReminders)만 읽는다. */}
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
@@ -36966,6 +36972,16 @@ export default function App() {
     }).then((unsubscribe) => { if (alive) stop = unsubscribe; else unsubscribe(); }).catch(fail("subscribe"));
     return () => { alive = false; stop(); };
   }, [inboxOn, account?.id]);
+  /* 강사 폰 푸시 기기 등록 (2026-11-28 대표 "푸시 알림으로"). 폰 앱 · 센터 소속이면 앱을 열 때 한 번.
+     보내는 것은 서버이고, 운영 스위치 "강사 푸시 알림" 이 꺼져 있으면 토큰이 있어도 안 간다. */
+  const teacherPushOrg = organizationRoster ? String(organizationContext.organizationId || "") : "";
+  useEffect(() => {
+    if (!teacherPushOrg || !account?.id) return;
+    registerTeacherDevice({
+      organizationId: teacherPushOrg, call: fbTeacherPushSettings,
+      record: (entry) => deviceLog("teacher_push_register", { feature: "teacher_push", ...entry }),
+    }).catch((error) => deviceLog("teacher_push_register", { feature: "teacher_push", stage: "register", errorDomain: "capacitor_plugin", errorCode: error?.code || "unknown", message: error?.message }));
+  }, [teacherPushOrg, account?.id]);
   const readInboxItem = useCallback((item) => {
     const uid = account?.id;
     if (!uid || !item?.id || item.readAt) return;

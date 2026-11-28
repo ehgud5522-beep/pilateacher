@@ -11,6 +11,7 @@
  * (api) -- 테스트가 가짜를 넘긴다.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Spinner } from "./spinner.jsx";
 import { TYPE } from "../../src/features/ui/type-scale.js";
 import { RATING_COPY, RATING_ITEMS, SCORE_RANGE } from "../../functions/shared/lesson-rating.mjs";
 import { ratingFailure } from "./rating-copy.js";
@@ -167,7 +168,7 @@ export function LessonRatingCard({ lesson, place, api, onSeen, onStopAsking, ini
 
       {failure ? <p className="blocked">{failure.message}</p> : null}
       <button type="button" className="btn primary mt" disabled={!complete || phase === "sending"} onClick={submit}>
-        {phase === "sending" ? "보내는 중…" : RATING_COPY.SUBMIT}
+        {phase === "sending" ? <Spinner inline label="보내는 중" /> : RATING_COPY.SUBMIT}
       </button>
       <button type="button" className="btn mt" disabled={phase === "sending"} onClick={later}>{RATING_COPY.LATER}</button>
       {onStopAsking ? <button type="button" className="ratestop" disabled={phase === "sending"} onClick={stopAsking}>앞으로 묻지 않기</button> : null}

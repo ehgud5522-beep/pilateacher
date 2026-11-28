@@ -613,3 +613,12 @@ test("몸 상태 칸: 수업이 시작되면 고칠 수 없다고 말한다", as
   assert.match(started, /수업이 시작돼서 더 고칠 수 없어요/);
   assert.doesNotMatch(started, /data-condition-send/);
 });
+
+test("기다리는 화면은 도는 동그라미 -- 글자는 화면 읽기 프로그램에만 (2026-11-28)", async (t) => {
+  const markupOf = await memberScreens(t);
+  const loading = markupOf("불러오는 중");
+  assert.match(loading, /data-spinner/);
+  assert.match(loading, /class="spinner-ring"/);
+  assert.match(loading, /class="sr-only">잠시만요</);
+  assert.doesNotMatch(loading, /잠시만요…/);
+});

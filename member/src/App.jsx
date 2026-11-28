@@ -1,4 +1,5 @@
 import MemberBeforeAfter from "./before-after.jsx";
+import { Spinner } from "./spinner.jsx";
 import { beforeAfterSummary } from "./before-after-copy.js";
 import { memberPhotoSharing } from "./firebase.js";
 /**
@@ -320,7 +321,7 @@ function SignIn({ signedIn, deletion = false }) {
               onChange={(event) => setPhone(event.target.value)} />
             <button type="button" className="btn primary mt"
               disabled={Boolean(busy) || !phone || waiting}
-              onClick={send}>{sendButtonLabel({ busy: busy === "send", secondsLeft })}</button>
+              onClick={send}>{busy === "send" ? <Spinner inline label={sendButtonLabel({ busy: true, secondsLeft })} /> : sendButtonLabel({ busy: false, secondsLeft })}</button>
           </>
         ) : (
           <>
@@ -328,11 +329,11 @@ function SignIn({ signedIn, deletion = false }) {
               placeholder="인증번호 6자리" value={code}
               onChange={(event) => setCode(event.target.value)} />
             <button type="button" className="btn primary mt" disabled={Boolean(busy) || !code}
-              onClick={confirm}>{busy === "confirm" ? "확인하는 중…" : "확인"}</button>
+              onClick={confirm}>{busy === "confirm" ? <Spinner inline label="확인하는 중" /> : "확인"}</button>
             {/* 문자가 안 왔을 때. 60초 동안은 남은 초만 보인다. */}
             <button type="button" className="btn mt" disabled={Boolean(busy) || waiting}
               onClick={send}>
-              {sendButtonLabel({ busy: busy === "send", secondsLeft, resend: true })}
+              {busy === "send" ? <Spinner inline label="보내는 중" /> : sendButtonLabel({ busy: false, secondsLeft, resend: true })}
             </button>
             {/* 번호를 잘못 넣었을 때 돌아갈 길. */}
             <button type="button" className="btn mt" disabled={Boolean(busy)}

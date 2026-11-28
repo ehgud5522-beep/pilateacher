@@ -11,6 +11,7 @@
  * 서버 호출은 넘겨받는다 (api) -- 테스트가 가짜를 넘긴다.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Spinner } from "./spinner.jsx";
 import { TYPE } from "../../src/features/ui/type-scale.js";
 import { useMotionClose } from "../../src/features/ui/use-motion-close.js";
 import {
@@ -127,9 +128,9 @@ export function LessonSheet({ lesson, place, offline = false, api, conditionApi 
         {tags.length ? <p className="muted" style={{ fontSize: TYPE.caption }}>{tags.join(" · ")}</p> : null}
 
         {/* 수업 전 몸 상태 (2026-11-28 대표) -- 취소보다 위. 수업 30분 전 알림을 누르면 이 칸이 열린다. */}
-        {phase !== "done" ? <ConditionBox lessonId={lessonId} place={place} api={conditionApi} offline={offline} /> : null}
+        {phase !== "done" ? <ConditionBox lessonId={lessonId} place={place} api={conditionApi} offline={offline} onSent={close} /> : null}
 
-        {phase === "loading" ? <p className="muted mt" style={{ fontSize: TYPE.caption }}>취소 가능 여부를 확인하고 있어요…</p> : null}
+        {phase === "loading" ? <div className="mt"><Spinner label="취소 가능 여부를 확인하는 중" /></div> : null}
 
         {["ready", "confirm", "sending"].includes(phase) && status ? (
           <div className="cancelbox">
@@ -148,7 +149,7 @@ export function LessonSheet({ lesson, place, offline = false, api, conditionApi 
                 <p className="mt" style={{ fontSize: TYPE.body }}>이 수업을 취소할까요?</p>
                 <p className="muted" style={{ fontSize: TYPE.caption }}>취소하면 남은 취소 횟수가 1회 줄어요. 회원권 횟수는 그대로예요.</p>
                 <button type="button" className="btn primary mt" disabled={phase === "sending"} onClick={confirmCancel}>
-                  {phase === "sending" ? "취소하는 중…" : "취소하기"}
+                  {phase === "sending" ? <Spinner inline label="취소하는 중" /> : "취소하기"}
                 </button>
                 <button type="button" className="btn mt" disabled={phase === "sending"} onClick={() => setPhase("ready")}>돌아가기</button>
               </>

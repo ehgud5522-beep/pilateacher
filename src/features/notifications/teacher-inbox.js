@@ -11,7 +11,11 @@
 const text = (value) => String(value ?? "").trim();
 
 /* member_cancel: 강사에게 (회원 앱 취소). 아래 둘은 대표 · 총괄에게 (2026-11-21) -- 수업이 없어 눌러도 읽음만. */
-export const INBOX_KIND = Object.freeze({ MEMBER_CANCEL: "member_cancel", SALES_CONFIRMED: "sales_confirmed", PASS_ISSUED_BY_FC: "pass_issued_by_fc" });
+/* 회원 요청 둘 (2026-11-28, 보니따 [비포애프터 요청] · [피드백 요청]) -- 수업이 없어 눌러도 읽음만. */
+export const INBOX_KIND = Object.freeze({
+  MEMBER_CANCEL: "member_cancel", SALES_CONFIRMED: "sales_confirmed", PASS_ISSUED_BY_FC: "pass_issued_by_fc",
+  MEMBER_REQUEST_BEFORE_AFTER: "member_request_before_after", MEMBER_REQUEST_FEEDBACK: "member_request_feedback",
+});
 
 export const INBOX_COPY = Object.freeze({
   TITLE: "알림",

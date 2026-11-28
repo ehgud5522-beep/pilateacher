@@ -43,7 +43,7 @@
  * 폰에 내려가기 때문이다.
  */
 const PASS_FIELDS = Object.freeze([
-  "passId", "lessonType", "totalSessions", "serviceSessions",
+  "passId", "lessonType", "diosaGrade", "totalSessions", "serviceSessions",
   "remainingCount", "expiresAt", "status", "isDuet", "partnerName", "holdFrom", "holdUntil",
   /* 세션업 기간 (2026-11-15, 대표 결정: 회원도 본다). 숫자 둘만 나간다 -- 계산에
      쓰는 serviceUsed 는 여전히 나가지 않는다. */
@@ -88,13 +88,26 @@ function lessonTypeOf(pass, productSessionTypes, shared) {
   return LESSON_TYPE.OTHER;
 }
 
+/**
+ * 디오사 A(30분) · B(50분) (2026-11-28 대표: "수강권 현황에 디오사 a, b 가 분리돼 있는지").
+ * lessonType 은 "diosa" 그대로 두고 칸을 하나 더한다 -- 이미 깔린 보니따(1.1.5)는 모르는
+ * lessonType 을 "필라테스 수업" 으로 부르므로, 새 값을 만들면 옛 앱에서 디오사가 사라진다.
+ * 옛 앱은 이 칸을 모르고 지나간다. 디오사가 아니면 빈 문자열.
+ */
+function diosaGradeOf(pass) {
+  const category = text(pass?.category);
+  if (category === "diosa_a") return "a";
+  if (category === "diosa_b") return "b";
+  return "";
+}
+
 /** 수업 이력 한 건에서 내보낼 것. */
 /* lessonType 은 그 수업이 어떤 회원권에서 차감됐는지로 정한다 -- 회원 앱이
    이력 한 줄을 "1:1 필라테스 수업" 으로 부른다 (2026-10-30). passId 는 내보내지
    않는다. */
 /* lessonId (2026-11-09, 수업 후 별점 평가): 회원이 평가할 수업을 가리키는 값. 차감에만 싣는다.
    예정 수업의 lessonId 와 같은 값이고, 그 문서를 회원이 읽을 수는 없다. */
-const HISTORY_FIELDS = Object.freeze(["occurredAt", "type", "lessonType", "instructorName", "memberNote", "lessonId"]);
+const HISTORY_FIELDS = Object.freeze(["occurredAt", "type", "lessonType", "diosaGrade", "instructorName", "memberNote", "lessonId"]);
 
 /**
  * 회원에게 보낼 말의 길이.
@@ -284,6 +297,7 @@ function buildMemberView(input) {
     return {
       passId: text(pass.id || pass.passId),
       lessonType: lessonTypeOf(pass, input?.productSessionTypes, others.length > 0),
+      diosaGrade: diosaGradeOf(pass),
       totalSessions: count(pass.totalSessions),
       serviceSessions: count(pass.serviceSessions),
       remainingCount: count(pass.remainingCount),
@@ -304,6 +318,7 @@ function buildMemberView(input) {
 
   const passIds = new Set(passes.map((pass) => pass.passId).filter(Boolean));
   const lessonTypeByPass = new Map(passes.map((pass) => [pass.passId, pass.lessonType]));
+  const diosaGradeByPass = new Map(passes.map((pass) => [pass.passId, pass.diosaGrade]));
   const history = (Array.isArray(input?.ledger) ? input.ledger : [])
     .filter(Boolean)
     .filter((entry) => HISTORY_TYPES.includes(text(entry.type)))
@@ -312,6 +327,7 @@ function buildMemberView(input) {
       occurredAt: toDate(entry.occurredAt),
       type: text(entry.type),
       lessonType: lessonTypeByPass.get(text(entry.passId)) || LESSON_TYPE.OTHER,
+      diosaGrade: diosaGradeByPass.get(text(entry.passId)) || "",
       /* 이름을 박아 둔다. 강사가 퇴사해도 그때 가르친 사람의 이름이 남아야
          한다 -- uid 를 내보내고 화면에서 찾게 하면 그 이름이 사라진다. */
       instructorName: lookup(input?.instructorNames, text(entry.instructorId)),

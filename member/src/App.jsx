@@ -20,7 +20,7 @@ import { TYPE } from "../../src/features/ui/type-scale.js";
 import { BRAND_MARK } from "./brand.js";
 import { classifyPhoneAuthError } from "./auth-errors.js";
 import {
-  callMemberCancel, callMemberRating, deleteMemberAccount, linkMemberAccount, memberPushSettings, resetRecaptcha, signOutMember, startPhoneSignIn,
+  callMemberCancel, callMemberRating, callMemberRequest, deleteMemberAccount, linkMemberAccount, memberPushSettings, resetRecaptcha, signOutMember, startPhoneSignIn,
   watchAuth, db,
 } from "./firebase.js";
 import {
@@ -32,7 +32,9 @@ import { LINK_RESULT, linkResultScreen, needsLinkCall } from "./link-result.js";
 import {
   MEMBER_FEATURE, MEMBER_STAGE, clearDiagnostics, readDiagnostics, recordDiagnostic,
 } from "./diagnostics.js";
-import { readMemberLink, readMemberViews } from "./member-data.js";
+import { readMemberLink, readMemberNotice, readMemberViews } from "./member-data.js";
+import { MemberNoticePopup } from "./member-extras.jsx";
+import { memberNoticeLive, memberNoticeSnoozed, snoozeMemberNotice } from "../../functions/shared/member-notice.mjs";
 import { recoverMemberViews } from "./view-recovery.js";
 import { offlineNotice, readViewCache, writeViewCache } from "./offline-cache.js";
 import {
@@ -376,6 +378,28 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
      홈으로 돌아올 때마다 다시 읽는다. 실패하면 칸을 그대로 두고(0개) 오류를 띄우지 않는다 -- 비포애프터 탭이 자기 오류를 말한다. */
   const baLink = state.stage === "ready" && Array.isArray(state.places) ? state.places[Math.min(place, Math.max(0, state.places.length - 1))]?.link : null;
   const [beforeAfterSummaryState, setBeforeAfterSummaryState] = useState(null);
+  /* 공지 팝업 (2026-11-28). 지점(센터)마다 문서 하나를 한 번 읽는다. 못 읽어도 화면은 그대로 -- 진단에만 남긴다.
+     오프라인 사본을 보는 중에는 읽지 않는다. 닫으면 이번 실행 동안 다시 뜨지 않는다. */
+  const [memberNotice, setMemberNotice] = useState(null);
+  const noticeOrg = baLink?.organizationId || "";
+  const noticeScope = `${text(userId)}_${noticeOrg}`;
+  const noticeShownRef = useRef(new Set());
+  useEffect(() => {
+    if (!noticeOrg || state.offlineAt || noticeShownRef.current.has(noticeOrg)) return undefined;
+    let active = true;
+    readMemberNotice(db, noticeOrg).then((notice) => {
+      if (!active) return;
+      noticeShownRef.current.add(noticeOrg);
+      const storage = typeof localStorage === "undefined" ? null : localStorage;
+      if (memberNoticeLive(notice) && !memberNoticeSnoozed(storage, noticeScope, notice)) setMemberNotice(notice);
+    }).catch((error) => {
+      recordDiagnostic({
+        feature: MEMBER_FEATURE.MEMBER_NOTICE, stage: MEMBER_STAGE.NOTICE_READ,
+        errorDomain: "firestore", errorCode: text(error?.code) || "unknown", message: text(error?.message),
+      });
+    });
+    return () => { active = false; };
+  }, [noticeOrg, noticeScope, state.offlineAt]);
   useEffect(() => {
     if (!sharingEnabled || !baLink?.organizationId || !baLink?.clientId || tab !== "home") { if (!sharingEnabled) setBeforeAfterSummaryState(null); return undefined; }
     let active = true;
@@ -668,6 +692,7 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
             onStopAsking={() => savePushPref(PUSH_KIND.LESSON_RATING, false)} />
         ) : null}
         <Home view={{ ...current.view, schedule }} onOpenRecords={() => setTab("records")}
+          requestPlace={current.link} requestApi={state.offlineAt ? null : callMemberRequest}
           onOpenLesson={setOpenLesson}
           beforeAfter={sharingEnabled ? beforeAfterSummaryState : null} onOpenBeforeAfter={() => setTab("beforeAfter")} />
       </div>
@@ -706,6 +731,13 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
           onCancelled={(lessonId) => {
             setCancelledIds((previous) => new Set([...previous, text(lessonId)]));
             load({ quiet: true });
+          }} />
+      ) : null}
+      {memberNotice ? (
+        <MemberNoticePopup notice={memberNotice} onClose={() => setMemberNotice(null)}
+          onSnooze={() => {
+            snoozeMemberNotice(typeof localStorage === "undefined" ? null : localStorage, noticeScope, memberNotice);
+            setMemberNotice(null);
           }} />
       ) : null}
     </Shell>

@@ -43,7 +43,7 @@ export const CACHED_VIEW_FIELDS = Object.freeze([
 ]);
 
 export const CACHED_PASS_FIELDS = Object.freeze([
-  "passId", "lessonType", "totalSessions", "serviceSessions",
+  "passId", "lessonType", "diosaGrade", "totalSessions", "serviceSessions",
   "remainingCount", "expiresAt", "status", "isDuet", "partnerName",
 ]);
 
@@ -53,7 +53,7 @@ export const CACHED_SCHEDULE_FIELDS = Object.freeze([
 ]);
 
 export const CACHED_HISTORY_FIELDS = Object.freeze([
-  "occurredAt", "type", "lessonType", "instructorName", "memberNote",
+  "occurredAt", "type", "lessonType", "diosaGrade", "instructorName", "memberNote",
 ]);
 
 /**

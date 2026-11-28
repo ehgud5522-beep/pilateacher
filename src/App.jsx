@@ -198,6 +198,10 @@ import { readPassesForClients, subscribeClients } from "./data/repositories/clie
 import { markTeacherInboxRead, subscribeTeacherInbox } from "./data/repositories/teacher-inbox-repository.js";
 import { currentPassUsage, passHistoryRows } from "./features/membership/pass-usage.js";
 import { hideToday as hideDailySentenceToday, isHiddenToday as dailySentenceHiddenToday, pickSentence, readLastSentence, rememberSentence } from "./features/schedule/daily-sentence.js";
+import {
+  MEMBER_NOTICE_BODY_MAX, MEMBER_NOTICE_ERROR_TEXT, MEMBER_NOTICE_TITLE_MAX, memberNoticeError, readMemberNotice, saveMemberNotice,
+} from "./data/repositories/member-notice-repository.js";
+import { shrinkNoticeImage } from "./features/member-notice/shrink-image.js";
 import { INBOX_COPY, inboxFailure, inboxRow, inboxStripLabel, lessonForInboxItem } from "./features/notifications/teacher-inbox.js";
 import {
   MEMBER_CANCEL_VIEW_COPY, ackKey as memberCancelAckKey, acksFromInbox, freesSlot, hasMemberCancel, isMemberCancelledAttendee,
@@ -24961,6 +24965,107 @@ const MEMBER_APP_LINKS = {
   verify: fbVerifyMemberViews,
 };
 
+/* ── 보니따 공지 팝업 (2026-11-28 대표) ────────────────────────────────
+   회원 앱을 열면 한 장 뜨는 공지. 이미지 · 제목 · 내용 · 띄우기 켜고 끄기 · 종료일.
+   회원은 [일주일 동안 안 보기] · [닫기] 를 누른다. 고쳐서 저장하면 안 보기를 누른 회원에게도 다시 뜬다.
+   판정은 functions/shared/member-notice.mjs, 저장은 member-notice-repository.js (규칙이 대표 · 총괄만 연다). */
+function MemberNoticeAdmin({ organization, store = undefined, initialNotice = undefined, onToast }) {
+  const organizationId = organization?.organizationId || "";
+  const [draft, setDraft] = useState(() => ({ title: "", body: "", image: "", active: false, endsOn: "", ...(initialNotice || {}) }));
+  const [loading, setLoading] = useState(initialNotice === undefined);
+  const [loadError, setLoadError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [imageBusy, setImageBusy] = useState(false);
+  const fileRef = useRef(null);
+  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
+  useEffect(() => {
+    if (initialNotice !== undefined || !organizationId) return undefined;
+    let active = true;
+    readMemberNotice(organizationId, store ? { store } : undefined).then((found) => {
+      if (active && found) setDraft({ title: found.title || "", body: found.body || "", image: found.image || "", active: found.active === true, endsOn: found.endsOn || "" });
+    }).catch((failure) => {
+      if (!active) return;
+      const code = String(failure?.code || "unknown");
+      setLoadError(code);
+      deviceLog("member_notice_load_failed", { feature: "member_notice", stage: "read", errorDomain: "firestore", errorCode: code, message: String(failure?.message || "").slice(0, 200) });
+    }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [organizationId, initialNotice, store]);
+  const errorText = (code) => `${MEMBER_NOTICE_ERROR_TEXT[code] || "저장하지 못했어요."} (코드 ${code})`;
+  const pickImage = async (file) => {
+    if (!file) return;
+    setImageBusy(true);
+    setError("");
+    try {
+      const data = await shrinkNoticeImage(file);
+      setDraft((value) => ({ ...value, image: data }));
+    } catch (failure) {
+      setError(errorText(String(failure?.code || "member_notice_image_decode")));
+    } finally {
+      setImageBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+  const save = async (next) => {
+    setSaving(true);
+    setError("");
+    try {
+      const saved = await saveMemberNotice(organizationId, next, store ? { store } : undefined);
+      setDraft((value) => ({ ...value, ...saved }));
+      onToast?.(saved.active ? "보니따 앱에 공지를 띄웠어요" : "공지를 내렸어요");
+    } catch (failure) {
+      const code = String(failure?.code || "unknown").replace(/^firestore\//, "");
+      setError(errorText(code));
+      deviceLog("member_notice_save_failed", { feature: "member_notice", stage: "write", errorDomain: "firestore", errorCode: code, message: String(failure?.message || "").slice(0, 200) });
+    } finally {
+      setSaving(false);
+    }
+  };
+  if (loading) return <p className="text-xs" style={{ color: SUB }}>공지를 불러오는 중…</p>;
+  const refused = memberNoticeError(draft);
+  return (
+    <div className="space-y-3" data-member-notice-admin>
+      {loadError ? <p className="rounded-lg px-3 py-2 text-xs font-bold" style={{ backgroundColor: CANVAS, color: BAD }}>지금 띄운 공지를 읽지 못했어요 (코드 {loadError})</p> : null}
+      <section style={sectionStyle}>
+        <p style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>보니따 앱 공지 팝업</p>
+        <p className="mt-1" style={{ fontSize: TYPE.caption, color: SUB, lineHeight: 1.5 }}>회원이 앱을 열면 한 장 떠요. 회원은 [일주일 동안 안 보기] · [닫기] 를 누를 수 있고, 고쳐서 저장하면 다시 떠요.</p>
+        <div className="mt-3 space-y-2">
+          <div>
+            {draft.image ? (
+              <div className="relative">
+                <img src={draft.image} alt="공지 이미지 미리보기" className="w-full rounded-lg" style={{ border: `1px solid ${LINE}` }} />
+                <button type="button" onClick={() => setDraft((value) => ({ ...value, image: "" }))} className="absolute right-2 top-2 flex h-9 items-center gap-1 rounded-lg px-2 text-xs font-bold" style={{ backgroundColor: CARD, color: BAD, border: `1px solid ${LINE}` }}><Trash2 size={13} /> 이미지 빼기</button>
+              </div>
+            ) : null}
+            <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(event) => pickImage(event.target.files?.[0])} />
+            <button type="button" disabled={imageBusy} onClick={() => fileRef.current?.click()} className="mt-2 flex min-h-11 w-full items-center justify-center gap-1.5 rounded-lg text-xs font-bold disabled:opacity-50" style={{ backgroundColor: CANVAS, color: INK2, border: `1px solid ${LINE}` }}>
+              <ImagePlus size={14} /> {imageBusy ? "이미지 줄이는 중…" : draft.image ? "이미지 바꾸기" : "이미지 넣기"}
+            </button>
+          </div>
+          <input value={draft.title} maxLength={MEMBER_NOTICE_TITLE_MAX} placeholder="제목 (예: 12월 휴무 안내)" onChange={(event) => setDraft((value) => ({ ...value, title: event.target.value }))}
+            className="h-11 w-full rounded-lg px-3 text-sm" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }} />
+          <textarea value={draft.body} maxLength={MEMBER_NOTICE_BODY_MAX} rows={4} placeholder="내용 (없어도 돼요)" onChange={(event) => setDraft((value) => ({ ...value, body: event.target.value }))}
+            className="w-full rounded-lg px-3 py-2 text-sm" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }} />
+          <label className="flex min-h-11 items-center justify-between gap-2 text-xs font-bold" style={{ color: INK2 }}>
+            <span>종료일 (이날까지 띄움, 비우면 내릴 때까지)</span>
+            <input type="date" value={draft.endsOn} onChange={(event) => setDraft((value) => ({ ...value, endsOn: event.target.value }))}
+              className="h-10 rounded-lg px-2 text-xs" style={{ backgroundColor: CARD, color: INK, border: `1px solid ${LINE}` }} />
+          </label>
+        </div>
+        {error ? <p role="alert" className="mt-2 text-xs font-bold" style={{ color: BAD }}>{error}</p> : null}
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <button type="button" data-member-notice-publish disabled={saving || Boolean(refused)} onClick={() => save({ ...draft, active: true })}
+            className="min-h-11 rounded-lg text-xs font-extrabold text-white disabled:opacity-40" style={{ backgroundColor: PRIMARY }}>{saving ? "저장 중" : draft.active ? "고쳐서 다시 띄우기" : "보니따 앱에 띄우기"}</button>
+          <button type="button" data-member-notice-off disabled={saving || !draft.active || Boolean(refused)} onClick={() => save({ ...draft, active: false })}
+            className="min-h-11 rounded-lg text-xs font-extrabold disabled:opacity-40" style={{ backgroundColor: CARD, color: SUB, border: `1px solid ${LINE}` }}>내리기</button>
+        </div>
+        <p className="mt-2" style={{ fontSize: TYPE.caption, color: draft.active ? GOOD : SUB }}>{draft.active ? "지금 보니따 앱에 떠 있어요" : "지금은 띄우지 않고 있어요"}</p>
+      </section>
+    </div>
+  );
+}
+
 function MemberAppAdmin({
   organization, clientStore, locationStore, links = MEMBER_APP_LINKS,
   onToast, initialState = null,
@@ -31413,6 +31518,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     issues: "발급 내역",
     "member-app": "회원 앱",
     "member-app-status": "보니따 앱 설치 현황",
+    "member-notice": "보니따 공지 팝업",
     audit: "감사 로그",
     "renewal-radar": "재등록 레이더",
     "record-board": "강사 기록 현황",
@@ -31483,6 +31589,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
       /* 회원이 자기 잔여를 보는 앱. 여기서는 연결만 다룬다 -- 자동으로 잇지
          못한 것과, 잘못 이은 것과, 화면의 숫자가 맞는지. */
       ...(showMemberApp ? [{ key: "member-app", title: "회원 앱", description: "연결 대기 · 끊기 · 점검", Icon: Users }] : []),
+      /* 보니따 공지 팝업 (2026-11-28 대표). 회원 앱 연결과 같은 사람(대표 · 총괄). */
+      ...(showMemberApp ? [{ key: "member-notice", title: "보니따 공지 팝업", description: "회원 앱을 열면 뜨는 공지 · 이미지", Icon: Megaphone }] : []),
       ...(showInstructorAdmin ? [{ key: "instructor-admin", title: "강사 관리", description: "강사 추가 · 지점 · 직함 · 풀방금액", Icon: Users }] : []),
       /* 강사 관리와 따로 둔다. 한 강사의 회원권을 **전부** 옮기는 일이라
          직함을 고치는 일과 무게가 다르고, 되돌리려면 한 장씩 되돌려야 한다. */
@@ -32110,6 +32218,9 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
                대표가 어느 줄이 누구인지 모른 채 숫자만 본다. */
             clientStore={clientStore} passStore={passStore}
             onRetryOrganization={onRetryOrganization} onToast={onToast} />
+        )}
+        {view === "member-notice" && showMemberApp && (
+          <MemberNoticeAdmin organization={organization} onToast={onToast} />
         )}
         {view === "member-app" && showMemberApp && (
           <MemberAppAdmin organization={organization}
@@ -33295,6 +33406,10 @@ export function createAppScreenSmokeCases() {
        차감이 차수 순이라 뒤 차수가 먼저 만료되면 그 회차를 잃는다. */
     { name: "더보기 탭 · 만료일 순서 확인", element: settingsTab(smokeOwner, { initialView: "expiry-order" }) },
     { name: "더보기 탭 · 일정 색상", element: settingsTab(smokeOwner, { initialView: "schedule-colors" }) },
+    { name: "더보기 탭 · 보니따 공지 팝업", element: provider(
+      <MemberNoticeAdmin organization={readyOrganizationContext(smokeOwner)} onToast={noop}
+        initialNotice={{ title: "12월 휴무 안내", body: "25일은 쉽니다", image: "data:image/jpeg;base64,AAAA", active: true, endsOn: "2026-12-31" }} />,
+    ) },
     /* 확정된 듀엣인데 한 명이 "예약" 으로 남은 수업 -- 대표 확인 목록. 읽지 않고 그린다. */
     { name: "듀엣 출석 확인", element: providerWith(smokeOwner, (
       <DuetUnmarkedReview organization={readyOrganizationContext(smokeOwner)} initialState={{

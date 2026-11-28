@@ -41,6 +41,9 @@ export const MEMBER_FEATURE = Object.freeze({
   APP_UPDATE: "app_update",
   /* 수업 후 별점 평가 (2026-11-09). 점수는 적지 않는다 -- 결과 코드만. */
   LESSON_RATING: "member_lesson_rating",
+  /* 2026-11-28: 공지 팝업 읽기 · 강사에게 요청 (비포애프터 · 피드백). */
+  MEMBER_NOTICE: "member_notice",
+  MEMBER_REQUEST: "member_request",
 });
 
 /** 그 기능의 어느 단계인가. */
@@ -58,6 +61,8 @@ export const MEMBER_STAGE = Object.freeze({
   CANCEL_CALL: "cancel_call",
   RATING_STATUS: "rating_status",
   RATING_SUBMIT: "rating_submit",
+  NOTICE_READ: "notice_read",
+  REQUEST_CALL: "request_call",
   UPDATE_CHECK: "update_check",
   UPDATE_START: "update_start",
   DONE: "done",

@@ -186,6 +186,16 @@ export async function callMemberCancel({ action, organizationId, clientId, lesso
 }
 
 /**
+ * 담당 강사에게 요청 (2026-11-28): kind 는 member_request_before_after · member_request_feedback.
+ * 담당 강사는 서버가 회원 문서에서 읽는다. 같은 종류는 하루 한 번 -- 두 번째는 status "duplicate".
+ */
+export async function callMemberRequest({ organizationId, clientId, kind }) {
+  const call = httpsCallable(functions, "memberRequestToTeacher");
+  const response = await call({ organizationId, clientId, kind });
+  return response?.data || null;
+}
+
+/**
  * 수업 후 별점 평가 (2026-11-09). action "status" 는 쓰지 않고 카드를 그릴지만 묻는다.
  * "submit" 이 점수를 보낸다. 판정 · 담당 강사는 서버가 수업 문서에서 읽는다 -- 보내는 것은
  * 어느 수업인지와 점수뿐이고, 본인 확인은 토큰의 uid 로 한다.

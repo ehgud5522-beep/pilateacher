@@ -56,6 +56,7 @@ const { handleMemberPushSettings, runMemberPush } = require("./member-push");
 const { manageGroupPayroll } = require("./group-payroll");
 const { handleNoticeRequest } = require("./notice-admin");
 const { grantMemberCancel, memberCancelLesson, memberCancelStatus } = require("./member-cancel");
+const { sendMemberRequest } = require("./member-request");
 const { lessonRatingStats, lessonRatingStatus, submitLessonRating } = require("./lesson-rating");
 const { cancelThenNotifyTeacher, handleTeacherPushSettings } = require("./teacher-cancel-push");
 const { monthlyPayFor, planAccountSwap, runAccountSwap } = require("./instructor-swap");
@@ -1080,6 +1081,31 @@ exports.memberCancelLesson = onCall(MEMBER_LINK_OPTIONS, async (request) => {
       errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
     });
     throw new HttpsError("unavailable", "member_cancel_failed", { reason: "member_cancel_failed" });
+  }
+});
+
+/* 회원 → 담당 강사 요청 (2026-11-28): 보니따 홈의 [비포애프터 요청] · [피드백 요청].
+   담당 강사 알림함에 한 건. 같은 회원 · 같은 종류는 하루 한 번. 근거는 member-request.js. */
+exports.memberRequestToTeacher = onCall(MEMBER_LINK_OPTIONS, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const kind = String(request?.data?.kind || "").trim();
+  const log = (level, event, fields) => logger[level](event, { feature: "member_request", organizationId, kind, ...fields });
+  try {
+    const result = await sendMemberRequest(firestore, {
+      callerUid: request?.auth?.uid, organizationId, clientId: request?.data?.clientId, kind,
+    }, { stamp: () => FieldValue.serverTimestamp() });
+    // 회원 이름 · uid 는 남기지 않는다 (§7).
+    log("info", "member_request_done", { stage: "send", status: result.status, instructors: result.instructors });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      log("warn", "member_request_refused", { stage: "send", errorDomain: "member_request", errorCode: error.reason || error.httpsCode });
+      throw new HttpsError(error.httpsCode, error.message, { reason: error.reason || "" });
+    }
+    log("error", "member_request_failed", {
+      stage: "send", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+    throw new HttpsError("unavailable", "member_request_failed", { reason: "member_request_failed" });
   }
 });
 

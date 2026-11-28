@@ -532,3 +532,56 @@ test("그날 수업은 예정과 받은 것을 시각 순으로 한 줄에", asy
 });
 
 const toHour = (value) => new Date(value).getHours();
+
+/* ── 2026-11-28 대표 요청 ─────────────────────────────────────────────── */
+
+test("수업기록은 한 달씩 -- 지난달 기록은 넘겨야 보인다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const records = markupOf("수업기록 · 두 달");
+  assert.match(records, /data-record-month="2026-09"/);
+  assert.match(records, /2026년 9월 · 1번/);
+  assert.match(records, /구월강사/);
+  assert.doesNotMatch(records, /팔월강사/, "8월 기록은 숨긴다");
+  assert.match(records, /aria-label="지난달">/, "지난달로 넘길 수 있다");
+  assert.match(records, /aria-label="다음 달" disabled/, "이번 달보다 앞으로는 못 간다");
+});
+
+test("디오사 A · B 는 30분 · 50분으로 나뉘어 불린다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const home = markupOf("홈 · 디오사 A · B");
+  assert.match(home, /디오사 프로그램 30분 4회/);
+  assert.match(home, /디오사 프로그램 50분 4회/);
+});
+
+test("시각이 지난 예정 수업은 출석 확인 전으로 말한다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const home = markupOf("홈 · 디오사 A · B");
+  assert.match(home, /class="lesson-state">출석 확인 전</);
+  assert.match(home, /class="lesson-state">예정</, "아직 안 한 수업은 예정 그대로");
+});
+
+test("오늘 수업 아이콘은 달력 하나 -- 사람 모양 선이 아니다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const home = markupOf("홈 · 디오사 A · B");
+  assert.match(home, /<span class="icon"><svg[^>]*><rect /);
+  assert.doesNotMatch(home, /M5 21l4-7 3 2 3-2 4 7/);
+});
+
+test("선생님께 요청은 작은 버튼 둘, 오프라인이면 없다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const home = markupOf("홈 · 선생님께 요청");
+  assert.match(home, /data-request-kind="member_request_feedback"[^>]*>피드백 요청</);
+  assert.match(home, /data-request-kind="member_request_before_after"[^>]*>비포애프터 요청</);
+  assert.doesNotMatch(markupOf("홈 · 요청 없음(오프라인)"), /data-member-request/);
+});
+
+test("공지 팝업: 이미지 · 제목 · 내용 · 일주일 동안 안 보기 · 닫기", async (t) => {
+  const markupOf = await memberScreens(t);
+  const popup = markupOf("공지 팝업");
+  assert.match(popup, /<img class="notice-image" src="data:image\/jpeg;base64,AAAA"/);
+  assert.match(popup, /12월 휴무 안내/);
+  assert.match(popup, /25일은 쉽니다/);
+  assert.match(popup, /data-notice-snooze[^>]*>일주일 동안 안 보기</);
+  assert.match(popup, /data-notice-close[^>]*>닫기</);
+  assert.match(popup, /role="dialog"/);
+});

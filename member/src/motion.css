@@ -22,6 +22,7 @@
 @keyframes member-sheet-out { to { transform: translateY(100%); } }
 @keyframes member-card-in { from { opacity: 0; transform: translateY(12px) scale(.98); } }
 @keyframes member-pop-in { from { opacity: 0; transform: scale(.94); } }
+@keyframes member-notice-out { to { opacity: 0; transform: scale(.96) translateY(6px); } }
 @keyframes member-star-pop { 0% { transform: scale(.55); } 55% { transform: scale(1.3); } 100% { transform: scale(1); } }
 @keyframes member-num-pop { 0% { transform: scale(.7); } 60% { transform: scale(1.35); } 100% { transform: scale(1); } }
 @keyframes member-tab-pop { 0% { transform: scale(.82); } 60% { transform: scale(1.12); } 100% { transform: scale(1); } }
@@ -64,6 +65,14 @@
   .sheetwrap[data-closing] { animation: app-scrim-out var(--m-out) ease-in both; }
   .sheetwrap[data-closing] .sheet { animation: member-sheet-out var(--m-out) cubic-bezier(.4, 0, 1, 1) both; }
   .updatewall { animation: app-scrim-in 240ms ease; }
+  /* 공지 팝업 (2026-11-28): 살짝 커지며 떠오르고, 닫을 때 줄며 사라진다. */
+  .noticewrap { animation: app-scrim-in 240ms ease; }
+  .noticewrap .noticecard { animation: member-pop-in 340ms var(--m-glide); }
+  .noticewrap[data-closing] { animation: app-scrim-out 220ms ease-in both; }
+  .noticewrap[data-closing] .noticecard { animation: member-notice-out 220ms cubic-bezier(.4, 0, 1, 1) both; }
+  .request-buttons button { transition: transform var(--m-press) var(--m-glide); }
+  .request-buttons button:active:not(:disabled) { transform: scale(.94); }
+  .request-result { animation: member-page-rise 240ms var(--m-glide); }
   .updatewall .updatecard { animation: member-pop-in 320ms var(--m-glide); }
   .zoom-viewer { animation: app-scrim-in 200ms ease; }
   .zoom-viewer .zoom-stage img { animation: member-pop-in 300ms var(--m-glide); }

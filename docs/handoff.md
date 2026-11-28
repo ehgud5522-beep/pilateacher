@@ -1,3 +1,20 @@
+## 2026-11-28 — 강사 폰 푸시 (회원 요청 · 수업 전 몸 상태) · release/1-1-63 (PR, 병합 · 배포 전)
+
+- 대표: "강사에게 푸시 알림으로 -- 앱에서 눈에 잘 안 띔" → "가"(진행), "새로운 빌드로 1-1-63"
+- 서버 `functions/src/teacher-push.js` `pushToTeacher`: 알림함에 쓴 **뒤** 한 번. 스위치 `runtimeConfig/teacherPush`(off · all · listed),
+  토큰 `teacherPush/{uid}`, 한 번만 `notificationSends/teacher_{inboxId}_{uid}`, 죽은 토큰 지움, 던지지 않음. 안드로이드 채널 `teacher_alerts`.
+  memberRequestToTeacher(담당 강사마다) · memberLessonCondition(불편한 곳)이 부름. 문구에 이름 · 부위 · 메모 없음. 회원 취소 푸시는 예전 그대로(teacher-cancel-push.js)
+- 강사 앱 `src/features/notifications/teacher-push-client.js`: 폰 앱 · 센터 소속이면 열 때 한 번 권한 묻고 토큰을 `teacherPushSettings` 로.
+  보니따 `registerDevice` 를 그대로 쓰고 채널만 다름(`channel` 인자 추가, 보니따는 기본값 그대로). **플러그인이 안 실린 빌드는 묻지 않음**(isPluginAvailable)
+- 운영 스위치: 더보기 → 대표 설정 → **"강사 푸시 알림"** (끔 · 전체 · 고른 계정만). 기본 꺼짐 -- 켜는 것은 대표
+- **1.1.63 = 안드로이드만 푸시**. 릴리스 includePlugins 에 `@capacitor-firebase/messaging` 을 더함(1.1.47 에 강사 앱에서 뺐던 것).
+  **iOS 는 이번에 안 넣음** -- aps-environment entitlement 를 넣으면 애플 App ID(com.pilateacher.app)에 Push 기능이 켜져 있지 않을 때
+  Codemagic 프로필 생성 · 서명이 깨진다. iOS 는 대표가 ① Apple Developer → Identifiers → com.pilateacher.app → Push Notifications 켜기
+  ② Firebase 콘솔 → 프로젝트 설정 → 클라우드 메시징 → 강사 iOS 앱에 APNs 키 올리기(보니따와 같은 키 가능) 뒤 다음 빌드에서
+  (entitlement · AppDelegate 토큰 전달 · iOS includePlugins). iOS 강사는 그동안 앱 안 토스트 · 진한 알림 띠로 봄
+- 확인: test:node 4067 · Functions 482 · typecheck · eslint(새 오류 0). 실기기 푸시 수신 못 봄
+- 배포(대표 지시 뒤): Functions `memberRequestToTeacher` · `memberLessonCondition` → 강사 웹(스위치 화면) → 강사 앱 1.1.63 → 스위치 켜기
+
 ## 2026-11-28 — 강사 알림함을 모든 강사에게 · 요청 문구 · 새 알림 띄우기 (PR, 병합 · 배포 전)
 
 - 대표: "피드백 요청하기가 강사 앱에서 알림이 안 옴", "오늘 수업 내용 요청하기 · 최근 비포애프터 요청하기로", "강사에게 푸시로 -- 앱에서 눈에 잘 안 띔"

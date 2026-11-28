@@ -27,7 +27,9 @@ const HANDLE_ONLY = "getFirestore";
 const LIST_APIS = ["collection(", "collectionGroup(", "getDocs(", "query(", "where(", "onSnapshot("];
 
 /** 열어도 되는 컬렉션. 이 둘뿐이다. */
-const ALLOWED_COLLECTIONS = ["memberLinks", "organizations", "memberViews"];
+/* memberNotices (2026-11-28): 센터 공지 팝업 문서 하나(popup). 회원 정보가 없는 센터 글이고,
+   규칙이 "이 센터에 이어진 회원" 만 연다. */
+const ALLOWED_COLLECTIONS = ["memberLinks", "organizations", "memberViews", "memberNotices"];
 
 /** 회원 앱이 절대 읽지 않는 곳. */
 const FORBIDDEN_COLLECTIONS = [

@@ -1,4 +1,21 @@
-## 2026-11-28 — release/1-1-62 (빌드 시작 · 스토어 업로드는 대표)
+## 2026-11-28 — #307 병합 · 배포 · release/1-1-62 에 합침 (대표 "순서대로 배포 병합해 주고 앱 빌드까지")
+
+- **병합** #307 → main `a158423`. main 에서 규칙 505 · Functions 478 다시 통과
+- **배포 순서대로**: 색인(lessonConditions.expireAt TTL, `--only firestore:indexes --config firebase.foundation.json`) →
+  규칙(`--only firestore:rules`, memberNotices · lessonConditions · memberConsents) →
+  Functions 9개(`--config firebase.ai-gateway.json`): memberRequestToTeacher · memberLessonCondition(새로), sendMemberLessonReminders(30분 전 문구),
+  rebuildMemberViews · verifyMemberViews · rebuildMemberViewOn{Pass,Client,LessonNote,Lesson}Write → 강사 웹(빌드 1205) → 회원 웹(pilateacher-member.web.app)
+- 강사 웹 첫 시도는 빌드가 끝난 뒤 Windows libuv 종료 오류(`UV_HANDLE_CLOSING`, 3221226505)로 멈춤 -- 코드 문제 아님, 다시 돌려 배포됨
+- **못 한 것: 투영 일괄 다시 만들기(`rebuildMemberViews`)** -- 대표 계정 callable 이고 화면 버튼이 없다(`fbRebuildMemberViews` 는 어디에도 안 이어짐).
+  그래서 디오사 30/50분 칸(diosaGrade)은 그 회원의 회원권 · 회원 · 수업이 바뀔 때(차감 · 발급 등) 트리거가 다시 만들면서 채워진다. 그 전까지는 "디오사 프로그램"
+- **앱 빌드 브랜치 `release/1-1-62`** 에 main a158423 합침(d580112) + **보니따 VIP 1.1.6**(c2c415c). 강사 1.1.62 · versionCode 85 그대로.
+  test:android-release 11 · build · build:member 통과. 네이티브 설정 · 의존성 변화 없음
+- **Codemagic 시작 · 스토어 업로드는 대표**: 강사(iOS TestFlight · Android) · 보니따(member-ios-testflight · member-android) 모두 `release/1-1-62`.
+  로컬 AAB 는 만들지 않음 -- 스토어 번호는 Codemagic 이 Play 최대값 위로 잡아 왔고, 정책 파일의 lastPublishedVersionCode(55)는 오래돼 겹침을 못 막음.
+  1.1.62 를 이미 Codemagic 으로 시작했다면 다시 시작해야 #307 강사 화면(공지 쓰는 화면 · 수업 전 몸 상태)이 들어감
+- 깔린 보니따 1.1.5 는 1.1.6 이 깔리기 전까지 새 화면이 안 보임(30분 전 알림 문구는 서버라 바로 바뀜 -- 옛 앱은 눌러도 홈으로)
+
+## 2026-11-28 — release/1-1-62 (빌드 시작 · 스토어 업로드는 대표) -- 뒤에 #307 합침, 아래 배포 기록 참고
 
 - 대표: "1.1.62 빌드 만들기". release/1-1-61 + main b2d6325(#272 ~ #305) + 버전: 강사 1.1.62 · versionCode 85 · iOS MARKETING_VERSION 1.1.62 ·
   허용 브랜치 추가 (7c17d67). 병합 충돌 0. 네이티브 설정 · 의존성 변화 없음 -- 웹 코드만 (capacitor.config 의 includePlugins 는 릴리스 쪽 그대로)
@@ -6,6 +23,56 @@
   발급 대기 1~3단계 화면(#297 · #298 · #300) · **서비스 수업료 새 금액(#302, 폰 확정도 이 빌드부터)** · 차수 칸 없앰(#304) · 일정 삭제 · 다음 주 등록 · 일정 색상(#305)
 - test:android-release 11 · npm run build(typecheck · 테스트 포함) 0 fail
 - Codemagic 시작 · 스토어 업로드 · 게시 뒤 `lastPublishedVersionCode` 갱신은 대표. 깔린 뒤 settlement 최소 빌드를 올릴지도 대표 결정(#302 금액 섞임)
+
+## 2026-11-28 — 보니따: 수업 전 몸 상태를 담당 강사에게 · 오늘 작업 움직임 다듬기 (#307 에 더함, PR · 배포 전)
+
+- 대표: "보니따에 이번 주 수업 컨디션 미리 강사에게 전달하기 -- 강사님에게 내 몸 상태를 미리 전달해 주세요. 어디에 넣으면 좋을지,
+  수업 30분 전 알림?" → 추천안 승인. 결정: **1. 추천대로 2. 수업 뒤 30일 보관 3. 동의 문구 넣고 바로 켬**
+- 보니따: 수업 상세(오늘 수업 카드를 누르면 열림, 취소보다 위)에 **"오늘 내 몸 상태 전하기"** -- 😊 좋아요 · 😮‍💨 피곤해요 · 🤕 불편한 곳 있어요
+  (목 · 어깨 · 허리 · 골반 · 무릎 · 발목 · 기타) + 한 줄(100자). 이번 주 예정 수업 어디서든, 수업 시작 전까지 고칠 수 있음.
+  처음 한 번 동의(담당 선생님께만 · 30일 뒤 자동 삭제 · 안 해도 수업은 그대로) 체크해야 보냄. `member/src/lesson-condition.jsx`
+- **수업 30분 전 알림** 문구 → "30분 뒤 수업이에요. 오늘 몸 상태를 강사에게 미리 전해 주세요." (`님` 은 문구 테스트가 막아서 "선생님께" 대신 "강사에게"),
+  data.open = "condition" → 누르면 그 수업 상세가 열림(`conditionTarget`). 옛 보니따는 홈으로 감(그대로)
+- 서버 `memberLessonCondition`(lesson-condition.js): status/save. 본인 확인은 수업 취소와 같음(clients.userId + 수업 clientIds).
+  `lessonConditions/{lessonId}_{clientId}` (instructorId · expireAt = 수업 + 30일), 동의 `memberConsents/{clientId}_lesson_condition`(판 2026-11-28).
+  "불편한 곳" 이면 담당 강사 알림함 `cond_…` 한 건(**부위 · 메모 없음** -- 알림함은 안 지워져서), 누르면 그 수업이 열림. 로그에 부위 · 메모 없음
+- **30일 삭제 = Firestore TTL** (`firestore.foundation.indexes.json` fieldOverrides lessonConditions.expireAt ttl). TTL 은 만료 뒤 보통 24시간 안에 지움
+- 강사 앱: 수업 관리 [수업 전] 브리핑 맨 위 "회원이 전한 오늘 몸 상태: 허리 불편 · 메모"(불편이면 주황). 규칙이 **그 수업의 담당 강사만** 읽게 함 --
+  대표 · FC 도 못 읽음(permission-denied 면 아무것도 안 그림). 없는 문서는 직원에게 "없음" 으로 답함
+- 움직임(대표 "오늘 작업한 것들 움직임이 자연스럽고 한눈에"): 몸 상태 칩 누름 · 색 바뀜 · 부위 줄 떠오름, 수업기록 달 넘기는 방향으로 미끄러짐,
+  공지 팝업 커지며 떠오르고 닫힐 때 줄며 사라짐, 요청 버튼 눌림 · 결과 떠오름, 강사 앱 몸 상태 · 다음 주/삭제 자리 · 일정 색 점 줄 떠오름 ·
+  고른 점 커짐. 동작 줄이기 기기에서는 멈춤(기존 motion.css 규칙 안)
+- 확인: Functions 478 · 규칙 505 · 보니따 321 · typecheck · eslint · 빌드. 실기기 · 실계정 못 봄. **법률 검토 전에 켰다(대표 결정 3)** -- 처리방침(#235)에 몸 상태 항목 추가 필요
+- 배포: #307 순서에 더해 **색인 배포(TTL)** · Functions `memberLessonCondition` · `sendMemberLessonReminders`(문구)
+
+## 2026-11-28 — 보니따: 공지 팝업 · 선생님께 요청 · 수업기록 한 달씩 · 디오사 30/50분 · 오늘 수업 표시 (PR · 배포 전)
+
+- 대표(캡처 3장): "보니따 일정이 안 맞음, 오늘 수업 현황에 계속 떠 있음", "오늘 수업 이모티콘이 이상함", "수강권 현황에 디오사 a, b 분리돼 있는지",
+  "회원앱 공지 팝업 -- 매끄럽게, 일주일 동안 안 보기 · 닫기, 이미지", "비포애프터 · 피드백 요청 버튼 작게 + 해당 강사에게 알림",
+  "수업기록은 한 달 단위로만, 전 달 것은 숨김"
+- **오늘 수업 03:00 김강사**: 강사 앱 일정은 그 계정 강사의 수업만 보이고, 보니따는 그 회원의 모든 강사 수업을 보인다. 김강사 = 심사용 강사 계정(2123줄).
+  03:00 KST = 미국 서부 오전 10시 -- 11-17(완료) · 11-28(예정) 모두 애플 심사관이 심사 중 만든 수업으로 **추정**(운영 데이터는 못 읽음, 확인 필요).
+  예정으로 남은 것은 아무도 확정 · 삭제하지 않아서. 정리하려면 심사용 계정으로 그 수업을 지움
+- 고침(보니따 화면 `member/src`):
+  - 시각이 지난 예정 수업은 "예정" 대신 **"출석 확인 전"** (`lessonStateLabel`). 결석으로 단정하지 않음
+  - 수업 아이콘: 사람 모양 선 → 달력 하나
+  - 디오사: lessonType 은 diosa 그대로 두고 **`diosaGrade` 칸(a/b)** 추가(투영 passes · history, 오프라인 사본) → "디오사 프로그램 30분 · 50분".
+    새 lessonType 을 만들지 않은 이유: 깔린 보니따 1.1.5 가 모르는 유형을 "필라테스 수업" 으로 부른다
+  - **수업기록 한 달씩**: 이번 달로 열고 ‹ › 로 넘김. 지난달 기록은 넘겨야 보임. 예전 맨 아래 "N번의 수업이 더 있어요" 줄은 뺌
+  - **선생님께 요청**: 홈 비포애프터 칸 아래 작은 알약 [피드백 요청] [비포애프터 요청](비포애프터 공유 꺼진 계정은 피드백만).
+    서버 `memberRequestToTeacher`(member-request.js): memberLinks + clients.userId 로 본인 확인 → **담당 강사(clients.instructorIds) 알림함**
+    `users/{uid}/inbox` 에 "[피드백 요청]" / "[비포애프터 요청]" (회원 이름 · 글 없음, 강사 앱이 clientId 로 이름 찾음). 같은 종류는 서울 날짜로 하루 한 번
+    (`memberRequests/{kind}_{clientId}_{YYYYMMDD}` create, 알림과 한 배치). 강사 앱 알림함에 그대로 섬(수업 없는 알림 = 읽음만). **폰 푸시는 아님** --
+    강사 앱이 아직 기기 토큰을 등록하지 않는다(teacher-cancel-push.js 머리말)
+  - **공지 팝업**: `organizations/{센터}/memberNotices/popup` 문서 하나. 대표 · 총괄이 강사 웹 **더보기 → 관리 → 보니따 공지 팝업**에서 이미지(긴 변 1080 JPEG 로
+    줄여 data URL, 70만 자 이하) · 제목 · 내용 · 종료일 · [보니따 앱에 띄우기] / [내리기]. 보니따는 앱을 열 때 한 번 읽어 가운데 카드로 부드럽게 띄움.
+    [일주일 동안 안 보기](기기 · 계정 · 센터별, 글을 고치면 다시 뜸) · [닫기](이번 실행 동안). 판정 `functions/shared/member-notice.mjs`
+  - 규칙: memberNotices -- 읽기 = 센터 직원 또는 `linkedMemberOf`(memberLinks status linked/multi_location 이고 links 앞 세 칸 중 이 센터),
+    쓰기 = ownerLevel, 칸 · 길이 · data URL 모양 · updatedAt = 서버 시각 · updatedBy = 본인. 규칙 테스트 4개(65만 자 이미지 포함) 통과
+- 확인: test:node 4057 · Functions 473 · 규칙 502 · typecheck · eslint(바꾼 파일 새 오류 0) · 보니따 빌드. **실기기 · 실계정 화면은 못 봄**
+- **배포 순서**: 규칙 → Functions(`memberRequestToTeacher` 새로, 투영 함수 `rebuildMemberView*` · `rebuildMemberViews` · `verifyMemberViews`) →
+  `rebuildMemberViews` 로 투영 다시 만들기(디오사 등급 칸) → 강사 웹(공지 쓰는 화면) → 회원 웹(`deploy:member`).
+  **깔린 보니따(1.1.5)는 화면이 번들이라 새 보니따 빌드 전까지 이 변화가 하나도 안 보인다** (회원 웹은 바로)
 
 ## 2026-11-28 — 수업 관리: 일정 삭제 · 다음 주 같은 시간 등록을 접지 않음 · 일정 색상 단순화 (PR · 배포 전)
 

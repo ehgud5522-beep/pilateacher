@@ -56,6 +56,8 @@ const { handleMemberPushSettings, runMemberPush } = require("./member-push");
 const { manageGroupPayroll } = require("./group-payroll");
 const { handleNoticeRequest } = require("./notice-admin");
 const { grantMemberCancel, memberCancelLesson, memberCancelStatus } = require("./member-cancel");
+const { sendMemberRequest } = require("./member-request");
+const { lessonConditionStatus, saveLessonCondition } = require("./lesson-condition");
 const { lessonRatingStats, lessonRatingStatus, submitLessonRating } = require("./lesson-rating");
 const { cancelThenNotifyTeacher, handleTeacherPushSettings } = require("./teacher-cancel-push");
 const { monthlyPayFor, planAccountSwap, runAccountSwap } = require("./instructor-swap");
@@ -1080,6 +1082,59 @@ exports.memberCancelLesson = onCall(MEMBER_LINK_OPTIONS, async (request) => {
       errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
     });
     throw new HttpsError("unavailable", "member_cancel_failed", { reason: "member_cancel_failed" });
+  }
+});
+
+/* 수업 전 몸 상태 전하기 (2026-11-28 대표). action "status" · "save". 근거는 lesson-condition.js.
+   부위 · 메모는 로그에 남기지 않는다 -- 건강에 관한 정보다 (§7). */
+exports.memberLessonCondition = onCall(MEMBER_LINK_OPTIONS, async (request) => {
+  const action = String(request?.data?.action || "").trim() === "save" ? "save" : "status";
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const lessonId = String(request?.data?.lessonId || "").trim();
+  const log = (level, event, fields) => logger[level](event, { feature: "lesson_condition", stage: action, organizationId, lessonId, ...fields });
+  const input = {
+    callerUid: request?.auth?.uid, organizationId, lessonId, clientId: request?.data?.clientId,
+    condition: request?.data?.condition, consent: request?.data?.consent === true,
+  };
+  try {
+    if (action === "status") return await lessonConditionStatus(firestore, input);
+    const result = await saveLessonCondition(firestore, input, { stamp: () => FieldValue.serverTimestamp() });
+    log("info", "lesson_condition_saved", { mood: result.mood, notified: result.notified });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      log("warn", "lesson_condition_refused", { errorDomain: "lesson_condition", errorCode: error.reason || error.httpsCode });
+      throw new HttpsError(error.httpsCode, error.message, { reason: error.reason || "" });
+    }
+    log("error", "lesson_condition_failed", {
+      errorDomain: "firestore", errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+    throw new HttpsError("unavailable", "lesson_condition_failed", { reason: "lesson_condition_failed" });
+  }
+});
+
+/* 회원 → 담당 강사 요청 (2026-11-28): 보니따 홈의 [비포애프터 요청] · [피드백 요청].
+   담당 강사 알림함에 한 건. 같은 회원 · 같은 종류는 하루 한 번. 근거는 member-request.js. */
+exports.memberRequestToTeacher = onCall(MEMBER_LINK_OPTIONS, async (request) => {
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const kind = String(request?.data?.kind || "").trim();
+  const log = (level, event, fields) => logger[level](event, { feature: "member_request", organizationId, kind, ...fields });
+  try {
+    const result = await sendMemberRequest(firestore, {
+      callerUid: request?.auth?.uid, organizationId, clientId: request?.data?.clientId, kind,
+    }, { stamp: () => FieldValue.serverTimestamp() });
+    // 회원 이름 · uid 는 남기지 않는다 (§7).
+    log("info", "member_request_done", { stage: "send", status: result.status, instructors: result.instructors });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      log("warn", "member_request_refused", { stage: "send", errorDomain: "member_request", errorCode: error.reason || error.httpsCode });
+      throw new HttpsError(error.httpsCode, error.message, { reason: error.reason || "" });
+    }
+    log("error", "member_request_failed", {
+      stage: "send", errorDomain: "firestore", errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+    throw new HttpsError("unavailable", "member_request_failed", { reason: "member_request_failed" });
   }
 });
 

@@ -20,19 +20,21 @@ import { TYPE } from "../../src/features/ui/type-scale.js";
 import { BRAND_MARK } from "./brand.js";
 import { classifyPhoneAuthError } from "./auth-errors.js";
 import {
-  callMemberCancel, callMemberRating, deleteMemberAccount, linkMemberAccount, memberPushSettings, resetRecaptcha, signOutMember, startPhoneSignIn,
+  callMemberCancel, callMemberLessonCondition, callMemberRating, callMemberRequest, deleteMemberAccount, linkMemberAccount, memberPushSettings, resetRecaptcha, signOutMember, startPhoneSignIn,
   watchAuth, db,
 } from "./firebase.js";
 import {
   DEFAULT_PREFS, PUSH_KIND, PUSH_PERMISSION, PUSH_SUPPORT, forgetPushDevice, normalizePrefs, permissionGuide,
-  platformOf, pushPlugin, registerDevice, tapTarget, ratingTarget, sharedPhotoTarget,
+  platformOf, pushPlugin, registerDevice, tapTarget, conditionTarget, ratingTarget, sharedPhotoTarget,
 } from "./push.js";
 import { wantsAccountDeletion } from "./delete-account.js";
 import { LINK_RESULT, linkResultScreen, needsLinkCall } from "./link-result.js";
 import {
   MEMBER_FEATURE, MEMBER_STAGE, clearDiagnostics, readDiagnostics, recordDiagnostic,
 } from "./diagnostics.js";
-import { readMemberLink, readMemberViews } from "./member-data.js";
+import { readMemberLink, readMemberNotice, readMemberViews } from "./member-data.js";
+import { MemberNoticePopup } from "./member-extras.jsx";
+import { memberNoticeLive, memberNoticeSnoozed, snoozeMemberNotice } from "../../functions/shared/member-notice.mjs";
 import { recoverMemberViews } from "./view-recovery.js";
 import { offlineNotice, readViewCache, writeViewCache } from "./offline-cache.js";
 import {
@@ -376,6 +378,28 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
      홈으로 돌아올 때마다 다시 읽는다. 실패하면 칸을 그대로 두고(0개) 오류를 띄우지 않는다 -- 비포애프터 탭이 자기 오류를 말한다. */
   const baLink = state.stage === "ready" && Array.isArray(state.places) ? state.places[Math.min(place, Math.max(0, state.places.length - 1))]?.link : null;
   const [beforeAfterSummaryState, setBeforeAfterSummaryState] = useState(null);
+  /* 공지 팝업 (2026-11-28). 지점(센터)마다 문서 하나를 한 번 읽는다. 못 읽어도 화면은 그대로 -- 진단에만 남긴다.
+     오프라인 사본을 보는 중에는 읽지 않는다. 닫으면 이번 실행 동안 다시 뜨지 않는다. */
+  const [memberNotice, setMemberNotice] = useState(null);
+  const noticeOrg = baLink?.organizationId || "";
+  const noticeScope = `${text(userId)}_${noticeOrg}`;
+  const noticeShownRef = useRef(new Set());
+  useEffect(() => {
+    if (!noticeOrg || state.offlineAt || noticeShownRef.current.has(noticeOrg)) return undefined;
+    let active = true;
+    readMemberNotice(db, noticeOrg).then((notice) => {
+      if (!active) return;
+      noticeShownRef.current.add(noticeOrg);
+      const storage = typeof localStorage === "undefined" ? null : localStorage;
+      if (memberNoticeLive(notice) && !memberNoticeSnoozed(storage, noticeScope, notice)) setMemberNotice(notice);
+    }).catch((error) => {
+      recordDiagnostic({
+        feature: MEMBER_FEATURE.MEMBER_NOTICE, stage: MEMBER_STAGE.NOTICE_READ,
+        errorDomain: "firestore", errorCode: text(error?.code) || "unknown", message: text(error?.message),
+      });
+    });
+    return () => { active = false; };
+  }, [noticeOrg, noticeScope, state.offlineAt]);
   useEffect(() => {
     if (!sharingEnabled || !baLink?.organizationId || !baLink?.clientId || tab !== "home") { if (!sharingEnabled) setBeforeAfterSummaryState(null); return undefined; }
     let active = true;
@@ -395,6 +419,7 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
      전(몇 초)에도 목록에서 바로 뺀다 -- 방금 취소한 수업이 그대로 보이면 회원은
      취소가 안 된 줄 안다. */
   const [openLesson, setOpenLesson] = useState(null);
+  const [requestedLesson, setRequestedLesson] = useState(null);
   const [cancelledIds, setCancelledIds] = useState(() => new Set());
   /* 수업 후 별점 평가 (2026-11-09). 보냈거나 "다음에" 를 누른 수업 id -- 다시 묻지 않는다. */
   const [ratingSeen, setRatingSeen] = useState(() => new Set(readRatingSeen(deviceBox())));
@@ -522,6 +547,22 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
     return () => { alive = false; };
   }, [ready, plugin, recordPush]);
 
+  /* 수업 30분 전 알림으로 들어오면 그 수업 상세를 연다. 지점이 여럿이면 그 센터의 화면으로 옮긴다.
+     일정에 없으면(이미 확정 · 취소됨) 홈에 머문다. */
+  const loadedPlaces = state.stage === "ready" && Array.isArray(state.places) ? state.places : [];
+  const requestedPlaceIndex = requestedLesson ? loadedPlaces.findIndex((item) => item.link?.organizationId === requestedLesson.organizationId
+    && (Array.isArray(item.view?.schedule) ? item.view.schedule : []).some((lesson) => text(lesson?.lessonId) === requestedLesson.lessonId)) : -1;
+  useEffect(() => {
+    if (!requestedLesson || state.stage !== "ready") return;
+    if (requestedPlaceIndex < 0) { setRequestedLesson(null); return; }
+    const view = loadedPlaces[requestedPlaceIndex]?.view;
+    const lesson = (view?.schedule || []).find((item) => text(item?.lessonId) === requestedLesson.lessonId);
+    setPlace(requestedPlaceIndex);
+    setTab("home");
+    if (lesson) setOpenLesson(lesson);
+    setRequestedLesson(null);
+  }, [requestedLesson, requestedPlaceIndex, state.stage]);
+
   /* 알림을 누르면 홈(달력)으로. 수업 하나를 여는 화면은 아직 없다. */
   useEffect(() => {
     if (!plugin?.addListener) return undefined;
@@ -531,6 +572,8 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
       setTab(tapTarget(event?.notification));
       const target = ratingTarget(event?.notification);
       setRequestedRating(target ? { ...target, openedAt: Date.now() } : null);
+      /* 수업 30분 전 알림 → 그 수업 상세(몸 상태 칸). 일정이 들어오면 아래 effect 가 연다. */
+      setRequestedLesson(conditionTarget(event?.notification));
       window.scrollTo?.({ top: 0, behavior: "instant" });
     }))
       .then((value) => { handle = value; }).catch(() => {});
@@ -668,6 +711,7 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
             onStopAsking={() => savePushPref(PUSH_KIND.LESSON_RATING, false)} />
         ) : null}
         <Home view={{ ...current.view, schedule }} onOpenRecords={() => setTab("records")}
+          requestPlace={current.link} requestApi={state.offlineAt ? null : callMemberRequest}
           onOpenLesson={setOpenLesson}
           beforeAfter={sharingEnabled ? beforeAfterSummaryState : null} onOpenBeforeAfter={() => setTab("beforeAfter")} />
       </div>
@@ -701,11 +745,18 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
       <div key={tab} className="app-motion-content member-page" data-dir={pageDirection(tab)}>{body}</div>
       {openLesson && current ? (
         <LessonSheet lesson={openLesson} place={current.link} offline={Boolean(state.offlineAt)}
-          api={callMemberCancel}
+          api={callMemberCancel} conditionApi={callMemberLessonCondition}
           onClose={() => setOpenLesson(null)}
           onCancelled={(lessonId) => {
             setCancelledIds((previous) => new Set([...previous, text(lessonId)]));
             load({ quiet: true });
+          }} />
+      ) : null}
+      {memberNotice ? (
+        <MemberNoticePopup notice={memberNotice} onClose={() => setMemberNotice(null)}
+          onSnooze={() => {
+            snoozeMemberNotice(typeof localStorage === "undefined" ? null : localStorage, noticeScope, memberNotice);
+            setMemberNotice(null);
           }} />
       ) : null}
     </Shell>

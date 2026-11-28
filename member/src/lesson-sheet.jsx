@@ -18,6 +18,7 @@ import {
 } from "./cancel-copy.js";
 import { lessonName } from "./pass-label.js";
 import { MEMBER_FEATURE, MEMBER_STAGE, recordDiagnostic } from "./diagnostics.js";
+import { ConditionBox } from "./lesson-condition.jsx";
 
 const text = (value) => String(value ?? "").trim();
 
@@ -35,7 +36,7 @@ function whenLabel(value) {
  *   onClose: () => void, onCancelled: (lessonId: string) => void,
  * }} props
  */
-export function LessonSheet({ lesson, place, offline = false, api, onClose, onCancelled }) {
+export function LessonSheet({ lesson, place, offline = false, api, conditionApi = null, onClose, onCancelled }) {
   const { closing, close } = useMotionClose(onClose);
   const closeButton = useRef(null);
   useEffect(() => {
@@ -124,6 +125,9 @@ export function LessonSheet({ lesson, place, offline = false, api, onClose, onCa
         <p className="name">{lessonName(lesson)}</p>
         <p className="num" style={{ fontSize: TYPE.body }}>{whenLabel(lesson?.startsAt)}</p>
         {tags.length ? <p className="muted" style={{ fontSize: TYPE.caption }}>{tags.join(" · ")}</p> : null}
+
+        {/* 수업 전 몸 상태 (2026-11-28 대표) -- 취소보다 위. 수업 30분 전 알림을 누르면 이 칸이 열린다. */}
+        {phase !== "done" ? <ConditionBox lessonId={lessonId} place={place} api={conditionApi} offline={offline} /> : null}
 
         {phase === "loading" ? <p className="muted mt" style={{ fontSize: TYPE.caption }}>취소 가능 여부를 확인하고 있어요…</p> : null}
 

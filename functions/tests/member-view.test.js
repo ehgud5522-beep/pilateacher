@@ -608,3 +608,21 @@ test("member projection carries the session-up window but never serviceUsed", ()
   assert.equal(view.passes[0].sessionUpLeft, 5); // 결제 회차 2회 사용, 6회차까지 → 지금 포함 5번
   assert.ok(!("serviceUsed" in view.passes[0]));
 });
+
+test("디오사 A · B 는 등급 칸으로 나뉜다 — lessonType 은 diosa 그대로 (2026-11-28)", () => {
+  /* 대표: "수강권 현황에 디오사 a, b 가 분리돼 있는지". 새 lessonType 을 만들면 이미 깔린
+     보니따(1.1.5)가 디오사를 "필라테스 수업" 으로 부른다 -- 칸을 더하고 유형은 그대로 둔다. */
+  const view = buildMemberView({
+    client: { id: "client-a", organizationId: "center-a", userId: "uid-1", name: "김하나" },
+    passes: [
+      { id: "da", clientId: "client-a", category: "diosa_a", totalSessions: 4, remainingCount: 3, status: "active" },
+      { id: "db", clientId: "client-a", category: "diosa_b", totalSessions: 4, remainingCount: 4, status: "active" },
+      { id: "pt", clientId: "client-a", category: "pt_1_1_new", totalSessions: 10, remainingCount: 5, status: "active" },
+    ],
+    ledger: [{ passId: "db", type: "deduct", occurredAt: new Date(2026, 10, 18, 10, 0), instructorId: "u1" }],
+  });
+  assert.deepEqual(view.passes.map((pass) => [pass.lessonType, pass.diosaGrade]), [
+    [LESSON_TYPE.DIOSA, "a"], [LESSON_TYPE.DIOSA, "b"], [LESSON_TYPE.SOLO, ""],
+  ]);
+  assert.equal(view.history[0].diosaGrade, "b");
+});

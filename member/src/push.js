@@ -98,6 +98,22 @@ export function tapTarget(_notification) {
   return "home";
 }
 
+/**
+ * 수업 30분 전 알림을 누르면 그 수업 상세(몸 상태 칸)를 연다 (2026-11-28). 옛 알림(open: home)은 null.
+ * @returns {{ organizationId: string, lessonId: string } | null}
+ */
+export function conditionTarget(notification) {
+  const data = notification?.data;
+  if (data?.kind !== PUSH_KIND.LESSON_30M || data?.open !== "condition") return null;
+  const result = {};
+  for (const key of ["organizationId", "lessonId"]) {
+    const value = String(data[key] || "").trim();
+    if (!value || value.length > 200 || value.includes("/")) return null;
+    result[key] = value;
+  }
+  return result;
+}
+
 /** 알림이 지정한 수업만 연다. 소속·회원 확인은 화면과 서버에서 다시 한다. */
 export function ratingTarget(notification) {
   const data = notification?.data;

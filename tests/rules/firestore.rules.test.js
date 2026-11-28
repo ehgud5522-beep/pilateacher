@@ -7378,3 +7378,108 @@ describe("PT 발급은 발급 대기에서만 (scheduleSync.flowPtGate) -- 2026-
     await assertFails(updateDoc(queueRef(dbFor(users.owner), "99000011"), { state: "issued", handledBy: users.owner, handledAt: serverTimestamp(), passId: "no-such-pass" }), "없는 회원권과 잇지 못한다");
   });
 });
+
+/* ── 보니따 공지 팝업 (2026-11-28) ─────────────────────────────────────
+   센터마다 문서 하나(popup). 대표 · 총괄이 쓰고, 이 센터에 이어진 회원과 직원이 읽는다.
+   회원 앱 사용자는 소속 문서가 없다 -- memberLinks 의 links 로만 센터를 안다. */
+describe("bonita member notice popup", () => {
+  const NOTICE_MEMBER = "notice-member";
+  const ENDED_MEMBER = "notice-member-ended";
+  const OTHER_MEMBER = "notice-member-other-centre";
+  const noticeRef = (userId, id = "popup", org = ORG_A) => doc(dbFor(userId), "organizations", org, "memberNotices", id);
+  const body = (userId, overrides = {}) => ({
+    organizationId: ORG_A, title: "12월 휴무 안내", body: "25일은 쉽니다",
+    image: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ==", active: true, endsOn: "2026-12-31",
+    updatedAt: serverTimestamp(), updatedBy: userId, ...overrides,
+  });
+
+  beforeEach(async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "memberLinks", NOTICE_MEMBER), { userId: NOTICE_MEMBER, status: "linked", links: [{ organizationId: ORG_A, clientId: "c-1", locationId: "location-a" }] });
+      await setDoc(doc(db, "memberLinks", ENDED_MEMBER), { userId: ENDED_MEMBER, status: "ended", links: [{ organizationId: ORG_A, clientId: "c-2", locationId: "location-a" }] });
+      await setDoc(doc(db, "memberLinks", OTHER_MEMBER), { userId: OTHER_MEMBER, status: "multi_location", links: [{ organizationId: ORG_B, clientId: "c-3" }, { organizationId: "org-c", clientId: "c-4" }] });
+      await setDoc(doc(db, "organizations", ORG_A, "memberNotices", "popup"), { ...body(users.owner), updatedAt: new Date() });
+    });
+  });
+
+  test("이어진 회원 · 센터 직원은 읽고, 끊긴 회원 · 다른 센터 회원 · 소속 없는 로그인은 못 읽는다", async () => {
+    await assertSucceeds(getDoc(noticeRef(NOTICE_MEMBER)));
+    await assertSucceeds(getDoc(noticeRef(users.instructor)));
+    await assertFails(getDoc(noticeRef(ENDED_MEMBER)), "끊긴 연결");
+    await assertFails(getDoc(noticeRef(OTHER_MEMBER)), "다른 센터 회원");
+    await assertFails(getDoc(noticeRef("signed-in-nobody")), "연결 없는 로그인");
+    await assertFails(getDocs(collection(dbFor(NOTICE_MEMBER), "organizations", ORG_A, "memberNotices")), "목록은 닫힌다");
+  });
+
+  test("대표 · 총괄만 쓴다 -- 강사 · FC · 회원은 못 쓴다", async () => {
+    await assertSucceeds(setDoc(noticeRef(users.owner), body(users.owner)));
+    await assertSucceeds(setDoc(noticeRef(users.area_manager), body(users.area_manager, { active: false })));
+    for (const userId of [users.manager, users.instructor, NOTICE_MEMBER]) {
+      await assertFails(setDoc(noticeRef(userId), body(userId)), userId);
+    }
+    await assertFails(setDoc(noticeRef(users.outsider), body(users.outsider)), "다른 센터 대표");
+  });
+
+  test("문서는 popup 하나 · 칸은 정해진 것만 · 이미지는 data URL · 작성자와 시각은 본인과 서버 시각", async () => {
+    const owner = users.owner;
+    await assertFails(setDoc(noticeRef(owner, "second"), body(owner)), "popup 말고 다른 문서");
+    await assertFails(setDoc(noticeRef(owner), { ...body(owner), extra: 1 }), "모르는 칸");
+    await assertFails(setDoc(noticeRef(owner), body(owner, { image: "https://example.com/a.jpg" })), "바깥 주소 이미지");
+    await assertFails(setDoc(noticeRef(owner), body(owner, { title: "", image: "" })), "빈 공지");
+    await assertFails(setDoc(noticeRef(owner), body(owner, { title: "가".repeat(61) })), "제목 61자");
+    await assertFails(setDoc(noticeRef(owner), body(owner, { endsOn: "12/31" })), "종료일 모양");
+    await assertFails(setDoc(noticeRef(owner), body(owner, { updatedBy: users.area_manager })), "작성자 바꿔 적기");
+    await assertFails(setDoc(noticeRef(owner), body(owner, { updatedAt: new Date() })), "기기 시계");
+    await assertFails(setDoc(noticeRef(owner), body(owner, { organizationId: ORG_B })), "다른 센터 id");
+    await assertSucceeds(setDoc(noticeRef(owner), body(owner, { title: "", body: "" })), "이미지만 있어도 된다");
+    await assertSucceeds(setDoc(noticeRef(owner), body(owner, { image: "" })), "이미지 없이 제목만");
+  });
+
+  test("이미지 크기 한도 안이면 통과한다 (규칙 계산이 큰 문자열에서 막히지 않는다)", async () => {
+    const big = `data:image/jpeg;base64,${"A".repeat(650000)}`;
+    await assertSucceeds(setDoc(noticeRef(users.owner), body(users.owner, { image: big })));
+    await assertSucceeds(getDoc(noticeRef(NOTICE_MEMBER)));
+  });
+});
+
+/* ── 수업 전 몸 상태 (2026-11-28) ──────────────────────────────────────
+   건강에 관한 정보다. 그 수업의 담당 강사만 읽는다 -- 대표 · FC · 다른 강사 · 회원 모두 못 읽는다.
+   쓰기는 서버(memberLessonCondition)뿐. 동의 기록은 아무도 읽지 않는다. */
+describe("lesson condition from the member app", () => {
+  const conditionRef = (userId, id = "L1_c1") => doc(dbFor(userId), "organizations", ORG_A, "lessonConditions", id);
+
+  beforeEach(async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "organizations", ORG_A, "lessonConditions", "L1_c1"), {
+        organizationId: ORG_A, lessonId: "L1", clientId: "c1", instructorId: users.instructor,
+        mood: "discomfort", areas: ["back"], memo: "삐끗", updatedAt: new Date(), expireAt: new Date(Date.now() + 86400000),
+      });
+      await setDoc(doc(db, "organizations", ORG_A, "memberConsents", "c1_lesson_condition"), { version: "2026-11-28", userId: "app-member" });
+    });
+  });
+
+  test("담당 강사만 읽는다", async () => {
+    await assertSucceeds(getDoc(conditionRef(users.instructor)));
+    for (const userId of [users.owner, users.area_manager, users.manager, users.staff, users.member, users.outsider, "app-member"]) {
+      await assertFails(getDoc(conditionRef(userId)), userId);
+    }
+  });
+
+  test("없는 문서는 센터 직원에게 '없음' 으로 답한다 -- 권한 거부로 말하지 않는다", async () => {
+    const missing = await assertSucceeds(getDoc(conditionRef(users.instructor, "L9_c9")));
+    assert.equal(missing.exists(), false);
+    await assertFails(getDoc(conditionRef(users.outsider, "L9_c9")), "다른 센터는 없는 문서도 못 묻는다");
+  });
+
+  test("목록 · 쓰기는 아무도 -- 서버만 쓴다. 동의 기록은 아무도 읽지 않는다", async () => {
+    await assertFails(getDocs(collection(dbFor(users.instructor), "organizations", ORG_A, "lessonConditions")));
+    await assertFails(setDoc(conditionRef(users.instructor), { mood: "good" }));
+    await assertFails(setDoc(conditionRef(users.owner, "L2_c1"), { organizationId: ORG_A, instructorId: users.owner, mood: "good" }));
+    await assertFails(deleteDoc(conditionRef(users.instructor)));
+    for (const userId of [users.owner, users.instructor, "app-member"]) {
+      await assertFails(getDoc(doc(dbFor(userId), "organizations", ORG_A, "memberConsents", "c1_lesson_condition")), userId);
+    }
+  });
+});

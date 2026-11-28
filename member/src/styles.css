@@ -623,3 +623,71 @@ body {
 .pass .session-up-detail { margin-top: 2px; font-size: 12px; color: var(--sub); line-height: 1.5; }
 .pass .session-up-value { margin-top: 8px; font-size: 12px; color: var(--ink); line-height: 1.55; }
 .pass .session-up-ask { margin-top: 2px; font-size: 11px; color: var(--faint); line-height: 1.5; }
+
+/* ── 공지 팝업 (2026-11-28) ─────────────────────────────────────────────
+   가운데 카드 한 장. 이미지는 카드 폭에 맞추고 세로가 길면 카드 안에서 내린다. */
+.noticewrap {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px 20px calc(24px + env(safe-area-inset-bottom));
+  background: rgba(0, 0, 0, .42);
+}
+.noticecard {
+  width: 100%; max-width: 380px; max-height: 82vh;
+  display: flex; flex-direction: column;
+  border-radius: 22px; overflow: hidden;
+  background: var(--card); color: var(--ink);
+  box-shadow: 0 24px 60px -20px rgba(0, 0, 0, .45);
+}
+.notice-image { display: block; width: 100%; height: auto; max-height: 60vh; object-fit: contain; background: var(--card-tone); }
+.notice-text { padding: 18px 20px 6px; overflow-y: auto; }
+.notice-title { font-size: var(--t-title); font-weight: 700; word-break: keep-all; line-height: 1.4; }
+.notice-body { margin-top: 8px; font-size: var(--t-body); color: var(--sub); white-space: pre-line; word-break: keep-all; line-height: 1.6; }
+.notice-actions { display: flex; margin-top: 10px; border-top: 1px solid var(--line); }
+.notice-actions button {
+  flex: 1; min-height: 52px; border: 0; background: none;
+  font-size: var(--t-body); color: var(--sub);
+}
+.notice-actions button.close { color: var(--ink); font-weight: 700; border-left: 1px solid var(--line); }
+
+/* ── 선생님께 요청 (2026-11-28) -- 작은 알약 버튼 두 개 ─────────────────── */
+.request-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 4px; }
+.request-label { font-size: var(--t-caption); color: var(--sub); }
+.request-buttons { display: flex; gap: 6px; }
+.request-buttons button {
+  min-height: 34px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink);
+  font-size: var(--t-caption); font-weight: 600;
+}
+.request-buttons button:disabled { opacity: .5; }
+.request-result { flex-basis: 100%; font-size: var(--t-caption); color: var(--rose); word-break: keep-all; }
+.request-result.failed { color: var(--sub); }
+
+/* ── 수업기록 한 달씩 (2026-11-28) ─────────────────────────────────────── */
+.record-month { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 12px; }
+.record-month .mon { font-size: var(--t-title); font-weight: 800; }
+.record-month .arrows { display: flex; gap: 2px; }
+.record-month button { min-width: 44px; min-height: 44px; border: 0; background: none; color: var(--ink); font-size: 20px; }
+.record-month button:disabled { opacity: .3; }
+
+/* ── 수업 전 몸 상태 (2026-11-28) ──────────────────────────────────────── */
+.conditionbox { margin-top: 18px; padding: 14px; border-radius: 16px; background: var(--card-tone); }
+.condition-title { font-size: var(--t-body); font-weight: 700; }
+.condition-sub { font-size: var(--t-caption); margin-top: 2px; }
+.condition-moods, .condition-areas { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.condition-moods button, .condition-areas button {
+  min-height: 40px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink);
+  font-size: var(--t-caption); font-weight: 600;
+}
+.condition-moods button.on, .condition-areas button.on { border-color: var(--rose); color: var(--rose); box-shadow: inset 0 0 0 1px var(--rose); }
+.condition-moods button:disabled, .condition-areas button:disabled { opacity: .55; }
+.condition-memo {
+  width: 100%; min-height: 44px; margin-top: 10px; padding: 0 12px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink); font-size: var(--t-body);
+}
+.condition-consent { display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; font-size: var(--t-caption); color: var(--sub); line-height: 1.6; }
+.condition-consent input { margin-top: 4px; width: 18px; height: 18px; flex-shrink: 0; }
+.condition-consent .consent-line { display: block; }
+.condition-consent b { display: block; color: var(--ink); margin-top: 2px; }
+.condition-done { margin-top: 10px; font-size: var(--t-caption); color: var(--rose); }

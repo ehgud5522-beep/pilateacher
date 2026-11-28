@@ -138,7 +138,9 @@ test("30분 전 한 통 · 문구는 대표 확정 그대로 · 이름 없음 ·
   assert.equal(tally.sent, 1);
   const [message] = messaging.sent;
   assert.equal(message.notification.title, "수업 30분 전");
-  assert.equal(message.notification.body, "잠시 후 수업이 시작됩니다. 수업 준비를 부탁드립니다.");
+  /* 2026-11-28 대표: 몸 상태를 미리 전하도록 문구를 바꿨다. 누르면 그 수업 상세(몸 상태 칸)가 열린다. */
+  assert.equal(message.notification.body, "30분 뒤 수업이에요. 오늘 몸 상태를 강사에게 미리 전해 주세요.");
+  assert.equal(message.data.open, "condition");
   assert.deepEqual(message.tokens, ["tok-1"]);
   assert.deepEqual(Object.keys(message.data).sort(), ["kind", "lessonId", "open", "organizationId"]);
   const record = firestore.store.get(`notificationSends/${sendKey("L1", "c1", PUSH_KIND.LESSON_30M)}`);

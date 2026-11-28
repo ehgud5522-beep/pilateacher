@@ -22,6 +22,7 @@
    구독이 필요해지는 날에는 lite 로 안 된다 -- 그때 무엇을 얻고 무엇을
    내주는지 다시 재 보고 바꾼다. */
 import { doc, getDoc } from "firebase/firestore/lite";
+import { MEMBER_NOTICE_DOC_ID } from "../../functions/shared/member-notice.mjs";
 
 const text = (value) => String(value ?? "").trim();
 
@@ -75,4 +76,15 @@ export async function readMemberViews(db, links) {
       return { link, view: null, errorCode: text(error?.code) || "unknown" };
     }
   }));
+}
+
+/**
+ * 보니따 공지 팝업 (2026-11-28). 센터마다 문서 하나. 없으면 null.
+ * 못 읽어도 화면은 그대로 -- 공지는 덤이고, 이것 때문에 홈이 멈추면 안 된다. 부르는 쪽이 오류를 진단에 남긴다.
+ */
+export async function readMemberNotice(db, organizationId) {
+  const organization = text(organizationId);
+  if (!db || !organization) return null;
+  const snapshot = await getDoc(doc(db, "organizations", organization, "memberNotices", MEMBER_NOTICE_DOC_ID));
+  return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
 }

@@ -28,6 +28,7 @@ import { lessonName, passTitle, serviceLabel } from "./pass-label.js";
 import { homeSummary } from "./home-summary.js";
 import { BEFORE_AFTER_PRIVACY, daysBetweenDates } from "./before-after-copy.js";
 import { SESSION_UP_ASK, SESSION_UP_VALUE, sessionUpNotice } from "./session-up-copy.js";
+import { MemberRequestRow } from "./member-extras.jsx";
 
 /**
  * 의견을 받는 곳. 링크 하나다.
@@ -250,17 +251,33 @@ export function remainingChip(passes, now = new Date()) {
 const MONTH_LABEL = (year, month) => `${year}년 ${month + 1}월`;
 const DOW = ["일", "월", "화", "수", "목", "금", "토"];
 
-/* 수업 아이콘. 아이콘 묶음을 들이지 않는다 -- 쓰는 것이 몇 개뿐이다. */
+/* 수업 아이콘. 아이콘 묶음을 들이지 않는다 -- 쓰는 것이 몇 개뿐이다.
+   2026-11-28 대표 "오늘 수업에 이모티콘이 이상함": 손으로 그린 사람 모양이 다리가 꺾인 그림으로
+   읽혔다. 수업은 일정이므로 달력 하나로 둔다. */
 const LessonIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
     strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <circle cx="12" cy="5" r="2" />
-    <path d="M5 21l4-7 3 2 3-2 4 7M9 14l-2-4h10l-2 4" />
+    <rect x="4" y="5" width="16" height="15" rx="3" />
+    <path d="M8 3v4M16 3v4M4 10h16" />
+    <circle cx="12" cy="15" r="1.4" fill="currentColor" stroke="none" />
   </svg>
 );
 
+/**
+ * 수업 카드의 상태 한마디.
+ *
+ * 예정 수업은 강사가 확정해야 받은 수업으로 넘어간다. 시각이 지났는데 강사가 아직 확정하지
+ * 않았으면 "예정" 이라고 말하지 않는다 (2026-11-28 대표: "오늘 수업 현황에 계속 떠 있음").
+ * 출석이 정해지기 전이라는 사실만 말한다 -- 결석으로 단정하지 않는다.
+ */
+export function lessonStateLabel(row, now = new Date()) {
+  if (!row?.planned) return "완료";
+  const at = toDate(row.when || row.startsAt);
+  return at && at.getTime() <= now.getTime() ? "출석 확인 전" : "예정";
+}
+
 /** 수업 한 건 카드. 시각 · 수업 이름 · 강사 · 지점. 그룹 표기는 없다. */
-function LessonCard({ row, location, onOpen, highlighted = false }) {
+function LessonCard({ row, location, onOpen, highlighted = false, now = new Date() }) {
   const when = row.when || row.occurredAt;
   const time = timeLabel(when);
   return (
@@ -273,7 +290,7 @@ function LessonCard({ row, location, onOpen, highlighted = false }) {
           {text(row.instructorName) ? <i>{text(row.instructorName)} 강사</i> : null}
           {text(row.locationName || location) ? <i>{text(row.locationName || location)}</i> : null}
         </span>
-        <span className="lesson-state">{row.planned ? "예정" : "완료"}</span>
+        <span className="lesson-state">{lessonStateLabel(row, now)}</span>
       </span>
       {onOpen ? <span className="chev" aria-hidden="true">›</span> : null}
     </button>
@@ -330,7 +347,7 @@ const HISTORY_LABEL = {
  * 취소 버튼은 서버가 켜져 있다고 답할 때만 그린다 (lesson-sheet.jsx). 수업 id 가 없는
  * 옛 회원 데이터(서버가 다시 만들기 전)는 누를 수 없다.
  */
-export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, onOpenLesson, beforeAfter = null, onOpenBeforeAfter }) {
+export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, onOpenLesson, beforeAfter = null, onOpenBeforeAfter, requestPlace = null, requestApi = null }) {
   const history = Array.isArray(view?.history) ? view.history : [];
   const dates = useMemo(() => attendedDates(history), [history]);
   const planned = useMemo(() => plannedDates(view?.schedule), [view?.schedule]);
@@ -424,6 +441,9 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, on
         <span className="ba-privacy ba-home-privacy">{BEFORE_AFTER_PRIVACY}</span>
       </button> : null}
 
+      {/* 선생님께 요청 (2026-11-28) -- 작게. 오프라인 사본을 보는 중에는 requestApi 가 없다. */}
+      <MemberRequestRow place={requestPlace} api={requestApi} beforeAfter={Boolean(beforeAfter)} />
+
       <Card className="cal">
         <div className="calhead">
           <p className="mon num">{MONTH_LABEL(year, month)}</p>
@@ -459,7 +479,7 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, on
         {lessonsThatDay.length ? (
           <div className="stack tight">
             {lessonsThatDay.map((row, index) => (
-              <LessonCard key={`${text(row.when)}-${index}`} row={row} highlighted={row === highlightedLesson}
+              <LessonCard key={`${text(row.when)}-${index}`} row={row} now={now} highlighted={row === highlightedLesson}
                 location={view?.locationName}
                 onOpen={row.planned
                   ? (onOpenLesson && text(row.lessonId) ? () => onOpenLesson(row) : undefined)
@@ -500,11 +520,47 @@ export function Home({ view, now = new Date(), monthsBack = 0, onOpenRecords, on
 
 /* ── 수업기록 ────────────────────────────────────────────────────────── */
 
-export function Records({ view }) {
+/**
+ * 수업기록은 한 달씩 (2026-11-28 대표: "수업기록은 한 달 단위로만 보이게 하고 전 달 것은 숨김").
+ * 이번 달로 열고, 지난달은 ‹ 로 넘겨야 보인다. 한 화면에 몇 달 치가 길게 늘어서지 않는다.
+ *
+ * @returns {{ year: number, month: number }} back 달 전 (0 이 이번 달)
+ */
+export function recordMonthAt(now, back) {
+  const at = new Date(now.getFullYear(), now.getMonth() - back, 1);
+  return { year: at.getFullYear(), month: at.getMonth() };
+}
+
+/** 가장 오래된 기록이 몇 달 전인가. 기록이 없으면 0 -- 이번 달만. */
+export function recordMonthsBack(rows, now = new Date()) {
+  let oldest = null;
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const at = toDate(row?.occurredAt);
+    if (at && (!oldest || at < oldest)) oldest = at;
+  }
+  if (!oldest) return 0;
+  return Math.max(0, (now.getFullYear() - oldest.getFullYear()) * 12 + now.getMonth() - oldest.getMonth());
+}
+
+/** 그 달의 기록만. */
+export function recordsInMonth(rows, year, month) {
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    const at = toDate(row?.occurredAt);
+    return at && at.getFullYear() === year && at.getMonth() === month;
+  });
+}
+
+export function Records({ view, now = new Date() }) {
   const rows = Array.isArray(view?.history) ? view.history : [];
   const used = count(view?.journey?.usedTotal);
+  const maxBack = recordMonthsBack(rows, now);
+  const [back, setBack] = useState(0);
+  /* 넘긴 방향 -- 지난달이면 왼쪽에서(back), 다음 달이면 오른쪽에서(forward) 들어온다. */
+  const [dir, setDir] = useState("");
+  const { year, month } = recordMonthAt(now, Math.min(back, maxBack));
+  const monthRows = recordsInMonth(rows, year, month);
   const groups = new Map();
-  for (const row of rows) {
+  for (const row of monthRows) {
     const at = toDate(row.occurredAt);
     const key = at ? `${at.getFullYear()}-${at.getMonth()}-${at.getDate()}` : "unknown";
     if (!groups.has(key)) groups.set(key, []);
@@ -529,13 +585,20 @@ export function Records({ view }) {
       {/* 앱에 옮기기 전의 수업도 회원이 한 수업이다. 날짜가 없어 줄로는 그리지
           못하므로 숫자로만 남긴다. */}
       {used ? <p className="count num">지금까지 <b>{used}번</b> 함께했어요</p> : null}
-      {[...groups].map(([key, entries]) => <section className="record-day" key={key}>
-        <h2 className="record-day-title num">{dayLabel(entries[0].occurredAt)} <span>{weekdayLabel(entries[0].occurredAt)}요일</span></h2>
-        <ol className="timeline">{entries.map((row, index) => <RecordItem key={`${text(row.occurredAt)}-${index}`} row={row} showDate={false} />)}</ol>
-      </section>)}
-      {used > rows.length ? (
-        <p className="more num">{used - rows.length}번의 수업이 더 있어요</p>
-      ) : null}
+      <div className="record-month" data-record-month={`${year}-${String(month + 1).padStart(2, "0")}`}>
+        <p className="mon num">{MONTH_LABEL(year, month)} · {monthRows.length}번</p>
+        <span className="arrows">
+          <button type="button" aria-label="지난달" disabled={back >= maxBack} onClick={() => { setDir("back"); setBack((value) => Math.min(maxBack, value + 1)); }}>‹</button>
+          <button type="button" aria-label="다음 달" disabled={back <= 0} onClick={() => { setDir("forward"); setBack((value) => Math.max(0, value - 1)); }}>›</button>
+        </span>
+      </div>
+      <div className="record-month-list" key={`${year}-${month}`} data-dir={dir || undefined}>
+        {monthRows.length === 0 ? <p className="muted">{back === 0 ? "이번 달 수업기록이 아직 없어요." : "이 달에는 수업기록이 없어요."}</p> : null}
+        {[...groups].map(([key, entries]) => <section className="record-day" key={key}>
+          <h2 className="record-day-title num">{dayLabel(entries[0].occurredAt)} <span>{weekdayLabel(entries[0].occurredAt)}요일</span></h2>
+          <ol className="timeline">{entries.map((row, index) => <RecordItem key={`${text(row.occurredAt)}-${index}`} row={row} showDate={false} />)}</ol>
+        </section>)}
+      </div>
     </div>
   );
 }

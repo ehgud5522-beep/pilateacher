@@ -25,6 +25,10 @@ export const LESSON_TYPE = Object.freeze({
 });
 
 const text = (value) => String(value ?? "").trim();
+
+/* 디오사 A · B (2026-11-28). 강사 앱의 "디오사 관리 30분 · 50분" 과 같은 길이.
+   등급을 모르는 옛 문서는 길이 없이 "디오사 프로그램" -- 지어내지 않는다. */
+const DIOSA_MINUTES = Object.freeze({ a: " 30분", b: " 50분" });
 const count = (value) => {
   const number = Number(value);
   return Number.isInteger(number) && number > 0 ? number : 0;
@@ -51,7 +55,7 @@ export function lessonTypeOf(pass) {
  */
 export function lessonName(source) {
   const type = lessonTypeOf(source);
-  if (type === LESSON_TYPE.DIOSA) return "디오사 프로그램";
+  if (type === LESSON_TYPE.DIOSA) return `디오사 프로그램${DIOSA_MINUTES[text(source?.diosaGrade)] || ""}`;
   if (type === LESSON_TYPE.SOLO || type === LESSON_TYPE.DUET) return `${type} 필라테스 수업`;
   return "필라테스 수업";
 }

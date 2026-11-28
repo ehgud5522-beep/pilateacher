@@ -32,7 +32,8 @@
     "^release/1-1-60$",
     "^release/1-1-61$",
     "^release/1-1-62$",
-    "^release/1-1-63$"
+    "^release/1-1-63$",
+    "^release/1-1-64$"
   ],
   "criticalSourceFile": "src/App.jsx",
   "minimumCriticalFileSizeRatio": 0.75,

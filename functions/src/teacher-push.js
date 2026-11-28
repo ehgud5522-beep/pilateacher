@@ -52,6 +52,8 @@ async function pushToTeacher(firestore, getMessaging, input, options = {}) {
 
     stage = "read_device";
     const device = await firestore.collection("teacherPush").doc(uid).get();
+    /* 강사가 더보기에서 껐으면 보내지 않는다 (2026-11-28). 칸이 없으면 켜짐. */
+    if (device.exists && device.data()?.enabled === false) return { push: "muted" };
     const tokens = tokensOf(device.exists ? device.data() : null);
     if (!tokens.length) return { push: "no_device" };
 

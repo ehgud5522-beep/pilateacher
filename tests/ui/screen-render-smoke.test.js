@@ -281,6 +281,9 @@ test("all primary tabs and detail surfaces render without a ReferenceError", asy
     "더보기 탭 · 앱 업데이트 안내",
     "더보기 탭 · 만료일 순서 확인",
     "더보기 탭 · 일정 색상",
+    "더보기 탭 · 알림 설정 · 켜짐",
+    "더보기 탭 · 알림 설정 · 꺼짐",
+    "더보기 탭 · 알림 설정 · 폰 미등록",
     "더보기 탭 · 보니따 공지 팝업",
     "듀엣 출석 확인",
     "더보기 탭 · 묶음 펼침",
@@ -4135,4 +4138,16 @@ test("owner edits the Bonita notice popup: image, title, end date, publish and t
   assert.match(markup, /고쳐서 다시 띄우기/);
   assert.match(markup, /data-member-notice-off/);
   assert.match(markup, /지금 보니따 앱에 떠 있어요/);
+});
+
+test("instructors switch member push alerts on or off in 더보기 -- on by default", async (t) => {
+  /* 2026-11-28 대표: "강사가 더보기에서 알림 설정 켜기 끄기, 기본은 켜짐". */
+  const markupOf = await issueScreens(t);
+  const on = markupOf("더보기 탭 · 알림 설정 · 켜짐");
+  assert.match(on, /role="switch"[^>]*aria-checked="true"/);
+  assert.match(on, /이 계정의 폰으로 알림이 가요/);
+  const off = markupOf("더보기 탭 · 알림 설정 · 꺼짐");
+  assert.match(off, /role="switch"[^>]*aria-checked="false"/);
+  assert.match(off, /알림함에만 쌓여요/);
+  assert.match(markupOf("더보기 탭 · 알림 설정 · 폰 미등록"), /알림을 허용한 뒤 앱을 다시 열어 주세요/);
 });

@@ -25004,6 +25004,71 @@ const MEMBER_APP_LINKS = {
    회원 앱을 열면 한 장 뜨는 공지. 이미지 · 제목 · 내용 · 띄우기 켜고 끄기 · 종료일.
    회원은 [일주일 동안 안 보기] · [닫기] 를 누른다. 고쳐서 저장하면 안 보기를 누른 회원에게도 다시 뜬다.
    판정은 functions/shared/member-notice.mjs, 저장은 member-notice-repository.js (규칙이 대표 · 총괄만 연다). */
+/* ── 알림 설정 (2026-11-28 대표: "강사가 더보기에서 알림 설정 켜기 끄기, 기본은 켜짐") ──
+   회원 요청(오늘 수업 내용 · 최근 비포애프터) · 수업 전 몸 상태 · 회원 수업 취소 푸시를 이 강사가 받을지.
+   서버(teacherPush/{uid}.enabled)에 둔다 -- 폰마다가 아니라 계정마다이고, 끄면 서버가 보내지 않는다.
+   앱 안 알림함 · 토스트는 그대로다. 폰 자체의 알림 권한은 폰 설정의 일이라 여기서 바꾸지 않고 안내만 한다. */
+function TeacherPushSettingsView({ organizationId, call = fbTeacherPushSettings, initialState = null, native = undefined }) {
+  const [state, setState] = useState(initialState || { loading: true, enabled: true, devices: 0, error: "" });
+  const [busy, setBusy] = useState(false);
+  const isNative = native ?? Boolean(globalThis.Capacitor?.isNativePlatform?.());
+  useEffect(() => {
+    if (initialState || !organizationId) return undefined;
+    let alive = true;
+    call({ action: "get", organizationId }).then((result) => {
+      if (alive) setState({ loading: false, enabled: result?.enabled !== false, devices: Number(result?.devices) || 0, error: "" });
+    }).catch((error) => {
+      const code = String(error?.details?.code || error?.code || "unknown").replace(/^functions\//, "");
+      deviceLog("teacher_push_settings_failed", { feature: "teacher_push", stage: "get", errorDomain: "functions", errorCode: code, message: error?.message });
+      if (alive) setState((value) => ({ ...value, loading: false, error: code }));
+    });
+    return () => { alive = false; };
+  }, [organizationId, call, initialState]);
+  const toggle = async () => {
+    if (busy || state.loading) return;
+    const next = !state.enabled;
+    setBusy(true);
+    setState((value) => ({ ...value, enabled: next, error: "" }));
+    try {
+      const result = await call({ action: "set", organizationId, enabled: next });
+      setState((value) => ({ ...value, enabled: result?.enabled !== false, devices: Number(result?.devices) || value.devices }));
+    } catch (error) {
+      const code = String(error?.details?.code || error?.code || "unknown").replace(/^functions\//, "");
+      deviceLog("teacher_push_settings_failed", { feature: "teacher_push", stage: "set", errorDomain: "functions", errorCode: code, message: error?.message });
+      setState((value) => ({ ...value, enabled: !next, error: code }));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
+  return (
+    <div className="space-y-2" data-teacher-push-settings>
+      <section style={sectionStyle}>
+        <div className="flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <p style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>회원 알림 받기</p>
+            <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB, lineHeight: 1.5 }}>회원의 오늘 수업 내용 · 최근 비포애프터 요청, 수업 전 몸 상태(불편한 곳), 회원 수업 취소를 폰 알림으로 받아요.</p>
+          </div>
+          <button type="button" role="switch" aria-checked={state.enabled} aria-label="회원 알림 받기" data-push-toggle
+            disabled={busy || state.loading} onClick={toggle}
+            className="relative shrink-0 rounded-full disabled:opacity-50"
+            style={{ width: 52, height: 32, backgroundColor: state.enabled ? PRIMARY : LINE, transition: "background-color 200ms ease" }}>
+            <span aria-hidden="true" className="absolute rounded-full" style={{ top: 3, left: 3, width: 26, height: 26, backgroundColor: "#fff", boxShadow: "0 1px 3px rgba(0,0,0,.25)", transform: state.enabled ? "translateX(20px)" : "none", transition: "transform 220ms cubic-bezier(.2,.8,.2,1)" }} />
+          </button>
+        </div>
+        <p className="mt-3 rounded-lg px-3 py-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2, backgroundColor: CANVAS }}>
+          {state.loading ? "설정을 불러오는 중…"
+            : !state.enabled ? "꺼져 있어요. 알림은 앱 안 알림함에만 쌓여요."
+            : !isNative ? "알림은 폰 앱에서 받아요. 이 설정은 폰에도 그대로 적용돼요."
+            : state.devices > 0 ? "이 계정의 폰으로 알림이 가요."
+            : "아직 이 폰이 등록되지 않았어요. 폰 설정 → 앱 → 필라티쳐 → 알림을 허용한 뒤 앱을 다시 열어 주세요."}
+        </p>
+        {state.error ? <p role="alert" className="mt-2 text-xs font-bold" style={{ color: BAD }}>알림 설정을 처리하지 못했어요 (코드 {state.error})</p> : null}
+      </section>
+    </div>
+  );
+}
+
 function MemberNoticeAdmin({ organization, store = undefined, initialNotice = undefined, onToast }) {
   const organizationId = organization?.organizationId || "";
   const [draft, setDraft] = useState(() => ({ title: "", body: "", image: "", active: false, endsOn: "", ...(initialNotice || {}) }));
@@ -28118,11 +28183,19 @@ function radarEntry(organizationId) {
   if (!radarCache.has(organizationId)) radarCache.set(organizationId, { data: {}, at: 0, loading: false, listeners: new Set() });
   return radarCache.get(organizationId);
 }
-function startRadarLoad({ organizationId, clientStore, passStore, instructorStore, onLoadShares = fbBeforeAfterShareStats, role = "", staffMode = false, onLoadBranch = fbRenewalRadarBranch }, { force = false } = {}) {
+/* 한가해질 때까지 기다린다 (늦어도 timeout). 미리 읽기가 읽을 것 사이사이 화면에 숨 쉴 틈을 준다. */
+const radarIdle = (timeout = 1500) => new Promise((resolve) => {
+  if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") window.requestIdleCallback(() => resolve(), { timeout });
+  else setTimeout(resolve, 120);
+});
+function startRadarLoad({ organizationId, clientStore, passStore, instructorStore, onLoadShares = fbBeforeAfterShareStats, role = "", staffMode = false, onLoadBranch = fbRenewalRadarBranch }, { force = false, gentle = false } = {}) {
   if (staffMode) return startStaffRadarLoad({ organizationId, onLoadBranch, role }, { force });
   const entry = radarEntry(organizationId);
+  /* 미리 읽기(gentle)가 도는 중에 화면이 열리면, 남은 것은 쉬지 않고 읽게 한다 (hurry). */
+  if (entry.loading && !gentle) entry.hurry = true;
   if (!organizationId || entry.loading || (!force && entry.at && Date.now() - entry.at < RADAR_FRESH_MS)) return entry;
   entry.loading = true;
+  entry.hurry = !gentle;
   const now = new Date();
   const thisMonth = currentRatingMonth();
   /* 달 초에는 이 달 숫자가 아직 적다 -- 10일까지는 지난달 기록률을 쓴다. */
@@ -28130,9 +28203,13 @@ function startRadarLoad({ organizationId, clientStore, passStore, instructorStor
   const notify = () => entry.listeners.forEach((listener) => listener(entry));
   const put = (key, value) => { entry.data = { ...entry.data, [key]: value }; notify(); };
   const day = 86400000;
-  const jobs = [
+  const startedAt = Date.now();
+  /* 2026-11-28 대표 "더보기 처음 들어가면 렉": 일곱 가지를 한꺼번에 읽으면 수천 건을 한 번에 푸느라 화면이 멈칫한다.
+     그래서 일을 함수로 들고 있다가, 레이더 화면이 부를 때는 한꺼번에(빨리), 더보기의 미리 읽기(gentle)는 하나씩 · 사이사이
+     한가할 때까지 기다리며 돌린다. 읽는 것 · 결과는 같다. */
+  const jobFactories = [
     /* 차감 · 되돌림만 읽는다 (급여가 쓰는 색인). 원장 전체를 읽으면 발급 · 담당 교체까지 딸려 와 몇 배가 된다. */
-    Promise.all([
+    () => Promise.all([
       listClients(organizationId, { store: clientStore }),
       listPasses(organizationId, { store: passStore }),
       listRecentDeductions({ organizationId, now, days: RADAR_LEDGER_DAYS }),
@@ -28146,20 +28223,30 @@ function startRadarLoad({ organizationId, clientStore, passStore, instructorStor
           role, appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
         });
       }),
-    toleratingReadFailure(listLessonNotesBetween(organizationId, new Date(now.getTime() - RADAR_NOTES_DAYS * day), new Date(now.getTime() + day))).then((value) => put("notes", value)),
-    Promise.resolve().then(() => onLoadShares({ organizationId }))
+    () => toleratingReadFailure(listLessonNotesBetween(organizationId, new Date(now.getTime() - RADAR_NOTES_DAYS * day), new Date(now.getTime() + day))).then((value) => put("notes", value)),
+    () => Promise.resolve().then(() => onLoadShares({ organizationId }))
       .then((result) => ({ rows: Array.isArray(result?.rows) ? result.rows : [], errorCode: "" }))
       .catch((thrown) => ({ rows: null, errorCode: serverCodeOf(thrown) || String(thrown?.code || "unknown") }))
       .then((value) => put("shares", value)),
-    toleratingReadFailure(listRecordActivity(organizationId, activityMonth)).then((value) => put("activities", value)),
-    listRenewalCandidates(organizationId)
+    () => toleratingReadFailure(listRecordActivity(organizationId, activityMonth)).then((value) => put("activities", value)),
+    () => listRenewalCandidates(organizationId)
       .then((rows) => ({ rows, errorCode: "" }))
       .catch((thrown) => ({ rows: null, errorCode: String(thrown?.code || "unknown").replace("firestore/", "") }))
       .then((value) => put("candidates", value)),
-    toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })).then((value) => put("members", value)),
-    toleratingReadFailure(listLocations(organizationId)).then((value) => put("locations", value)),
+    () => toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })).then((value) => put("members", value)),
+    () => toleratingReadFailure(listLocations(organizationId)).then((value) => put("locations", value)),
   ];
-  Promise.allSettled(jobs).then(() => { entry.loading = false; entry.at = Date.now(); notify(); });
+  const settle = (job) => Promise.resolve().then(job).catch(() => {});
+  const run = gentle
+    ? jobFactories.reduce((chain, job) => chain.then(() => (entry.hurry ? null : radarIdle())).then(() => settle(job)), Promise.resolve())
+    : Promise.allSettled(jobFactories.map((job) => settle(job)));
+  run.then(() => {
+    entry.loading = false;
+    entry.at = Date.now();
+    notify();
+    /* 걸린 시간 -- 더보기 렉을 다시 말하면 이것으로 본다 (더보기 → 진단). 회원 수 등 내용은 남기지 않는다. */
+    deviceLog("renewal_radar_loaded", { feature: "renewal_radar", stage: gentle ? "prefetch" : "screen", ms: Date.now() - startedAt, platform: Capacitor.getPlatform() });
+  });
   notify();
   return entry;
 }
@@ -28212,9 +28299,14 @@ function prefetchRenewalRadar(params) {
   if (entry.at || entry.loading) return;
   /* 브라우저가 한가할 때 (늦어도 3초 안). 더보기를 열자마자 읽기 시작하면 수천 건을 푸는 일이 첫 몇 번의 누름과 겹친다
      (2026-11-21 대표: "눌렀을 때 반응이 0.5초 느림"). 그 사이 화면을 열면 화면이 바로 읽는다. */
-  const run = () => { try { startRadarLoad(params); } catch (_ignored) { /* 미리 읽기가 메뉴를 깨뜨리면 안 된다 -- 화면을 열면 다시 읽는다. */ } };
-  if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") window.requestIdleCallback(run, { timeout: 3000 });
-  else setTimeout(run, 1500);
+  /* 2026-11-28: 하나씩 · 사이사이 쉬며(gentle). 그 사이 레이더 화면을 열면 화면이 남은 것을 한꺼번에 읽는다. */
+  const run = () => { try { startRadarLoad(params, { gentle: true }); } catch (_ignored) { /* 미리 읽기가 메뉴를 깨뜨리면 안 된다 -- 화면을 열면 다시 읽는다. */ } };
+  const later = () => {
+    if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") window.requestIdleCallback(run, { timeout: 4000 });
+    else setTimeout(run, 1500);
+  };
+  /* 더보기가 열리는 움직임 · 첫 누름과 겹치지 않게 조금 뒤에 시작한다. */
+  setTimeout(later, 1500);
 }
 
 /* ── 현황판 틀 (2026-11-21 대표 승인 "현황판 웹 배치안" 1단계) ───────────────
@@ -31539,7 +31631,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     return total;
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
-    report: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 · 운영 스위치", "owner-message": "이사님 전달사항", "name-confirm": "강사 이름 확정", notices: "공지사항", "expiry-order": "만료일 순서 확인", "duet-unmarked": "듀엣 출석 확인", assessment: "비포애프터 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
+    report: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 · 운영 스위치", "owner-message": "이사님 전달사항", "name-confirm": "강사 이름 확정", notices: "공지사항", "expiry-order": "만료일 순서 확인", "duet-unmarked": "듀엣 출석 확인", assessment: "비포애프터 설정", center: "센터 정보", theme: "화면 설정", push: "알림 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
@@ -31693,6 +31785,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     : [];
   const scheduleColorsItem = { key: "schedule-colors", title: "일정 색상", description: "개인 · 듀엣 · 그룹 · 상담 · 휴무 카드 색", Icon: Palette };
   const themeItem = { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone };
+  /* 알림 설정 (2026-11-28). 센터 소속이면 누구나 -- 회원 알림이 오는 사람. */
+  const pushItems = inOrganization ? [{ key: "push", title: "알림 설정", description: "회원 요청 · 몸 상태 · 취소 알림 켜기 · 끄기", Icon: Bell }] : [];
   const dataItem = { key: "data", title: "데이터 상태", description: "기기 저장 · 로그인 상태", Icon: Check };
   const backupItem = { key: "backup", title: "데이터 이관 · 백업", description: "자동 클라우드 백업 · 회원 인계 · 백업 파일", Icon: Download };
   const onboardingItem = { key: "onboarding", title: "사용법 다시 보기", description: "기록 → 기억 → 다음 수업 흐름 다시 보기", Icon: Play, action: onOpenOnboarding };
@@ -31722,7 +31816,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     ...centreGroups.filter((group) => group.label !== "점검" && group.label !== "대표 설정"),
     { label: "업무", items: [...salesMineItems, ...noticeItems] },
     ...centreGroups.filter((group) => group.label === "대표 설정"),
-    { label: "내 설정", items: [...centerItems, themeItem, dataItem, backupItem] },
+    { label: "내 설정", items: [...centerItems, ...pushItems, themeItem, dataItem, backupItem] },
     { label: "계정 · 앱", items: [accountItem, permissionsItem, appItem] },
     ...centreGroups.filter((group) => group.label === "점검"),
     { label: INSTRUCTOR_MENU_GROUP, collapsible: true,
@@ -31731,7 +31825,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   ].filter((group) => group.items.length > 0) : [
     { label: "업무", items: [scheduleItem, recordsItem, reportItem, ...salesMineItems, ...(showRatings ? [ratingsItem] : []), ...(showRadarStaff && !showAudit ? [radarStaffItem] : []), ...expiryItems, ...noticeItems] },
     ...centreGroups,
-    { label: "내 설정", items: [assessmentItem, ...centerItems, scheduleColorsItem, themeItem, dataItem, backupItem] },
+    { label: "내 설정", items: [assessmentItem, ...centerItems, ...pushItems, scheduleColorsItem, themeItem, dataItem, backupItem] },
     { label: "기타", items: [onboardingItem, permissionsItem, lessonExamplesItem, knowledgeItem, accountItem, appItem] },
   ];
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: "14px" };
@@ -32169,6 +32263,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
         )}
         {view === "schedule-colors" && <ScheduleColorSettings scheduleColors={scheduleColors}
           onChange={(next) => onChangeSettings({ ...db.settings, scheduleColors: next })} />}
+        {view === "push" && inOrganization && <TeacherPushSettingsView organizationId={organization?.organizationId || ""} />}
         {view === "theme" && (
           <section style={sectionStyle}>
             <div className="mb-3"><h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>화면 테마</h2><p style={{ marginTop: 3, fontSize: TYPE.caption, color: SUB }}>기기 설정을 따르거나 원하는 화면을 고릅니다.</p></div>
@@ -33446,6 +33541,9 @@ export function createAppScreenSmokeCases() {
        차감이 차수 순이라 뒤 차수가 먼저 만료되면 그 회차를 잃는다. */
     { name: "더보기 탭 · 만료일 순서 확인", element: settingsTab(smokeOwner, { initialView: "expiry-order" }) },
     { name: "더보기 탭 · 일정 색상", element: settingsTab(smokeOwner, { initialView: "schedule-colors" }) },
+    { name: "더보기 탭 · 알림 설정 · 켜짐", element: provider(<TeacherPushSettingsView organizationId="smoke-center" native initialState={{ loading: false, enabled: true, devices: 1, error: "" }} />) },
+    { name: "더보기 탭 · 알림 설정 · 꺼짐", element: provider(<TeacherPushSettingsView organizationId="smoke-center" native initialState={{ loading: false, enabled: false, devices: 1, error: "" }} />) },
+    { name: "더보기 탭 · 알림 설정 · 폰 미등록", element: provider(<TeacherPushSettingsView organizationId="smoke-center" native initialState={{ loading: false, enabled: true, devices: 0, error: "" }} />) },
     { name: "더보기 탭 · 보니따 공지 팝업", element: provider(
       <MemberNoticeAdmin organization={readyOrganizationContext(smokeOwner)} onToast={noop}
         initialNotice={{ title: "12월 휴무 안내", body: "25일은 쉽니다", image: "data:image/jpeg;base64,AAAA", active: true, endsOn: "2026-12-31" }} />,

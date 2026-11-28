@@ -10,6 +10,8 @@
  */
 import { platformOf, pushPlugin, registerDevice } from "../../../member/src/push.js";
 
+export const TEACHER_PUSH_PLATFORMS = Object.freeze(["android"]);
+
 /** 서버 teacher-push.js 의 ANDROID_CHANNEL 과 같은 id. */
 export const TEACHER_PUSH_CHANNEL = Object.freeze({
   id: "teacher_alerts", name: "회원 알림", description: "회원 요청 · 수업 전 몸 상태 · 수업 취소", importance: 4,
@@ -31,6 +33,9 @@ export async function registerTeacherDevice({ organizationId, call, record = () 
   } catch (_error) {
     return { permission: "unknown", registered: false, skipped: "plugin_missing" };
   }
+  /* iOS 는 애플 App ID 의 Push 기능 · Firebase APNs 키가 준비된 빌드부터 (2026-11-28, 1.1.63 은 안드로이드만).
+     그 전에 물으면 강사는 허용해도 아무것도 오지 않는다. 준비되면 여기에 "ios" 를 더한다. */
+  if (!TEACHER_PUSH_PLATFORMS.includes(platformOf(globals))) return { permission: "unknown", registered: false, skipped: "platform_not_ready" };
   if (!String(organizationId || "").trim()) return { permission: "unknown", registered: false, skipped: "no_organization" };
   return registerDevice({
     plugin, platform: platformOf(globals), record, channel: TEACHER_PUSH_CHANNEL,

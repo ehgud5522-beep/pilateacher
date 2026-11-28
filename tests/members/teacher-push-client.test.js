@@ -46,3 +46,12 @@ test("거절한 강사에게는 토큰을 보내지 않는다", async () => {
   assert.equal(result.permission, "denied");
   assert.equal(sent.length, 0);
 });
+
+test("iOS 는 아직 묻지 않는다 -- 애플 푸시 설정 전 (1.1.63)", async () => {
+  const { globals, calls } = native("ios");
+  const sent = [];
+  const result = await registerTeacherDevice({ organizationId: "bonita", call: async (p) => sent.push(p), globals });
+  assert.equal(result.skipped, "platform_not_ready");
+  assert.equal(calls.asked, 0);
+  assert.equal(sent.length, 0);
+});

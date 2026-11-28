@@ -51,7 +51,7 @@ test("담당 강사마다 알림함에 한 건 -- 회원 이름은 싣지 않는
     const item = db.docs.get(`users/${uid}/inbox/${id}`);
     assert.equal(item.kind, MEMBER_REQUEST_KIND.FEEDBACK);
     assert.equal(item.clientId, "c1");
-    assert.equal(item.title, "[피드백 요청]");
+    assert.equal(item.title, "[오늘 수업 내용 요청]");
     assert.doesNotMatch(JSON.stringify(item), /김하나|uid-1/);
     assert.equal("lessonId" in item, false, "수업이 없는 알림 -- 강사 앱은 읽음만 한다");
   }

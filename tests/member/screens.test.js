@@ -570,8 +570,8 @@ test("오늘 수업 아이콘은 달력 하나 -- 사람 모양 선이 아니다
 test("선생님께 요청은 작은 버튼 둘, 오프라인이면 없다", async (t) => {
   const markupOf = await memberScreens(t);
   const home = markupOf("홈 · 선생님께 요청");
-  assert.match(home, /data-request-kind="member_request_feedback"[^>]*>피드백 요청</);
-  assert.match(home, /data-request-kind="member_request_before_after"[^>]*>비포애프터 요청</);
+  assert.match(home, /data-request-kind="member_request_feedback"[^>]*>오늘 수업 내용 요청하기</);
+  assert.match(home, /data-request-kind="member_request_before_after"[^>]*>최근 비포애프터 요청하기</);
   assert.doesNotMatch(markupOf("홈 · 요청 없음(오프라인)"), /data-member-request/);
 });
 

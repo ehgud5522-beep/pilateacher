@@ -10,8 +10,9 @@ export const MEMBER_REQUEST_KIND = Object.freeze({
 });
 
 export const REQUEST_LABEL = Object.freeze({
-  [MEMBER_REQUEST_KIND.FEEDBACK]: "피드백 요청",
-  [MEMBER_REQUEST_KIND.BEFORE_AFTER]: "비포애프터 요청",
+  /* 2026-11-28 대표: 피드백 → 오늘 수업 내용, 비포애프터 → 최근 비포애프터. */
+  [MEMBER_REQUEST_KIND.FEEDBACK]: "오늘 수업 내용 요청하기",
+  [MEMBER_REQUEST_KIND.BEFORE_AFTER]: "최근 비포애프터 요청하기",
 });
 
 const text = (value) => String(value ?? "").trim();

@@ -27,8 +27,9 @@ const MEMBER_REQUEST_KIND = Object.freeze({
 });
 
 const COPY = Object.freeze({
-  [MEMBER_REQUEST_KIND.BEFORE_AFTER]: { title: "[비포애프터 요청]", body: "회원이 비포애프터 사진을 받고 싶어 해요" },
-  [MEMBER_REQUEST_KIND.FEEDBACK]: { title: "[피드백 요청]", body: "회원이 선생님 피드백을 받고 싶어 해요" },
+  /* 2026-11-28 대표: "피드백 말고 오늘 수업 내용 요청하기 · 최근 비포애프터 요청하기". kind 값은 그대로 둔다. */
+  [MEMBER_REQUEST_KIND.BEFORE_AFTER]: { title: "[최근 비포애프터 요청]", body: "회원이 최근 비포애프터를 받고 싶어 해요" },
+  [MEMBER_REQUEST_KIND.FEEDBACK]: { title: "[오늘 수업 내용 요청]", body: "회원이 오늘 수업 내용을 받고 싶어 해요. 회원에게 한마디로 남겨 주세요" },
 });
 
 const MEMBER_REQUEST_REASON = Object.freeze({

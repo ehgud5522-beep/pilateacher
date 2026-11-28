@@ -94,7 +94,8 @@ test("화면 배선: 강사 메뉴 · FC 대표 메뉴 · 확정은 서버 호�
 
 test("대표 · 총괄도 알림함을 듣고, 수업 없는 알림은 눌러도 읽음만", async () => {
   const app = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
-  assert.ok(app.includes("|| isOwnerLevelRole(organizationContext.role));"), "대표 · 총괄 알림함");
+  /* 2026-11-28: 대표 · 총괄만이 아니라 센터 소속이면 모두 듣는다 (회원 요청 · 몸 상태 알림이 일반 강사에게 안 보였다). */
+  assert.ok(app.includes("const inboxOn = Boolean(organizationRoster) && Boolean(account?.id);"), "소속이면 모두 알림함");
   assert.ok(app.includes('if (!String(item?.lessonId || "").trim()) return;'), "수업 없는 알림");
   const { INBOX_KIND } = await import("../../src/features/notifications/teacher-inbox.js");
   const { SALES_CONFIRMED_INBOX_KIND } = await import("../../functions/shared/sales-incentive.mjs");

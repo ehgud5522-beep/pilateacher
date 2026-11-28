@@ -28183,11 +28183,19 @@ function radarEntry(organizationId) {
   if (!radarCache.has(organizationId)) radarCache.set(organizationId, { data: {}, at: 0, loading: false, listeners: new Set() });
   return radarCache.get(organizationId);
 }
-function startRadarLoad({ organizationId, clientStore, passStore, instructorStore, onLoadShares = fbBeforeAfterShareStats, role = "", staffMode = false, onLoadBranch = fbRenewalRadarBranch }, { force = false } = {}) {
+/* 한가해질 때까지 기다린다 (늦어도 timeout). 미리 읽기가 읽을 것 사이사이 화면에 숨 쉴 틈을 준다. */
+const radarIdle = (timeout = 1500) => new Promise((resolve) => {
+  if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") window.requestIdleCallback(() => resolve(), { timeout });
+  else setTimeout(resolve, 120);
+});
+function startRadarLoad({ organizationId, clientStore, passStore, instructorStore, onLoadShares = fbBeforeAfterShareStats, role = "", staffMode = false, onLoadBranch = fbRenewalRadarBranch }, { force = false, gentle = false } = {}) {
   if (staffMode) return startStaffRadarLoad({ organizationId, onLoadBranch, role }, { force });
   const entry = radarEntry(organizationId);
+  /* 미리 읽기(gentle)가 도는 중에 화면이 열리면, 남은 것은 쉬지 않고 읽게 한다 (hurry). */
+  if (entry.loading && !gentle) entry.hurry = true;
   if (!organizationId || entry.loading || (!force && entry.at && Date.now() - entry.at < RADAR_FRESH_MS)) return entry;
   entry.loading = true;
+  entry.hurry = !gentle;
   const now = new Date();
   const thisMonth = currentRatingMonth();
   /* 달 초에는 이 달 숫자가 아직 적다 -- 10일까지는 지난달 기록률을 쓴다. */
@@ -28195,9 +28203,13 @@ function startRadarLoad({ organizationId, clientStore, passStore, instructorStor
   const notify = () => entry.listeners.forEach((listener) => listener(entry));
   const put = (key, value) => { entry.data = { ...entry.data, [key]: value }; notify(); };
   const day = 86400000;
-  const jobs = [
+  const startedAt = Date.now();
+  /* 2026-11-28 대표 "더보기 처음 들어가면 렉": 일곱 가지를 한꺼번에 읽으면 수천 건을 한 번에 푸느라 화면이 멈칫한다.
+     그래서 일을 함수로 들고 있다가, 레이더 화면이 부를 때는 한꺼번에(빨리), 더보기의 미리 읽기(gentle)는 하나씩 · 사이사이
+     한가할 때까지 기다리며 돌린다. 읽는 것 · 결과는 같다. */
+  const jobFactories = [
     /* 차감 · 되돌림만 읽는다 (급여가 쓰는 색인). 원장 전체를 읽으면 발급 · 담당 교체까지 딸려 와 몇 배가 된다. */
-    Promise.all([
+    () => Promise.all([
       listClients(organizationId, { store: clientStore }),
       listPasses(organizationId, { store: passStore }),
       listRecentDeductions({ organizationId, now, days: RADAR_LEDGER_DAYS }),
@@ -28211,20 +28223,30 @@ function startRadarLoad({ organizationId, clientStore, passStore, instructorStor
           role, appBuild: APP_BUILD_LABEL, platform: Capacitor.getPlatform(),
         });
       }),
-    toleratingReadFailure(listLessonNotesBetween(organizationId, new Date(now.getTime() - RADAR_NOTES_DAYS * day), new Date(now.getTime() + day))).then((value) => put("notes", value)),
-    Promise.resolve().then(() => onLoadShares({ organizationId }))
+    () => toleratingReadFailure(listLessonNotesBetween(organizationId, new Date(now.getTime() - RADAR_NOTES_DAYS * day), new Date(now.getTime() + day))).then((value) => put("notes", value)),
+    () => Promise.resolve().then(() => onLoadShares({ organizationId }))
       .then((result) => ({ rows: Array.isArray(result?.rows) ? result.rows : [], errorCode: "" }))
       .catch((thrown) => ({ rows: null, errorCode: serverCodeOf(thrown) || String(thrown?.code || "unknown") }))
       .then((value) => put("shares", value)),
-    toleratingReadFailure(listRecordActivity(organizationId, activityMonth)).then((value) => put("activities", value)),
-    listRenewalCandidates(organizationId)
+    () => toleratingReadFailure(listRecordActivity(organizationId, activityMonth)).then((value) => put("activities", value)),
+    () => listRenewalCandidates(organizationId)
       .then((rows) => ({ rows, errorCode: "" }))
       .catch((thrown) => ({ rows: null, errorCode: String(thrown?.code || "unknown").replace("firestore/", "") }))
       .then((value) => put("candidates", value)),
-    toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })).then((value) => put("members", value)),
-    toleratingReadFailure(listLocations(organizationId)).then((value) => put("locations", value)),
+    () => toleratingReadFailure(listMemberships(organizationId, { store: instructorStore })).then((value) => put("members", value)),
+    () => toleratingReadFailure(listLocations(organizationId)).then((value) => put("locations", value)),
   ];
-  Promise.allSettled(jobs).then(() => { entry.loading = false; entry.at = Date.now(); notify(); });
+  const settle = (job) => Promise.resolve().then(job).catch(() => {});
+  const run = gentle
+    ? jobFactories.reduce((chain, job) => chain.then(() => (entry.hurry ? null : radarIdle())).then(() => settle(job)), Promise.resolve())
+    : Promise.allSettled(jobFactories.map((job) => settle(job)));
+  run.then(() => {
+    entry.loading = false;
+    entry.at = Date.now();
+    notify();
+    /* 걸린 시간 -- 더보기 렉을 다시 말하면 이것으로 본다 (더보기 → 진단). 회원 수 등 내용은 남기지 않는다. */
+    deviceLog("renewal_radar_loaded", { feature: "renewal_radar", stage: gentle ? "prefetch" : "screen", ms: Date.now() - startedAt, platform: Capacitor.getPlatform() });
+  });
   notify();
   return entry;
 }
@@ -28277,9 +28299,14 @@ function prefetchRenewalRadar(params) {
   if (entry.at || entry.loading) return;
   /* 브라우저가 한가할 때 (늦어도 3초 안). 더보기를 열자마자 읽기 시작하면 수천 건을 푸는 일이 첫 몇 번의 누름과 겹친다
      (2026-11-21 대표: "눌렀을 때 반응이 0.5초 느림"). 그 사이 화면을 열면 화면이 바로 읽는다. */
-  const run = () => { try { startRadarLoad(params); } catch (_ignored) { /* 미리 읽기가 메뉴를 깨뜨리면 안 된다 -- 화면을 열면 다시 읽는다. */ } };
-  if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") window.requestIdleCallback(run, { timeout: 3000 });
-  else setTimeout(run, 1500);
+  /* 2026-11-28: 하나씩 · 사이사이 쉬며(gentle). 그 사이 레이더 화면을 열면 화면이 남은 것을 한꺼번에 읽는다. */
+  const run = () => { try { startRadarLoad(params, { gentle: true }); } catch (_ignored) { /* 미리 읽기가 메뉴를 깨뜨리면 안 된다 -- 화면을 열면 다시 읽는다. */ } };
+  const later = () => {
+    if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") window.requestIdleCallback(run, { timeout: 4000 });
+    else setTimeout(run, 1500);
+  };
+  /* 더보기가 열리는 움직임 · 첫 누름과 겹치지 않게 조금 뒤에 시작한다. */
+  setTimeout(later, 1500);
 }
 
 /* ── 현황판 틀 (2026-11-21 대표 승인 "현황판 웹 배치안" 1단계) ───────────────

@@ -47,11 +47,17 @@ test("거절한 강사에게는 토큰을 보내지 않는다", async () => {
   assert.equal(sent.length, 0);
 });
 
-test("iOS 는 아직 묻지 않는다 -- 애플 푸시 설정 전 (1.1.63)", async () => {
-  const { globals, calls } = native("ios");
+test("iOS 도 등록한다 -- 애플 Push · APNs 키 준비 뒤 (2026-11-28)", async () => {
+  const { globals } = native("ios");
   const sent = [];
-  const result = await registerTeacherDevice({ organizationId: "bonita", call: async (p) => sent.push(p), globals });
+  const result = await registerTeacherDevice({ organizationId: "bonita", call: async (p) => { sent.push(p); }, globals });
+  assert.equal(result.registered, true);
+  assert.equal(sent[0].platform, "ios");
+});
+
+test("모르는 플랫폼은 묻지 않는다", async () => {
+  const { globals, calls } = native("windows");
+  const result = await registerTeacherDevice({ organizationId: "bonita", call: async () => {}, globals });
   assert.equal(result.skipped, "platform_not_ready");
   assert.equal(calls.asked, 0);
-  assert.equal(sent.length, 0);
 });

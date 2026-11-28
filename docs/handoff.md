@@ -14,6 +14,9 @@
   (entitlement · AppDelegate 토큰 전달 · iOS includePlugins). iOS 강사는 그동안 앱 안 토스트 · 진한 알림 띠로 봄
 - 확인: test:node 4067 · Functions 482 · typecheck · eslint(새 오류 0). 실기기 푸시 수신 못 봄
 - 배포(대표 지시 뒤): Functions `memberRequestToTeacher` · `memberLessonCondition` → 강사 웹(스위치 화면) → 강사 앱 1.1.63 → 스위치 켜기
+- **release/1-1-63** (4e77a1b): release/1-1-62(보니따 1.1.6 포함) + 이 브랜치(병합 전) · 강사 1.1.63 · versionCode 86. `android.includePlugins` 로 안드로이드에만
+  messaging(12개), iOS 11개 그대로. 로컬에서 build · cap sync android · `gradlew assembleDebug` 통과(Java 는 Android Studio jbr, sdk.dir 은 local.properties).
+  Codemagic 시작 · 스토어 업로드는 대표. **1.1.62 는 건너뛰어도 된다** -- 1.1.63 이 1.1.62 를 전부 담는다
 
 ## 2026-11-28 — 강사 알림함을 모든 강사에게 · 요청 문구 · 새 알림 띄우기 (PR, 병합 · 배포 전)
 

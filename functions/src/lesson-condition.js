@@ -118,6 +118,7 @@ async function saveLessonCondition(firestore, input, deps = {}) {
     lessonStartsAt: context.startsAt, ...condition, updatedAt: stamp(), expireAt: shared.conditionExpireAt(context.startsAt),
   });
   let notified = false;
+  let pushTarget = null;
   if (instructorId && condition.mood === shared.CONDITION_MOOD.DISCOMFORT) {
     /* 부위 · 메모는 알림함에 적지 않는다 -- 알림함은 지워지지 않고, 30일 뒤 지우는 약속이 깨진다. */
     batch.set(firestore.collection("users").doc(instructorId).collection("inbox").doc(`cond_${docId}`), {
@@ -126,9 +127,14 @@ async function saveLessonCondition(firestore, input, deps = {}) {
       lessonStartsAt: context.startsAt, createdAt: stamp(),
     });
     notified = true;
+    pushTarget = {
+      instructorUid: instructorId, inboxId: `cond_${docId}`, kind: "member_condition", organizationId: context.organizationId,
+      lessonId: context.lessonId, title: "[몸 상태 전달]", body: "회원이 수업 전에 불편한 곳을 알려 왔어요",
+    };
   }
   await batch.commit();
-  return { saved: true, notified, mood: condition.mood };
+  /* pushTarget 은 index.js 만 쓴다 (푸시). 회원 화면에는 saved · notified · mood 만 간다. */
+  return { saved: true, notified, mood: condition.mood, pushTarget };
 }
 
 module.exports = { CONDITION_REASON, lessonConditionStatus, saveLessonCondition };

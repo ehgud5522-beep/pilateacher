@@ -98,7 +98,11 @@ async function sendMemberRequest(firestore, input, deps = {}) {
     if (isAlreadyExists(error)) return { status: "duplicate", instructors: instructors.length };
     throw error;
   }
-  return { status: "sent", instructors: instructors.length };
+  /* 푸시 대상 (2026-11-28) -- index.js 가 알림함을 쓴 뒤 teacher-push.js 로 보낸다. 화면에 돌려주지 않는다. */
+  const pushTargets = instructors.map((instructorUid) => ({
+    instructorUid, inboxId: requestId, kind, organizationId, title: COPY[kind].title, body: COPY[kind].body,
+  }));
+  return { status: "sent", instructors: instructors.length, pushTargets };
 }
 
 module.exports = { MEMBER_REQUEST_KIND, MEMBER_REQUEST_REASON, sendMemberRequest, seoulStamp };

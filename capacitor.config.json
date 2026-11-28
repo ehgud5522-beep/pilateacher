@@ -5,6 +5,7 @@
   "includePlugins": [
     "@capacitor-community/speech-recognition",
     "@capacitor-firebase/authentication",
+    "@capacitor-firebase/messaging",
     "@capacitor/app",
     "@capacitor/camera",
     "@capacitor/filesystem",
@@ -36,22 +37,5 @@
       "resize": "native",
       "resizeOnFullScreen": true
     }
-  },
-  "android": {
-    "includePlugins": [
-      "@capacitor-community/speech-recognition",
-      "@capacitor-firebase/authentication",
-      "@capacitor-firebase/messaging",
-      "@capacitor/app",
-      "@capacitor/camera",
-      "@capacitor/filesystem",
-      "@capacitor/haptics",
-      "@capacitor/keyboard",
-      "@capacitor/local-notifications",
-      "@capacitor/motion",
-      "@capacitor/share",
-      "@capgo/camera-preview",
-      "@capgo/capacitor-audio-recorder"
-    ]
   }
 }

@@ -56,7 +56,7 @@ import {
   fbVerifyInstructorIds,
   fbListPendingMemberLinks, fbLinkMemberAccountByOwner, fbUnlinkMemberAccount, fbUpdateClientPhone, fbDeleteArchivedClient,
   fbBeforeAfterShareStats, fbRenewalRadarBranch, fbRefreshFlowPtQueue, fbConfirmSalesMonth, fbConfirmFcLessonMonth, fbClosePayMonth, fbRunPayCheck,
-  fbVerifyMemberViews, fbMemberAppStatus,
+  fbVerifyMemberViews, fbMemberAppStatus, fbTeacherPushSettings,
   AI_CONSENT_POLICY_VERSION, AI_CONSENT_SCOPES,
 } from "./lib/firebase";
 import { readPendingClientWrites, runAppDualWrite } from "./data/dual-write/app-runtime";
@@ -202,6 +202,7 @@ import {
   MEMBER_NOTICE_BODY_MAX, MEMBER_NOTICE_ERROR_TEXT, MEMBER_NOTICE_TITLE_MAX, memberNoticeError, readMemberNotice, saveMemberNotice,
 } from "./data/repositories/member-notice-repository.js";
 import { shrinkNoticeImage } from "./features/member-notice/shrink-image.js";
+import { registerTeacherDevice } from "./features/notifications/teacher-push-client.js";
 import { conditionHeadline, readLessonCondition } from "./data/repositories/lesson-condition-repository.js";
 import { INBOX_COPY, inboxFailure, inboxRow, inboxStripLabel, lessonForInboxItem } from "./features/notifications/teacher-inbox.js";
 import {
@@ -4128,12 +4129,13 @@ function ScheduleManager({ draftAccountId, db, photos, onSave, onDelete, onStatu
             가장 가까운 그 수업을 연다. */}
         {/* 강사 알림함 (2026-11-07). 읽지 않은 것이 있을 때만 띠, 오류면 띠가 코드를 말한다. */}
         {inbox && (inboxLabel || inbox.error) ? (
+          /* 2026-11-28 대표 "앱에서 눈에 잘 안 띔": 안 읽은 알림이 있으면 진한 띠로. 오류는 예전 옅은 띠. */
           <button type="button" data-inbox-strip ref={inboxTriggerRef} onClick={() => setInboxOpen(true)}
-            className="mb-1.5 flex h-10 w-full items-center gap-2 rounded-xl px-3 text-left"
-            style={{ backgroundColor: TINT, border: `1px solid ${RING}` }}>
-            <Bell size={14} style={{ color: PRIMARY }} />
-            <span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: INK }}>{inboxLabel || inbox.error.message}</span>
-            <span className="shrink-0 text-xs font-extrabold" style={{ color: PRIMARY }}>보기</span>
+            className="lm-fade-up mb-1.5 flex h-11 w-full items-center gap-2 rounded-xl px-3 text-left"
+            style={inboxLabel ? { backgroundColor: PRIMARY, border: `1px solid ${PRIMARY}` } : { backgroundColor: TINT, border: `1px solid ${RING}` }}>
+            <Bell size={15} style={{ color: inboxLabel ? "#fff" : PRIMARY }} />
+            <span className="min-w-0 flex-1 truncate text-sm font-extrabold" style={{ color: inboxLabel ? "#fff" : INK }}>{inboxLabel || inbox.error.message}</span>
+            <span className="shrink-0 text-xs font-extrabold" style={{ color: inboxLabel ? "#fff" : PRIMARY }}>보기</span>
           </button>
         ) : null}
         {memberCancelOn && memberCancelCount > 0 ? (
@@ -32385,6 +32387,11 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
               document="beforeAfterSharing" title="비포애프터 회원 공유" allowListed={false}
               description="켜면 모든 강사가 변화 카드를 회원에게 보낼 수 있고, 보니따 앱에 비포애프터 탭이 생깁니다. 회원이 앱에서 '사진 공유 동의' 를 한 경우에만 받습니다. 끄면 이미 보낸 카드도 회원 앱에서 보이지 않습니다." />
+            {/* 강사 푸시 알림 (2026-11-28 대표). 서버(teacher-push.js · teacher-cancel-push.js)만 읽는다. */}
+            <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
+              onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
+              document="teacherPush" title="강사 푸시 알림"
+              description="켜면 강사 폰으로 회원 요청(오늘 수업 내용 · 최근 비포애프터), 수업 전 몸 상태(불편한 곳), 회원 수업 취소가 푸시로 갑니다. 강사가 새 앱(1.1.62)을 깔고 알림을 허용해야 받습니다. 회원 이름 · 몸 상태 내용은 알림에 들어가지 않고, 앱의 알림함에서 봅니다. '고른 계정만' 으로 몇 명만 먼저 켤 수 있습니다." />
             {/* 회원 수업 알림 (2026-11-07, 지시서 2차). 서버(sendMemberLessonReminders)만 읽는다. */}
             <ScheduleSyncAdmin organization={organization} instructorStore={instructorStore}
               onLoadConfig={onLoadRuntimeConfig} onSaveConfig={onSaveRuntimeConfig}
@@ -36924,8 +36931,10 @@ export default function App() {
   /* 강사 알림함 (2026-11-07). 회원 앱 취소가 켜진 강사만 듣는다 -- 알림이 올 일이 없는 계정에
      듣기를 열지 않는다. 규칙이 아직 안 나갔으면 permission-denied 로 끝나고 띠가 코드를 말한다. */
   /* 2026-11-21: 대표 · 총괄도 듣는다 -- FC 의 매출 인센 확정 · 회원권 발급 알림이 대표 알림함으로 온다 (서버 confirmSalesMonth · notifyOwnerOnFcIssue). */
-  const inboxOn = Boolean(organizationRoster) && Boolean(account?.id)
-    && (memberCancelEnabledFor(scheduleSyncConfig, account?.id) || isOwnerLevelRole(organizationContext.role));
+  /* 2026-11-28 대표 "피드백 요청하기가 강사 앱에서 알림이 안 옴": 회원 앱 취소 시범 강사 · 대표 · 총괄만 듣고 있어서
+     일반 강사에게는 회원 요청(수업 내용 · 비포애프터) · 수업 전 몸 상태 알림이 서버에 있어도 안 보였다.
+     이제 센터 소속이면 누구나 자기 알림함을 듣는다 (규칙: 본인 것만). */
+  const inboxOn = Boolean(organizationRoster) && Boolean(account?.id);
   const [inboxItems, setInboxItems] = useState([]);
   const [inboxError, setInboxError] = useState(null);
   useEffect(() => {
@@ -36942,12 +36951,37 @@ export default function App() {
         errorCode: error?.code || error?.name || "unknown", message: error?.message,
       });
     };
+    /* 새로 들어온 알림은 어느 탭에 있든 잠깐 위에 띄운다 (2026-11-28 대표 "앱에서 눈에 잘 안 띔").
+       처음 읽어 온 목록은 띄우지 않는다 -- 열 때마다 옛 알림이 쏟아지면 안 된다. */
+    let first = true;
+    const seen = new Set();
     subscribeTeacherInbox(uid, {
-      onChange: (items) => { if (!alive) return; setInboxItems(items); setInboxError(null); },
+      onChange: (items) => {
+        if (!alive) return;
+        const fresh = first ? [] : items.filter((item) => !item?.readAt && item?.id && !seen.has(item.id));
+        items.forEach((item) => { if (item?.id) seen.add(item.id); });
+        first = false;
+        setInboxItems(items);
+        setInboxError(null);
+        if (fresh.length) {
+          const row = inboxRow(fresh[0], rosterMembersRef.current || []);
+          setToast({ ok: true, msg: `🔔 ${row.title}${row.who ? ` ${row.who}` : ""}${fresh.length > 1 ? ` 외 ${fresh.length - 1}건` : ""} · 일정 탭에서 보기` });
+        }
+      },
       onError: fail("listen"),
     }).then((unsubscribe) => { if (alive) stop = unsubscribe; else unsubscribe(); }).catch(fail("subscribe"));
     return () => { alive = false; stop(); };
   }, [inboxOn, account?.id]);
+  /* 강사 폰 푸시 기기 등록 (2026-11-28 대표 "푸시 알림으로"). 폰 앱 · 센터 소속이면 앱을 열 때 한 번.
+     보내는 것은 서버이고, 운영 스위치 "강사 푸시 알림" 이 꺼져 있으면 토큰이 있어도 안 간다. */
+  const teacherPushOrg = organizationRoster ? String(organizationContext.organizationId || "") : "";
+  useEffect(() => {
+    if (!teacherPushOrg || !account?.id) return;
+    registerTeacherDevice({
+      organizationId: teacherPushOrg, call: fbTeacherPushSettings,
+      record: (entry) => deviceLog("teacher_push_register", { feature: "teacher_push", ...entry }),
+    }).catch((error) => deviceLog("teacher_push_register", { feature: "teacher_push", stage: "register", errorDomain: "capacitor_plugin", errorCode: error?.code || "unknown", message: error?.message }));
+  }, [teacherPushOrg, account?.id]);
   const readInboxItem = useCallback((item) => {
     const uid = account?.id;
     if (!uid || !item?.id || item.readAt) return;

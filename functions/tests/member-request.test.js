@@ -45,13 +45,16 @@ const input = (kind = MEMBER_REQUEST_KIND.FEEDBACK) => ({ callerUid: "uid-1", or
 test("담당 강사마다 알림함에 한 건 -- 회원 이름은 싣지 않는다", async () => {
   const db = fakeFirestore(linked());
   const result = await sendMemberRequest(db, input(), { now: NOW });
-  assert.deepEqual(result, { status: "sent", instructors: 2 });
+  const { pushTargets, ...shown } = result;
+  assert.deepEqual(shown, { status: "sent", instructors: 2 });
+  assert.deepEqual(pushTargets.map((target) => target.instructorUid), ["t1", "t2"]);
+  assert.doesNotMatch(JSON.stringify(pushTargets), /김하나|uid-1/);
   const id = "member_request_feedback_c1_20261128";
   for (const uid of ["t1", "t2"]) {
     const item = db.docs.get(`users/${uid}/inbox/${id}`);
     assert.equal(item.kind, MEMBER_REQUEST_KIND.FEEDBACK);
     assert.equal(item.clientId, "c1");
-    assert.equal(item.title, "[피드백 요청]");
+    assert.equal(item.title, "[오늘 수업 내용 요청]");
     assert.doesNotMatch(JSON.stringify(item), /김하나|uid-1/);
     assert.equal("lessonId" in item, false, "수업이 없는 알림 -- 강사 앱은 읽음만 한다");
   }

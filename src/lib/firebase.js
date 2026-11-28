@@ -783,6 +783,9 @@ export const fbVerifyMemberViews = callableAsOwner("verifyMemberViews");
 /** 보니따 앱 설치 현황 (대표 · 총괄). 회원 id 마다 "앱을 쓰는가 · 어디서 · 언제" 만 돌아온다. */
 export const fbMemberAppStatus = callableAsOwner("memberAppStatus");
 
+/** 강사 폰 푸시 기기 등록 (2026-11-28). 센터 직원이면 누구나 -- 서버가 소속을 본다. */
+export const fbTeacherPushSettings = callableAsOwner("teacherPushSettings");
+
 /** 투영을 다시 만든다. **`dryRun: false` 를 명시해야 실제로 쓴다.** */
 export const fbRebuildMemberViews = callableAsOwner("rebuildMemberViews");
 

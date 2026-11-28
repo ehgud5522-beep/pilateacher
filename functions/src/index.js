@@ -58,6 +58,8 @@ const { handleNoticeRequest } = require("./notice-admin");
 const { grantMemberCancel, memberCancelLesson, memberCancelStatus } = require("./member-cancel");
 const { sendMemberRequest } = require("./member-request");
 const { lessonConditionStatus, saveLessonCondition } = require("./lesson-condition");
+const { pushToTeacher } = require("./teacher-push");
+const teacherMessaging = () => require("firebase-admin/messaging").getMessaging();
 const { lessonRatingStats, lessonRatingStatus, submitLessonRating } = require("./lesson-rating");
 const { cancelThenNotifyTeacher, handleTeacherPushSettings } = require("./teacher-cancel-push");
 const { monthlyPayFor, planAccountSwap, runAccountSwap } = require("./instructor-swap");
@@ -1098,8 +1100,10 @@ exports.memberLessonCondition = onCall(MEMBER_LINK_OPTIONS, async (request) => {
   };
   try {
     if (action === "status") return await lessonConditionStatus(firestore, input);
-    const result = await saveLessonCondition(firestore, input, { stamp: () => FieldValue.serverTimestamp() });
-    log("info", "lesson_condition_saved", { mood: result.mood, notified: result.notified });
+    const { pushTarget, ...result } = await saveLessonCondition(firestore, input, { stamp: () => FieldValue.serverTimestamp() });
+    /* 강사 폰 푸시 (2026-11-28). 저장은 이미 끝났다 -- 푸시가 실패해도 저장은 성공이다. */
+    const pushed = pushTarget ? await pushToTeacher(firestore, teacherMessaging, pushTarget, { log: logger, stamp: () => FieldValue.serverTimestamp() }) : null;
+    log("info", "lesson_condition_saved", { mood: result.mood, notified: result.notified, push: pushed?.push || "none", pushCode: pushed?.errorCode || "" });
     return result;
   } catch (error) {
     if (error?.httpsCode) {
@@ -1120,11 +1124,13 @@ exports.memberRequestToTeacher = onCall(MEMBER_LINK_OPTIONS, async (request) => 
   const kind = String(request?.data?.kind || "").trim();
   const log = (level, event, fields) => logger[level](event, { feature: "member_request", organizationId, kind, ...fields });
   try {
-    const result = await sendMemberRequest(firestore, {
+    const { pushTargets = [], ...result } = await sendMemberRequest(firestore, {
       callerUid: request?.auth?.uid, organizationId, clientId: request?.data?.clientId, kind,
     }, { stamp: () => FieldValue.serverTimestamp() });
+    /* 강사 폰 푸시 (2026-11-28). 알림함은 이미 썼다 -- 푸시 결과는 로그에만. */
+    const pushed = await Promise.all(pushTargets.map((target) => pushToTeacher(firestore, teacherMessaging, target, { log: logger, stamp: () => FieldValue.serverTimestamp() })));
     // 회원 이름 · uid 는 남기지 않는다 (§7).
-    log("info", "member_request_done", { stage: "send", status: result.status, instructors: result.instructors });
+    log("info", "member_request_done", { stage: "send", status: result.status, instructors: result.instructors, push: pushed.map((item) => item.push).join(",") });
     return result;
   } catch (error) {
     if (error?.httpsCode) {

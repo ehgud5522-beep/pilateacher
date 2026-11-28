@@ -13,6 +13,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { Spinner } from "./spinner.jsx";
 import { TYPE } from "../../src/features/ui/type-scale.js";
 import { PUSH_KIND, PUSH_PERMISSION, PUSH_ROWS, PUSH_SUPPORT } from "./push.js";
 import {
@@ -867,7 +868,7 @@ export function DeleteAccount({ onDelete }) {
       ) : null}
 
       <button type="button" className="btn danger mt" disabled={working} onClick={run}>
-        {working ? "지우는 중…" : "네, 지울게요"}
+        {working ? <Spinner inline label="지우는 중" /> : "네, 지울게요"}
       </button>
       <button type="button" className="btn mt" disabled={working}
         onClick={() => { setStep(DELETE_STEP.IDLE); setFailure(""); }}>그만두기</button>
@@ -928,7 +929,7 @@ export function Diagnostics({ entries, onClose, onClear }) {
 }
 
 export function Loading() {
-  return <Card><p className="muted" style={{ fontSize: TYPE.body }}>잠시만요…</p></Card>;
+  return <Card><Spinner size={34} label="잠시만요" /></Card>;
 }
 
 /** 못 읽은 것. 코드를 함께 보여준다 -- 센터가 물어볼 수 있어야 한다. */
@@ -953,7 +954,8 @@ export function LoadFailed({ code, onRetry }) {
 export function Preparing({ onRetry }) {
   return (
     <Card>
-      <p style={{ fontSize: TYPE.body }}>회원권 정보를 준비하고 있어요.</p>
+      <Spinner size={30} label="회원권 정보를 준비하는 중" />
+      <p className="mt" style={{ fontSize: TYPE.body, textAlign: "center" }}>회원권 정보를 준비하고 있어요.</p>
       <p className="muted mt" style={{ fontSize: TYPE.caption }}>조금 뒤 다시 열어 주세요.</p>
       {onRetry ? <button type="button" className="btn mt" onClick={onRetry}>새로고침</button> : null}
     </Card>

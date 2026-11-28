@@ -6,6 +6,7 @@
  * 2. 담당 강사에게 요청 -- [피드백 요청] · [비포애프터 요청] 작은 버튼. 서버가 담당 강사 알림함에 한 건.
  */
 import { useRef, useState } from "react";
+import { Spinner } from "./spinner.jsx";
 import { REQUEST_LABEL, MEMBER_REQUEST_KIND, requestDone, requestFailure } from "./request-copy.js";
 import { MEMBER_FEATURE, MEMBER_STAGE, recordDiagnostic } from "./diagnostics.js";
 
@@ -76,7 +77,7 @@ export function MemberRequestRow({ place, api, beforeAfter = true }) {
       <div className="request-buttons">
         {kinds.map((kind) => (
           <button key={kind} type="button" data-request-kind={kind} disabled={Boolean(busy)} onClick={() => send(kind)}>
-            {busy === kind ? "보내는 중" : REQUEST_LABEL[kind]}
+            {busy === kind ? <Spinner inline size={16} label="보내는 중" /> : REQUEST_LABEL[kind]}
           </button>
         ))}
       </div>

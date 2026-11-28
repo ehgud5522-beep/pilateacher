@@ -10,6 +10,7 @@
  * 서버 · 플러그인 호출은 넘겨받는다 (deps) -- 테스트가 가짜를 넘긴다.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Spinner } from "./spinner.jsx";
 import { TYPE } from "../../src/features/ui/type-scale.js";
 import {
   MEMBER_UPDATE_COPY, MEMBER_UPDATE_DEFAULTS, UPDATE_PROMPT, UPDATE_SNOOZE_KEY, UPDATE_START,
@@ -144,7 +145,7 @@ export function UpdateGate({ children, deps: injected = null, initialState = nul
             <p className="mt" style={{ fontSize: TYPE.body, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{message}</p>
             {failure ? <p className="blocked" role="alert">{failure}</p> : null}
             <button type="button" className="btn primary mt" disabled={busy} onClick={start} data-update-now>
-              {busy ? MEMBER_UPDATE_COPY.updating : failure ? "다시 시도" : MEMBER_UPDATE_COPY.update}
+              {busy ? <Spinner inline label={MEMBER_UPDATE_COPY.updating} /> : failure ? "다시 시도" : MEMBER_UPDATE_COPY.update}
             </button>
             {optional ? <button type="button" className="btn mt" disabled={busy} onClick={later} data-update-later>{MEMBER_UPDATE_COPY.later}</button> : null}
           </div>

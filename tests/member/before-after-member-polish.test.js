@@ -33,7 +33,8 @@ test('the consent answer is remembered per member, and only the status word is s
 test('until the server answers, the screen never shows the consent form to someone who already agreed', async () => {
   const screen = await read('member/src/before-after.jsx');
   assert.match(screen, /useState\(\(\) => seen\?\.consent \|\| readConsent\(storage, key\) \|\| 'loading'\)/);
-  assert.match(screen, /\{consent === 'loading' \? \(error \? null : <p className="ba-status" role="status">확인하고 있어요…<\/p>\)/);
+  // 2026-11-28: 기다림은 로딩 동그라미로 (대표 "기다려야 하는 것들 다 로딩 동그라미로"). 뜻은 같다 -- 모르는 동안 동의 화면을 그리지 않는다.
+  assert.match(screen, /\{consent === 'loading' \? \(error \? null : <Spinner size=\{30\} label="확인하고 있어요" \/>\)/);
   // 목록은 메모리에만 -- 기기(localStorage)에는 동의 한 단어뿐.
   assert.match(screen, /const lastSeen = new Map\(\);/);
   assert.doesNotMatch(screen, /setItem\(/);

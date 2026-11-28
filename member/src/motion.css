@@ -23,6 +23,7 @@
 @keyframes member-card-in { from { opacity: 0; transform: translateY(12px) scale(.98); } }
 @keyframes member-pop-in { from { opacity: 0; transform: scale(.94); } }
 @keyframes member-notice-out { to { opacity: 0; transform: scale(.96) translateY(6px); } }
+@keyframes member-draw { to { stroke-dashoffset: 0; } }
 @keyframes member-star-pop { 0% { transform: scale(.55); } 55% { transform: scale(1.3); } 100% { transform: scale(1); } }
 @keyframes member-num-pop { 0% { transform: scale(.7); } 60% { transform: scale(1.35); } 100% { transform: scale(1); } }
 @keyframes member-tab-pop { 0% { transform: scale(.82); } 60% { transform: scale(1.12); } 100% { transform: scale(1); } }
@@ -84,6 +85,11 @@
   .condition-areas, .condition-memo, .condition-consent { animation: member-page-rise 260ms var(--m-glide); }
   .conditionbox .condition-done, .conditionbox .blocked { animation: member-page-rise 240ms var(--m-glide); }
   .conditionbox { animation: member-card-in 320ms var(--m-glide); }
+  /* 보냄: 체크 원이 그려지고 글자가 떠오른다 */
+  .condition-sent { animation: member-pop-in 320ms var(--m-glide); }
+  .condition-check circle { stroke-dasharray: 120; stroke-dashoffset: 120; animation: member-draw 420ms var(--m-glide) forwards; }
+  .condition-check path { stroke-dasharray: 40; stroke-dashoffset: 40; animation: member-draw 320ms 300ms var(--m-glide) forwards; }
+  .spinner.block { animation: member-page-rise 220ms var(--m-glide); }
   .record-month-list[data-dir="back"] { animation: member-page-back var(--m-page) var(--m-glide); }
   .record-month-list[data-dir="forward"] { animation: member-page-forward var(--m-page) var(--m-glide); }
   .record-month .mon { transition: opacity 160ms ease; }

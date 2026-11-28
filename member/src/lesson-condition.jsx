@@ -11,10 +11,14 @@ import {
 } from "../../functions/shared/lesson-condition.mjs";
 import { conditionFailure } from "./condition-copy.js";
 import { MEMBER_FEATURE, MEMBER_STAGE, recordDiagnostic } from "./diagnostics.js";
+import { Spinner } from "./spinner.jsx";
+
+/* 보낸 뒤 완료 표시를 보여 주는 시간. 그 뒤 창이 부드럽게 닫힌다 (2026-11-28 대표). */
+export const CONDITION_CLOSE_DELAY_MS = 1200;
 
 const text = (value) => String(value ?? "").trim();
 
-export function ConditionBox({ lessonId, place, api, offline = false, initial = undefined }) {
+export function ConditionBox({ lessonId, place, api, offline = false, initial = undefined, onSent = null }) {
   const [phase, setPhase] = useState(initial ? "ready" : offline ? "off" : "loading");
   const [status, setStatus] = useState(initial || null);
   const [draft, setDraft] = useState(() => initial?.condition || { mood: "", areas: [], memo: "" });
@@ -42,7 +46,20 @@ export function ConditionBox({ lessonId, place, api, offline = false, initial = 
   useEffect(() => { if (!initial) load(); }, [load, initial]);
 
   if (phase === "off") return null;
-  if (phase === "loading") return <div className="conditionbox"><p className="muted">몸 상태 칸을 준비하고 있어요…</p></div>;
+  if (phase === "loading") return <div className="conditionbox"><Spinner label="몸 상태 칸을 준비하는 중" /></div>;
+  /* 보냄: 체크가 그려지고 잠깐 뒤 창이 닫힌다. */
+  if (phase === "sent") {
+    return (
+      <div className="conditionbox condition-sent" role="status" data-condition-sent>
+        <svg className="condition-check" width="44" height="44" viewBox="0 0 44 44" aria-hidden="true">
+          <circle cx="22" cy="22" r="19" fill="none" stroke="currentColor" strokeWidth="3" />
+          <path d="M13.5 22.5l6 6 11-12" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        <p className="condition-title">선생님께 전했어요</p>
+        <p className="muted condition-sub">수업 전에 확인하실 거예요.</p>
+      </div>
+    );
+  }
   if (phase === "failed") {
     return (
       <div className="conditionbox">
@@ -64,8 +81,9 @@ export function ConditionBox({ lessonId, place, api, offline = false, initial = 
       const result = await api({ action: "save", ...request, condition: draft, consent: consented || agree });
       recordDiagnostic({ feature: MEMBER_FEATURE.LESSON_CONDITION, stage: MEMBER_STAGE.DONE, message: `${text(result?.mood)}:${result?.notified ? "notified" : "quiet"}` });
       setStatus((value) => ({ ...(value || {}), consented: true, condition: draft }));
-      setMessage({ text: "선생님께 전했어요. 수업 전에 확인하실 거예요." });
-      setPhase("ready");
+      setMessage(null);
+      setPhase("sent");
+      if (typeof onSent === "function") globalThis.setTimeout(onSent, CONDITION_CLOSE_DELAY_MS);
     } catch (error) {
       const view = conditionFailure(error);
       recordDiagnostic({ feature: MEMBER_FEATURE.LESSON_CONDITION, stage: MEMBER_STAGE.CONDITION_SAVE, errorDomain: "functions_callable", errorCode: text(error?.code) || "unknown", message: view.code });
@@ -109,7 +127,7 @@ export function ConditionBox({ lessonId, place, api, offline = false, initial = 
       ) : null}
       {editable ? (
         <button type="button" className="btn primary mt" data-condition-send disabled={phase === "sending" || Boolean(refused) || (!consented && !agree)} onClick={send}>
-          {phase === "sending" ? "전하는 중…" : status?.condition ? "고쳐서 다시 전하기" : "선생님께 전하기"}
+          {phase === "sending" ? <Spinner inline label="전하는 중" /> : status?.condition ? "고쳐서 다시 전하기" : "선생님께 전하기"}
         </button>
       ) : <p className="muted mt">수업이 시작돼서 더 고칠 수 없어요.</p>}
       {message ? <p className={message.failed ? "blocked" : "condition-done"} role="status">{message.text}</p> : null}

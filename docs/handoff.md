@@ -10,6 +10,20 @@
 - 실기기 · 실데이터로는 못 봄 -- 대표가 다시 렉을 말하면 더보기 → 진단의 이 줄로 확인
 - 반영: 강사 웹 배포로 PC 바로, 폰은 release/1-1-64 에 합침
 
+## 2026-11-28 — 강사 더보기 → 알림 설정 (켜기 · 끄기, 기본 켜짐) · release/1-1-64 (PR, 병합 · 배포 전)
+
+- 대표: 안드로이드 푸시가 이제 옴. "권한 설정을 강사가 더보기에서 알림 설정 켜기 끄기로, 기본은 켜는 걸로, 64 브랜치로 새로"
+- 서버: `teacherPushSettings` 에 action "set" {enabled} → `teacherPush/{uid}.enabled`. get 이 {devices, enabled} 를 돌려줌. 칸이 없으면 켜짐(기본).
+  끈 강사에게는 `pushToTeacher` 가 `muted`, 회원 취소 푸시(teacher-cancel-push)는 `off · teacher_muted`. 알림함 · 앱 안 토스트는 그대로
+- 강사 앱: 더보기 → 내 설정 → **알림 설정**(센터 소속이면 누구나). 스위치 하나 "회원 알림 받기" + 상태 한 줄(꺼짐 · 웹 · 폰 등록됨 · 폰 미등록 안내).
+  계정마다(폰마다 아님). 폰 OS 권한은 바꾸지 않고 안내만
+- 확인: test:node 4077 · Functions 485 · typecheck · eslint · 화면 테스트 3. 실기기 못 봄
+- 배포(대표 지시 뒤): Functions teacherPushSettings · memberRequestToTeacher · memberLessonCondition · memberCancelLesson → 강사 웹 → 앱 1.1.64
+- **release/1-1-64** (c03a47b): release/1-1-63 + main 54fc10e(#310) + 이 브랜치(병합 전). 강사 1.1.64 · versionCode 87 · 보니따 1.1.7. 플러그인 12개 그대로.
+  test:android-release · build · build:member 통과. Codemagic · 스토어는 대표. 서버(이 PR)가 배포돼야 끄기가 실제로 먹힌다
+- 대표 "더보기 들어가면 렉 · 버벅임이 심해짐": 더보기 첫 화면 그리기는 5~20ms 로 오늘 아침(b2d6325)과 같음(SSR 측정) -- 오늘 코드가 그리기를
+  무겁게 한 것은 아님. 의심: 대표 계정의 재등록 레이더 미리 읽기(prefetchRenewalRadar, #294 이후 앱 연 뒤 한 번) 같은 들어갈 때의 읽기. 기기 · 계정 · 처음만/매번 확인 대기
+
 ## 2026-11-28 — 보니따: 기다리는 곳은 모두 로딩 동그라미 · 몸 상태 보낸 뒤 창 저절로 닫힘 (PR, 병합 · 배포 전)
 
 - 대표: "내 몸 상태 전하기 -- 로딩은 동그라미가 돌아가는 버퍼링으로, 보내고 난 뒤 자동으로 창 꺼지게 부드럽게",

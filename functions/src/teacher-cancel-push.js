@@ -147,6 +147,7 @@ async function notifyTeacherOfMemberCancel(firestore, messaging, input, options 
 
     stage = "read_device";
     const device = await firestore.collection("teacherPush").doc(instructorUid).get();
+    if (teacherPushMuted(device.exists ? device.data() : null)) return { teacherNotice: TEACHER_NOTICE.OFF, errorCode: "teacher_muted" };
     const tokens = tokensOf(device.exists ? device.data() : null);
     if (tokens.length === 0) {
       log.warn?.("member_cancel_push_skipped", { ...where, stage, errorDomain: "teacher_push", errorCode: "no_device" });
@@ -323,6 +324,11 @@ async function cancelThenNotifyTeacher(firestore, getMessaging, input, cancelDep
    센터 직원(소속 active)만. 강사 앱 쪽 호출 · 네이티브 설정은 아직 없다. */
 
 const PLATFORMS = new Set(["ios", "android"]);
+
+/** 강사가 더보기에서 껐는가. 칸이 없으면 켜짐 (기본). */
+function teacherPushMuted(doc) {
+  return doc?.enabled === false;
+}
 const STAFF_ROLES = new Set(["owner", "area_manager", "manager", "instructor", "staff"]);
 const settingsError = (httpsCode, code) => Object.assign(new Error(code), { httpsCode, code });
 
@@ -355,15 +361,22 @@ async function handleTeacherPushSettings(firestore, input, deps) {
       const { FieldValue } = require("firebase-admin/firestore");
       await ref.set({ tokens: { [tokenKey(token)]: FieldValue.delete() }, updatedAt: at }, { merge: true });
     }
+  } else if (action === "set") {
+    /* 강사 본인의 켜기/끄기 (2026-11-28 대표: "강사가 더보기에서 알림 설정 켜기 끄기, 기본은 켜짐").
+       토큰은 그대로 둔다 -- 다시 켜면 바로 받는다. 끈 강사에게는 서버가 보내지 않는다 (teacherPushMuted). */
+    if (typeof input?.enabled !== "boolean") throw settingsError("invalid-argument", "push_enabled_invalid");
+    await ref.set({ enabled: input.enabled, enabledUpdatedAt: at, updatedAt: at }, { merge: true });
   } else if (action !== "get") {
     throw settingsError("invalid-argument", "push_action_invalid");
   }
   const snapshot = await ref.get();
-  return { devices: tokensOf(snapshot.exists ? snapshot.data() : null).length };
+  const saved = snapshot.exists ? snapshot.data() : null;
+  return { devices: tokensOf(saved).length, enabled: !teacherPushMuted(saved) };
 }
 
 module.exports = {
   ANDROID_CHANNEL,
+  teacherPushMuted,
   INBOX_STATUS,
   TEACHER_NOTICE,
   TITLE,

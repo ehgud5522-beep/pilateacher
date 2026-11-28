@@ -25004,6 +25004,71 @@ const MEMBER_APP_LINKS = {
    회원 앱을 열면 한 장 뜨는 공지. 이미지 · 제목 · 내용 · 띄우기 켜고 끄기 · 종료일.
    회원은 [일주일 동안 안 보기] · [닫기] 를 누른다. 고쳐서 저장하면 안 보기를 누른 회원에게도 다시 뜬다.
    판정은 functions/shared/member-notice.mjs, 저장은 member-notice-repository.js (규칙이 대표 · 총괄만 연다). */
+/* ── 알림 설정 (2026-11-28 대표: "강사가 더보기에서 알림 설정 켜기 끄기, 기본은 켜짐") ──
+   회원 요청(오늘 수업 내용 · 최근 비포애프터) · 수업 전 몸 상태 · 회원 수업 취소 푸시를 이 강사가 받을지.
+   서버(teacherPush/{uid}.enabled)에 둔다 -- 폰마다가 아니라 계정마다이고, 끄면 서버가 보내지 않는다.
+   앱 안 알림함 · 토스트는 그대로다. 폰 자체의 알림 권한은 폰 설정의 일이라 여기서 바꾸지 않고 안내만 한다. */
+function TeacherPushSettingsView({ organizationId, call = fbTeacherPushSettings, initialState = null, native = undefined }) {
+  const [state, setState] = useState(initialState || { loading: true, enabled: true, devices: 0, error: "" });
+  const [busy, setBusy] = useState(false);
+  const isNative = native ?? Boolean(globalThis.Capacitor?.isNativePlatform?.());
+  useEffect(() => {
+    if (initialState || !organizationId) return undefined;
+    let alive = true;
+    call({ action: "get", organizationId }).then((result) => {
+      if (alive) setState({ loading: false, enabled: result?.enabled !== false, devices: Number(result?.devices) || 0, error: "" });
+    }).catch((error) => {
+      const code = String(error?.details?.code || error?.code || "unknown").replace(/^functions\//, "");
+      deviceLog("teacher_push_settings_failed", { feature: "teacher_push", stage: "get", errorDomain: "functions", errorCode: code, message: error?.message });
+      if (alive) setState((value) => ({ ...value, loading: false, error: code }));
+    });
+    return () => { alive = false; };
+  }, [organizationId, call, initialState]);
+  const toggle = async () => {
+    if (busy || state.loading) return;
+    const next = !state.enabled;
+    setBusy(true);
+    setState((value) => ({ ...value, enabled: next, error: "" }));
+    try {
+      const result = await call({ action: "set", organizationId, enabled: next });
+      setState((value) => ({ ...value, enabled: result?.enabled !== false, devices: Number(result?.devices) || value.devices }));
+    } catch (error) {
+      const code = String(error?.details?.code || error?.code || "unknown").replace(/^functions\//, "");
+      deviceLog("teacher_push_settings_failed", { feature: "teacher_push", stage: "set", errorDomain: "functions", errorCode: code, message: error?.message });
+      setState((value) => ({ ...value, enabled: !next, error: code }));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: 14 };
+  return (
+    <div className="space-y-2" data-teacher-push-settings>
+      <section style={sectionStyle}>
+        <div className="flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <p style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>회원 알림 받기</p>
+            <p className="mt-0.5" style={{ fontSize: TYPE.caption, color: SUB, lineHeight: 1.5 }}>회원의 오늘 수업 내용 · 최근 비포애프터 요청, 수업 전 몸 상태(불편한 곳), 회원 수업 취소를 폰 알림으로 받아요.</p>
+          </div>
+          <button type="button" role="switch" aria-checked={state.enabled} aria-label="회원 알림 받기" data-push-toggle
+            disabled={busy || state.loading} onClick={toggle}
+            className="relative shrink-0 rounded-full disabled:opacity-50"
+            style={{ width: 52, height: 32, backgroundColor: state.enabled ? PRIMARY : LINE, transition: "background-color 200ms ease" }}>
+            <span aria-hidden="true" className="absolute rounded-full" style={{ top: 3, left: 3, width: 26, height: 26, backgroundColor: "#fff", boxShadow: "0 1px 3px rgba(0,0,0,.25)", transform: state.enabled ? "translateX(20px)" : "none", transition: "transform 220ms cubic-bezier(.2,.8,.2,1)" }} />
+          </button>
+        </div>
+        <p className="mt-3 rounded-lg px-3 py-2" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2, backgroundColor: CANVAS }}>
+          {state.loading ? "설정을 불러오는 중…"
+            : !state.enabled ? "꺼져 있어요. 알림은 앱 안 알림함에만 쌓여요."
+            : !isNative ? "알림은 폰 앱에서 받아요. 이 설정은 폰에도 그대로 적용돼요."
+            : state.devices > 0 ? "이 계정의 폰으로 알림이 가요."
+            : "아직 이 폰이 등록되지 않았어요. 폰 설정 → 앱 → 필라티쳐 → 알림을 허용한 뒤 앱을 다시 열어 주세요."}
+        </p>
+        {state.error ? <p role="alert" className="mt-2 text-xs font-bold" style={{ color: BAD }}>알림 설정을 처리하지 못했어요 (코드 {state.error})</p> : null}
+      </section>
+    </div>
+  );
+}
+
 function MemberNoticeAdmin({ organization, store = undefined, initialNotice = undefined, onToast }) {
   const organizationId = organization?.organizationId || "";
   const [draft, setDraft] = useState(() => ({ title: "", body: "", image: "", active: false, endsOn: "", ...(initialNotice || {}) }));
@@ -31566,7 +31631,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     return total;
   }, [db.schedule, db.members, db.settings, reportYm]);
   const detailTitles = {
-    report: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 · 운영 스위치", "owner-message": "이사님 전달사항", "name-confirm": "강사 이름 확정", notices: "공지사항", "expiry-order": "만료일 순서 확인", "duet-unmarked": "듀엣 출석 확인", assessment: "비포애프터 설정", center: "센터 정보", theme: "화면 설정", "schedule-colors": "일정 색상",
+    report: inOrganization ? "이번 달 내 수업 활동" : "월간 리포트", expiry: "만료 회원", "instructor-scope": "담당 강사", "app-update": "앱 업데이트 · 운영 스위치", "owner-message": "이사님 전달사항", "name-confirm": "강사 이름 확정", notices: "공지사항", "expiry-order": "만료일 순서 확인", "duet-unmarked": "듀엣 출석 확인", assessment: "비포애프터 설정", center: "센터 정보", theme: "화면 설정", push: "알림 설정", "schedule-colors": "일정 색상",
     data: "데이터 상태", backup: "데이터 이관 · 백업", permissions: "접근권한 안내", knowledge: "오늘의 지식", account: "계정", "account-delete": "계정 삭제", app: "앱 정보",
     products: "회원권 상품",
     clients: "회원 관리",
@@ -31720,6 +31785,8 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     : [];
   const scheduleColorsItem = { key: "schedule-colors", title: "일정 색상", description: "개인 · 듀엣 · 그룹 · 상담 · 휴무 카드 색", Icon: Palette };
   const themeItem = { key: "theme", title: "화면 설정", description: "폰 설정 · 라이트 · 다크", Icon: Smartphone };
+  /* 알림 설정 (2026-11-28). 센터 소속이면 누구나 -- 회원 알림이 오는 사람. */
+  const pushItems = inOrganization ? [{ key: "push", title: "알림 설정", description: "회원 요청 · 몸 상태 · 취소 알림 켜기 · 끄기", Icon: Bell }] : [];
   const dataItem = { key: "data", title: "데이터 상태", description: "기기 저장 · 로그인 상태", Icon: Check };
   const backupItem = { key: "backup", title: "데이터 이관 · 백업", description: "자동 클라우드 백업 · 회원 인계 · 백업 파일", Icon: Download };
   const onboardingItem = { key: "onboarding", title: "사용법 다시 보기", description: "기록 → 기억 → 다음 수업 흐름 다시 보기", Icon: Play, action: onOpenOnboarding };
@@ -31749,7 +31816,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
     ...centreGroups.filter((group) => group.label !== "점검" && group.label !== "대표 설정"),
     { label: "업무", items: [...salesMineItems, ...noticeItems] },
     ...centreGroups.filter((group) => group.label === "대표 설정"),
-    { label: "내 설정", items: [...centerItems, themeItem, dataItem, backupItem] },
+    { label: "내 설정", items: [...centerItems, ...pushItems, themeItem, dataItem, backupItem] },
     { label: "계정 · 앱", items: [accountItem, permissionsItem, appItem] },
     ...centreGroups.filter((group) => group.label === "점검"),
     { label: INSTRUCTOR_MENU_GROUP, collapsible: true,
@@ -31758,7 +31825,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
   ].filter((group) => group.items.length > 0) : [
     { label: "업무", items: [scheduleItem, recordsItem, reportItem, ...salesMineItems, ...(showRatings ? [ratingsItem] : []), ...(showRadarStaff && !showAudit ? [radarStaffItem] : []), ...expiryItems, ...noticeItems] },
     ...centreGroups,
-    { label: "내 설정", items: [assessmentItem, ...centerItems, scheduleColorsItem, themeItem, dataItem, backupItem] },
+    { label: "내 설정", items: [assessmentItem, ...centerItems, ...pushItems, scheduleColorsItem, themeItem, dataItem, backupItem] },
     { label: "기타", items: [onboardingItem, permissionsItem, lessonExamplesItem, knowledgeItem, accountItem, appItem] },
   ];
   const sectionStyle = { backgroundColor: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: "14px" };
@@ -32196,6 +32263,7 @@ function ReferenceSettingsTab({ db, photos, account, savedAt, demoMode, dataRevi
         )}
         {view === "schedule-colors" && <ScheduleColorSettings scheduleColors={scheduleColors}
           onChange={(next) => onChangeSettings({ ...db.settings, scheduleColors: next })} />}
+        {view === "push" && inOrganization && <TeacherPushSettingsView organizationId={organization?.organizationId || ""} />}
         {view === "theme" && (
           <section style={sectionStyle}>
             <div className="mb-3"><h2 style={{ fontSize: TYPE.body, fontWeight: 600, color: INK }}>화면 테마</h2><p style={{ marginTop: 3, fontSize: TYPE.caption, color: SUB }}>기기 설정을 따르거나 원하는 화면을 고릅니다.</p></div>
@@ -33473,6 +33541,9 @@ export function createAppScreenSmokeCases() {
        차감이 차수 순이라 뒤 차수가 먼저 만료되면 그 회차를 잃는다. */
     { name: "더보기 탭 · 만료일 순서 확인", element: settingsTab(smokeOwner, { initialView: "expiry-order" }) },
     { name: "더보기 탭 · 일정 색상", element: settingsTab(smokeOwner, { initialView: "schedule-colors" }) },
+    { name: "더보기 탭 · 알림 설정 · 켜짐", element: provider(<TeacherPushSettingsView organizationId="smoke-center" native initialState={{ loading: false, enabled: true, devices: 1, error: "" }} />) },
+    { name: "더보기 탭 · 알림 설정 · 꺼짐", element: provider(<TeacherPushSettingsView organizationId="smoke-center" native initialState={{ loading: false, enabled: false, devices: 1, error: "" }} />) },
+    { name: "더보기 탭 · 알림 설정 · 폰 미등록", element: provider(<TeacherPushSettingsView organizationId="smoke-center" native initialState={{ loading: false, enabled: true, devices: 0, error: "" }} />) },
     { name: "더보기 탭 · 보니따 공지 팝업", element: provider(
       <MemberNoticeAdmin organization={readyOrganizationContext(smokeOwner)} onToast={noop}
         initialNotice={{ title: "12월 휴무 안내", body: "25일은 쉽니다", image: "data:image/jpeg;base64,AAAA", active: true, endsOn: "2026-12-31" }} />,

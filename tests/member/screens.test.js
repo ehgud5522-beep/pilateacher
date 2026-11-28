@@ -585,3 +585,31 @@ test("공지 팝업: 이미지 · 제목 · 내용 · 일주일 동안 안 보�
   assert.match(popup, /data-notice-close[^>]*>닫기</);
   assert.match(popup, /role="dialog"/);
 });
+
+test("몸 상태 칸: 처음이면 동의를 받아야 보낼 수 있다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const first = markupOf("몸 상태 · 처음");
+  assert.match(first, /오늘 내 몸 상태 전하기/);
+  for (const label of ["좋아요", "피곤해요", "불편한 곳 있어요"]) assert.ok(first.includes(label), label);
+  assert.match(first, /data-condition-consent/);
+  assert.match(first, /담당 선생님께만 전달돼요/);
+  assert.match(first, /30일이 지나면 자동으로 지워져요/);
+  assert.match(first, /data-condition-send[^>]*disabled/, "동의 전에는 보낼 수 없다");
+});
+
+test("몸 상태 칸: 남긴 것이 그대로 · 부위가 보이고 · 고쳐서 다시 전하기", async (t) => {
+  const markupOf = await memberScreens(t);
+  const saved = markupOf("몸 상태 · 불편한 곳 남김");
+  assert.match(saved, /data-condition-mood="discomfort"[^>]*aria-checked="true"|aria-checked="true"[^>]*data-condition-mood="discomfort"/);
+  assert.match(saved, /aria-pressed="true"[^>]*data-condition-area="back"/);
+  assert.match(saved, /value="계단에서 삐끗"/);
+  assert.match(saved, /고쳐서 다시 전하기/);
+  assert.doesNotMatch(saved, /data-condition-consent/, "이미 동의했으면 다시 묻지 않는다");
+});
+
+test("몸 상태 칸: 수업이 시작되면 고칠 수 없다고 말한다", async (t) => {
+  const markupOf = await memberScreens(t);
+  const started = markupOf("몸 상태 · 수업 시작함");
+  assert.match(started, /수업이 시작돼서 더 고칠 수 없어요/);
+  assert.doesNotMatch(started, /data-condition-send/);
+});

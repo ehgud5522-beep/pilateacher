@@ -57,6 +57,7 @@ const { manageGroupPayroll } = require("./group-payroll");
 const { handleNoticeRequest } = require("./notice-admin");
 const { grantMemberCancel, memberCancelLesson, memberCancelStatus } = require("./member-cancel");
 const { sendMemberRequest } = require("./member-request");
+const { lessonConditionStatus, saveLessonCondition } = require("./lesson-condition");
 const { lessonRatingStats, lessonRatingStatus, submitLessonRating } = require("./lesson-rating");
 const { cancelThenNotifyTeacher, handleTeacherPushSettings } = require("./teacher-cancel-push");
 const { monthlyPayFor, planAccountSwap, runAccountSwap } = require("./instructor-swap");
@@ -1081,6 +1082,34 @@ exports.memberCancelLesson = onCall(MEMBER_LINK_OPTIONS, async (request) => {
       errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
     });
     throw new HttpsError("unavailable", "member_cancel_failed", { reason: "member_cancel_failed" });
+  }
+});
+
+/* 수업 전 몸 상태 전하기 (2026-11-28 대표). action "status" · "save". 근거는 lesson-condition.js.
+   부위 · 메모는 로그에 남기지 않는다 -- 건강에 관한 정보다 (§7). */
+exports.memberLessonCondition = onCall(MEMBER_LINK_OPTIONS, async (request) => {
+  const action = String(request?.data?.action || "").trim() === "save" ? "save" : "status";
+  const organizationId = String(request?.data?.organizationId || "").trim();
+  const lessonId = String(request?.data?.lessonId || "").trim();
+  const log = (level, event, fields) => logger[level](event, { feature: "lesson_condition", stage: action, organizationId, lessonId, ...fields });
+  const input = {
+    callerUid: request?.auth?.uid, organizationId, lessonId, clientId: request?.data?.clientId,
+    condition: request?.data?.condition, consent: request?.data?.consent === true,
+  };
+  try {
+    if (action === "status") return await lessonConditionStatus(firestore, input);
+    const result = await saveLessonCondition(firestore, input, { stamp: () => FieldValue.serverTimestamp() });
+    log("info", "lesson_condition_saved", { mood: result.mood, notified: result.notified });
+    return result;
+  } catch (error) {
+    if (error?.httpsCode) {
+      log("warn", "lesson_condition_refused", { errorDomain: "lesson_condition", errorCode: error.reason || error.httpsCode });
+      throw new HttpsError(error.httpsCode, error.message, { reason: error.reason || "" });
+    }
+    log("error", "lesson_condition_failed", {
+      errorDomain: "firestore", errorCode: String(error?.code || "unknown"), message: String(error?.message || "").slice(0, 200),
+    });
+    throw new HttpsError("unavailable", "lesson_condition_failed", { reason: "lesson_condition_failed" });
   }
 });
 

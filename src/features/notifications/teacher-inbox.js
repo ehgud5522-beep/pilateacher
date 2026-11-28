@@ -15,6 +15,8 @@ const text = (value) => String(value ?? "").trim();
 export const INBOX_KIND = Object.freeze({
   MEMBER_CANCEL: "member_cancel", SALES_CONFIRMED: "sales_confirmed", PASS_ISSUED_BY_FC: "pass_issued_by_fc",
   MEMBER_REQUEST_BEFORE_AFTER: "member_request_before_after", MEMBER_REQUEST_FEEDBACK: "member_request_feedback",
+  /* 수업 전 몸 상태 "불편한 곳" (2026-11-28) -- 수업이 있어 누르면 그 수업이 열린다. */
+  MEMBER_CONDITION: "member_condition",
 });
 
 export const INBOX_COPY = Object.freeze({

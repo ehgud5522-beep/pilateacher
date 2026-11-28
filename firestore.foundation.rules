@@ -2453,6 +2453,22 @@ service cloud.firestore {
          센터마다 문서 하나(popup). 대표 · 총괄이 쓰고, 이 센터에 이어진 회원과 직원이 읽는다.
          이미지는 줄인 JPEG 를 data URL 로 담는다 -- 회원에게 Storage 문을 열지 않으려고.
          판정 값은 functions/shared/member-notice.mjs 와 같다. */
+      /* ── 수업 전 몸 상태 (2026-11-28) ──────────────────────────────────
+         회원이 보니따에서 남긴다 -- 쓰기는 서버(memberLessonCondition)뿐이다. 건강에 관한 정보라
+         **그 수업의 담당 강사만** 읽는다. 대표 · FC 도 읽지 않는다. 문서가 없을 때는 센터 직원에게
+         "없음" 으로 답한다 (없는 것을 권한 거부로 말하면 강사 앱이 고장으로 읽는다).
+         expireAt 에 TTL 이 걸려 수업 30일 뒤 지워진다 (firestore.foundation.indexes.json). */
+      match /lessonConditions/{conditionId} {
+        allow get: if signedIn() && (resource == null
+          ? isCentreStaff(organizationId)
+          : (resource.data.instructorId == request.auth.uid && resource.data.organizationId == organizationId));
+        allow list, create, update, delete: if false;
+      }
+      /* 동의 기록. 서버만 쓰고 아무도 읽지 않는다 (증빙은 콘솔에서). */
+      match /memberConsents/{consentId} {
+        allow read, write: if false;
+      }
+
       match /memberNotices/{noticeId} {
         allow get: if signedIn() && noticeId == "popup"
           && (isCentreStaff(organizationId) || linkedMemberOf(organizationId));

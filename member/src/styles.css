@@ -669,3 +669,25 @@ body {
 .record-month .arrows { display: flex; gap: 2px; }
 .record-month button { min-width: 44px; min-height: 44px; border: 0; background: none; color: var(--ink); font-size: 20px; }
 .record-month button:disabled { opacity: .3; }
+
+/* ── 수업 전 몸 상태 (2026-11-28) ──────────────────────────────────────── */
+.conditionbox { margin-top: 18px; padding: 14px; border-radius: 16px; background: var(--card-tone); }
+.condition-title { font-size: var(--t-body); font-weight: 700; }
+.condition-sub { font-size: var(--t-caption); margin-top: 2px; }
+.condition-moods, .condition-areas { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.condition-moods button, .condition-areas button {
+  min-height: 40px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink);
+  font-size: var(--t-caption); font-weight: 600;
+}
+.condition-moods button.on, .condition-areas button.on { border-color: var(--rose); color: var(--rose); box-shadow: inset 0 0 0 1px var(--rose); }
+.condition-moods button:disabled, .condition-areas button:disabled { opacity: .55; }
+.condition-memo {
+  width: 100%; min-height: 44px; margin-top: 10px; padding: 0 12px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink); font-size: var(--t-body);
+}
+.condition-consent { display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; font-size: var(--t-caption); color: var(--sub); line-height: 1.6; }
+.condition-consent input { margin-top: 4px; width: 18px; height: 18px; flex-shrink: 0; }
+.condition-consent .consent-line { display: block; }
+.condition-consent b { display: block; color: var(--ink); margin-top: 2px; }
+.condition-done { margin-top: 10px; font-size: var(--t-caption); color: var(--rose); }

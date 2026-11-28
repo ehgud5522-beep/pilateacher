@@ -44,6 +44,8 @@ export const MEMBER_FEATURE = Object.freeze({
   /* 2026-11-28: 공지 팝업 읽기 · 강사에게 요청 (비포애프터 · 피드백). */
   MEMBER_NOTICE: "member_notice",
   MEMBER_REQUEST: "member_request",
+  /* 수업 전 몸 상태 (2026-11-28). 부위 · 메모는 적지 않는다 -- 결과 코드와 기분 종류만. */
+  LESSON_CONDITION: "lesson_condition",
 });
 
 /** 그 기능의 어느 단계인가. */
@@ -63,6 +65,8 @@ export const MEMBER_STAGE = Object.freeze({
   RATING_SUBMIT: "rating_submit",
   NOTICE_READ: "notice_read",
   REQUEST_CALL: "request_call",
+  CONDITION_STATUS: "condition_status",
+  CONDITION_SAVE: "condition_save",
   UPDATE_CHECK: "update_check",
   UPDATE_START: "update_start",
   DONE: "done",

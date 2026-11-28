@@ -7442,3 +7442,44 @@ describe("bonita member notice popup", () => {
     await assertSucceeds(getDoc(noticeRef(NOTICE_MEMBER)));
   });
 });
+
+/* ── 수업 전 몸 상태 (2026-11-28) ──────────────────────────────────────
+   건강에 관한 정보다. 그 수업의 담당 강사만 읽는다 -- 대표 · FC · 다른 강사 · 회원 모두 못 읽는다.
+   쓰기는 서버(memberLessonCondition)뿐. 동의 기록은 아무도 읽지 않는다. */
+describe("lesson condition from the member app", () => {
+  const conditionRef = (userId, id = "L1_c1") => doc(dbFor(userId), "organizations", ORG_A, "lessonConditions", id);
+
+  beforeEach(async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, "organizations", ORG_A, "lessonConditions", "L1_c1"), {
+        organizationId: ORG_A, lessonId: "L1", clientId: "c1", instructorId: users.instructor,
+        mood: "discomfort", areas: ["back"], memo: "삐끗", updatedAt: new Date(), expireAt: new Date(Date.now() + 86400000),
+      });
+      await setDoc(doc(db, "organizations", ORG_A, "memberConsents", "c1_lesson_condition"), { version: "2026-11-28", userId: "app-member" });
+    });
+  });
+
+  test("담당 강사만 읽는다", async () => {
+    await assertSucceeds(getDoc(conditionRef(users.instructor)));
+    for (const userId of [users.owner, users.area_manager, users.manager, users.staff, users.member, users.outsider, "app-member"]) {
+      await assertFails(getDoc(conditionRef(userId)), userId);
+    }
+  });
+
+  test("없는 문서는 센터 직원에게 '없음' 으로 답한다 -- 권한 거부로 말하지 않는다", async () => {
+    const missing = await assertSucceeds(getDoc(conditionRef(users.instructor, "L9_c9")));
+    assert.equal(missing.exists(), false);
+    await assertFails(getDoc(conditionRef(users.outsider, "L9_c9")), "다른 센터는 없는 문서도 못 묻는다");
+  });
+
+  test("목록 · 쓰기는 아무도 -- 서버만 쓴다. 동의 기록은 아무도 읽지 않는다", async () => {
+    await assertFails(getDocs(collection(dbFor(users.instructor), "organizations", ORG_A, "lessonConditions")));
+    await assertFails(setDoc(conditionRef(users.instructor), { mood: "good" }));
+    await assertFails(setDoc(conditionRef(users.owner, "L2_c1"), { organizationId: ORG_A, instructorId: users.owner, mood: "good" }));
+    await assertFails(deleteDoc(conditionRef(users.instructor)));
+    for (const userId of [users.owner, users.instructor, "app-member"]) {
+      await assertFails(getDoc(doc(dbFor(userId), "organizations", ORG_A, "memberConsents", "c1_lesson_condition")), userId);
+    }
+  });
+});

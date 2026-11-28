@@ -186,6 +186,18 @@ export async function callMemberCancel({ action, organizationId, clientId, lesso
 }
 
 /**
+ * 수업 전 몸 상태 (2026-11-28). action "status" (쓰지 않음) · "save" (condition · consent).
+ * 본인 확인 · 담당 강사는 서버가 회원 문서와 수업 문서에서 읽는다.
+ */
+export async function callMemberLessonCondition({ action, organizationId, clientId, lessonId, condition, consent }) {
+  const call = httpsCallable(functions, "memberLessonCondition");
+  const response = await call(action === "save"
+    ? { action, organizationId, clientId, lessonId, condition, consent: consent === true }
+    : { action: "status", organizationId, clientId, lessonId });
+  return response?.data || null;
+}
+
+/**
  * 담당 강사에게 요청 (2026-11-28): kind 는 member_request_before_after · member_request_feedback.
  * 담당 강사는 서버가 회원 문서에서 읽는다. 같은 종류는 하루 한 번 -- 두 번째는 status "duplicate".
  */

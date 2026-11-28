@@ -202,6 +202,7 @@ import {
   MEMBER_NOTICE_BODY_MAX, MEMBER_NOTICE_ERROR_TEXT, MEMBER_NOTICE_TITLE_MAX, memberNoticeError, readMemberNotice, saveMemberNotice,
 } from "./data/repositories/member-notice-repository.js";
 import { shrinkNoticeImage } from "./features/member-notice/shrink-image.js";
+import { conditionHeadline, readLessonCondition } from "./data/repositories/lesson-condition-repository.js";
 import { INBOX_COPY, inboxFailure, inboxRow, inboxStripLabel, lessonForInboxItem } from "./features/notifications/teacher-inbox.js";
 import {
   MEMBER_CANCEL_VIEW_COPY, ackKey as memberCancelAckKey, acksFromInbox, freesSlot, hasMemberCancel, isMemberCancelledAttendee,
@@ -3645,11 +3646,11 @@ function ScheduleColorSettings({ scheduleColors, onChange }) {
                 </span>
                 <span className="min-w-0 flex-1 truncate" style={{ fontSize: TYPE.body, color: INK }}>{type.label}</span>
                 <span className="shrink-0" style={{ fontSize: TYPE.caption, color: SUB }}>{presetLabel}</span>
-                <span aria-hidden="true" className="shrink-0 rounded-full" style={{ width: 18, height: 18, backgroundColor: tone.edge }} />
+                <span aria-hidden="true" className="shrink-0 rounded-full" style={{ width: 18, height: 18, backgroundColor: tone.edge, transition: "background-color 220ms ease" }} />
                 <ChevronDown size={16} className="shrink-0" style={{ color: FAINT, transform: open ? "rotate(180deg)" : "none", transition: "transform 160ms ease" }} />
               </button>
               {open && (
-                <div role="radiogroup" aria-label={`${type.label} 색`} className="flex flex-wrap justify-between gap-y-1 pb-3">
+                <div role="radiogroup" aria-label={`${type.label} 색`} className="lm-fade-up flex flex-wrap justify-between gap-y-1 pb-3">
                   {SCHEDULE_COLOR_PRESETS.map((preset) => {
                     const value = THEME === "dark" ? preset.dark : preset.light;
                     const on = tone.presetId === preset.id;
@@ -3657,7 +3658,7 @@ function ScheduleColorSettings({ scheduleColors, onChange }) {
                       <button type="button" role="radio" key={preset.id} aria-label={`${type.label} ${preset.label}`} aria-checked={on}
                         onClick={() => { onChange(setScheduleTypeColor(scheduleColors, type.key, preset.id)); setOpenType(""); }}
                         className="grid h-11 w-11 place-items-center">
-                        <span className="grid place-items-center rounded-full" style={{ width: 30, height: 30, backgroundColor: value.edge, boxShadow: on ? `0 0 0 2px ${CARD}, 0 0 0 4px ${value.edge}` : "none" }}>
+                        <span className="grid place-items-center rounded-full" style={{ width: 30, height: 30, backgroundColor: value.edge, boxShadow: on ? `0 0 0 2px ${CARD}, 0 0 0 4px ${value.edge}` : "none", transform: on ? "scale(1.06)" : "none", transition: "box-shadow 180ms ease, transform 200ms cubic-bezier(.2,.8,.2,1)" }}>
                           {on && <Check size={14} strokeWidth={3} style={{ color: "#fff" }} />}
                         </span>
                       </button>
@@ -4718,6 +4719,37 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
       ) : null}
     </p>
   ) : null;
+  /* 수업 전 몸 상태 (2026-11-28 대표): 회원이 보니따에서 남긴 것을 [수업 전] 브리핑 맨 위에. 강사 입력 없음.
+     규칙이 그 수업의 담당 강사만 읽게 한다 -- 담당이 아니면(permission-denied) 아무것도 그리지 않는다.
+     그 밖의 실패는 코드와 함께 한 줄. 부위 · 메모는 진단에 남기지 않는다. */
+  const conditionOrg = organizationMode && draft.id ? String(briefingContext.organizationId || "") : "";
+  const conditionClientId = conditionOrg && activeMember ? String(activeMember.orgClientId || "") : "";
+  const [conditionByClient, setConditionByClient] = useState({});
+  useEffect(() => {
+    if (!conditionClientId) return undefined;
+    let alive = true;
+    readLessonCondition(conditionOrg, draft.id, conditionClientId).then((condition) => {
+      if (alive) setConditionByClient((value) => ({ ...value, [conditionClientId]: { condition } }));
+    }).catch((error) => {
+      const code = String(error?.code || "unknown").replace(/^firestore\//, "");
+      if (code !== "permission-denied") deviceLog("lesson_condition_read_failed", { feature: "lesson_condition", stage: "read", errorDomain: "firestore", errorCode: code, correlationId: draft.id });
+      if (alive) setConditionByClient((value) => ({ ...value, [conditionClientId]: { errorCode: code } }));
+    });
+    return () => { alive = false; };
+  }, [conditionOrg, draft.id, conditionClientId]);
+  const conditionRead = conditionClientId ? conditionByClient[conditionClientId] : null;
+  const conditionBanner = conditionRead?.condition ? (
+    <div data-lesson-condition={conditionRead.condition.mood} className="lm-fade-up mb-3 rounded-xl px-3 py-2.5"
+      style={{ backgroundColor: conditionRead.condition.mood === "discomfort" ? WARN_S : TINT }}>
+      <p style={{ fontSize: TYPE.caption, color: SUB }}>회원이 전한 오늘 몸 상태</p>
+      <p style={{ fontSize: TYPE.body, fontWeight: 700, color: conditionRead.condition.mood === "discomfort" ? WARN : INK }}>{conditionHeadline(conditionRead.condition)}</p>
+      {conditionRead.condition.memo ? <p className="mt-0.5 break-words" style={{ fontSize: TYPE.caption, lineHeight: 1.5, color: INK2 }}>{conditionRead.condition.memo}</p> : null}
+    </div>
+  ) : conditionRead?.errorCode && conditionRead.errorCode !== "permission-denied" ? (
+    <p data-lesson-condition-error className="mb-3 rounded-lg px-3 py-2" style={{ fontSize: TYPE.caption, color: SUB, backgroundColor: CANVAS }}>
+      회원이 전한 몸 상태를 읽지 못했어요 (코드 {conditionRead.errorCode})
+    </p>
+  ) : null;
   /* 권장 문구 (2026-11-21 대표): 수업기록 3번에 1번 · 비포애프터 한 달에 한 장. 수업 후 탭 일지 칸 위에 저절로,
      할 일을 하면 저절로 사라진다. 막지 않는다. 판정은 features/records/record-nudges.js. */
   const nudgeClientId = briefingContext.organizationId && activeMember ? String(activeMember.orgClientId || "") : "";
@@ -5513,6 +5545,7 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
 
               {!manageDone && stage === LESSON_STAGE.PRE && (
                 <div key="pre" className="lm-stage" data-dir={stageDir || undefined} data-lesson-stage="pre">
+                  {conditionBanner}
                   {sectionTitle("브리핑", activeMember ? <button type="button" onClick={() => onOpenMember?.(activeMember.id)} className="min-h-11 px-1" style={{ fontSize: TYPE.caption, color: SUB }}>전체 기록 ›</button> : null)}
                   {lessonBriefingView ? <LessonBriefing view={lessonBriefingView} sessions={activeLessonSessions} footer={renewalLineView} fallback={briefingFallback} /> : null}
                 </div>
@@ -5661,7 +5694,7 @@ function ScheduleForm({ onRepeatNextWeek = null, draftAccountId, memberCancelAck
                   "다음 주 같은 시간 버튼이 사라졌다"). 11-17 개편 때 [수업 후] 탭의 접힌 [추가 관리] 안으로
                   들어가 [수업 전] 에서는 아예 없고, [수업 후] 에서도 펼쳐야 보였다. 두 탭 모두 바로 보인다. */}
               {!manageDone && (draft.id && (typeof onRepeatNextWeek === "function" || onDelete)) ? (
-                <section data-lesson-actions className="space-y-2 pt-3" style={{ borderTop: `1px solid ${LINE}` }}>
+                <section data-lesson-actions className="lm-fade-up space-y-2 pt-3" style={{ borderTop: `1px solid ${LINE}` }}>
                   {renderRepeat(false)}
                   {onDelete ? deleteControls : null}
                 </section>

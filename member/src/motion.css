@@ -73,6 +73,22 @@
   .request-buttons button { transition: transform var(--m-press) var(--m-glide); }
   .request-buttons button:active:not(:disabled) { transform: scale(.94); }
   .request-result { animation: member-page-rise 240ms var(--m-glide); }
+  /* 2026-11-28 대표 "오늘 작업한 것들 움직임이 자연스럽고 한눈에":
+     몸 상태 칩은 누르면 살짝 눌렸다 놓이고 색이 부드럽게 바뀐다. 부위 줄 · 결과 문구는 떠오르며 나온다.
+     수업기록은 달을 넘기는 방향에서 미끄러져 들어온다. */
+  .condition-moods button, .condition-areas button {
+    transition: transform var(--m-press) var(--m-glide), background-color 180ms ease, color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  }
+  .condition-moods button:active:not(:disabled), .condition-areas button:active:not(:disabled) { transform: scale(.94); }
+  .condition-moods button.on { animation: member-tab-pop 300ms var(--m-glide); }
+  .condition-areas, .condition-memo, .condition-consent { animation: member-page-rise 260ms var(--m-glide); }
+  .conditionbox .condition-done, .conditionbox .blocked { animation: member-page-rise 240ms var(--m-glide); }
+  .conditionbox { animation: member-card-in 320ms var(--m-glide); }
+  .record-month-list[data-dir="back"] { animation: member-page-back var(--m-page) var(--m-glide); }
+  .record-month-list[data-dir="forward"] { animation: member-page-forward var(--m-page) var(--m-glide); }
+  .record-month .mon { transition: opacity 160ms ease; }
+  .record-month button { transition: transform var(--m-press) var(--m-glide); }
+  .record-month button:active:not(:disabled) { transform: scale(.86); }
   .updatewall .updatecard { animation: member-pop-in 320ms var(--m-glide); }
   .zoom-viewer { animation: app-scrim-in 200ms ease; }
   .zoom-viewer .zoom-stage img { animation: member-pop-in 300ms var(--m-glide); }

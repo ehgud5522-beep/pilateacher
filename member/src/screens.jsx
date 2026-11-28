@@ -555,6 +555,8 @@ export function Records({ view, now = new Date() }) {
   const used = count(view?.journey?.usedTotal);
   const maxBack = recordMonthsBack(rows, now);
   const [back, setBack] = useState(0);
+  /* 넘긴 방향 -- 지난달이면 왼쪽에서(back), 다음 달이면 오른쪽에서(forward) 들어온다. */
+  const [dir, setDir] = useState("");
   const { year, month } = recordMonthAt(now, Math.min(back, maxBack));
   const monthRows = recordsInMonth(rows, year, month);
   const groups = new Map();
@@ -586,15 +588,17 @@ export function Records({ view, now = new Date() }) {
       <div className="record-month" data-record-month={`${year}-${String(month + 1).padStart(2, "0")}`}>
         <p className="mon num">{MONTH_LABEL(year, month)} · {monthRows.length}번</p>
         <span className="arrows">
-          <button type="button" aria-label="지난달" disabled={back >= maxBack} onClick={() => setBack((value) => Math.min(maxBack, value + 1))}>‹</button>
-          <button type="button" aria-label="다음 달" disabled={back <= 0} onClick={() => setBack((value) => Math.max(0, value - 1))}>›</button>
+          <button type="button" aria-label="지난달" disabled={back >= maxBack} onClick={() => { setDir("back"); setBack((value) => Math.min(maxBack, value + 1)); }}>‹</button>
+          <button type="button" aria-label="다음 달" disabled={back <= 0} onClick={() => { setDir("forward"); setBack((value) => Math.max(0, value - 1)); }}>›</button>
         </span>
       </div>
-      {monthRows.length === 0 ? <p className="muted">{back === 0 ? "이번 달 수업기록이 아직 없어요." : "이 달에는 수업기록이 없어요."}</p> : null}
-      {[...groups].map(([key, entries]) => <section className="record-day" key={key}>
-        <h2 className="record-day-title num">{dayLabel(entries[0].occurredAt)} <span>{weekdayLabel(entries[0].occurredAt)}요일</span></h2>
-        <ol className="timeline">{entries.map((row, index) => <RecordItem key={`${text(row.occurredAt)}-${index}`} row={row} showDate={false} />)}</ol>
-      </section>)}
+      <div className="record-month-list" key={`${year}-${month}`} data-dir={dir || undefined}>
+        {monthRows.length === 0 ? <p className="muted">{back === 0 ? "이번 달 수업기록이 아직 없어요." : "이 달에는 수업기록이 없어요."}</p> : null}
+        {[...groups].map(([key, entries]) => <section className="record-day" key={key}>
+          <h2 className="record-day-title num">{dayLabel(entries[0].occurredAt)} <span>{weekdayLabel(entries[0].occurredAt)}요일</span></h2>
+          <ol className="timeline">{entries.map((row, index) => <RecordItem key={`${text(row.occurredAt)}-${index}`} row={row} showDate={false} />)}</ol>
+        </section>)}
+      </div>
     </div>
   );
 }

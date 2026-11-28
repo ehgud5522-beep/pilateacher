@@ -55,7 +55,8 @@ const PUSH_COPY = Object.freeze({
   }),
   [PUSH_KIND.LESSON_30M]: Object.freeze({
     title: "수업 30분 전",
-    body: "잠시 후 수업이 시작됩니다. 수업 준비를 부탁드립니다.",
+    /* 2026-11-28 대표: 몸 상태를 미리 전하도록. 누르면 그 수업 상세(몸 상태 칸)가 열린다. */
+    body: "30분 뒤 수업이에요. 오늘 몸 상태를 강사에게 미리 전해 주세요.",
     label: "수업 리마인드",
     lead: 30 * MINUTE,
   }),
@@ -150,7 +151,7 @@ function messageFor({ kind, organizationId, lessonId, clientId, tokens }) {
   return {
     tokens,
     notification: { title: copy.title, body: copy.body },
-    data: { kind, organizationId: text(organizationId), lessonId: text(lessonId), open: kind === PUSH_KIND.LESSON_RATING ? "rating" : "home", ...(kind === PUSH_KIND.LESSON_RATING ? { clientId: text(clientId) } : {}) },
+    data: { kind, organizationId: text(organizationId), lessonId: text(lessonId), open: kind === PUSH_KIND.LESSON_RATING ? "rating" : kind === PUSH_KIND.LESSON_30M ? "condition" : "home", ...(kind === PUSH_KIND.LESSON_RATING ? { clientId: text(clientId) } : {}) },
     android: { priority: "high", notification: { channelId: ANDROID_CHANNEL } },
     apns: { payload: { aps: { sound: "default" } } },
   };

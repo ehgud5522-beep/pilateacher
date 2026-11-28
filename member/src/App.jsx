@@ -20,12 +20,12 @@ import { TYPE } from "../../src/features/ui/type-scale.js";
 import { BRAND_MARK } from "./brand.js";
 import { classifyPhoneAuthError } from "./auth-errors.js";
 import {
-  callMemberCancel, callMemberRating, callMemberRequest, deleteMemberAccount, linkMemberAccount, memberPushSettings, resetRecaptcha, signOutMember, startPhoneSignIn,
+  callMemberCancel, callMemberLessonCondition, callMemberRating, callMemberRequest, deleteMemberAccount, linkMemberAccount, memberPushSettings, resetRecaptcha, signOutMember, startPhoneSignIn,
   watchAuth, db,
 } from "./firebase.js";
 import {
   DEFAULT_PREFS, PUSH_KIND, PUSH_PERMISSION, PUSH_SUPPORT, forgetPushDevice, normalizePrefs, permissionGuide,
-  platformOf, pushPlugin, registerDevice, tapTarget, ratingTarget, sharedPhotoTarget,
+  platformOf, pushPlugin, registerDevice, tapTarget, conditionTarget, ratingTarget, sharedPhotoTarget,
 } from "./push.js";
 import { wantsAccountDeletion } from "./delete-account.js";
 import { LINK_RESULT, linkResultScreen, needsLinkCall } from "./link-result.js";
@@ -419,6 +419,7 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
      전(몇 초)에도 목록에서 바로 뺀다 -- 방금 취소한 수업이 그대로 보이면 회원은
      취소가 안 된 줄 안다. */
   const [openLesson, setOpenLesson] = useState(null);
+  const [requestedLesson, setRequestedLesson] = useState(null);
   const [cancelledIds, setCancelledIds] = useState(() => new Set());
   /* 수업 후 별점 평가 (2026-11-09). 보냈거나 "다음에" 를 누른 수업 id -- 다시 묻지 않는다. */
   const [ratingSeen, setRatingSeen] = useState(() => new Set(readRatingSeen(deviceBox())));
@@ -546,6 +547,22 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
     return () => { alive = false; };
   }, [ready, plugin, recordPush]);
 
+  /* 수업 30분 전 알림으로 들어오면 그 수업 상세를 연다. 지점이 여럿이면 그 센터의 화면으로 옮긴다.
+     일정에 없으면(이미 확정 · 취소됨) 홈에 머문다. */
+  const loadedPlaces = state.stage === "ready" && Array.isArray(state.places) ? state.places : [];
+  const requestedPlaceIndex = requestedLesson ? loadedPlaces.findIndex((item) => item.link?.organizationId === requestedLesson.organizationId
+    && (Array.isArray(item.view?.schedule) ? item.view.schedule : []).some((lesson) => text(lesson?.lessonId) === requestedLesson.lessonId)) : -1;
+  useEffect(() => {
+    if (!requestedLesson || state.stage !== "ready") return;
+    if (requestedPlaceIndex < 0) { setRequestedLesson(null); return; }
+    const view = loadedPlaces[requestedPlaceIndex]?.view;
+    const lesson = (view?.schedule || []).find((item) => text(item?.lessonId) === requestedLesson.lessonId);
+    setPlace(requestedPlaceIndex);
+    setTab("home");
+    if (lesson) setOpenLesson(lesson);
+    setRequestedLesson(null);
+  }, [requestedLesson, requestedPlaceIndex, state.stage]);
+
   /* 알림을 누르면 홈(달력)으로. 수업 하나를 여는 화면은 아직 없다. */
   useEffect(() => {
     if (!plugin?.addListener) return undefined;
@@ -555,6 +572,8 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
       setTab(tapTarget(event?.notification));
       const target = ratingTarget(event?.notification);
       setRequestedRating(target ? { ...target, openedAt: Date.now() } : null);
+      /* 수업 30분 전 알림 → 그 수업 상세(몸 상태 칸). 일정이 들어오면 아래 effect 가 연다. */
+      setRequestedLesson(conditionTarget(event?.notification));
       window.scrollTo?.({ top: 0, behavior: "instant" });
     }))
       .then((value) => { handle = value; }).catch(() => {});
@@ -726,7 +745,7 @@ function Member({ userId, initialTab = "home", pendingPhotoShare = null }) {
       <div key={tab} className="app-motion-content member-page" data-dir={pageDirection(tab)}>{body}</div>
       {openLesson && current ? (
         <LessonSheet lesson={openLesson} place={current.link} offline={Boolean(state.offlineAt)}
-          api={callMemberCancel}
+          api={callMemberCancel} conditionApi={callMemberLessonCondition}
           onClose={() => setOpenLesson(null)}
           onCancelled={(lessonId) => {
             setCancelledIds((previous) => new Set([...previous, text(lessonId)]));

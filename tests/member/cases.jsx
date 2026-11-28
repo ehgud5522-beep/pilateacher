@@ -15,6 +15,7 @@ import {
 } from "../../member/src/screens.jsx";
 import { linkResultScreen } from "../../member/src/link-result.js";
 import { MemberNoticePopup } from "../../member/src/member-extras.jsx";
+import { ConditionBox } from "../../member/src/lesson-condition.jsx";
 
 /** 2026-09-24 (목) 정오. */
 export const NOW = new Date(2026, 8, 24, 12, 0);
@@ -140,6 +141,22 @@ export function memberScreenCases() {
         requestPlace={{ organizationId: "center-a", clientId: "client-a" }} requestApi={noop} />,
     },
     { name: "홈 · 요청 없음(오프라인)", element: <Home view={view()} now={NOW} onOpenRecords={noop} requestPlace={{ organizationId: "center-a", clientId: "client-a" }} /> },
+    /* 2026-11-28: 수업 전 몸 상태. 처음이면 동의 문구, 남긴 것이 있으면 그대로, 시작한 수업은 못 고친다. */
+    {
+      name: "몸 상태 · 처음",
+      element: <ConditionBox lessonId="L1" place={{ organizationId: "org", clientId: "c1" }} api={noop}
+        initial={{ editable: true, consented: false, condition: null }} />,
+    },
+    {
+      name: "몸 상태 · 불편한 곳 남김",
+      element: <ConditionBox lessonId="L1" place={{ organizationId: "org", clientId: "c1" }} api={noop}
+        initial={{ editable: true, consented: true, condition: { mood: "discomfort", areas: ["back"], memo: "계단에서 삐끗" } }} />,
+    },
+    {
+      name: "몸 상태 · 수업 시작함",
+      element: <ConditionBox lessonId="L1" place={{ organizationId: "org", clientId: "c1" }} api={noop}
+        initial={{ editable: false, consented: true, condition: { mood: "good", areas: [], memo: "" } }} />,
+    },
     {
       name: "공지 팝업",
       element: <MemberNoticePopup notice={{ title: "12월 휴무 안내", body: "25일은 쉽니다", image: "data:image/jpeg;base64,AAAA" }} onClose={noop} onSnooze={noop} />,
